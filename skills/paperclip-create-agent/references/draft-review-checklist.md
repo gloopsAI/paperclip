@@ -9,6 +9,7 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 ## A. Identity and framing
 
 - [ ] `name`, `role`, and `title` are set and consistent with each other
+- [ ] `name` is a real human first + last name (e.g. `Ada Whitfield`), not the role/function/team — the function lives in `title` and the enum in `role`; the chosen name is not already used by an existing teammate
 - [ ] `AGENTS.md` names the agent, the role, and the company in the first sentence
 - [ ] The first paragraph points at the Paperclip skill as the source of truth for the heartbeat procedure
 - [ ] The reporting line (`reportsTo`) resolves to a real in-company agent id

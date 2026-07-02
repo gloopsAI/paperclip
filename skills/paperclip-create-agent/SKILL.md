@@ -73,7 +73,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 
 ### 6. Draft the new hire config
 
-- role / title / name
+- `name` / `role` / `title` — **the `name` field MUST be a real human first + last name** (e.g. `Ada Whitfield`), never the role, function, or team. Put the function in `title` (e.g. "Chief Technology Officer") and the role enum in `role` (e.g. `cto`). Pick a name not already used by an existing teammate.
 - icon (required in practice; pick from `/llms/agent-icons.txt`)
 - reporting line (`reportsTo`)
 - adapter type
@@ -100,7 +100,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "CTO",
+    "name": "Ada Whitfield",
     "role": "cto",
     "title": "Chief Technology Officer",
     "icon": "crown",
