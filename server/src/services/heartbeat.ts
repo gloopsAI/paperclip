@@ -103,6 +103,7 @@ import {
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
+  type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
@@ -172,6 +173,7 @@ import {
   type AgentOrgRow,
 } from "./agent-invokability.js";
 import {
+  buildLowTrustSourceTrust,
   redactQuarantinedBodyForHigherTrust,
   sanitizeQuarantinedCommentForHigherTrust,
 } from "./source-trust.js";
@@ -217,6 +219,7 @@ import {
   type EffectiveRunConfigSecretManifestEntry,
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { adoptWorkProductsForRun } from "./work-product-adoption.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -9453,6 +9456,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
       : null;
+    const runWorkProductSourceTrust = issueRef && trustPreset.kind === "low_trust_review"
+      ? buildLowTrustSourceTrust({
+        issueId: issueRef.id,
+        runId: run.id,
+        agentId: agent.id,
+      })
+      : null;
     const continuationSummary = issueRef
       ? await getIssueContinuationSummaryDocument(db, issueRef.id)
       : null;
@@ -10543,6 +10553,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         });
       };
+      const adoptHeartbeatWorkProducts = async (input: {
+        runtimeServices?: RuntimeServiceRef[];
+        resultJson?: Record<string, unknown> | null;
+      }) => {
+        if (!issueRef) return;
+        try {
+          const result = await adoptWorkProductsForRun({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            runId: run.id,
+            projectId: executionWorkspace.projectId ?? issueRef.projectId ?? null,
+            executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef.executionWorkspaceId ?? null,
+            workspace: {
+              cwd: executionWorkspace.cwd,
+              repoUrl: executionWorkspace.repoUrl,
+              repoRef: executionWorkspace.repoRef,
+              branchName: executionWorkspace.branchName,
+            },
+            runtimeServices: input.runtimeServices,
+            resultJson: input.resultJson,
+            sourceTrust: runWorkProductSourceTrust,
+          });
+          if (result.created > 0) {
+            await onLog("stdout", `[paperclip] Adopted ${result.created} work product${result.created === 1 ? "" : "s"} for this run.\n`);
+          }
+        } catch (err) {
+          logger.warn(
+            { err, runId: run.id, issueId: issueRef.id },
+            "failed to adopt heartbeat work products",
+          );
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to adopt work products: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      };
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
           "stdout",
@@ -10612,6 +10659,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
+        await adoptHeartbeatWorkProducts({ runtimeServices });
       }
       if (issueId && (executionWorkspace.created || runtimeServices.some((service) => !service.reused))) {
         try {
@@ -10771,6 +10819,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
+        await adoptHeartbeatWorkProducts({ runtimeServices: adapterManagedRuntimeServices });
         if (issueId) {
           try {
             await issuesSvc.addComment(
@@ -10900,6 +10949,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }),
         adapterResult.summary ?? null,
       );
+
+      await adoptHeartbeatWorkProducts({ resultJson: persistedResultJson });
 
       const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
         finishedAt: new Date(),

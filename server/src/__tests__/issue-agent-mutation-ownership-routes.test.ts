@@ -300,6 +300,30 @@ function createRunContextDb(
   };
 }
 
+function createWorkProductRuntimeLinkDb(input: {
+  runtimeServices?: Record<string, unknown>[];
+  executionWorkspaces?: Record<string, unknown>[];
+  projects?: Record<string, unknown>[];
+} = {}) {
+  const rowsForSelection = (selection: Record<string, unknown>) => {
+    const keys = Object.keys(selection);
+    if (keys.includes("runtimeServiceId")) return input.runtimeServices ?? [];
+    if (keys.includes("executionWorkspaceId")) return input.executionWorkspaces ?? [];
+    if (keys.includes("projectId")) return input.projects ?? [];
+    return [];
+  };
+  return {
+    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    select: vi.fn((selection: Record<string, unknown> = {}) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+        })),
+      })),
+    })),
+  };
+}
+
 async function createApp(actor: Record<string, unknown>, db?: unknown) {
   const routeDb = db ?? createRunContextDb(
     {},
@@ -978,6 +1002,83 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       expect.objectContaining({ createdByRunId: ownerRunId }),
     );
+  });
+
+  it("normalizes runtime service work product links to the execution workspace and project", async () => {
+    const projectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const executionWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const runtimeServiceId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    mockIssueService.getById.mockResolvedValue(makeIssue({ projectId }));
+    const app = await createApp(boardActor(), createWorkProductRuntimeLinkDb({
+      runtimeServices: [{
+        runtimeServiceId,
+        companyId,
+        projectId,
+        executionWorkspaceId,
+        issueId,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+      }],
+      executionWorkspaces: [{
+        executionWorkspaceId,
+        companyId,
+        projectId,
+      }],
+    }));
+
+    const res = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "runtime_service",
+      provider: "paperclip",
+      title: "Preview service",
+      runtimeServiceId,
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issueId,
+      companyId,
+      expect.objectContaining({
+        projectId,
+        executionWorkspaceId,
+        runtimeServiceId,
+      }),
+    );
+  });
+
+  it("rejects runtime service work product links that point at another execution workspace", async () => {
+    const projectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const executionWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const otherExecutionWorkspaceId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const runtimeServiceId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    mockIssueService.getById.mockResolvedValue(makeIssue({ projectId }));
+    const app = await createApp(boardActor(), createWorkProductRuntimeLinkDb({
+      runtimeServices: [{
+        runtimeServiceId,
+        companyId,
+        projectId,
+        executionWorkspaceId,
+        issueId,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+      }],
+      executionWorkspaces: [{
+        executionWorkspaceId: otherExecutionWorkspaceId,
+        companyId,
+        projectId,
+      }],
+    }));
+
+    const res = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "runtime_service",
+      provider: "paperclip",
+      title: "Preview service",
+      runtimeServiceId,
+      executionWorkspaceId: otherExecutionWorkspaceId,
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe("Runtime service must belong to the referenced execution workspace");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
   });
 
   it("rejects agent-created work products with a forged run id", async () => {

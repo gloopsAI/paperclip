@@ -42,6 +42,20 @@ export function workProductService(db: Db) {
       return rows.map(toIssueWorkProduct);
     },
 
+    listForExecutionWorkspace: async (companyId: string, executionWorkspaceId: string) => {
+      const rows = await db
+        .select()
+        .from(issueWorkProducts)
+        .where(
+          and(
+            eq(issueWorkProducts.companyId, companyId),
+            eq(issueWorkProducts.executionWorkspaceId, executionWorkspaceId),
+          ),
+        )
+        .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt));
+      return rows.map(toIssueWorkProduct);
+    },
+
     getById: async (id: string) => {
       const row = await db
         .select()

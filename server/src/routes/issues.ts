@@ -20,7 +20,9 @@ import {
   pipelineCases,
   pipelineStages,
   pipelines,
+  projects,
   projectWorkspaces,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -1748,6 +1750,194 @@ export function issueRoutes(
       downloadPath: `${contentPath}?download=1`,
       originalFilename: attachment.originalFilename ?? null,
     });
+  }
+
+  type WorkProductLinkedIssue = {
+    id: string;
+    companyId: string;
+    projectId: string | null;
+  };
+
+  type WorkProductLinkFields = {
+    projectId?: string | null;
+    executionWorkspaceId?: string | null;
+    runtimeServiceId?: string | null;
+  };
+
+  type CurrentWorkProductLinkFields = {
+    projectId: string | null;
+    executionWorkspaceId: string | null;
+    runtimeServiceId: string | null;
+  };
+
+  function hasOwn(input: object, key: string) {
+    return Object.prototype.hasOwnProperty.call(input, key);
+  }
+
+  async function normalizeWorkProductRuntimeLinks(input: {
+    issue: WorkProductLinkedIssue;
+    next: WorkProductLinkFields;
+    current?: CurrentWorkProductLinkFields | null;
+    mode: "create" | "update";
+  }): Promise<WorkProductLinkFields> {
+    const projectIdChanged = hasOwn(input.next, "projectId");
+    const executionWorkspaceIdChanged = hasOwn(input.next, "executionWorkspaceId");
+    const runtimeServiceIdChanged = hasOwn(input.next, "runtimeServiceId");
+    const hasLinkChange = projectIdChanged || executionWorkspaceIdChanged || runtimeServiceIdChanged;
+    if (input.mode === "update" && !hasLinkChange) return {};
+
+    let projectId = projectIdChanged
+      ? input.next.projectId ?? null
+      : input.current?.projectId ?? input.issue.projectId ?? null;
+    let executionWorkspaceId = executionWorkspaceIdChanged
+      ? input.next.executionWorkspaceId ?? null
+      : input.current?.executionWorkspaceId ?? null;
+    const runtimeServiceId = runtimeServiceIdChanged
+      ? input.next.runtimeServiceId ?? null
+      : input.current?.runtimeServiceId ?? null;
+
+    let runtimeService: {
+      runtimeServiceId: string;
+      companyId: string;
+      projectId: string | null;
+      executionWorkspaceId: string | null;
+      issueId: string | null;
+      scopeType: string;
+      scopeId: string | null;
+    } | null = null;
+    if (runtimeServiceId) {
+      runtimeService = await db
+        .select({
+          runtimeServiceId: workspaceRuntimeServices.id,
+          companyId: workspaceRuntimeServices.companyId,
+          projectId: workspaceRuntimeServices.projectId,
+          executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+          issueId: workspaceRuntimeServices.issueId,
+          scopeType: workspaceRuntimeServices.scopeType,
+          scopeId: workspaceRuntimeServices.scopeId,
+        })
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.id, runtimeServiceId))
+        .then((rows) => rows[0] ?? null);
+      if (!runtimeService || runtimeService.companyId !== input.issue.companyId) {
+        throw unprocessable("Runtime service must belong to the same company as the issue", {
+          code: "invalid_work_product_runtime_link",
+          runtimeServiceId,
+        });
+      }
+      if (
+        runtimeService.scopeType === "issue" &&
+        (runtimeService.issueId ?? runtimeService.scopeId) &&
+        (runtimeService.issueId ?? runtimeService.scopeId) !== input.issue.id
+      ) {
+        throw unprocessable("Issue-scoped runtime service must be linked to the same issue", {
+          code: "invalid_work_product_runtime_link",
+          runtimeServiceId,
+          issueId: input.issue.id,
+        });
+      }
+      if (!executionWorkspaceId && runtimeService.executionWorkspaceId) {
+        executionWorkspaceId = runtimeService.executionWorkspaceId;
+      }
+      if (!projectId && runtimeService.projectId) {
+        projectId = runtimeService.projectId;
+      }
+    }
+
+    let workspace: {
+      executionWorkspaceId: string;
+      companyId: string;
+      projectId: string;
+    } | null = null;
+    if (executionWorkspaceId) {
+      workspace = await db
+        .select({
+          executionWorkspaceId: executionWorkspaces.id,
+          companyId: executionWorkspaces.companyId,
+          projectId: executionWorkspaces.projectId,
+        })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, executionWorkspaceId))
+        .then((rows) => rows[0] ?? null);
+      if (!workspace || workspace.companyId !== input.issue.companyId) {
+        throw unprocessable("Execution workspace must belong to the same company as the issue", {
+          code: "invalid_work_product_runtime_link",
+          executionWorkspaceId,
+        });
+      }
+      if (!projectId) {
+        projectId = workspace.projectId;
+      }
+    }
+
+    if (
+      runtimeService?.executionWorkspaceId &&
+      executionWorkspaceId &&
+      runtimeService.executionWorkspaceId !== executionWorkspaceId
+    ) {
+      throw unprocessable("Runtime service must belong to the referenced execution workspace", {
+        code: "invalid_work_product_runtime_link",
+        runtimeServiceId,
+        executionWorkspaceId,
+      });
+    }
+    if (runtimeService?.projectId && projectId && runtimeService.projectId !== projectId) {
+      throw unprocessable("Runtime service project must match the work product project", {
+        code: "invalid_work_product_runtime_link",
+        runtimeServiceId,
+        projectId,
+      });
+    }
+    if (workspace?.projectId && projectId && workspace.projectId !== projectId) {
+      throw unprocessable("Execution workspace project must match the work product project", {
+        code: "invalid_work_product_runtime_link",
+        executionWorkspaceId,
+        projectId,
+      });
+    }
+    if (input.issue.projectId && projectId && input.issue.projectId !== projectId) {
+      throw unprocessable("Work product project must match the issue project", {
+        code: "invalid_work_product_runtime_link",
+        issueProjectId: input.issue.projectId,
+        projectId,
+      });
+    }
+
+    const projectProvenByIssue = Boolean(projectId && projectId === input.issue.projectId);
+    const projectProvenByWorkspace = Boolean(projectId && workspace?.projectId === projectId);
+    const projectProvenByRuntimeService = Boolean(projectId && runtimeService?.projectId === projectId);
+    if (projectId && !projectProvenByIssue && !projectProvenByWorkspace && !projectProvenByRuntimeService) {
+      const project = await db
+        .select({
+          projectId: projects.id,
+          companyId: projects.companyId,
+        })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .then((rows) => rows[0] ?? null);
+      if (!project || project.companyId !== input.issue.companyId) {
+        throw unprocessable("Work product project must belong to the same company as the issue", {
+          code: "invalid_work_product_runtime_link",
+          projectId,
+        });
+      }
+    }
+
+    const normalized: WorkProductLinkFields = {};
+    if (input.mode === "create" || projectIdChanged || (hasLinkChange && projectId !== input.current?.projectId)) {
+      normalized.projectId = projectId;
+    }
+    if (
+      input.mode === "create" ||
+      executionWorkspaceIdChanged ||
+      (hasLinkChange && executionWorkspaceId !== input.current?.executionWorkspaceId)
+    ) {
+      normalized.executionWorkspaceId = executionWorkspaceId;
+    }
+    if (input.mode === "create" || runtimeServiceIdChanged) {
+      normalized.runtimeServiceId = runtimeServiceId;
+    }
+    return normalized;
   }
 
   async function assertIssueEnvironmentSelection(
@@ -4625,9 +4815,13 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const createInput = {
       ...req.body,
-      projectId: req.body.projectId ?? issue.projectId ?? null,
       sourceTrust: await sourceTrustForActorWrite(issue, actor),
     };
+    Object.assign(createInput, await normalizeWorkProductRuntimeLinks({
+      issue,
+      next: createInput,
+      mode: "create",
+    }));
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
     if (createdByRunId === undefined) return;
     createInput.createdByRunId = createdByRunId;
@@ -4827,6 +5021,12 @@ export function issueRoutes(
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, existing.companyId, req.body, "update");
     if (createdByRunId === undefined && Object.prototype.hasOwnProperty.call(req.body, "createdByRunId")) return;
     if (createdByRunId !== undefined) patch.createdByRunId = createdByRunId;
+    Object.assign(patch, await normalizeWorkProductRuntimeLinks({
+      issue,
+      next: patch,
+      current: existing,
+      mode: "update",
+    }));
     if (requiresPaperclipAttachmentMetadata(patch, existing)) {
       if (patch.metadata !== undefined) {
         patch.metadata = await canonicalizePaperclipArtifactMetadata({

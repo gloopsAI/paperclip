@@ -48,11 +48,22 @@ Phase 0 covers narrow behavior evals for the Paperclip heartbeat skill:
 | No work exit | `core` | Agent exits cleanly with no assignments |
 | Checkout before work | `core` | Agent always checks out before modifying |
 | 409 conflict handling | `core` | Agent stops on 409, picks different task |
+| Memory provider binding | `phase5_memory` | Agent honors agent override before company default |
+| Memory provenance audit | `phase5_memory` | Agent preserves inspectable source and operation records |
+| Memory hook cost/trust | `phase5_memory` | Agent keeps memory hook cost attribution and source trust visible |
+| Board command work objects | `phase5_control_surface` | Chat-like board commands create auditable work objects |
+
+Phase 5 memory/control-surface prompt evals should be paired with deterministic server/shared tests for:
+
+- memory provider resolution order: agent override, then company default
+- memory operation audit rows including company, agent, issue, run, provider, source, and cost references
+- hook-delivered memory payloads preserving source trust and cost attribution fields
+- board command/chat-like routes creating auditable issues, comments, documents, approvals, or work products
 
 ### Adding new cases
 
-1. Add a YAML file to `evals/promptfoo/cases/`
-2. Follow the existing case format (see `core-assignment-pickup.yaml` for reference)
+1. Add a YAML file to `evals/promptfoo/tests/`
+2. Follow the existing case format (see `core.yaml` for reference)
 3. Run `promptfoo eval` to test
 
 ### Phases
