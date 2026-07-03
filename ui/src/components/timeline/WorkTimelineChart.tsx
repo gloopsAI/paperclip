@@ -20,6 +20,7 @@ import {
   chooseTickStepMs,
   computeLayout,
   formatDuration,
+  isRoutineRun,
   issueColor,
   shortLabel,
   type ColorMode,
@@ -53,6 +54,8 @@ const GEOM: Omit<LayoutOptions, "pxPerMinute" | "nowMs"> = {
 const AVATAR_R = 11;
 const CHIP_R = 9;
 const MARKER_R = 5.5;
+/** Distinct accent for the routine badge — reads apart from issue hues on light+dark. */
+const ROUTINE_FILL = "hsl(265 52% 60%)";
 
 /**
  * Per-kind styling for instant event markers (diamonds). Each kind gets a
@@ -132,6 +135,37 @@ function AvatarGlyph({
       <text x={cx} y={cy + 3.4} fontSize={r > 10 ? 9 : 8} textAnchor="middle" fill={stroke}>
         {label}
       </text>
+    </g>
+  );
+}
+
+/**
+ * A hexagon badge marking a routine/automation-fired run at the bar's leading
+ * edge — deliberately a different shape from the square (human) / circle (agent)
+ * avatar chips so routine runs are distinguishable at a glance (PAP-12435). A
+ * small circular-arrow glyph inside reinforces "recurring / automated".
+ */
+function RoutineBadge({ cx, cy, r = CHIP_R }: { cx: number; cy: number; r?: number }) {
+  const points = Array.from({ length: 6 }, (_, k) => {
+    const a = (Math.PI / 3) * k; // flat-top hexagon
+    return `${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`;
+  }).join(" ");
+  const ar = r * 0.44;
+  return (
+    <g>
+      <polygon points={points} fill={ROUTINE_FILL} stroke="var(--color-foreground)" strokeWidth={1.5} />
+      {/* circular-arrow glyph (open loop + arrowhead) = "routine / recurring" */}
+      <path
+        d={`M ${(cx + ar).toFixed(2)} ${cy.toFixed(2)} A ${ar} ${ar} 0 1 1 ${(cx - ar * 0.5).toFixed(2)} ${(cy - ar * 0.87).toFixed(2)}`}
+        fill="none"
+        stroke="white"
+        strokeWidth={1.3}
+        strokeLinecap="round"
+      />
+      <path
+        d={`M ${(cx - ar * 0.5).toFixed(2)} ${(cy - ar * 1.5).toFixed(2)} L ${(cx - ar * 0.5).toFixed(2)} ${(cy - ar * 0.3).toFixed(2)} L ${(cx - ar * 1.5).toFixed(2)} ${(cy - ar * 0.9).toFixed(2)} Z`}
+        fill="white"
+      />
     </g>
   );
 }
@@ -353,7 +387,11 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
                           <rect x={bar.x2 - Math.min(w - 2, 26)} y={yTop + 1.5} width={Math.min(w - 2, 26)} height={bar.height - 3} fill="url(#tl-fade)" />
                         )}
                       </g>
-                      {bar.kickoff && (
+                      {isRoutineRun(bar.span) ? (
+                        <g className="pointer-events-none">
+                          <RoutineBadge cx={bar.x1} cy={yTop + bar.height / 2} />
+                        </g>
+                      ) : bar.kickoff ? (
                         <g className="pointer-events-none">
                           <AvatarGlyph
                             cx={bar.x1}
@@ -363,7 +401,7 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
                             type={actorType(bar.kickoff)}
                           />
                         </g>
-                      )}
+                      ) : null}
                     </g>
                   );
                 })}
@@ -479,12 +517,23 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
         {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : "now"} · {formatDuration(startMs, endMs)} ·{" "}
         <span className="font-medium text-foreground">{bar.span.status}</span>
       </div>
-      {bar.kickoff && (
+      {isRoutineRun(bar.span) ? (
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <span
+            className="inline-block h-2.5 w-2.5"
+            style={{
+              backgroundColor: ROUTINE_FILL,
+              clipPath: "polygon(100% 50%, 75% 93%, 25% 93%, 0% 50%, 25% 7%, 75% 7%)",
+            }}
+          />
+          fired by routine{bar.span.retryOfRunId ? " · retry" : ""}
+        </div>
+      ) : bar.kickoff ? (
         <div className="text-muted-foreground">
           kicked off by: {(bar.kickoff as WorkTimelineActor).name}
           {bar.span.retryOfRunId ? " · retry" : ""}
         </div>
-      )}
+      ) : null}
       <div className="mt-1 text-foreground">click → open task</div>
     </div>
   );

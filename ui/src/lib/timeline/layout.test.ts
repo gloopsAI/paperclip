@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { WorkTimelineResult } from "@paperclipai/shared";
-import { chooseTickStepMs, computeLayout, issueColor, shortLabel, type LayoutOptions } from "./layout";
+import {
+  chooseTickStepMs,
+  computeLayout,
+  isRoutineRun,
+  issueColor,
+  shortLabel,
+  type LayoutOptions,
+} from "./layout";
 
 const DAY = "2026-07-02";
 const t = (hhmm: string) => `${DAY}T${hhmm}:00.000Z`;
@@ -193,5 +200,25 @@ describe("helpers", () => {
 
   it("chooseTickStepMs grows the step as the view zooms out", () => {
     expect(chooseTickStepMs(6)).toBeLessThan(chooseTickStepMs(0.4));
+  });
+
+  it("isRoutineRun flags automation/timer-fired runs but not human kickoffs", () => {
+    const span = (invocationSource: string | null): WorkTimelineResult["spans"][number] => ({
+      actorId: "agent:x",
+      laneHint: invocationSource,
+      runId: "r",
+      issueId: "i",
+      issueIdentifier: "PAP-1",
+      issueTitle: "t",
+      start: t("09:00"),
+      end: t("09:10"),
+      status: "completed",
+      invocationSource,
+    });
+    expect(isRoutineRun(span("automation"))).toBe(true);
+    expect(isRoutineRun(span("timer"))).toBe(true);
+    expect(isRoutineRun(span("assignment"))).toBe(false);
+    expect(isRoutineRun(span("on_demand"))).toBe(false);
+    expect(isRoutineRun(span(null))).toBe(false);
   });
 });

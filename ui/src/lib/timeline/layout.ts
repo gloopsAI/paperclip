@@ -110,6 +110,18 @@ export function isRunningStatus(status: string): boolean {
   return RUNNING_STATUSES.has(status);
 }
 
+/**
+ * Invocation sources that mean "a routine/automation fired this run" rather than
+ * a human/agent kickoff. Runs with these sources get a distinct "Routine" badge
+ * on the bar's leading edge instead of a kickoff avatar (plan §actors, PAP-12435).
+ */
+const ROUTINE_INVOCATION_SOURCES = new Set(["automation", "timer"]);
+
+/** True when a run was fired by a routine/automation rather than an assignment or on-demand kickoff. */
+export function isRoutineRun(span: WorkTimelineSpan): boolean {
+  return span.invocationSource != null && ROUTINE_INVOCATION_SOURCES.has(span.invocationSource);
+}
+
 export function actorType(actor: WorkTimelineActor | undefined): string {
   return actor?.type ?? "system";
 }

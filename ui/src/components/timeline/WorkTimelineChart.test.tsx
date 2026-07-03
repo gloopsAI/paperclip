@@ -108,6 +108,17 @@ describe("WorkTimelineChart", () => {
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
   });
 
+  it("marks routine/automation-fired runs with a hexagon badge, not other runs", () => {
+    const data = timelineSample();
+    data.spans[0].invocationSource = "automation"; // routine-fired → badge
+    data.spans[1].invocationSource = "assignment"; // normal kickoff → no badge
+    renderChart(data);
+
+    // exactly one routine badge (hexagon polygon) is drawn, for the automation run.
+    const badges = container.querySelectorAll("svg.absolute polygon");
+    expect(badges).toHaveLength(1);
+  });
+
   it("renders a human row with diamond event markers when the payload carries events", () => {
     const data = timelineSample();
     data.actors.push({ id: "user:dotta", type: "user", name: "Dotta" });

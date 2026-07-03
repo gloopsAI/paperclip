@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { GanttChartSquare } from "lucide-react";
 import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
 import { workTimelineApi, type WorkTimelineParams } from "@/api/workTimeline";
+import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -71,23 +72,57 @@ export function Timeline() {
     setZoom(z);
   };
   const [colorMode, setColorMode] = useState<ColorMode>("issue");
-  const [lensUserId, setLensUserId] = useState<string>(EVERYONE);
+  // Lens defaults to the viewer's own kicked-off work (plan §Default lens,
+  // PAP-12435); resolved from the session once it loads. `null` = not yet resolved
+  // so we don't fire a whole-company fetch before knowing the viewer.
+  const [lensUserId, setLensUserId] = useState<string | null>(null);
+  const lensTouched = useRef(false);
+  const setLensManual = (v: string) => {
+    lensTouched.current = true;
+    setLensUserId(v);
+  };
   // Union of users discovered across fetches so the lens list stays stable.
   const [knownUsers, setKnownUsers] = useState<WorkTimelineActor[]>([]);
+
+  const { data: session, isLoading: sessionLoading } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const viewerLensId = session?.user?.id ? `user:${session.user.id}` : null;
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Timeline" }]);
   }, [setBreadcrumbs]);
 
+  // Resolve the initial lens once the session settles: the viewer's own work if
+  // we can identify them, otherwise fall back to whole-company.
+  useEffect(() => {
+    if (lensTouched.current || lensUserId !== null || sessionLoading) return;
+    setLensUserId(viewerLensId ?? EVERYONE);
+  }, [sessionLoading, viewerLensId, lensUserId]);
+
+  // Seed the lens dropdown with the viewer so their own option is always present,
+  // even before they show up as an actor in a fetched window.
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    const id = `user:${session.user.id}`;
+    setKnownUsers((prev) =>
+      prev.some((u) => u.id === id)
+        ? prev
+        : [{ id, type: "user", name: session.user.name ?? "You" }, ...prev],
+    );
+  }, [session]);
+
   const params: WorkTimelineParams = useMemo(
-    () => (lensUserId === EVERYONE ? {} : { userId: lensUserId.replace(/^user:/, "") }),
+    () => (!lensUserId || lensUserId === EVERYONE ? {} : { userId: lensUserId.replace(/^user:/, "") }),
     [lensUserId],
   );
 
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.workTimeline(selectedCompanyId ?? "", lensUserId),
+    queryKey: queryKeys.workTimeline(selectedCompanyId ?? "", lensUserId ?? undefined),
     queryFn: () => workTimelineApi.get(selectedCompanyId!, params),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && lensUserId !== null,
   });
 
   useEffect(() => {
@@ -116,8 +151,9 @@ export function Timeline() {
       </div>
       <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
         A Gantt view of who did what, when. Rows are actors; bars are heartbeat runs colored by task;
-        the avatar chip at a bar's leading edge is who kicked it off; straight lines are agent→agent
-        delegation. Hover a bar for its task &amp; timing; click to open the task.
+        the avatar chip at a bar's leading edge is who kicked it off (a hexagon badge marks
+        routine-fired runs); straight lines are agent→agent delegation. Hover a bar for its task &amp;
+        timing; click to open the task.
       </p>
     </div>
   );
@@ -138,7 +174,7 @@ export function Timeline() {
       </label>
       <label className="flex items-center gap-2 text-xs text-muted-foreground">
         Report for
-        <Select value={lensUserId} onValueChange={setLensUserId}>
+        <Select value={lensUserId ?? EVERYONE} onValueChange={setLensManual}>
           <SelectTrigger className="h-8 w-[220px] text-xs">
             <SelectValue />
           </SelectTrigger>
@@ -146,7 +182,7 @@ export function Timeline() {
             <SelectItem value={EVERYONE}>Everyone (company)</SelectItem>
             {knownUsers.map((u) => (
               <SelectItem key={u.id} value={u.id}>
-                {u.name} — work kicked off
+                {u.id === viewerLensId ? `${u.name} (you) — work kicked off` : `${u.name} — work kicked off`}
               </SelectItem>
             ))}
           </SelectContent>
@@ -171,7 +207,7 @@ export function Timeline() {
       {header}
       {toolbar}
 
-      {isLoading && <PageSkeleton />}
+      {(isLoading || lensUserId === null) && <PageSkeleton />}
 
       {error && (
         <EmptyState
@@ -201,6 +237,22 @@ export function Timeline() {
   );
 }
 
+/** Purple hexagon chip mirroring the routine badge drawn on routine-fired bars. */
+function RoutineLegendChip() {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span
+        className="inline-block h-3 w-3"
+        style={{
+          backgroundColor: "hsl(265 52% 60%)",
+          clipPath: "polygon(100% 50%, 75% 93%, 25% 93%, 0% 50%, 25% 7%, 75% 7%)",
+        }}
+      />
+      routine-fired
+    </span>
+  );
+}
+
 function Legend({ data, colorMode }: { data: WorkTimelineResult; colorMode: ColorMode }) {
   if (colorMode === "status") {
     return (
@@ -222,6 +274,7 @@ function Legend({ data, colorMode }: { data: WorkTimelineResult; colorMode: Colo
           />{" "}
           changes/blocked
         </span>
+        <RoutineLegendChip />
       </div>
     );
   }
@@ -237,6 +290,7 @@ function Legend({ data, colorMode }: { data: WorkTimelineResult; colorMode: Colo
         </span>
       ))}
       {issues.length > 12 && <span>+{issues.length - 12} more</span>}
+      <RoutineLegendChip />
     </div>
   );
 }
