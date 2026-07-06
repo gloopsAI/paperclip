@@ -184,10 +184,9 @@ function statusTone(status: IssueThreadInteraction["status"]): "pending" | "succ
 }
 
 /**
- * A confirmation that targets the issue's `plan` document renders as a distinct
- * plan card (PAP-95g): a full state-coloured outline — violet while in review,
- * green once approved, red when changes are requested (PAP-75 palette) — with no
- * left stripe, so plans stand out from comments and status rows.
+ * A confirmation that targets the issue's `plan` document uses plan-specific
+ * label copy ("Plan review", approve/request-changes wording). The card shell
+ * itself is the same neutral disclosure row as every other interaction.
  */
 function isPlanConfirmation(interaction: IssueThreadInteraction): boolean {
   if (interaction.kind !== "request_confirmation") return false;
@@ -734,11 +733,11 @@ function QuestionOptionButton({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block font-medium">{label}</span>
-      {description ? (
-        <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-          {description}
-        </span>
-      ) : null}
+        {description ? (
+          <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+            {description}
+          </span>
+        ) : null}
       </span>
     </button>
   );
