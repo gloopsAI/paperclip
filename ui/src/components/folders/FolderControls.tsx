@@ -479,7 +479,7 @@ export function FolderFormDialog({
               onChange={(event) => setName(event.target.value)}
               autoFocus
               onKeyDown={(event) => {
-                if (event.key === "Enter" && name.trim()) onSubmit({ name: name.trim(), color });
+                if (event.key === "Enter" && name.trim() && !pending) onSubmit({ name: name.trim(), color });
               }}
             />
           </div>
