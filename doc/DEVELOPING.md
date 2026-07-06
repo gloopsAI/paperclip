@@ -638,6 +638,11 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
   wrappers surface the last failed backup in `/api/health`
 
+The `/api/health` backup check only trusts `.sql.gz` archives that decompress as
+complete gzip streams, so truncated dumps from crashed producers (including
+external cron jobs that do not stage through `.partial` files) are ignored and
+reported via a `database_backup_corrupt` warning instead of counting as fresh.
+
 DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
