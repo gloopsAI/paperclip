@@ -1979,6 +1979,14 @@ export function issueRoutes(
     return dedupeProjectIds(fallbackProjectIds);
   }
 
+  function explicitProjectIdsFromIssueUpdateBody(
+    body: { projectId?: string | null; projectIds?: string[] },
+    fallbackProjectIds: readonly string[] = [],
+  ) {
+    if (!Array.isArray(body.projectIds) && body.projectId === undefined) return undefined;
+    return effectiveProjectIdsFromIssueBody(body, fallbackProjectIds);
+  }
+
   async function resolveAssignmentProjectIds(input: {
     companyId: string;
     projectIds: string[] | null | undefined;
@@ -6273,25 +6281,28 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
+        const nextParentIssueId = (updateFields.parentId === undefined
+          ? existing.parentId
+          : updateFields.parentId) as string | null | undefined;
+        const explicitUpdateProjectIds = explicitProjectIdsFromIssueUpdateBody(
+          updateFields as { projectId?: string | null; projectIds?: string[] },
+          issueProjectIdsForAuthorization(existing),
+        );
+        const assignmentProjectIds = updateFields.parentId !== undefined || explicitUpdateProjectIds !== undefined
+          ? await resolveAssignmentProjectIds({
+            companyId: existing.companyId,
+            projectIds: explicitUpdateProjectIds,
+            parentIssueId: nextParentIssueId,
+          })
+          : undefined;
         await assertCanAssignTasks(req, existing.companyId, {
           issueId: existing.id,
           projectId: primaryProjectIdFromIssueBody(
             updateFields as { projectId?: string | null; projectIds?: string[] },
             existing.projectId,
           ),
-          projectIds: await resolveAssignmentProjectIds({
-            companyId: existing.companyId,
-            projectIds: effectiveProjectIdsFromIssueBody(
-              updateFields as { projectId?: string | null; projectIds?: string[] },
-              issueProjectIdsForAuthorization(existing),
-            ),
-            parentIssueId: (updateFields.parentId === undefined
-              ? existing.parentId
-              : updateFields.parentId) as string | null | undefined,
-          }),
-          parentIssueId: (updateFields.parentId === undefined
-            ? existing.parentId
-            : updateFields.parentId) as string | null | undefined,
+          projectIds: assignmentProjectIds,
+          parentIssueId: nextParentIssueId,
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });

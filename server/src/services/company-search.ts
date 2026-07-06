@@ -295,7 +295,7 @@ function issueResult(row: IssueSearchRow, prefix: string, normalizedQuery: strin
   };
 }
 
-async function hydrateIssueSearchProjects(db: Db, rows: IssueSearchRow[]) {
+async function hydrateIssueSearchProjects(db: Db, companyId: string, rows: IssueSearchRow[]) {
   if (rows.length === 0) return rows;
   const issueIds = rows.map((row) => row.id);
   const projectRows = await db
@@ -312,7 +312,10 @@ async function hydrateIssueSearchProjects(db: Db, rows: IssueSearchRow[]) {
       eq(issueProjects.projectId, projects.id),
       eq(issueProjects.companyId, projects.companyId),
     ))
-    .where(inArray(issueProjects.issueId, issueIds))
+    .where(and(
+      eq(issueProjects.companyId, companyId),
+      inArray(issueProjects.issueId, issueIds),
+    ))
     .orderBy(desc(issueProjects.isPrimary), asc(issueProjects.createdAt), asc(issueProjects.projectId));
   const byIssueId = new Map<string, NonNullable<IssueSearchRow["projects"]>>();
   for (const row of projectRows) {
@@ -780,7 +783,7 @@ export function companySearchService(db: Db) {
         }).then((result) => result.artifacts)
         : [];
 
-      const hydratedIssueRows = await hydrateIssueSearchProjects(db, issueRows as IssueSearchRow[]);
+      const hydratedIssueRows = await hydrateIssueSearchProjects(db, companyId, issueRows as IssueSearchRow[]);
       const results: CompanySearchResult[] = [
         ...hydratedIssueRows.map((row) => issueResult(row, prefix, normalizedQuery, tokens)),
         ...artifactRows.map((artifact) => artifactResult(artifact, normalizedQuery, tokens)),

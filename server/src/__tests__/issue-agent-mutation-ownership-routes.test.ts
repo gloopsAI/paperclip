@@ -1491,6 +1491,75 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("does not require untouched secondary project memberships for assignment-only updates", async () => {
+    const allowedProjectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const deniedProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const decide = vi.fn(async (input: {
+      action: string;
+      resource?: { projectId?: string | null; projectIds?: string[] };
+    }) => {
+      const allowed =
+        input.action === "issue:mutate" ||
+        (input.action === "tasks:assign" &&
+          input.resource?.projectId === allowedProjectId &&
+          !input.resource?.projectIds?.includes(deniedProjectId));
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_scope",
+        explanation: allowed ? "Allowed by test grant." : "Project is outside this task bridge scope.",
+      };
+    });
+    (mockAccessService as any).decide = decide;
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      projectId: allowedProjectId,
+      assigneeAgentId: ownerAgentId,
+      projects: [
+        { id: allowedProjectId, name: "Allowed", color: null, icon: null, isPrimary: true },
+        { id: deniedProjectId, name: "Denied", color: null, icon: null, isPrimary: false },
+      ],
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({
+        projectId: allowedProjectId,
+        assigneeAgentId: ownerAgentId,
+        projects: [
+          { id: allowedProjectId, name: "Allowed", color: null, icon: null, isPrimary: true },
+          { id: deniedProjectId, name: "Denied", color: null, icon: null, isPrimary: false },
+        ],
+      }),
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const app = await createApp({
+      ...ownerActor(),
+      keyId: "task-bridge-key",
+      keyScope: { kind: "task_bridge", projectIds: [allowedProjectId] },
+    });
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ assigneeAgentId: peerAgentId }),
+    );
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        projectId: allowedProjectId,
+        projectIds: [allowedProjectId],
+        assigneeAgentId: peerAgentId,
+      }),
+    }));
+  });
+
   describe("task watchdog scope grants", () => {
     const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
     const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
