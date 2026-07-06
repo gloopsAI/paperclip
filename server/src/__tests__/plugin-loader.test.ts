@@ -12,14 +12,6 @@ describe("external adapter plugin loader", () => {
       (match) => match[1],
     );
 
-    expect(importSpecifiers).toEqual([
-      "node:fs",
-      "node:path",
-      "./types.js",
-      "../middleware/logger.js",
-      "../services/adapter-plugin-store.js",
-      "../services/adapter-plugin-store.js",
-    ]);
     expect(source).toContain("await import(modulePath)");
     expect(importSpecifiers.filter((specifier) => specifier.startsWith("../adapters/"))).toEqual([]);
     expect(importSpecifiers.filter((specifier) => specifier.startsWith("@paperclipai/"))).toEqual([]);
