@@ -11108,10 +11108,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
       if (Object.keys(nextIssuePatch).length > 0) {
-        await issuesSvc.update(issueId, {
-          ...nextIssuePatch,
-          preserveExecutionWorkspaceEnvironmentId: true,
-        });
+        await issuesSvc.update(issueId, nextIssuePatch);
       }
     }
     if (persistedExecutionWorkspace) {
