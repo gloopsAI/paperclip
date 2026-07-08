@@ -118,6 +118,37 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     ).toEqual(['9999_bad_backfill.sql: UPDATE "issues" sets updated_at']);
   });
 
+  it("keeps pipeline migration backfills ahead of defaults and opaque fallbacks", async () => {
+    const foundation = await fs.promises.readFile(
+      new URL("./migrations/0113_pipeline_foundation.sql", import.meta.url),
+      "utf8",
+    );
+    const retryEffects = await fs.promises.readFile(
+      new URL("./migrations/0121_pipeline_automation_retry_effects.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(foundation).not.toContain(`SET "case_key" = "id"::text`);
+    expect(foundation).toContain("Cannot backfill pipeline_cases.case_key");
+    expect(foundation).not.toContain(
+      `ALTER TABLE "pipeline_case_events" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now();`,
+    );
+    expect(retryEffects).not.toContain(
+      `ALTER TABLE "pipeline_case_events" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now();`,
+    );
+
+    const stagePositionAdd = foundation.indexOf(
+      `ALTER TABLE "pipeline_stages" ADD COLUMN IF NOT EXISTS "position" integer;`,
+    );
+    const stagePositionBackfill = foundation.indexOf(`WITH existing_stage_positions AS`);
+    const stagePositionDefault = foundation.indexOf(
+      `ALTER TABLE "pipeline_stages" ALTER COLUMN "position" SET DEFAULT 0;`,
+    );
+    expect(stagePositionAdd).toBeGreaterThanOrEqual(0);
+    expect(stagePositionBackfill).toBeGreaterThan(stagePositionAdd);
+    expect(stagePositionDefault).toBeGreaterThan(stagePositionBackfill);
+  });
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
