@@ -1,7 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import {
+  agents,
+  companies,
+  companySecretBindings,
+  companySecrets,
+  createDb,
+  environmentCustomImageSetupSessions,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
+  heartbeatRuns,
+  instanceSettings,
+  issues,
+  projects,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,9 +44,16 @@ describeEmbeddedPostgres("environmentService leases", () => {
   });
 
   afterEach(async () => {
+    await db.delete(companySecretBindings);
+    await db.delete(environmentCustomImageSetupSessions);
     await db.delete(environmentLeases);
+    await db.delete(executionWorkspaces);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
+    await db.delete(projects);
+    await db.delete(instanceSettings);
+    await db.delete(companySecrets);
     await db.delete(environments);
     await db.delete(companies);
   });
@@ -503,5 +524,260 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
     const rows = await db.select().from(environments);
     expect(rows.filter((row) => row.driver === "ssh")).toHaveLength(2);
+  });
+
+  it("reports delete blast radius with static references separate from active runtime use", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const environmentId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    const runId = randomUUID();
+    const secretId = randomUUID();
+    const otherSecretId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Acme",
+        issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Shared Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake" },
+      metadata: { managedByPaperclip: false },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(instanceSettings).values({
+      defaultEnvironmentId: environmentId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: environmentId,
+      permissions: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Sandbox Project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        environmentId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Use sandbox",
+      status: "todo",
+      priority: "medium",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Sandbox workspace",
+      status: "active",
+      metadata: {
+        config: {
+          environmentId,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await svc.acquireLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runId,
+      provider: "fake",
+    });
+    await db.insert(environmentCustomImageSetupSessions).values({
+      environmentId,
+      provider: "fake",
+      status: "waiting_for_user",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companySecrets).values([
+      {
+        id: secretId,
+        companyId,
+        key: "sandbox_token",
+        name: "Sandbox token",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherSecretId,
+        companyId: otherCompanyId,
+        key: "sandbox_token",
+        name: "Sandbox token",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(companySecretBindings).values([
+      {
+        companyId,
+        secretId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "env.SANDBOX_TOKEN",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId: otherCompanyId,
+        secretId: otherSecretId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "env.SANDBOX_TOKEN",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const blastRadius = await svc.getDeleteBlastRadius(environmentId);
+
+    expect(blastRadius).toMatchObject({
+      environmentId,
+      environmentName: "Shared Sandbox",
+      canDelete: false,
+      blockReason: "instance_default",
+      staticReferences: {
+        isInstanceDefault: true,
+        agentDefaultCount: 1,
+        executionWorkspaceSelectionCount: 1,
+        issueSelectionCount: 1,
+        projectSelectionCount: 1,
+        secretBindingCount: 2,
+        totalCount: 7,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 1,
+        runningSetupSessionCount: 1,
+        totalCount: 2,
+        hasActiveUse: true,
+      },
+    });
+    expect(blastRadius?.blockMessage).toContain("current instance default");
+    expect(blastRadius).not.toHaveProperty("config");
+    expect(blastRadius).not.toHaveProperty("envVars");
+    expect(blastRadius).not.toHaveProperty("metadata");
+  });
+
+  it("atomically refuses to remove managed local or current default environments", async () => {
+    const companyId = randomUUID();
+    const localEnvironmentId = randomUUID();
+    const defaultEnvironmentId = randomUUID();
+    const deletableEnvironmentId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values([
+      {
+        id: localEnvironmentId,
+        name: "Local",
+        driver: "local",
+        status: "active",
+        config: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: defaultEnvironmentId,
+        name: "Default SSH",
+        driver: "ssh",
+        status: "active",
+        config: { host: "default.example.test" },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: deletableEnvironmentId,
+        name: "Delete Me",
+        driver: "ssh",
+        status: "active",
+        config: { host: "delete.example.test" },
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(instanceSettings).values({
+      defaultEnvironmentId,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await expect(svc.removeIfDeletable(localEnvironmentId)).resolves.toBeNull();
+    await expect(svc.getById(localEnvironmentId)).resolves.toMatchObject({ id: localEnvironmentId });
+
+    await expect(svc.removeIfDeletable(defaultEnvironmentId)).resolves.toBeNull();
+    await expect(svc.getById(defaultEnvironmentId)).resolves.toMatchObject({ id: defaultEnvironmentId });
+
+    const removed = await svc.removeIfDeletable(deletableEnvironmentId);
+
+    expect(removed?.id).toBe(deletableEnvironmentId);
+    await expect(svc.getById(deletableEnvironmentId)).resolves.toBeNull();
   });
 });

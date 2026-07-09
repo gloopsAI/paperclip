@@ -71,6 +71,35 @@ export interface Environment {
   updatedAt: Date;
 }
 
+export type EnvironmentDeleteBlockReason =
+  | "managed_local"
+  | "instance_default";
+
+export interface EnvironmentDeleteBlastRadius {
+  environmentId: string;
+  environmentName: string;
+  driver: EnvironmentDriver;
+  status: EnvironmentStatus;
+  canDelete: boolean;
+  blockReason: EnvironmentDeleteBlockReason | null;
+  blockMessage: string;
+  staticReferences: {
+    isInstanceDefault: boolean;
+    agentDefaultCount: number;
+    executionWorkspaceSelectionCount: number;
+    issueSelectionCount: number;
+    projectSelectionCount: number;
+    secretBindingCount: number;
+    totalCount: number;
+  };
+  activeRuntimeUse: {
+    activeLeaseCount: number;
+    runningSetupSessionCount: number;
+    totalCount: number;
+    hasActiveUse: boolean;
+  };
+}
+
 export interface EnvironmentLease {
   id: string;
   companyId: string;

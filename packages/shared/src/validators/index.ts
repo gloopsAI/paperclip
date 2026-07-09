@@ -36,9 +36,13 @@ export {
   environmentLeaseCleanupStatusSchema,
   createEnvironmentSchema,
   updateEnvironmentSchema,
+  deleteEnvironmentSchema,
   probeEnvironmentConfigSchema,
+  environmentDeleteBlockReasonSchema,
+  environmentDeleteBlastRadiusSchema,
   type CreateEnvironment,
   type UpdateEnvironment,
+  type DeleteEnvironment,
   type ProbeEnvironmentConfig,
 } from "./environment.js";
 export {

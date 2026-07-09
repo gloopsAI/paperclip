@@ -24,6 +24,10 @@ interface OrgOutputOptions extends CompanyOptions {
   out?: string;
 }
 
+interface EnvironmentDeleteBlastRadius {
+  blockMessage: string;
+}
+
 export function registerWorkspaceCommands(program: Command): void {
   const org = program.command("org").description("Organization chart operations");
   addCompanyGet(org, "get", "Get org chart data", "org");
@@ -62,7 +66,7 @@ export function registerWorkspaceCommands(program: Command): void {
       }),
   );
   addPatchJson(environment, "update", "Update an environment", "environments");
-  addDelete(environment, "delete", "Delete an environment", "environments");
+  addEnvironmentDelete(environment);
   addPostEmpty(environment, "probe", "Probe an environment", "environments", "probe");
   addCompanyPostJson(environment, "probe-config", "Probe an environment config", "environments/probe-config");
 
@@ -220,6 +224,32 @@ function addDelete(parent: Command, name: string, description: string, resource:
         try {
           const ctx = resolveCommandContext(opts);
           const result = await ctx.api.delete(`/api/${resource}/${encodeURIComponent(id)}`);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+function addEnvironmentDelete(parent: Command): void {
+  addCommonClientOptions(
+    parent
+      .command("delete")
+      .description("Delete an environment")
+      .argument("<id>", "Environment ID")
+      .action(async (id: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const blastRadius = await ctx.api.get<EnvironmentDeleteBlastRadius>(
+            `/api/environments/${encodeURIComponent(id)}/delete-blast-radius`,
+          );
+          if (!blastRadius?.blockMessage) {
+            throw new Error("Environment delete blast radius did not include a blockMessage.");
+          }
+          const result = await ctx.api.deleteWithBody(`/api/environments/${encodeURIComponent(id)}`, {
+            blockMessage: blastRadius.blockMessage,
+          });
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

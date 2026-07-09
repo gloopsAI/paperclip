@@ -45,3 +45,38 @@ export const probeEnvironmentConfigSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 }).strict();
 export type ProbeEnvironmentConfig = z.infer<typeof probeEnvironmentConfigSchema>;
+
+export const deleteEnvironmentSchema = z.object({
+  blockMessage: z.string().min(1),
+}).strict();
+export type DeleteEnvironment = z.infer<typeof deleteEnvironmentSchema>;
+
+export const environmentDeleteBlockReasonSchema = z.enum([
+  "managed_local",
+  "instance_default",
+]);
+
+export const environmentDeleteBlastRadiusSchema = z.object({
+  environmentId: z.string(),
+  environmentName: z.string(),
+  driver: environmentDriverSchema,
+  status: environmentStatusSchema,
+  canDelete: z.boolean(),
+  blockReason: environmentDeleteBlockReasonSchema.nullable(),
+  blockMessage: z.string(),
+  staticReferences: z.object({
+    isInstanceDefault: z.boolean(),
+    agentDefaultCount: z.number().int().nonnegative(),
+    executionWorkspaceSelectionCount: z.number().int().nonnegative(),
+    issueSelectionCount: z.number().int().nonnegative(),
+    projectSelectionCount: z.number().int().nonnegative(),
+    secretBindingCount: z.number().int().nonnegative(),
+    totalCount: z.number().int().nonnegative(),
+  }).strict(),
+  activeRuntimeUse: z.object({
+    activeLeaseCount: z.number().int().nonnegative(),
+    runningSetupSessionCount: z.number().int().nonnegative(),
+    totalCount: z.number().int().nonnegative(),
+    hasActiveUse: z.boolean(),
+  }).strict(),
+}).strict();

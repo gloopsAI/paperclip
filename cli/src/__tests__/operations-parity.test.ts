@@ -76,7 +76,11 @@ describe("operations parity commands", () => {
   });
 
   it("wraps org, execution workspace, environment, and project workspace endpoints", async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(
+      jsonResponse(url.endsWith(`/api/environments/${ENV_ID}/delete-blast-radius`)
+        ? { blockMessage: "Delete test environment" }
+        : { ok: true }),
+    ));
     vi.stubGlobal("fetch", fetchMock);
 
     await run(["org", "get", "--company-id", COMPANY_ID]);
@@ -119,6 +123,7 @@ describe("operations parity commands", () => {
       ["GET", `http://localhost:3100/api/environments/${ENV_ID}`],
       ["GET", `http://localhost:3100/api/environments/${ENV_ID}/leases`],
       ["PATCH", `http://localhost:3100/api/environments/${ENV_ID}`],
+      ["GET", `http://localhost:3100/api/environments/${ENV_ID}/delete-blast-radius`],
       ["DELETE", `http://localhost:3100/api/environments/${ENV_ID}`],
       ["POST", `http://localhost:3100/api/environments/${ENV_ID}/probe`],
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/environments/probe-config`],

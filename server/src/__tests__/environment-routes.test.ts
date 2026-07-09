@@ -17,10 +17,12 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  clearExecutionWorkspaceEnvironmentSelection: vi.fn(),
 }));
 
 const mockProjectService = vi.hoisted(() => ({
   getById: vi.fn(),
+  clearExecutionWorkspaceEnvironmentSelection: vi.fn(),
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
@@ -30,8 +32,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
+  getDeleteBlastRadius: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  removeIfDeletable: vi.fn(),
   listLeases: vi.fn(),
   getLeaseById: vi.fn(),
 }));
@@ -70,7 +74,9 @@ const mockGetPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
 const mockCapturePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
 const mockCancelPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
 const mockDeletePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
-const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  clearEnvironmentSelection: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
@@ -109,7 +115,21 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   validatePluginSandboxProviderConfig: mockValidatePluginSandboxProviderConfig,
 }));
 
-function createEnvironment() {
+type TestEnvironment = {
+  id: string;
+  companyId: string;
+  name: string;
+  description: string;
+  driver: string;
+  status: "active";
+  config: Record<string, unknown>;
+  envVars: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function createEnvironment(overrides: Partial<TestEnvironment> = {}): TestEnvironment {
   const now = new Date("2026-04-16T05:00:00.000Z");
   return {
     id: "env-1",
@@ -123,6 +143,7 @@ function createEnvironment() {
     metadata: { source: "manual" },
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   };
 }
 
@@ -178,13 +199,19 @@ describe("environment routes", () => {
     mockAccessService.decide.mockReset();
     mockAgentService.getById.mockReset();
     mockIssueService.getById.mockReset();
+    mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
+    mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
     mockProjectService.getById.mockReset();
+    mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
+    mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockResolvedValue(0);
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.list.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
+    mockEnvironmentService.getDeleteBlastRadius.mockReset();
     mockEnvironmentService.create.mockReset();
     mockEnvironmentService.update.mockReset();
+    mockEnvironmentService.removeIfDeletable.mockReset();
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
     Object.values(mockEnvironmentCustomImageService).forEach((mock) => mock.mockReset());
@@ -214,6 +241,8 @@ describe("environment routes", () => {
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
     mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
     mockSecretService.remove.mockResolvedValue(null);
+    mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
+    mockExecutionWorkspaceService.clearEnvironmentSelection.mockResolvedValue(0);
     mockSecretService.resolveSecretValueForEphemeralAccess.mockResolvedValue("resolved-provider-key");
     delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     mockValidatePluginEnvironmentDriverConfig.mockReset();
@@ -1141,6 +1170,253 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.provider).toBe("ssh");
     expect(mockEnvironmentService.getLeaseById).toHaveBeenCalledWith("lease-1");
+  });
+
+  it("returns delete blast radius only to instance environment admins", async () => {
+    const blastRadius = {
+      environmentId: "env-1",
+      environmentName: "Sandbox",
+      driver: "sandbox",
+      status: "active",
+      canDelete: true,
+      blockReason: null,
+      blockMessage: "Delete environment \"Sandbox\" (env-1) with 1 static reference(s) and 0 active runtime use record(s).",
+      staticReferences: {
+        isInstanceDefault: false,
+        agentDefaultCount: 1,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+        totalCount: 1,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        runningSetupSessionCount: 0,
+        totalCount: 0,
+        hasActiveUse: false,
+      },
+    };
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(blastRadius);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/environments/env-1/delete-blast-radius");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(blastRadius);
+    expect(res.body).not.toHaveProperty("config");
+    expect(res.body).not.toHaveProperty("envVars");
+    expect(res.body).not.toHaveProperty("metadata");
+  });
+
+  it("rejects non-admin board access to delete blast radius", async () => {
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue({
+      environmentId: "env-1",
+      environmentName: "Sandbox",
+      driver: "sandbox",
+      status: "active",
+      canDelete: true,
+      blockReason: null,
+      blockMessage: "Delete environment \"Sandbox\" (env-1) with 0 static reference(s) and 0 active runtime use record(s).",
+      staticReferences: {
+        isInstanceDefault: false,
+        agentDefaultCount: 0,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+        totalCount: 0,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        runningSetupSessionCount: 0,
+        totalCount: 0,
+        hasActiveUse: false,
+      },
+    });
+    const app = createApp({
+      type: "board",
+      userId: "user-2",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "member" }],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app).get("/api/environments/env-1/delete-blast-radius");
+
+    expect(res.status).toBe(403);
+    expect(mockEnvironmentService.getDeleteBlastRadius).not.toHaveBeenCalled();
+  });
+
+  it("deletes an environment only when the blast-radius block message matches", async () => {
+    const environment = createEnvironment({
+      id: "env-ssh",
+      name: "SSH Sandbox",
+      driver: "ssh",
+      config: {
+        host: "ssh.example.test",
+        username: "paperclip",
+        remoteWorkspacePath: "/workspace",
+        privateKeySecretRef: {
+          type: "secret_ref",
+          secretId: "11111111-1111-4111-8111-111111111111",
+          version: "latest",
+        },
+      },
+    });
+    const blockMessage =
+      "Delete environment \"SSH Sandbox\" (env-ssh) with 3 static reference(s) and 0 active runtime use record(s).";
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue({
+      environmentId: environment.id,
+      environmentName: environment.name,
+      driver: environment.driver,
+      status: environment.status,
+      canDelete: true,
+      blockReason: null,
+      blockMessage,
+      staticReferences: {
+        isInstanceDefault: false,
+        agentDefaultCount: 0,
+        executionWorkspaceSelectionCount: 1,
+        issueSelectionCount: 1,
+        projectSelectionCount: 0,
+        secretBindingCount: 1,
+        totalCount: 3,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        runningSetupSessionCount: 0,
+        totalCount: 0,
+        hasActiveUse: false,
+      },
+    });
+    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .delete("/api/environments/env-ssh")
+      .send({ blockMessage });
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-ssh");
+    expect(mockExecutionWorkspaceService.clearEnvironmentSelection).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.clearExecutionWorkspaceEnvironmentSelection).toHaveBeenCalledTimes(1);
+    expect(mockProjectService.clearExecutionWorkspaceEnvironmentSelection).toHaveBeenCalledTimes(1);
+    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      "company-1",
+      { targetType: "environment", targetId: "env-ssh" },
+      [],
+      { replaceAll: true },
+    );
+    expect(mockSecretService.remove).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "environment.deleted",
+      entityId: "env-ssh",
+    }));
+  });
+
+  it("rejects delete when the blast-radius block message is stale", async () => {
+    const environment = createEnvironment({ id: "env-ssh", name: "SSH Sandbox", driver: "ssh" });
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue({
+      environmentId: environment.id,
+      environmentName: environment.name,
+      driver: environment.driver,
+      status: environment.status,
+      canDelete: true,
+      blockReason: null,
+      blockMessage: "Delete environment \"SSH Sandbox\" (env-ssh) with 1 static reference(s) and 0 active runtime use record(s).",
+      staticReferences: {
+        isInstanceDefault: false,
+        agentDefaultCount: 1,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+        totalCount: 1,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        runningSetupSessionCount: 0,
+        totalCount: 0,
+        hasActiveUse: false,
+      },
+    });
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .delete("/api/environments/env-ssh")
+      .send({ blockMessage: "Delete environment \"SSH Sandbox\" (env-ssh) with 0 static reference(s) and 0 active runtime use record(s)." });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("environment_delete_confirmation_mismatch");
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "environment.delete_rejected",
+      details: expect.objectContaining({ reason: "confirmation_mismatch" }),
+    }));
+  });
+
+  it("rejects delete when the environment is protected", async () => {
+    const environment = createEnvironment({ id: "env-local", name: "Local", driver: "local" });
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue({
+      environmentId: environment.id,
+      environmentName: environment.name,
+      driver: environment.driver,
+      status: environment.status,
+      canDelete: false,
+      blockReason: "managed_local",
+      blockMessage: "Environment \"Local\" is the managed local environment and cannot be deleted.",
+      staticReferences: {
+        isInstanceDefault: false,
+        agentDefaultCount: 0,
+        executionWorkspaceSelectionCount: 0,
+        issueSelectionCount: 0,
+        projectSelectionCount: 0,
+        secretBindingCount: 0,
+        totalCount: 0,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 0,
+        runningSetupSessionCount: 0,
+        totalCount: 0,
+        hasActiveUse: false,
+      },
+    });
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .delete("/api/environments/env-local")
+      .send({ blockMessage: "Environment \"Local\" is the managed local environment and cannot be deleted." });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("environment_delete_blocked");
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "environment.delete_rejected",
+      details: expect.objectContaining({ blockReason: "managed_local" }),
+    }));
   });
 
   it("rejects agent access regardless of company when environment management is instance-scoped", async () => {

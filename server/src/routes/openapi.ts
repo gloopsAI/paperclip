@@ -78,6 +78,8 @@ import {
   workspaceRuntimeControlTargetSchema,
   // Environments
   createEnvironmentSchema,
+  deleteEnvironmentSchema,
+  environmentDeleteBlastRadiusSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
   createEnvironmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageSetupSessionSchema,
@@ -3714,6 +3716,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/environments/{id}/delete-blast-radius",
+  tags: ["environments"],
+  summary: "Get environment delete blast radius",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(environmentDeleteBlastRadiusSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/environment-leases/{leaseId}",
   tags: ["environments"],
   summary: "Get an environment lease",
@@ -3738,8 +3749,11 @@ registry.registerPath({
   path: "/api/environments/{id}",
   tags: ["environments"],
   summary: "Delete an environment",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(deleteEnvironmentSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
 });
 
 registry.registerPath({

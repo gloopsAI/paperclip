@@ -1,6 +1,16 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { environmentLeases, environments } from "@paperclipai/db";
+import {
+  agents,
+  companySecretBindings,
+  environmentCustomImageSetupSessions,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
+  instanceSettings,
+  issues,
+  projects,
+} from "@paperclipai/db";
 import {
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
@@ -9,6 +19,8 @@ import {
   ENVIRONMENT_STATUSES,
   type CreateEnvironment,
   type Environment,
+  type EnvironmentDeleteBlastRadius,
+  type EnvironmentDeleteBlockReason,
   type EnvironmentLease,
   type EnvironmentLeaseCleanupStatus,
   type EnvironmentLeasePolicy,
@@ -16,6 +28,11 @@ import {
   type UpdateEnvironment,
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import {
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+} from "./execution-workspace-policy.js";
+import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -30,6 +47,11 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
+const ACTIVE_CUSTOM_IMAGE_SETUP_SESSION_STATUSES = [
+  "starting",
+  "waiting_for_user",
+  "capturing",
+] as const;
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
@@ -163,6 +185,34 @@ function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
   };
 }
 
+function countValue(row: { count: unknown } | undefined): number {
+  return Number(row?.count ?? 0);
+}
+
+function totalStaticReferences(input: EnvironmentDeleteBlastRadius["staticReferences"]) {
+  return input.agentDefaultCount
+    + input.executionWorkspaceSelectionCount
+    + input.issueSelectionCount
+    + input.projectSelectionCount
+    + input.secretBindingCount
+    + (input.isInstanceDefault ? 1 : 0);
+}
+
+function buildDeleteBlockMessage(input: {
+  environment: Environment;
+  staticReferenceCount: number;
+  activeRuntimeUseCount: number;
+  blockReason: EnvironmentDeleteBlockReason | null;
+}): string {
+  if (input.blockReason === "managed_local") {
+    return `Environment "${input.environment.name}" is the managed local environment and cannot be deleted.`;
+  }
+  if (input.blockReason === "instance_default") {
+    return `Environment "${input.environment.name}" is the current instance default and cannot be deleted. Choose a new default before deleting it.`;
+  }
+  return `Delete environment "${input.environment.name}" (${input.environment.id}) with ${input.staticReferenceCount} static reference(s) and ${input.activeRuntimeUseCount} active runtime use record(s).`;
+}
+
 export function environmentService(db: Db) {
   return {
     list: async (
@@ -193,6 +243,140 @@ export function environmentService(db: Db) {
         .where(eq(environmentLeases.id, id))
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironmentLease(row) : null;
+    },
+
+    getDeleteBlastRadius: async (id: string): Promise<EnvironmentDeleteBlastRadius | null> => {
+      const environment = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!environment) return null;
+      const readableEnvironment = toEnvironment(environment);
+
+      const [
+        defaultSettings,
+        agentDefaultRows,
+        executionWorkspaceRows,
+        issueRows,
+        projectRows,
+        secretBindingRows,
+        activeLeaseRows,
+        runningSetupSessionRows,
+      ] = await Promise.all([
+        db
+          .select({ defaultEnvironmentId: instanceSettings.defaultEnvironmentId })
+          .from(instanceSettings)
+          .then((rows) => rows.find((row) => row.defaultEnvironmentId === id) ?? null),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(agents)
+          .where(eq(agents.defaultEnvironmentId, id))
+          .then((rows) => rows[0]),
+        db
+          .select({
+            id: executionWorkspaces.id,
+            metadata: executionWorkspaces.metadata,
+          })
+          .from(executionWorkspaces),
+        db
+          .select({
+            id: issues.id,
+            executionWorkspaceSettings: issues.executionWorkspaceSettings,
+          })
+          .from(issues),
+        db
+          .select({
+            id: projects.id,
+            executionWorkspacePolicy: projects.executionWorkspacePolicy,
+          })
+          .from(projects),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.targetType, "environment"),
+              eq(companySecretBindings.targetId, id),
+            ),
+          )
+          .then((rows) => rows[0]),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(environmentLeases)
+          .where(
+            and(
+              eq(environmentLeases.environmentId, id),
+              eq(environmentLeases.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0]),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(environmentCustomImageSetupSessions)
+          .where(
+            and(
+              eq(environmentCustomImageSetupSessions.environmentId, id),
+              sql`${environmentCustomImageSetupSessions.status} IN (${sql.join(
+                ACTIVE_CUSTOM_IMAGE_SETUP_SESSION_STATUSES.map((status) => sql`${status}`),
+                sql`, `,
+              )})`,
+            ),
+          )
+          .then((rows) => rows[0]),
+      ]);
+
+      const executionWorkspaceSelectionCount = executionWorkspaceRows.filter((row) =>
+        readExecutionWorkspaceConfig(row.metadata)?.environmentId === id
+      ).length;
+      const issueSelectionCount = issueRows.filter((row) =>
+        parseIssueExecutionWorkspaceSettings(row.executionWorkspaceSettings, { includeEnvironmentId: true })
+          ?.environmentId === id
+      ).length;
+      const projectSelectionCount = projectRows.filter((row) =>
+        parseProjectExecutionWorkspacePolicy(row.executionWorkspacePolicy)?.environmentId === id
+      ).length;
+
+      const staticReferences = {
+        isInstanceDefault: defaultSettings !== null,
+        agentDefaultCount: countValue(agentDefaultRows),
+        executionWorkspaceSelectionCount,
+        issueSelectionCount,
+        projectSelectionCount,
+        secretBindingCount: countValue(secretBindingRows),
+        totalCount: 0,
+      };
+      staticReferences.totalCount = totalStaticReferences(staticReferences);
+      const activeRuntimeUse = {
+        activeLeaseCount: countValue(activeLeaseRows),
+        runningSetupSessionCount: countValue(runningSetupSessionRows),
+        totalCount: countValue(activeLeaseRows) + countValue(runningSetupSessionRows),
+        hasActiveUse: false,
+      };
+      activeRuntimeUse.hasActiveUse = activeRuntimeUse.totalCount > 0;
+      const blockReason: EnvironmentDeleteBlockReason | null =
+        readableEnvironment.driver === "local"
+          ? "managed_local"
+          : staticReferences.isInstanceDefault
+            ? "instance_default"
+            : null;
+
+      return {
+        environmentId: readableEnvironment.id,
+        environmentName: readableEnvironment.name,
+        driver: readableEnvironment.driver,
+        status: readableEnvironment.status,
+        canDelete: blockReason === null,
+        blockReason,
+        blockMessage: buildDeleteBlockMessage({
+          environment: readableEnvironment,
+          staticReferenceCount: staticReferences.totalCount,
+          activeRuntimeUseCount: activeRuntimeUse.totalCount,
+          blockReason,
+        }),
+        staticReferences,
+        activeRuntimeUse,
+      };
     },
 
     ensureLocalEnvironment: async (_companyId?: string): Promise<Environment> => {
@@ -433,6 +617,25 @@ export function environmentService(db: Db) {
       const row = await db
         .delete(environments)
         .where(eq(environments.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? toEnvironment(row) : null;
+    },
+
+    removeIfDeletable: async (id: string): Promise<Environment | null> => {
+      const row = await db
+        .delete(environments)
+        .where(
+          and(
+            eq(environments.id, id),
+            ne(environments.driver, "local"),
+            sql`NOT EXISTS (
+              SELECT 1
+              FROM ${instanceSettings}
+              WHERE ${instanceSettings.defaultEnvironmentId} = ${environments.id}
+            )`,
+          ),
+        )
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironment(row) : null;

@@ -1,6 +1,8 @@
 export type { Company } from "./company.js";
 export type {
   Environment,
+  EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteBlockReason,
   EnvironmentLease,
   EnvironmentProbeResult,
   FakeSandboxEnvironmentConfig,

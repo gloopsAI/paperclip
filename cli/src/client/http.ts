@@ -92,6 +92,13 @@ export class PaperclipApiClient {
     return this.request<T>(path, { method: "DELETE" }, opts);
   }
 
+  deleteWithBody<T>(path: string, body: unknown, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "DELETE",
+      body: JSON.stringify(body),
+    }, opts);
+  }
+
   setApiKey(apiKey: string | undefined) {
     this.apiKey = apiKey?.trim() || undefined;
   }
