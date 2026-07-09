@@ -100,7 +100,7 @@ describe("resolveCodexAuthPrecedence", () => {
   describe("constants", () => {
     it("warning message is stable and human-readable", () => {
       expect(CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING).toBe(
-        "snapshot login present but host credentials take precedence",
+        "snapshot login present but configured or host credentials take precedence",
       );
     });
 
