@@ -569,6 +569,61 @@ describeEmbeddedPostgres("attention service", () => {
     )).toBe(false);
   });
 
+  it("suppresses exhausted failed runs when a newer run exists for the same agent and issue", async () => {
+    const { companyId, workerId } = await seedCompany("ATF");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATF-1",
+      title: "Retry target",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      updatedAt: new Date("2026-07-09T12:00:00.000Z"),
+    });
+    const exhaustedRunId = randomUUID();
+    const newerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: exhaustedRunId,
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { issueId },
+        createdAt: new Date("2026-07-09T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:01:00.000Z"),
+      },
+      {
+        id: newerRunId,
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        contextSnapshot: { issueId },
+        createdAt: new Date("2026-07-09T12:02:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:02:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:02:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId: exhaustedRunId,
+      agentId: workerId,
+      seq: 1,
+      eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      payload: { retryReason: "transient_failure", maxAttempts: 4 },
+      createdAt: new Date("2026-07-09T12:01:01.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.countsBySourceKind.failed_run).toBe(0);
+    expect(feed.items.some((item) => item.sourceKind === "failed_run" && item.subject.id === exhaustedRunId)).toBe(false);
+  });
+
   it("uses inbox_dismissals with attention-prefixed dedup keys and resurfaces newer activity", async () => {
     const { companyId } = await seedCompany("ATD");
     const approvalId = randomUUID();

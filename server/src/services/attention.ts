@@ -253,6 +253,10 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
+function runAttentionPairKey(agentId: string, issueId: string | null | undefined) {
+  return `${agentId}:${issueId ?? ""}`;
+}
+
 export function attentionService(db: Db) {
   return {
     list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
@@ -666,24 +670,41 @@ export function attentionService(db: Db) {
         if (!latestExhaustedByRunId.has(row.id)) latestExhaustedByRunId.set(row.id, row);
       }
       const failedRows = [...latestExhaustedByRunId.values()];
-      const failedIssueMap = await issueSummaryMap(
-        db,
-        companyId,
-        failedRows.map((row) => readRunIssueId(row.contextSnapshot)),
-      );
-      for (const run of failedRows) {
-        const issueId = readRunIssueId(run.contextSnapshot);
-        const newer = await db
-          .select({ id: heartbeatRuns.id })
+      const failedIssueIdByRunId = new Map(failedRows.map((row) => [row.id, readRunIssueId(row.contextSnapshot)]));
+      const failedIssueMap = await issueSummaryMap(db, companyId, [...failedIssueIdByRunId.values()]);
+      const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
+      const earliestFailedAt = failedRows.reduce<Date | null>((earliest, row) => {
+        if (earliest == null || row.createdAt.getTime() < earliest.getTime()) return row.createdAt;
+        return earliest;
+      }, null);
+      const latestRunCreatedAtByPair = new Map<string, Date>();
+      if (earliestFailedAt && failedAgentIds.length > 0) {
+        const newerRunRows = await db
+          .select({
+            agentId: heartbeatRuns.agentId,
+            issueKey: sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId', '')`,
+            createdAt: heartbeatRuns.createdAt,
+          })
           .from(heartbeatRuns)
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
-            eq(heartbeatRuns.agentId, run.agentId),
-            gt(heartbeatRuns.createdAt, run.createdAt),
-            sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ${issueId ?? ""}`,
-          ))
-          .limit(1);
-        if (newer.length > 0) continue;
+            inArray(heartbeatRuns.agentId, failedAgentIds),
+            gt(heartbeatRuns.createdAt, earliestFailedAt),
+          ));
+
+        for (const row of newerRunRows) {
+          const key = runAttentionPairKey(row.agentId, row.issueKey);
+          const current = latestRunCreatedAtByPair.get(key);
+          if (!current || row.createdAt.getTime() > current.getTime()) {
+            latestRunCreatedAtByPair.set(key, row.createdAt);
+          }
+        }
+      }
+
+      for (const run of failedRows) {
+        const issueId = failedIssueIdByRunId.get(run.id) ?? null;
+        const latestRunCreatedAt = latestRunCreatedAtByPair.get(runAttentionPairKey(run.agentId, issueId));
+        if (latestRunCreatedAt && latestRunCreatedAt.getTime() > run.createdAt.getTime()) continue;
 
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
         const dedupKey = `run:${run.id}`;

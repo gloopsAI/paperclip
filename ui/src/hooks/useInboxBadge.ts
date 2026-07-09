@@ -90,6 +90,7 @@ export function useInboxDismissals(companyId: string | null | undefined) {
       if (!companyId) return;
       queryClient.invalidateQueries({ queryKey });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     },
   });
 
