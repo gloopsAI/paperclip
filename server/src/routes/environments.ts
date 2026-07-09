@@ -335,17 +335,17 @@ export function environmentRoutes(
           sessionId: overview.activeSession.id,
           reason: "environment_deleted",
         });
-        environmentCustomImageTerminalSessionStore.deleteBySetupSessionId(overview.activeSession.id);
-        environmentCustomImageTerminalConnectionRegistry.closeBySetupSessionId(
-          overview.activeSession.id,
-          "environment_deleted",
-        );
         if (cancelled.status === "failed" || ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES_FOR_DELETE.has(cancelled.status)) {
           throw conflict(
             "Environment delete could not cancel the active custom image setup session. Retry after the failed setup cleanup is resolved.",
             { setupSessionId: cancelled.id },
           );
         }
+        environmentCustomImageTerminalSessionStore.deleteBySetupSessionId(overview.activeSession.id);
+        environmentCustomImageTerminalConnectionRegistry.closeBySetupSessionId(
+          overview.activeSession.id,
+          "environment_deleted",
+        );
       }
     }
   }
