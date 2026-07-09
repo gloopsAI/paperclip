@@ -1,0 +1,4 @@
+Engineer origin push preflight.
+
+This throwaway file verifies that an engineering agent workspace can commit and
+push a fully qualified ref for the git handoff workflow.
