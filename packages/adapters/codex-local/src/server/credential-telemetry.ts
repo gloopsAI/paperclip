@@ -32,15 +32,15 @@ export interface CodexCredentialTelemetrySnapshot {
   lastRefreshAgeBucket: CodexLastRefreshAgeBucket;
 }
 
-const ONE_HOUR_MS = 60 * 60 * 1000;
-const EIGHT_DAYS_MS = 8 * 24 * ONE_HOUR_MS;
-
 function missingCodexCredentialTelemetrySnapshot(): CodexCredentialTelemetrySnapshot {
   return {
     refreshTokenFingerprint: null,
     lastRefreshAgeBucket: "missing",
   };
 }
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const EIGHT_DAYS_MS = 8 * 24 * ONE_HOUR_MS;
 
 const CODEX_REFRESH_TOKEN_REUSED_RE =
   /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
@@ -97,6 +97,7 @@ export async function readCodexCredentialTelemetrySnapshot(
   } catch {
     return missingCodexCredentialTelemetrySnapshot();
   }
+
   return parseCodexCredentialTelemetrySnapshot(raw, now);
 }
 

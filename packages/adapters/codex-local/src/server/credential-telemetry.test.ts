@@ -17,10 +17,30 @@ describe("Codex credential telemetry", () => {
     expect(classifyCodexAuthRefreshFailure({ stderr: "OAuth failed: refresh token expired" })).toBe(
       "refresh_token_expired",
     );
-    expect(classifyCodexAuthRefreshFailure({ errorMessage: "chatgpt wham api returned 401" })).toBe(
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "OAuth failed: invalid_grant" })).toBe(
+      "refresh_token_invalidated",
+    );
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "refresh token has been invalidated" })).toBe(
+      "refresh_token_invalidated",
+    );
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "Codex OAuth refresh failed: unauthorized" })).toBe(
       "refresh_token_invalidated",
     );
     expect(classifyCodexAuthRefreshFailure({ errorMessage: "model is at capacity" })).toBeNull();
+  });
+
+  it("does not classify generic downstream or transient unauthorized output as refresh-token invalidation", () => {
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "chatgpt wham api returned 401" })).toBeNull();
+    expect(
+      classifyCodexAuthRefreshFailure({
+        stdout: "downstream webhook failed with 401 while reporting the result",
+      }),
+    ).toBeNull();
+    expect(
+      classifyCodexAuthRefreshFailure({
+        stderr: "transient upstream unavailable: provider returned unauthorized",
+      }),
+    ).toBeNull();
   });
 
   it("buckets last_refresh into the approved low-cardinality buckets", () => {

@@ -63,8 +63,8 @@ import {
   parseCodexCredentialTelemetrySnapshot,
   readCodexCredentialTelemetrySnapshot,
   type CodexAuthRefreshFailureClass,
-  type CodexCredentialSeedSource,
   type CodexCredentialTelemetrySnapshot,
+  type CodexCredentialSeedSource,
 } from "./credential-telemetry.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
@@ -87,12 +87,39 @@ const executeCodexAcp = createCodexAcpExecutor();
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
+function stripCodexRolloutNoise(text: string): string {
+  const parts = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      kept.push(part);
+      continue;
+    }
+    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
+    kept.push(part);
+  }
+  return kept.join("\n");
+}
+
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
+
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function missingCodexCredentialTelemetrySnapshot(): CodexCredentialTelemetrySnapshot {
-  return { refreshTokenFingerprint: null, lastRefreshAgeBucket: "missing" };
+  return {
+    refreshTokenFingerprint: null,
+    lastRefreshAgeBucket: "missing",
+  };
 }
 
 async function readPostRunCodexCredentialTelemetrySnapshot(input: {
@@ -126,30 +153,6 @@ async function readPostRunCodexCredentialTelemetrySnapshot(input: {
   } catch {
     return missingCodexCredentialTelemetrySnapshot();
   }
-}
-
-function stripCodexRolloutNoise(text: string): string {
-  const parts = text.split(/\r?\n/);
-  const kept: string[] = [];
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (!trimmed) {
-      kept.push(part);
-      continue;
-    }
-    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
-    kept.push(part);
-  }
-  return kept.join("\n");
-}
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
 }
 
 function signalCodexChild(

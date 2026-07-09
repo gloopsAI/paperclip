@@ -84,7 +84,7 @@ describe("CodexRpcClient spawn failures", () => {
     expect(result.error).toContain("spawn codex ENOENT");
   });
 
-  it("classifies WHAM 401 quota probe failures without exposing token material", async () => {
+  it("does not classify bare WHAM 401 quota probe failures or expose token material", async () => {
     const token = "access-token-fixture-secret";
     fs.writeFileSync(
       path.join(isolatedCodexHome!, "auth.json"),
@@ -105,7 +105,7 @@ describe("CodexRpcClient spawn failures", () => {
     const result = await getQuotaWindows();
 
     expect(result.ok).toBe(false);
-    expect(result.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.errorFamily).toBeUndefined();
     expect(result.error).toContain("chatgpt wham api returned 401");
     expect(JSON.stringify(result)).not.toContain(token);
     expect(JSON.stringify(result)).not.toContain("refresh-token-fixture-secret");
