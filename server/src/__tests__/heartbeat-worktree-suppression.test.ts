@@ -13,6 +13,7 @@ import {
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issues,
@@ -22,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, resolveHeartbeatSchedulingSuppression } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -36,19 +38,23 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
-  function isHeartbeatRunEventFkError(error: unknown) {
+  function isHeartbeatRunDependentFkError(error: unknown) {
     const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
-    return message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk");
+    return (
+      message.includes("heartbeat_run_events_run_id_heartbeat_runs_id_fk") ||
+      message.includes("activity_log_run_id_heartbeat_runs_id_fk")
+    );
   }
 
-  async function deleteHeartbeatRunsWithEvents() {
+  async function deleteHeartbeatRunsWithDependents() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(heartbeatRunEvents);
+      await db.delete(activityLog);
       try {
         await db.delete(heartbeatRuns);
         return;
       } catch (error) {
-        if (!isHeartbeatRunEventFkError(error) || attempt === 4) throw error;
+        if (!isHeartbeatRunDependentFkError(error) || attempt === 4) throw error;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     }
@@ -65,13 +71,14 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(activityLog);
-    await deleteHeartbeatRunsWithEvents();
+    await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
 
   afterAll(async () => {

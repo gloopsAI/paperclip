@@ -54,11 +54,13 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
+      enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? false,
+      enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -75,11 +77,13 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableExperimentalFileViewer: false,
     enableCloudSync: false,
     enableExternalObjects: false,
+    enableBuiltInAgents: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     enableWorkspaceBranchReconcileForward: false,
+    enableWorktreeRunExecution: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
