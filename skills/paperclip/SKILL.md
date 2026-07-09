@@ -407,14 +407,17 @@ issue conceptually and still hit 403 from a different task-bridge run.
 
 **Before you mutate another agent's issue:**
 
-1. Always check the target issue's `assigneeAgentId` and `authorizationBoundary` fields:
+1. Always fetch the target issue before writing. This response is the boundary
+   signal agents receive; there is no separate local "current boundary" env var.
+   Capture the target's assignment, bridge origin, and boundary fields:
    ```sh
    curl -sS "$PAPERCLIP_API_URL/api/issues/<targetId>" \
      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-     | jq '{assignee: .assigneeAgentId, boundary: .authorizationBoundary}'
+     | jq '{assignee: .assigneeAgentId, origin: {kind: .originKind, id: .originId}, boundary: .authorizationBoundary}'
    ```
-2. If the target issue is not inside your current run's write boundary, do not
-   attempt the write. Route the ask via one of:
+2. If the fetch returns 403, the issue is assigned to another agent, or a
+   non-null `authorizationBoundary` does not clearly include the target issue,
+   do not attempt the write. Route the ask via one of:
    - A comment on your own issue naming the target owner and the desired change.
    - A child issue assigned to the owner with the mutation encoded as its body.
    - An `interactions` request on your issue when a human/board approval is
