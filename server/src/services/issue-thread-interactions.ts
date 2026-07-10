@@ -1431,89 +1431,97 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
-      const current = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
-        .then((rows) => rows[0] ?? null);
+      const submission = await db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
 
-      if (!current) throw notFound("Interaction not found");
-      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
-        throw notFound("Interaction not found");
-      }
-      if (current.kind !== "request_item_verdicts") {
-        throw unprocessable("Only request_item_verdicts interactions can receive item verdicts");
-      }
-
-      const interaction = hydrateInteraction(current) as RequestItemVerdictsInteraction;
-      if (current.status !== "pending") {
-        if (current.status === "answered") {
-          const resolvedIds = new Set(interaction.result?.items.map((item) => item.id) ?? []);
-          const payloadIds = new Set(interaction.payload.items.map((item) => item.id));
-          for (const submitted of data.verdicts) {
-            if (!payloadIds.has(submitted.id)) {
-              throw unprocessable(`Unknown item verdict id: ${submitted.id}`);
-            }
-            if (!resolvedIds.has(submitted.id)) {
-              throw conflict("Interaction has already been resolved");
-            }
-          }
-          return { interaction, newlyResolvedItemIds: [] };
+        if (!current) throw notFound("Interaction not found");
+        if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
         }
-        throw conflict("Interaction has already been resolved");
-      }
+        if (current.kind !== "request_item_verdicts") {
+          throw unprocessable("Only request_item_verdicts interactions can receive item verdicts");
+        }
 
-      const expired = await expireStaleRequestConfirmationTarget(db, {
-        row: current,
-        actor,
+        const interaction = hydrateInteraction(current) as RequestItemVerdictsInteraction;
+        if (current.status !== "pending") {
+          if (current.status === "answered") {
+            const resolvedIds = new Set(interaction.result?.items.map((item) => item.id) ?? []);
+            const payloadIds = new Set(interaction.payload.items.map((item) => item.id));
+            for (const submitted of data.verdicts) {
+              if (!payloadIds.has(submitted.id)) {
+                throw unprocessable(`Unknown item verdict id: ${submitted.id}`);
+              }
+              if (!resolvedIds.has(submitted.id)) {
+                throw conflict("Interaction has already been resolved");
+              }
+            }
+            return { interaction, newlyResolvedItemIds: [], resolved: false };
+          }
+          throw conflict("Interaction has already been resolved");
+        }
+
+        const expired = await expireStaleRequestConfirmationTarget(tx, {
+          row: current,
+          actor,
+        });
+        if (expired) {
+          return { interaction: expired, newlyResolvedItemIds: [], resolved: false };
+        }
+
+        const now = new Date();
+        const { items, complete, newlyResolvedItemIds } = resolveRequestItemVerdictSubmissions({
+          interaction,
+          input: data,
+          actor,
+          now,
+        });
+        if (newlyResolvedItemIds.length === 0) {
+          return { interaction, newlyResolvedItemIds: [], resolved: false };
+        }
+
+        const result = {
+          version: 1,
+          outcome: "resolved",
+          complete,
+          items,
+        } satisfies RequestItemVerdictsResult;
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: complete ? "answered" : "pending",
+            result,
+            resolvedByAgentId: complete ? actor.agentId ?? null : null,
+            resolvedByUserId: complete ? actor.userId ?? null : null,
+            resolvedAt: complete ? now : null,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
+
+        await touchIssue(tx, issue.id);
+        return {
+          interaction: hydrateInteraction(updated),
+          newlyResolvedItemIds,
+          resolved: complete,
+        };
       });
-      if (expired) {
-        return { interaction: expired, newlyResolvedItemIds: [] };
-      }
 
-      const now = new Date();
-      const { items, complete, newlyResolvedItemIds } = resolveRequestItemVerdictSubmissions({
-        interaction,
-        input: data,
-        actor,
-        now,
-      });
-      if (newlyResolvedItemIds.length === 0) {
-        return { interaction, newlyResolvedItemIds: [] };
+      if (submission.resolved) {
+        await emitInteractionResolvedTelemetry(db, submission.interaction);
       }
-
-      const result = {
-        version: 1,
-        outcome: "resolved",
-        complete,
-        items,
-      } satisfies RequestItemVerdictsResult;
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: complete ? "answered" : "pending",
-          result,
-          resolvedByAgentId: complete ? actor.agentId ?? null : null,
-          resolvedByUserId: complete ? actor.userId ?? null : null,
-          resolvedAt: complete ? now : null,
-          updatedAt: now,
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-
-      if (!updated) {
-        throw conflict("Interaction has already been resolved");
-      }
-
-      await touchIssue(db, issue.id);
-      const submitted = hydrateInteraction(updated);
-      if (complete) {
-        await emitInteractionResolvedTelemetry(db, submitted);
-      }
-      return { interaction: submitted, newlyResolvedItemIds };
+      return submission;
     },
 
     rejectSuggestedTasks: async (
