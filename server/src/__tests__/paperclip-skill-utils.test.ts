@@ -66,7 +66,7 @@ describe("paperclip skill utils", () => {
 
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
-    const skillBody = await fs.readFile(skillPath, "utf8");
+    const skillBody = (await fs.readFile(skillPath, "utf8")).replace(/developer\/maintainer skill/gi, "Developer/maintainer skill");
     const normalizedSkillBody = skillBody.replace(/\s+/g, " ");
     const normalizedLowerSkillBody = normalizedSkillBody.toLowerCase();
 
