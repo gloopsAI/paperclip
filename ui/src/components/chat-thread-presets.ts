@@ -65,7 +65,9 @@ const ISSUE_CHAT_THREAD_PRESETS: Record<IssueChatThreadPresetName, IssueChatThre
     composerSingleLine: false,
   },
   assistant: {
-    density: "compact",
+    // Comfortable density matches the issue-chat message rendering: the
+    // board user's own messages are right-aligned blue bubbles (PAP-13345).
+    density: "comfortable",
     workingIndicator: "collapsed",
     variant: "full",
     showComposer: true,

@@ -41,6 +41,11 @@ export type SelectedAgentChatTarget = {
 export type SelectedAgentChatCommentResponse = {
   comment: IssueComment;
   targetAgent: SelectedAgentChatTarget;
+  /** Whether the target-agent wake could be scheduled for this send. */
+  wake?: {
+    suppressed: boolean;
+    reason: "worktree_instance" | "database_restore_in_progress" | null;
+  };
 };
 
 export type ResolveRecoveryActionResponse = {

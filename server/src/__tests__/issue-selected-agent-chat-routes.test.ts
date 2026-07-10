@@ -45,6 +45,10 @@ const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string 
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const mockResolveHeartbeatSchedulingSuppression = vi.hoisted(() =>
+  vi.fn((): { suppressed: boolean; reason: string | null } => ({ suppressed: false, reason: null })),
+);
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({}),
   accessService: () => ({
@@ -98,6 +102,7 @@ vi.mock("../services/index.js", () => ({
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
+  resolveHeartbeatSchedulingSuppression: mockResolveHeartbeatSchedulingSuppression,
   workProductService: () => ({}),
 }));
 
@@ -253,6 +258,25 @@ describe("selected-agent issue chat backend", () => {
       ASSIGNEE_AGENT_ID,
       expect.anything(),
     );
+    expect(res.body.wake).toEqual({ suppressed: false, reason: null });
+  });
+
+  it("reports wake suppression so the chat UI can explain a silent no-reply", async () => {
+    mockResolveHeartbeatSchedulingSuppression.mockReturnValueOnce({
+      suppressed: true,
+      reason: "worktree_instance",
+    });
+    const db = createDbStub(
+      [makeAgent({ id: CEO_AGENT_ID, name: "CEO", role: "ceo" })],
+      [],
+    );
+
+    const res = await request(await createApp(db))
+      .post(`/api/issues/${ISSUE_ID}/selected-agent-chat/comments`)
+      .send({ body: "hello?" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.wake).toEqual({ suppressed: true, reason: "worktree_instance" });
   });
 
   it("titles new board chat issues from the first selected-agent message and stores the target agent", async () => {

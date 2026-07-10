@@ -27,9 +27,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { MentionOption } from "./MarkdownEditor";
+import { accessApi } from "../api/access";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
+import {
+  buildCompanyUserLabelMap,
+  buildCompanyUserProfileMap,
+  type CompanyUserProfile,
+} from "../lib/company-members";
 import type { IssueChatComment, IssueChatTranscriptEntry } from "../lib/issue-chat-messages";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -227,6 +233,8 @@ export interface AssistantChatViewProps {
   companyId?: string | null;
   projectId?: string | null;
   currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
   backgroundWorkChildren?: IssueRelationIssueSummary[];
   suppressIssueStatusNotices?: boolean;
   companyName?: string | null;
@@ -240,6 +248,8 @@ export interface AssistantChatViewProps {
   loading?: boolean;
   /** Surface a delivery/transport failure inline (CR8). */
   errorText?: string | null;
+  /** Non-error inline notice (e.g. delivered but the agent can't run here). */
+  noticeText?: string | null;
   onRetry?: () => void;
   onSend: (body: string) => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
@@ -285,6 +295,8 @@ export function AssistantChatView({
   companyId,
   projectId,
   currentUserId,
+  userLabelMap,
+  userProfileMap,
   backgroundWorkChildren = [],
   suppressIssueStatusNotices,
   companyName = null,
@@ -296,6 +308,7 @@ export function AssistantChatView({
   onAttachImage,
   loading = false,
   errorText,
+  noticeText,
   onRetry,
   onSend,
   onStopRun,
@@ -439,6 +452,17 @@ export function AssistantChatView({
         </div>
       ) : null}
 
+      {noticeText ? (
+        <div
+          role="status"
+          data-testid="assistant-chat-notice"
+          className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-sm text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+          <p className="min-w-0 flex-1 break-words">{noticeText}</p>
+        </div>
+      ) : null}
+
       {loading && comments.length === 0 ? (
         <div
           data-testid="assistant-chat-skeleton"
@@ -452,7 +476,9 @@ export function AssistantChatView({
       ) : (
         <div
           data-testid="selected-agent-chat-body"
-          className="min-w-0 px-4 pb-4 pt-3"
+          // Own scroll container: chat scrolling (including the initial
+          // scroll-to-latest) must never move the page or the sidebar.
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-4 pt-3"
         >
           <IssueChatThread
             preset="assistant"
@@ -469,6 +495,8 @@ export function AssistantChatView({
             projectId={projectId}
             agentMap={agentMap}
             currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            userProfileMap={userProfileMap}
             backgroundWorkChildren={backgroundWorkChildren}
             suppressIssueStatusNotices={suppressIssueStatusNotices}
             mentions={mentions}
@@ -558,7 +586,22 @@ export function AssistantChat({
   }, [agents, preferredTargetAgentId, targetAgentId]);
 
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [noticeText, setNoticeText] = useState<string | null>(null);
   const [pendingComments, setPendingComments] = useState<PendingAssistantChatComment[]>([]);
+
+  // Resolve human author names/avatars (issue-chat parity: "Dotta", not "You").
+  const { data: companyMembers } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(companyId),
+    queryFn: () => accessApi.listUserDirectory(companyId),
+  });
+  const userLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
+  const userProfileMap = useMemo(
+    () => buildCompanyUserProfileMap(companyMembers?.users),
+    [companyMembers?.users],
+  );
 
   const liveRunsQuery = useQuery({
     queryKey: targetAgentId
@@ -655,6 +698,7 @@ export function AssistantChat({
   const handleSend = useCallback(
     async (body: string) => {
       setErrorText(null);
+      setNoticeText(null);
       const optimistic = createOptimisticComment({
         issueId,
         companyId,
@@ -676,6 +720,14 @@ export function AssistantChat({
               : pending,
           ),
         );
+        if (response.wake?.suppressed) {
+          const agentName = response.targetAgent?.name ?? "The agent";
+          setNoticeText(
+            response.wake.reason === "worktree_instance"
+              ? `Message saved, but agent runs are disabled on this worktree instance — ${agentName} won't reply here.`
+              : `Message saved, but agent runs are paused on this instance right now — ${agentName} can't reply yet.`,
+          );
+        }
         await onMessageSent?.();
         invalidateRuns();
       } catch (err) {
@@ -784,6 +836,8 @@ export function AssistantChat({
       companyId={companyId}
       projectId={projectId}
       currentUserId={currentUserId}
+      userLabelMap={userLabelMap}
+      userProfileMap={userProfileMap}
       backgroundWorkChildren={backgroundWorkChildren}
       suppressIssueStatusNotices
       companyName={companyName}
@@ -795,6 +849,7 @@ export function AssistantChat({
       onAttachImage={handleAttachFile}
       loading={commentsQuery.isLoading}
       errorText={errorText}
+      noticeText={noticeText}
       onRetry={errorText ? () => setErrorText(null) : undefined}
       onSend={handleSend}
       onStopRun={handleStopRun}

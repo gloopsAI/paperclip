@@ -33,7 +33,8 @@ describe("resolveIssueChatThreadPreset", () => {
   it("maps the assistant preset to the lightweight chat defaults", () => {
     expect(resolveIssueChatThreadPreset("assistant")).toMatchObject({
       preset: "assistant",
-      density: "compact",
+      // Comfortable = issue-chat message rendering (own messages right/blue).
+      density: "comfortable",
       workingIndicator: "collapsed",
       variant: "full",
       showComposer: true,

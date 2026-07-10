@@ -497,7 +497,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("renders assistant preset turns as compact rows and starts live reasoning collapsed", async () => {
+  it("renders assistant preset turns with issue-chat density and starts live reasoning collapsed", async () => {
     const root = createRoot(container);
     const transcriptsByRunId = new Map<string, readonly IssueChatTranscriptEntry[]>([
       [
@@ -561,7 +561,8 @@ describe("IssueChatThread", () => {
     });
 
     const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
-    expect(viewport?.className).toContain("space-y-3");
+    // Comfortable (issue-chat) density: full spacing, not the old compact rows.
+    expect(viewport?.className).toContain("space-y-4");
     const workingButton = Array.from(container.querySelectorAll("button")).find(
       (element) => element.textContent?.includes("Working"),
     );

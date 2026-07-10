@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ActivityEvent, Agent } from "@paperclipai/shared";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -245,11 +246,13 @@ function CollapsedFeedGroup({
   agentMap,
   entityNameMap,
   entityTitleMap,
+  boardChatIssueRefs,
 }: {
   group: CollapsedGroup;
   agentMap: Map<string, Agent>;
   entityNameMap: Map<string, string>;
   entityTitleMap: Map<string, string>;
+  boardChatIssueRefs?: ReadonlyMap<string, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const actor = group.latestEvent.actorType === "agent"
@@ -301,6 +304,7 @@ function CollapsedFeedGroup({
               agentMap={agentMap}
               entityNameMap={entityNameMap}
               entityTitleMap={entityTitleMap}
+              boardChatIssueRefs={boardChatIssueRefs}
               isMuted
             />
           ))}
@@ -360,6 +364,27 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
     enabled: !!selectedCompanyId,
   });
 
+  // Conference Room conversations are board_chat issues hidden from the
+  // default list above; fetch them separately so their events resolve to an
+  // identifier and deep-link to the room instead of a broken issue URL.
+  const { data: boardChatIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId ?? ""), "board-chat-refs"],
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        originKind: "board_chat",
+        limit: 100,
+        sortField: "updated",
+        sortDir: "desc",
+      }),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
     for (const a of agents ?? []) map.set(a.id, a);
@@ -370,14 +395,22 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
     const map = new Map<string, string>();
     for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id);
+    for (const i of boardChatIssues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id);
     return map;
-  }, [agents, issues]);
+  }, [agents, issues, boardChatIssues]);
 
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    for (const i of boardChatIssues ?? []) map.set(`issue:${i.id}`, i.title);
     return map;
-  }, [issues]);
+  }, [issues, boardChatIssues]);
+
+  const boardChatIssueRefs = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of boardChatIssues ?? []) map.set(i.id, i.identifier || i.id);
+    return map;
+  }, [boardChatIssues]);
 
   const entityStatusMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -389,6 +422,16 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
   const processedItems = useMemo(() => {
     const events = (activity ?? [])
       .filter((evt) => {
+        // The board user's own chat messages are not agent activity — they
+        // already see them in the thread they just typed into (PAP-13345).
+        if (
+          (evt.action === "issue.commented" || evt.action === "issue.comment_added")
+          && evt.actorType === "user"
+          && currentUserId
+          && evt.actorId === currentUserId
+        ) {
+          return false;
+        }
         const tier = getEventTier(evt);
         if (!showAllActivity && tier === 3) return false;
         return matchesFilter(evt, filter);
@@ -396,7 +439,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     return collapseSequential(events);
-  }, [activity, filter, showAllActivity]);
+  }, [activity, filter, showAllActivity, currentUserId]);
 
   const visibleItems = processedItems.slice(0, visibleCount);
   const hasMore = processedItems.length > visibleCount;
@@ -491,6 +534,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
               agentMap={agentMap}
               entityNameMap={entityNameMap}
               entityTitleMap={entityTitleMap}
+              boardChatIssueRefs={boardChatIssueRefs}
             />
           </div>
         </div>
@@ -513,6 +557,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
               entityNameMap={entityNameMap}
               entityTitleMap={entityTitleMap}
               entityStatusMap={entityStatusMap}
+              boardChatIssueRefs={boardChatIssueRefs}
               isActive={isActiveHeartbeat}
             />
           </div>
@@ -531,6 +576,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
             entityNameMap={entityNameMap}
             entityTitleMap={entityTitleMap}
             entityStatusMap={entityStatusMap}
+            boardChatIssueRefs={boardChatIssueRefs}
             isActive={isActiveHeartbeat}
             isMuted
           />

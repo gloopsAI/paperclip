@@ -98,6 +98,7 @@ import {
   executionWorkspaceService,
   goalService,
   heartbeatService,
+  resolveHeartbeatSchedulingSuppression,
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
@@ -8920,6 +8921,10 @@ export function issueRoutes(
           agentId: targetAgent.id,
         }, "failed to wake selected-agent chat target on issue comment"));
 
+      // Tell the client whether the wake can actually run here: on worktree
+      // instances scheduling is suppressed, and a silent no-reply chat reads
+      // as "sending did nothing" (PAP-13345).
+      const wakeSuppression = resolveHeartbeatSchedulingSuppression();
       res.status(201).json({
         comment,
         targetAgent: {
@@ -8927,6 +8932,10 @@ export function issueRoutes(
           name: targetAgent.name,
           role: targetAgent.role,
           status: targetAgent.status,
+        },
+        wake: {
+          suppressed: wakeSuppression.suppressed,
+          reason: wakeSuppression.reason,
         },
       });
     },
