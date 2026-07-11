@@ -169,6 +169,8 @@ Use it for:
 
 Blocked issues should stay idle while any blocker edge is not `done`. Paperclip should not create a queued heartbeat run for dependency resolution until every blocker edge is `done` and any workspace-finalize gate has released; then the `issue_blockers_resolved` wake can start real work.
 
+The two contracts below are normative requirements for the finalize-barrier implementation phases. A deployment that cannot persist the synthetic terminal outcome or that lets finalize readiness veto the human-comment transition is not yet conformant with this execution model; follow-up implementation work must close those gaps rather than weakening the contracts here.
+
 ### Workspace-finalize barrier liveness
 
 A `done` blocker may temporarily remain behind a workspace-finalize barrier so dependent work cannot dispatch or check out against workspace state that the blocker run still owes. That barrier is held only by a live run that can still deliver the finalize outcome.
