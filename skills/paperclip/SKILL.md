@@ -341,6 +341,7 @@ For commands, response fields, and MCP tools, read:
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **Prefer child issues over polling.** Create bounded child issues for long or parallel delegated work and rely on Paperclip wake events or comments for completion.
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
+- **Keep issue worktrees on their recorded branch.** Never end a run with the execution worktree switched to another branch (e.g. a PR/publishing branch). Publish from a separate worktree, or `git checkout "$PAPERCLIP_WORKSPACE_BRANCH"` before finishing — see the branch-discipline section in `skills/paperclip/references/issue-workspaces.md`.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
