@@ -477,6 +477,22 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .where(eq(issueThreadInteractions.issueId, sourceId));
     expect(repeatedInteractions).toHaveLength(1);
 
+    await db.update(issueThreadInteractions).set({
+      status: "accepted",
+      result: { version: 1, outcome: "accepted" },
+      resolvedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(issueThreadInteractions.id, repeatedInteractions[0]!.id));
+
+    const escalatedAfterResolution = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(escalatedAfterResolution).toMatchObject({ checked: 1, triggered: 0, escalated: 1 });
+    const interactionsAfterResolution = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, sourceId));
+    expect(interactionsAfterResolution).toHaveLength(2);
+    expect(interactionsAfterResolution.filter((interaction) => interaction.status === "pending")).toHaveLength(1);
+    expect(wakes).toHaveLength(1);
+
     await db.update(issues).set({
       monitorNextCheckAt: new Date(Date.now() + 60_000),
       updatedAt: new Date(),

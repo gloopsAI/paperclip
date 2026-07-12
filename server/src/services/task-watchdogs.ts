@@ -1450,23 +1450,31 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       && watchdog.reviewAcceptanceKind === "conditional"
       && watchdog.sameFingerprintReviewCount >= TASK_WATCHDOG_SAME_FINGERPRINT_REVIEW_LIMIT;
     if (shouldEscalateSameFingerprintReview) {
-      const escalationIdempotencyKey = `task_watchdog_escalation:${watchdog.id}:${classification.stopFingerprint}`;
-      const existingEscalation = await db
-        .select({ id: issueThreadInteractions.id })
+      const legacyEscalationIdempotencyKey = `task_watchdog_escalation:${watchdog.id}:${classification.stopFingerprint}`;
+      const escalationIdempotencyPrefix = `${legacyEscalationIdempotencyKey}:`;
+      const matchingEscalations = await db
+        .select({
+          id: issueThreadInteractions.id,
+          status: issueThreadInteractions.status,
+        })
         .from(issueThreadInteractions)
         .where(and(
           eq(issueThreadInteractions.companyId, sourceIssue.companyId),
           eq(issueThreadInteractions.issueId, sourceIssue.id),
-          eq(issueThreadInteractions.idempotencyKey, escalationIdempotencyKey),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (existingEscalation) {
+          or(
+            eq(issueThreadInteractions.idempotencyKey, legacyEscalationIdempotencyKey),
+            sql`${issueThreadInteractions.idempotencyKey} like ${`${escalationIdempotencyPrefix}%`}`,
+          ),
+        ));
+      const pendingEscalation = matchingEscalations.find((row) => row.status === "pending") ?? null;
+      if (pendingEscalation) {
         return {
           state: "escalated" as const,
           classification,
-          interactionId: existingEscalation.id,
+          interactionId: pendingEscalation.id,
         };
       }
+      const escalationIdempotencyKey = `${escalationIdempotencyPrefix}${matchingEscalations.length + 1}`;
       const interaction = await issueThreadInteractionService(db).create(
         sourceIssue,
         {
