@@ -51,6 +51,7 @@ import {
   interpolateRoutineTemplate,
   isValidRoutineDateString,
   pluginOperationIssueOriginKind,
+  routineRevisionSnapshotSchema,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
@@ -2531,7 +2532,7 @@ export function routineService(
         .then((rows) => rows[0] ?? null);
       if (!targetRevision) throw notFound("Routine revision not found");
 
-      const snapshot = targetRevision.snapshot as RoutineRevisionSnapshotV1;
+      const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
 
