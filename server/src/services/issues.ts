@@ -1649,7 +1649,7 @@ type IssueBlockerAttentionInputNode =
     IssueBlockerAttentionNode,
     "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
   >
-  & { executionRunId?: string | null; description?: string | null };
+  & { executionRunId?: string | null; description?: string | null; originKind?: string | null };
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -2045,6 +2045,31 @@ async function listIssueBlockerAttentionMap(
   }
   if (roots.length === 0) return attentionMap;
 
+  const rootIds = roots.map((root) => root.id);
+  const recoveryOwnedIssueIds = new Set<string>();
+  for (const chunk of chunkList(rootIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const recoveryRows = await dbOrTx
+      .select({
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        recoveryIssueId: issueRecoveryActions.recoveryIssueId,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          or(
+            inArray(issueRecoveryActions.sourceIssueId, chunk),
+            inArray(issueRecoveryActions.recoveryIssueId, chunk),
+          ),
+        ),
+      );
+    for (const row of recoveryRows) {
+      if (row.sourceIssueId) recoveryOwnedIssueIds.add(row.sourceIssueId);
+      if (row.recoveryIssueId) recoveryOwnedIssueIds.add(row.recoveryIssueId);
+    }
+  }
+
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
   for (const root of roots) nodesById.set(root.id, { ...root });
@@ -2360,7 +2385,11 @@ async function listIssueBlockerAttentionMap(
   for (const root of roots) {
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
     if (topLevelEdges.length === 0) {
-      if (externalWaitFromDescription(root.description ?? null)) {
+      if (
+        externalWaitFromDescription(root.description ?? null) ||
+        recoveryOwnedIssueIds.has(root.id) ||
+        (isStrandedIssueRecoveryOriginKind(root.originKind) && Boolean(root.assigneeAgentId))
+      ) {
         attentionMap.set(root.id, createIssueBlockerAttention({ state: "covered" }));
         continue;
       }

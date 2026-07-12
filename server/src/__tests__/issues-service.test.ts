@@ -3487,6 +3487,12 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const updated = await svc.update(issueId, { status: "blocked" });
 
     expect(updated?.status).toBe("blocked");
+    const [listed] = await svc.list(companyId, { status: "blocked" });
+    expect(listed?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: null,
+      unresolvedBlockerCount: 0,
+    });
   });
 
   it("auto-routes a blocked issue to todo when its final blocker edge is deleted", async () => {
