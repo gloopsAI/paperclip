@@ -89,7 +89,12 @@
       "@lexical/react": "0.46.0",
       "@lexical/rich-text": "0.46.0",
       "@lexical/selection": "0.46.0",
-      "@lexical/utils": "0.46.0"
+      "@lexical/utils": "0.46.0",
+      "hono": "4.12.25",
+      "path-to-regexp": "8.4.0",
+      "undici@6": "6.27.0",
+      "undici@7": "7.28.0",
+      "ws": "8.21.0"
     }
   }
 }
