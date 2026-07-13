@@ -1,0 +1,75 @@
+{
+  "$schema": "https://gloops.ai/schemas/paperclip-distribution-manifest.v1.json",
+  "schemaVersion": 1,
+  "distribution": {
+    "name": "GLoops Paperclip",
+    "version": "2026.713.0-gloops.1",
+    "stableBranch": "gloops/stable",
+    "upstreamMirrorBranch": "master",
+    "image": "ghcr.io/gloopsai/paperclip-gloops"
+  },
+  "upstream": {
+    "repository": "https://github.com/paperclipai/paperclip.git",
+    "baseCommit": "c36f1a4afd91e4ddf0e5c7224b288ce722c7404f"
+  },
+  "buildInputs": {
+    "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
+    "claudeCodeVersion": "2.1.207",
+    "codexVersion": "0.144.3",
+    "opencodeVersion": "1.17.18",
+    "geminiCliVersion": "0.50.0"
+  },
+  "patches": [
+    {
+      "id": "real-plugin-host-version",
+      "sourceKind": "upstream",
+      "upstreamPullRequest": "https://github.com/paperclipai/paperclip/pull/8114",
+      "sourceBase": "412a04c964915fd45e15675f064d24332d50f6cc",
+      "sourceHead": "90a2731a91882cf71457dabb25ad3ae4b51ed3c1",
+      "patchDiffSha256": "8c475e0aa67fa1cbbfc27dea407402cb0783f5b0f5bcc3a6c92427274451cb22",
+      "integratedCommits": [
+        "dc827db561ffa8e876a11dab86e69a02e8d3071d",
+        "b25c58e56edde327dbff8beab02260711a536b94"
+      ],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Remove only after the upstream replacement is present in the selected upstream base and the GLoops host-version and plugin-compatibility canaries pass against that base."
+    },
+    {
+      "id": "maintenance-runtime-and-plugin-cleanup-safety",
+      "sourceKind": "upstream",
+      "upstreamPullRequest": "https://github.com/paperclipai/paperclip/pull/9494",
+      "sourceBase": "c36f1a4afd91e4ddf0e5c7224b288ce722c7404f",
+      "sourceHead": "92967463a7e44aa7388f3ceff88448ffa380333a",
+      "patchDiffSha256": "690f4bea8da5c324d6fd87cdc9620af5e56e2c7972a68c2dc99383083688b616",
+      "integratedCommits": [
+        "2f4291cac56432e6435ec4a43e8faf86157cddc4",
+        "71268240cc9b2303ae5d5cb9fa1c70f42a722759"
+      ],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Remove only after the upstream replacement is present in the selected upstream base and maintenance-startup, hard-uninstall, PostgreSQL namespace, and schema-declared secret-reference canaries pass against that base."
+    },
+    {
+      "id": "reproducible-container-inputs",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "71268240cc9b2303ae5d5cb9fa1c70f42a722759",
+      "sourceHead": "90e02b03274fadc7f4c336354c769403b2d5aae4",
+      "patchDiffSha256": "48f6a24078ea57d1e44189969362d9587049aa9ea999b33b22bbf959ff0ba628",
+      "integratedCommits": ["90e02b03274fadc7f4c336354c769403b2d5aae4"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain as a GLoops distribution policy unless upstream provides equivalent digest-pinned base images and explicit agent-CLI build arguments; any upstreaming is tracked separately from runtime delivery."
+    }
+  ],
+  "releasePolicy": {
+    "autoDeploy": false,
+    "productionReference": "digest",
+    "requiredEvidence": [
+      "distribution-manifest-verification",
+      "paperclip-ci",
+      "gloops-maintenance-canary",
+      "container-sbom",
+      "container-provenance",
+      "independent-exact-head-acceptance"
+    ]
+  }
+}
