@@ -4,6 +4,8 @@ set -euo pipefail
 readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:38e0bd4725377cb930290f033b19418e0ccb1c3efc773243f66d25f5fb6e3d9f'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly STATE_DIR='/home/paperclip/.paperclip'
+readonly PLUGIN_DIR='/opt/paperclip/plugins'
+readonly MTE_PLUGIN_DIR='/home/paperclip/mte-shadow-package'
 readonly MAX_STATE_BYTES=$((10 * 1024 * 1024 * 1024))
 readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
 
@@ -19,6 +21,10 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
 
 [[ -d "${STATE_DIR}" ]] || {
   echo "Paperclip state directory is missing" >&2
+  exit 1
+}
+[[ -d "${PLUGIN_DIR}" && -d "${MTE_PLUGIN_DIR}" ]] || {
+  echo "one or more installed plugin directories are missing" >&2
   exit 1
 }
 
