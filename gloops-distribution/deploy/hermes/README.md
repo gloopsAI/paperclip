@@ -8,6 +8,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - The service cannot start without both an operator-created activation marker and an explicit unmask/enable action.
 - No host port is opened. Paperclip HTTP will bind to loopback only when a later pilot is approved.
 - Grok/xAI API credentials are neither configured nor mounted. Any later Grok execution must use the separately governed Grok CLI path.
+- Installed Paperclip plugin packages are mounted read-only; provider credentials and host workspaces are not mounted.
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
 
