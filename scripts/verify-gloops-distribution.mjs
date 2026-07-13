@@ -7,7 +7,21 @@ const manifestPath = new URL(
   "../gloops-distribution/manifest.json",
   import.meta.url,
 );
+const dockerfilePath = new URL("../Dockerfile", import.meta.url);
+const workflowPath = new URL(
+  "../.github/workflows/gloops-distribution.yml",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const dockerfile = readFileSync(dockerfilePath, "utf8");
+const workflow = readFileSync(workflowPath, "utf8");
+const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
+let vex = null;
+try {
+  vex = JSON.parse(readFileSync(vexPath, "utf8"));
+} catch (error) {
+  fail(`declared VEX cannot be read: ${error instanceof Error ? error.message : error}`);
+}
 
 function fail(message) {
   console.error(`GLoops distribution verification failed: ${message}`);
@@ -46,14 +60,79 @@ const buildInputs = manifest.buildInputs ?? {};
 if (!/^node:[^@]+@sha256:[0-9a-f]{64}$/.test(buildInputs.baseImage ?? "")) {
   fail("baseImage must be pinned by SHA-256 digest");
 }
-for (const key of [
-  "claudeCodeVersion",
-  "codexVersion",
-  "opencodeVersion",
-  "geminiCliVersion",
-]) {
-  if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(buildInputs[key] ?? "")) {
-    fail(`${key} must be an explicit semantic version`);
+if (buildInputs.runtimeTarget !== "gloops-production") {
+  fail("runtimeTarget must be the control-plane-only gloops-production stage");
+}
+if (!Array.isArray(buildInputs.bundledAgentClis) || buildInputs.bundledAgentClis.length !== 0) {
+  fail("the GLoops control-plane image must not bundle agent CLIs");
+}
+if (buildInputs.vex !== `gloops-distribution/security/vex-${distribution.version}.json`) {
+  fail("buildInputs.vex must name the versioned distribution VEX");
+}
+const gloopsStage = dockerfile.match(
+  /FROM node:[^\n]+ AS gloops-production([\s\S]+)$/,
+);
+if (!gloopsStage) {
+  fail("Dockerfile must define the gloops-production runtime stage");
+} else {
+  for (const forbidden of [
+    "@anthropic-ai/claude-code",
+    "@openai/codex",
+    "opencode-ai",
+    "@google/gemini-cli",
+  ]) {
+    if (gloopsStage[1].includes(forbidden)) {
+      fail(`gloops-production must not install ${forbidden}`);
+    }
+  }
+  if (!gloopsStage[1].includes('CMD ["node", "dist/index.js"]')) {
+    fail("gloops-production must run the compiled server without a TypeScript loader");
+  }
+}
+if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
+  fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");
+}
+if (!/^\s+target: gloops-production$/m.test(workflow)) {
+  fail("distribution workflow must build the gloops-production target");
+}
+if (/\b(CLAUDE_CODE|CODEX|OPENCODE|GEMINI_CLI)_VERSION=/m.test(workflow)) {
+  fail("distribution workflow must not pass agent CLI build arguments");
+}
+if (!gloopsStage?.[1].includes("/usr/local/lib/node_modules/npm")) {
+  fail("gloops-production must remove the npm build/package-management toolchain");
+}
+
+if (vex) {
+  if (vex["@context"] !== "https://openvex.dev/ns/v0.2.0") {
+    fail("VEX must use the OpenVEX 0.2 context");
+  }
+  const expectedVulnerabilities = new Map([
+    ["CVE-2026-41679", "fixed"],
+    ["GHSA-3xx2-mqjm-hg9x", "fixed"],
+    ["GHSA-47wq-cj9q-wpmp", "fixed"],
+    ["GHSA-vr7g-88fq-vhq3", "fixed"],
+    ["CVE-2026-41208", "fixed"],
+    ["GHSA-w8hx-hqjv-vjcq", "fixed"],
+    ["GHSA-xfqj-r5qw-8g4j", "fixed"],
+    ["CVE-2026-42496", "not_affected"],
+    ["CVE-2026-8376", "not_affected"],
+  ]);
+  for (const statement of vex.statements ?? []) {
+    const id = statement.vulnerability?.["@id"];
+    const expectedStatus = expectedVulnerabilities.get(id);
+    if (!expectedStatus) {
+      fail(`VEX contains an unexpected or duplicate vulnerability: ${id}`);
+    }
+    expectedVulnerabilities.delete(id);
+    if (statement.status !== expectedStatus) {
+      fail(`${id}: VEX status must be ${expectedStatus}`);
+    }
+    if (!statement.impact_statement?.includes("evidence:")) {
+      fail(`${id}: VEX must identify exact evidence`);
+    }
+  }
+  if (expectedVulnerabilities.size > 0) {
+    fail(`VEX is missing scanner findings: ${[...expectedVulnerabilities.keys()].join(", ")}`);
   }
 }
 if (!/^[0-9a-f]{40}$/.test(upstream.baseCommit ?? "")) {
@@ -142,6 +221,7 @@ for (const item of [
   "gloops-maintenance-canary",
   "container-sbom",
   "container-provenance",
+  "container-vex",
   "independent-exact-head-acceptance",
 ]) {
   if (!requiredEvidence.has(item))

@@ -34,6 +34,18 @@ A patch is removed only when all of the following are true:
 an SBOM and provenance attestation. Runtime configuration must pin the resulting
 `sha256:` digest; mutable tags are discovery aids only.
 
+The GLoops image builds the dedicated `gloops-production` target. It contains
+the Paperclip control plane and its runtime dependencies, but deliberately does
+not contain coding-agent CLIs or provider credentials. Provider execution stays
+in separately governed workers, outside the control-plane trust boundary.
+
+The release manifest names a versioned OpenVEX document under `security/`.
+Release acceptance evaluates the exact digest together with its SBOM,
+provenance, secret scan, vulnerability scan, and VEX. A release is rejected if
+any reachable critical vulnerability remains unmitigated; package-version-only
+scanner matches require source and test evidence in the VEX, not a blanket
+ignore rule.
+
 Publishing an image does not activate Paperclip. Production restart, schedules,
 heartbeats, agent wakes, provider credentials, MTE activation, and live mutation
 remain separate operator-controlled actions.
