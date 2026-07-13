@@ -21,6 +21,7 @@ done
 
 install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"
+install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/failure-alert.mjs" "${LIB_DIR}/failure-alert.mjs"
