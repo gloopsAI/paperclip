@@ -57,6 +57,17 @@
       "integratedCommits": ["90e02b03274fadc7f4c336354c769403b2d5aae4"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain as a GLoops distribution policy unless upstream provides equivalent digest-pinned base images and explicit agent-CLI build arguments; any upstreaming is tracked separately from runtime delivery."
+    },
+    {
+      "id": "control-plane-runtime-hardening",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "5962343692bf0bed65dc8deb9a8d5c9895687e05",
+      "sourceHead": "ceec206764047115cc07c3abecc57d32f2da47b0",
+      "patchDiffSha256": "a79258ce53359db2a2f56e06eefe8585851345923d1818b9c7e3db60e59bde9b",
+      "integratedCommits": ["ceec206764047115cc07c3abecc57d32f2da47b0"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until upstream provides an equivalently minimal compiled control-plane runtime target with no coding-agent CLIs or build/test toolchain, plus exact-digest SBOM, provenance, secret-scan, and VEX acceptance."
     }
   ],
   "releasePolicy": {
