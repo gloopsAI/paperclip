@@ -1,0 +1,25 @@
+[Unit]
+Description=Notify operators that %i failed
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/gloops-agentmail.env
+ConditionPathExists=/etc/gloops-exec-updates.env
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=gloops-exec-updates
+Group=gloops-exec-updates
+ExecStart=/usr/bin/node /usr/local/lib/paperclip-gloops/failure-alert.mjs %i
+LoadCredential=agentmail.env:/etc/gloops-agentmail.env
+LoadCredential=communications.env:/etc/gloops-exec-updates.env
+Environment=PAPERCLIP_GLOOPS_ALERT_STATE_DIR=/var/lib/gloops-exec-updates/paperclip-gloops-alerts
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/gloops-exec-updates
+TimeoutStartSec=45
+Restart=on-failure
+RestartSec=30
