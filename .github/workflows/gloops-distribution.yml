@@ -17,6 +17,13 @@ permissions:
   attestations: write
 
 jobs:
+  paperclip-ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
   verify-manifest:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -30,7 +37,9 @@ jobs:
         run: node scripts/verify-gloops-distribution.mjs
 
   container:
-    needs: verify-manifest
+    needs:
+      - paperclip-ci
+      - verify-manifest
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
