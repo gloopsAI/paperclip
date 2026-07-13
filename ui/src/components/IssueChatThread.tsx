@@ -1592,19 +1592,6 @@ function IssueChatUserMessage({
   const isOptimistic = commentId.startsWith("optimistic-");
   const canReply = Boolean(onReply) && !deleted && !pending && !queued && !isOptimistic;
   const isHighlighted = Boolean(highlightCommentId && highlightCommentId === commentId);
-  const handleReply = () => {
-    const { excerpt, truncated } = buildReplyExcerpt(threadMessageText(message));
-    onReply?.({
-      commentId,
-      authorName: authorName ?? "You",
-      excerpt,
-      excerptTruncated: truncated,
-    });
-  };
-  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
-  const [copied, setCopied] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const toastActions = useOptionalToastActions();
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1615,6 +1602,21 @@ function IssueChatUserMessage({
     currentUserId,
     userProfileMap,
   });
+  const handleReply = () => {
+    const { excerpt, truncated } = buildReplyExcerpt(threadMessageText(message));
+    onReply?.({
+      commentId,
+      // Reuse the resolved bubble label so replying to another user shows their
+      // name (not "You") even when the message carries no custom.authorName.
+      authorName: resolvedAuthorName,
+      excerpt,
+      excerptTruncated: truncated,
+    });
+  };
+  const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  const [copied, setCopied] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
       {avatarUrl ? <AvatarImage src={avatarUrl} alt={resolvedAuthorName} /> : null}
