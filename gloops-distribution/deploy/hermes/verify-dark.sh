@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:38e0bd4725377cb930290f033b19418e0ccb1c3efc773243f66d25f5fb6e3d9f'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:75eecd6c29eb365c3361d68170b896e2f5b22019146df46381dd1ef1977af0c3'
 failed=0
 
 check_inactive() {
@@ -46,11 +46,29 @@ else
   echo "PASS no paperclip-gloops container exists"
 fi
 
-if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)3100$|(^|:)8443$'; then
-  echo "FAIL Paperclip HTTP or HTTPS port is listening" >&2
+if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)3100$'; then
+  echo "FAIL Paperclip loopback HTTP port is listening" >&2
   failed=1
 else
-  echo "PASS no Paperclip HTTP or HTTPS listener exists"
+  echo "PASS no Paperclip loopback HTTP listener exists"
+fi
+
+serve_status="$(mktemp)"
+trap 'rm -f "${serve_status}"' EXIT
+tailscale serve status --json >"${serve_status}"
+if node - "${serve_status}" <<'NODE'
+const { readFileSync } = require("node:fs");
+const status = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const endpoint = "ubuntu-hermes-nyc1.taild219d6.ts.net:8443";
+if (status.TCP?.["8443"]?.HTTPS !== true) process.exit(1);
+if (status.Web?.[endpoint]?.Handlers?.["/"]?.Proxy !== "http://127.0.0.1:3100") process.exit(1);
+if (status.AllowFunnel?.[endpoint] === true) process.exit(1);
+NODE
+then
+  echo "PASS tailnet-only HTTPS 8443 is configured without Funnel"
+else
+  echo "FAIL tailnet-only HTTPS 8443 configuration is missing or public" >&2
+  failed=1
 fi
 
 if systemctl list-timers --all --no-legend | grep -Ei 'paperclip|gloops-(runner|exec|watchdog)|hermes-agent'; then
@@ -67,11 +85,82 @@ else
   echo "PASS Paperclip-related services are disabled, masked, or static"
 fi
 
-if grep -RIEq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)=' /etc/paperclip-gloops /usr/local/lib/systemd/system/paperclip-gloops.service; then
+if grep -RIEq 'paperclip|gloops-(runner|exec|watchdog)|hermes-agent' /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly /var/spool/cron/crontabs 2>/dev/null; then
+  echo "FAIL a Paperclip-related cron entry exists" >&2
+  failed=1
+else
+  echo "PASS no Paperclip-related cron entry exists"
+fi
+
+if command -v atq >/dev/null && atq | grep -q .; then
+  echo "FAIL queued at jobs exist and require operator classification" >&2
+  failed=1
+else
+  echo "PASS no queued at jobs exist"
+fi
+
+if pgrep -u paperclip >/dev/null \
+  || pgrep -x gloops-runner >/dev/null \
+  || pgrep -x hermes-agent >/dev/null; then
+  echo "FAIL a Paperclip-related process exists" >&2
+  failed=1
+else
+  echo "PASS no Paperclip-related process exists"
+fi
+
+provider_config=(
+  /etc/paperclip-gloops
+  /usr/local/lib/systemd/system/paperclip-gloops.service
+  /etc/gloops-runner.env
+  /etc/hermes-agent.env
+  /root/.hermes/config.yaml
+  /root/.hermes/.env
+)
+existing_provider_config=()
+for path in "${provider_config[@]}"; do
+  [[ -e "${path}" ]] && existing_provider_config+=("${path}")
+done
+if ((${#existing_provider_config[@]} > 0)) \
+  && grep -RIEq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)=' "${existing_provider_config[@]}"; then
   echo "FAIL Grok/xAI API configuration is present" >&2
   failed=1
 else
   echo "PASS no Grok/xAI API configuration is present"
+fi
+
+if [[ -x /opt/grok-build/bin/grok ]]; then
+  echo "PASS governed Grok CLI is available outside the control-plane container"
+else
+  echo "FAIL governed Grok CLI is unavailable" >&2
+  failed=1
+fi
+
+if grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' /etc/paperclip-gloops/runtime.env \
+  && ! find /opt/paperclip/plugins -mindepth 1 -maxdepth 2 -type d -iname '*mte*' -print -quit | grep -q .; then
+  echo "PASS Maximum Token Efficiency remains default-off and uninstalled"
+else
+  echo "FAIL Maximum Token Efficiency is not provably default-off" >&2
+  failed=1
+fi
+
+unit_file='/usr/local/lib/systemd/system/paperclip-gloops.service'
+for required in \
+  '--read-only' \
+  '--cap-drop ALL' \
+  '--security-opt no-new-privileges:true' \
+  '--memory 1536m' \
+  '--memory-swap 1536m' \
+  '--cpus 2.0' \
+  '--pids-limit 512' \
+  '--log-opt max-size=10m' \
+  '--log-opt max-file=3'; do
+  if ! grep -Fq -- "${required}" "${unit_file}"; then
+    echo "FAIL missing resource/security bound: ${required}" >&2
+    failed=1
+  fi
+done
+if [[ "${failed}" -eq 0 ]]; then
+  echo "PASS resource and container-security bounds are installed"
 fi
 
 exit "${failed}"

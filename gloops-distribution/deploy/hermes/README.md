@@ -6,7 +6,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 
 - No Paperclip container, agent, heartbeat, routine, scheduler, or related timer is running.
 - The service cannot start without both an operator-created activation marker and an explicit unmask/enable action.
-- No host port is opened. Paperclip HTTP will bind to loopback only when a later pilot is approved.
+- Tailnet-only HTTPS 8443 is configured through Tailscale Serve without Funnel. While dark it returns an unavailable-backend response because no Paperclip container or loopback HTTP listener exists.
 - Grok/xAI API credentials are neither configured nor mounted. Any later Grok execution must use the separately governed Grok CLI path.
 - Installed Paperclip plugin packages are mounted read-only; provider credentials and host workspaces are not mounted.
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
@@ -14,7 +14,13 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 
 ## Install dark
 
-First capture and validate an offline rollback backup. Then run:
+First capture and validate an offline rollback backup while both Paperclip services are inactive:
+
+```bash
+sudo ./backup-dark.sh
+```
+
+Then run:
 
 ```bash
 sudo ./install-dark.sh
@@ -22,7 +28,7 @@ sudo ./install-dark.sh
 
 The installation succeeds only if `verify-dark.sh` proves that the service is masked, the activation marker is absent, no container or listener exists, and related services/timers remain inactive.
 
-Dark installation is not release-security acceptance. The 2026-07-13 Trivy inventory contains high/critical version matches that require a recorded reachability/fixability disposition. Several Paperclip application advisories match the stale `0.3.1` package metadata even though their repaired authorization paths and regression tests are present in this source and artifact; operating-system and bundled-tool findings remain separate. No pilot may activate this digest while any reachable, unmitigated critical finding remains unresolved.
+Release `2026.713.0-gloops.2` is accepted for a later bounded pilot, not proven by one. Its compiled control-plane runtime contains no coding-agent CLI or build/test toolchain. The exact digest's raw Trivy inventory contains 26 HIGH/CRITICAL occurrences (16 unique IDs): all four application CRITICAL matches and three application HIGH matches are stale `0.3.1` metadata for repaired source paths with named regression tests, while the two remaining operating-system CRITICAL matches are not affected because Archive::Tar is absent and the published runtimes are 64-bit. The versioned OpenVEX ledger preserves those dispositions without hiding the raw scan. There is no known reachable, unmitigated critical finding; remaining HIGH operating-system matches stay visible for continuing base-image maintenance. This security acceptance does not activate Paperclip or satisfy the separate quality-first SDLC pilot.
 
 ## Rollback evidence
 
@@ -40,7 +46,7 @@ Activation is not part of dark installation. A later operator-approved quality p
 
 1. pass the backup, release, and dark-state receipts;
 2. record the vulnerability reachability/fixability disposition and show no unmitigated activation-blocking finding;
-3. configure tailnet-only HTTPS on port 8443, with no Funnel exposure;
+3. re-verify tailnet-only HTTPS on port 8443, with no Funnel exposure;
 4. prove Maximum Token Efficiency remains default-off and remove or disable every Grok/xAI API configuration; later Grok work may use only the separately governed CLI path;
 5. create `/etc/paperclip-gloops/ACTIVATION_APPROVED` containing the approval receipt identifier;
 6. unmask and start `paperclip-gloops.service` explicitly;
