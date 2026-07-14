@@ -126,6 +126,7 @@ fi
 for required in \
   '--network paperclip-execution' \
   '--read-only' \
+  '--tmpfs /run:rw,nosuid,nodev,size=64m' \
   '--cap-drop ALL' \
   '--security-opt no-new-privileges:true' \
   '--memory 2048m' \
