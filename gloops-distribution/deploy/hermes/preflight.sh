@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:b7ab5a223aa2d98d83877dc9b8c2e775d4f5f3c4db408f6d9ec4b7caccb773e5'
+readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:9039376095314e0fd51ed7d853171be9f904555049a34dbedd7b8da9c04c3168'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
@@ -23,40 +23,24 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
   echo "Maximum Token Efficiency must remain explicitly disabled" >&2
   exit 1
 }
-[[ "${PAPERCLIP_EXECUTION_ADMISSION_ENABLED:-}" == 'true' ]] || {
-  echo "task execution admission must remain explicitly enabled" >&2
-  exit 1
-}
-for required_execution_ceiling in \
-  PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK \
-  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK \
-  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK \
-  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK \
-  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION \
-  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION \
-  PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION \
-  PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION; do
-  [[ "${!required_execution_ceiling:-}" =~ ^[1-9][0-9]*$ ]] || {
-    echo "${required_execution_ceiling} must be a positive integer" >&2
+readonly -A EXPECTED_EXECUTION_ENVELOPE=(
+  [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
+  [PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK]='1'
+  [PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK]='0'
+  [PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK]='50000'
+  [PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK]='16000'
+  [PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK]='3600000'
+  [PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION]='30000'
+  [PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION]='8000'
+  [PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION]='8'
+  [PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION]='32'
+)
+for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
+  [[ "${!execution_setting:-}" == "${EXPECTED_EXECUTION_ENVELOPE[${execution_setting}]}" ]] || {
+    echo "${execution_setting} has drifted from the accepted third-pilot envelope" >&2
     exit 1
   }
 done
-[[ "${PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK:-}" =~ ^(0|[1-9][0-9]*)$ ]] || {
-  echo "PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK must be a non-negative integer" >&2
-  exit 1
-}
-((PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK < PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK)) || {
-  echo "task retries must be lower than total task runs" >&2
-  exit 1
-}
-((PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION <= PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK)) || {
-  echo "per-invocation input ceiling exceeds task ceiling" >&2
-  exit 1
-}
-((PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION <= PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK)) || {
-  echo "per-invocation output ceiling exceeds task ceiling" >&2
-  exit 1
-}
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1
@@ -102,6 +86,11 @@ fi
 /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --live
 systemctl is-active --quiet paperclip-hermes-execution.service || {
   echo "the Hermes execution-only sidecar must be active before Paperclip" >&2
+  exit 1
+}
+docker exec --user 10000:10000 --env HOME=/opt/data paperclip-hermes-execution \
+  sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/paperclip --jq "select(.private == false and .permissions.push == true)" >/dev/null' || {
+  echo "the live Hermes identity lacks bounded write access to the public pilot repository" >&2
   exit 1
 }
 

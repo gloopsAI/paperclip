@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:b7ab5a223aa2d98d83877dc9b8c2e775d4f5f3c4db408f6d9ec4b7caccb773e5'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:9039376095314e0fd51ed7d853171be9f904555049a34dbedd7b8da9c04c3168'
 readonly HERMES_IMAGE='hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
@@ -39,6 +39,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-config.yaml" "${LIB_DIR}/hermes-execution-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${LIB_DIR}/hermes-execution-policy.json"
+install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gitconfig"
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
@@ -53,6 +54,7 @@ systemctl disable --now paperclip.service gloops-runner.service hermes-agent.ser
 systemctl disable --now paperclip-gloops.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
 systemctl mask paperclip-gloops.service paperclip-hermes-execution.service
+systemctl reset-failed paperclip-gloops.service paperclip-hermes-execution.service 2>/dev/null || true
 
 "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 

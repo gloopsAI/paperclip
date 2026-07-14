@@ -1,15 +1,22 @@
 {
   "schemaVersion": "gloops.hermes-execution-profile.v1",
   "profile": "paperclip-execution-only",
-  "allowedProviders": ["ollama-cloud", "openai-codex"],
+  "allowedProviders": ["ollama-cloud"],
   "allowedRuntimeEnvironment": ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"],
   "allowedCredentialEnvironment": ["API_SERVER_KEY", "OLLAMA_API_KEY"],
-  "forbiddenProviders": ["anthropic", "openrouter", "xai", "xai-oauth", "grok"],
+  "allowedCredentialFiles": ["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"],
+  "forbiddenProviders": ["anthropic", "openai-codex", "openrouter", "xai", "xai-oauth", "grok"],
   "forbiddenChannels": ["slack", "agentmail", "email", "telegram", "discord"],
   "grok": {
     "mode": "host-cli-only",
     "binary": "/opt/grok-build/bin/grok",
     "apiEnvironmentAllowed": false
+  },
+  "github": {
+    "principal": "zach-hermes",
+    "allowedRepositories": ["gloopsAI/paperclip"],
+    "minimumPermission": "push",
+    "credentialMount": "read-only"
   },
   "network": {
     "name": "paperclip-execution",
