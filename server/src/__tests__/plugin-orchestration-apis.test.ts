@@ -356,6 +356,15 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           actorRunId: mismatchedRunId,
         },
       })).rejects.toThrow("not bound to this issue");
+      await expect(trustedServices.issues.update({
+        issueId: issue.id,
+        companyId,
+        patch: {
+          status: "done",
+          executionTruthReceipt: executionTruthReceipt(issue.identifier),
+          actorRunId: runId,
+        },
+      })).rejects.toThrow("requires actorAgentId");
       const updated = await trustedServices.issues.update({
         issueId: issue.id,
         companyId,
@@ -738,6 +747,68 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         reason: "mission_advance",
       }),
     ).rejects.toThrow("Issue is blocked by unresolved blockers");
+  });
+
+  it("returns persisted run context size, usage, metrics, and route without inventing missing evidence", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const contextSnapshot = { issueId, objective: "bounded pilot" };
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Observed run",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      contextSnapshot,
+      startedAt: new Date("2026-07-14T19:00:00.000Z"),
+      finishedAt: new Date("2026-07-14T19:01:00.000Z"),
+      lastOutputAt: new Date("2026-07-14T19:00:50.000Z"),
+      usageJson: { inputTokens: 1_200, cachedInputTokens: 100, outputTokens: 300 },
+      resultJson: {
+        execution_metrics: { turns: 4, tool_calls: 9 },
+        execution_route: {
+          provider_id: "ollama",
+          model_id: "ollama/qwen",
+          transport: "api",
+          path_id: "ollama-cloud",
+        },
+      },
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const summary = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+
+    expect(summary.runs).toEqual([
+      expect.objectContaining({
+        id: runId,
+        contextInputBytes: Buffer.byteLength(JSON.stringify(contextSnapshot), "utf8"),
+        usage: { inputTokens: 1_200, cachedInputTokens: 100, outputTokens: 300 },
+        executionMetrics: { turns: 4, toolCalls: 9 },
+        route: {
+          providerId: "ollama",
+          modelId: "ollama/qwen",
+          transport: "api",
+          pathId: "ollama-cloud",
+        },
+      }),
+    ]);
+
+    await db.update(heartbeatRuns).set({
+      resultJson: {
+        execution_metrics: {},
+        execution_route: { provider_id: "ollama", path_id: "ollama-cloud" },
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    const missing = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(missing.runs[0]).toMatchObject({ executionMetrics: null, route: null });
   });
 
   it("narrows orchestration cost summaries by subtree and billing code", async () => {

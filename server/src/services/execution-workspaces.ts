@@ -647,6 +647,57 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   };
 }
 
+export type ExecutionWorkspaceGitObservation = {
+  observedAt: string;
+  state: "available" | "missing" | "unknown";
+  headSha: string | null;
+  changedAt: string | null;
+  digest: string | null;
+  dirty: boolean | null;
+};
+
+/**
+ * Inspect the realized workspace without mutating it. The digest binds the
+ * observed HEAD and complete porcelain status so a trusted plugin can compare
+ * host-observed workspace/Git truth with an independently observed PR head.
+ */
+export async function inspectExecutionWorkspaceGit(
+  workspace: Pick<ExecutionWorkspace, "providerRef" | "cwd">,
+): Promise<ExecutionWorkspaceGitObservation> {
+  const observedAt = new Date().toISOString();
+  const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+  if (!workspacePath || !(await pathExists(workspacePath))) {
+    return { observedAt, state: "missing", headSha: null, changedAt: null, digest: null, dirty: null };
+  }
+
+  try {
+    const [headResult, statusResult, changedResult] = await Promise.all([
+      runGit(["rev-parse", "HEAD"], workspacePath),
+      runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath),
+      runGit(["show", "-s", "--format=%cI", "HEAD"], workspacePath),
+    ]);
+    const headSha = headResult.stdout.trim().toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(headSha)) {
+      return { observedAt, state: "unknown", headSha: null, changedAt: null, digest: null, dirty: null };
+    }
+    const status = statusResult.stdout.replace(/\r\n/g, "\n");
+    const changedRaw = changedResult.stdout.trim();
+    const changedMs = Date.parse(changedRaw);
+    const changedAt = Number.isFinite(changedMs) ? new Date(changedMs).toISOString() : null;
+    const digest = `sha256:${createHash("sha256").update(`${headSha}\n${status}`).digest("hex")}`;
+    return {
+      observedAt,
+      state: "available",
+      headSha,
+      changedAt,
+      digest,
+      dirty: status.trim().length > 0,
+    };
+  } catch {
+    return { observedAt, state: "unknown", headSha: null, changedAt: null, digest: null, dirty: null };
+  }
+}
+
 export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> | null | undefined): ExecutionWorkspaceConfig | null {
   const raw = isRecord(metadata?.config) ? metadata.config : null;
   if (!raw) return null;

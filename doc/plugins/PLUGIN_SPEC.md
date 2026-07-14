@@ -705,6 +705,9 @@ Governance helpers:
 - `ctx.issues.assertCheckoutOwner({ issueId, companyId, actorAgentId, actorRunId })` lets plugin actions preserve agent-run checkout ownership.
 - `ctx.issues.requestWakeup(issueId, companyId, options)` requests assignment wakeups through host heartbeat semantics, including terminal-status, blocker, assignee, and budget hard-stop checks.
 - `ctx.issues.requestWakeups(issueIds, companyId, options)` applies the same host-owned wakeup semantics to a batch and may use an idempotency key prefix for stable coordinator retries.
+- Agent tools are callable only from an authenticated agent run, not a board session. They receive a host-bound `ToolRunContext`: the host matches `agentId` and `runId` to the authenticated agent JWT and derives `issueId` from the persisted run snapshot. A plugin must not accept a caller-supplied issue or execution identity as authority. Board-facing operations belong on scoped plugin actions or API routes, which carry their own actor context.
+- A plugin using `execution-truth.project` must provide both `actorAgentId` and `actorRunId`; the host atomically verifies that the persisted run belongs to that actor and target issue before accepting the transition.
+- Orchestration run summaries expose persisted usage, execution metrics, route evidence, and the byte length (not content) of the persisted run context. Execution-workspace reads include a host-observed Git head/status digest when the workspace is locally visible. These are host observations, not agent assertions; missing metrics or route fields remain unavailable rather than being projected as zero or a default transport.
 
 Plugin-originated issue, relation, document, comment, and wakeup mutations must write activity entries with `actorType: "plugin"` and details fields for `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
 
@@ -811,6 +814,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issue.relations.write`
 - `issues.checkout`
 - `issues.wakeup`
+- `execution-truth.project`
 - `activity.log.write`
 - `metrics.write`
 - `telemetry.track`

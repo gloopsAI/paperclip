@@ -581,8 +581,8 @@ describe.sequential("plugin tool and bridge authz", () => {
     }
   });
 
-  it("allows tool execution when agent, run, and project all belong to runContext.companyId", async () => {
-    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+  it("rejects board-session execution even when supplied references belong to one company", async () => {
+    const executeTool = vi.fn();
     const { app } = await createApp(boardActor(), {}, {
       db: createSelectQueueDb([
         [{ companyId: companyA }],
@@ -611,17 +611,9 @@ describe.sequential("plugin tool and bridge authz", () => {
         },
       });
 
-    expect(res.status).toBe(200);
-    expect(executeTool).toHaveBeenCalledWith(
-      "paperclip.example:search",
-      { q: "test" },
-      {
-        agentId: agentA,
-        runId: runA,
-        companyId: companyA,
-        projectId: projectA,
-      },
-    );
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("authenticated agent run");
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -964,7 +956,7 @@ describe.sequential("plugin tool and bridge authz", () => {
       {
         db: createSelectQueueDb([
           [{ companyId: companyA }],
-          [{ companyId: companyA, agentId: agentA }],
+          [{ companyId: companyA, agentId: agentA, contextSnapshot: { issueId: "issue-a" } }],
           [{ companyId: companyA }],
         ]),
         toolDeps: {
@@ -989,8 +981,100 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(executeTool).toHaveBeenCalledWith(
       "paperclip.example:search",
       { q: "test" },
-      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA, issueId: "issue-a" },
     );
+  });
+
+  it("rejects a caller-supplied issue that differs from the persisted run issue", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(
+      agentActor(),
+      {},
+      {
+        db: createSelectQueueDb([
+          [{ companyId: companyA }],
+          [{ companyId: companyA, agentId: agentA, contextSnapshot: { issueId: "issue-a" } }],
+          [{ companyId: companyA }],
+        ]),
+        toolDeps: {
+          toolDispatcher: {
+            listToolsForAgent: vi.fn(),
+            getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+            executeTool,
+          },
+        },
+      },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+          issueId: "issue-b",
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("persisted run issue");
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent JWT when runContext.agentId is a different same-company agent", async () => {
+    const otherAgent = "77777777-7777-4777-8777-777777777777";
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: otherAgent, runId: runA, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("authenticated agent");
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent JWT when runContext.runId is a different same-agent run", async () => {
+    const otherRun = "88888888-8888-4888-8888-888888888888";
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginDbId: pluginId })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: otherRun, companyId: companyA, projectId: projectA },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("authenticated run");
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
   it("rejects agent JWT when runContext.companyId is outside the agent's company scope", async () => {

@@ -31,7 +31,7 @@ import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
-import { executionWorkspaceService } from "./execution-workspaces.js";
+import { executionWorkspaceService, inspectExecutionWorkspaceGit } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
@@ -632,9 +632,9 @@ export function buildHostServices(
     return { ...rebuildMetadata.providerMetadata };
   };
 
-  const toPluginExecutionWorkspaceMetadata = (
+  const toPluginExecutionWorkspaceMetadata = async (
     workspace: NonNullable<Awaited<ReturnType<typeof executionWorkspaces.getById>>>,
-  ): PluginExecutionWorkspaceMetadata => ({
+  ): Promise<PluginExecutionWorkspaceMetadata> => ({
     id: workspace.id,
     companyId: workspace.companyId,
     projectId: workspace.projectId,
@@ -646,6 +646,7 @@ export function buildHostServices(
     branchName: workspace.branchName,
     providerType: workspace.providerType,
     providerMetadata: readProviderMetadata(workspace.metadata),
+    gitObservation: await inspectExecutionWorkspaceGit(workspace),
   });
 
   const requireInCompany = <T extends { companyId: string | null | undefined }>(
@@ -755,18 +756,65 @@ export function buildHostServices(
         finishedAt: heartbeatRuns.finishedAt,
         error: heartbeatRuns.error,
         createdAt: heartbeatRuns.createdAt,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        usageJson: heartbeatRuns.usageJson,
+        resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), inArray(issueIdExpr, issueIds), statusCondition))
       .orderBy(desc(heartbeatRuns.createdAt))
       .limit(100);
 
-    return rows.map((row) => ({
-      ...row,
-      startedAt: row.startedAt?.toISOString() ?? null,
-      finishedAt: row.finishedAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString(),
-    }));
+    return rows.map((row) => {
+      const usage = isRecord(row.usageJson) ? row.usageJson : {};
+      const result = isRecord(row.resultJson) ? row.resultJson : {};
+      const metrics = isRecord(result.execution_metrics) ? result.execution_metrics : null;
+      const route = isRecord(result.execution_route) ? result.execution_route : null;
+      const number = (value: unknown) => typeof value === "number" && Number.isFinite(value)
+        ? Math.max(0, Math.floor(value))
+        : 0;
+      const optionalNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value)
+        ? Math.max(0, Math.floor(value))
+        : null;
+      const turns = optionalNumber(metrics?.turns);
+      const toolCalls = optionalNumber(metrics?.tool_calls ?? metrics?.toolCalls);
+      const transport: "cli" | "api" | "local" | null = route?.transport === "cli" || route?.transport === "api" || route?.transport === "local"
+        ? route.transport
+        : null;
+      const contextInputBytes = Buffer.byteLength(JSON.stringify(row.contextSnapshot ?? null), "utf8");
+      return {
+        id: row.id,
+        issueId: row.issueId,
+        agentId: row.agentId,
+        status: row.status,
+        invocationSource: row.invocationSource,
+        triggerDetail: row.triggerDetail,
+        error: row.error,
+        startedAt: row.startedAt?.toISOString() ?? null,
+        finishedAt: row.finishedAt?.toISOString() ?? null,
+        createdAt: row.createdAt.toISOString(),
+        lastOutputAt: row.lastOutputAt?.toISOString() ?? null,
+        contextInputBytes,
+        usage: {
+          inputTokens: number(usage.inputTokens ?? usage.input_tokens),
+          cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),
+          outputTokens: number(usage.outputTokens ?? usage.output_tokens),
+        },
+        executionMetrics: metrics && turns !== null && toolCalls !== null ? { turns, toolCalls } : null,
+        route: route
+          && typeof route.provider_id === "string"
+          && typeof route.path_id === "string"
+          && transport
+          ? {
+              providerId: route.provider_id,
+              modelId: typeof route.model_id === "string" ? route.model_id : null,
+              transport,
+              pathId: route.path_id,
+            }
+          : null,
+      };
+    });
   };
 
   const setBlockedByWithActivity = async (params: {
@@ -1470,7 +1518,7 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const workspace = await executionWorkspaces.getById(params.workspaceId);
         if (inCompany(workspace, companyId)) {
-          return toPluginExecutionWorkspaceMetadata(workspace);
+          return await toPluginExecutionWorkspaceMetadata(workspace);
         }
         return null;
       },
@@ -1608,6 +1656,7 @@ export function buildHostServices(
             throw new Error("Plugin lacks execution-truth.project capability");
           }
           if (!actorRunId) throw new Error("Trusted execution-truth projection requires actorRunId");
+          if (!actorAgentId) throw new Error("Trusted execution-truth projection requires actorAgentId");
           const decision = evaluateExecutionTruthTransition({
             transition: governedTransition,
             workId: existing.identifier ?? existing.id,
@@ -1635,7 +1684,7 @@ export function buildHostServices(
             if (runContext.issueId !== existing.id) {
               throw new Error("Trusted execution-truth projection run is not bound to this issue");
             }
-            if (actorAgentId && run.agentId !== actorAgentId) {
+            if (run.agentId !== actorAgentId) {
               throw new Error("Trusted execution-truth projection actor does not own this run");
             }
             await tx.update(heartbeatRuns).set({

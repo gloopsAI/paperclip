@@ -748,6 +748,32 @@ describe("testEnvironment", () => {
 });
 
 describe("mapFinalResultForTest", () => {
+  it("persists independently consumable execution-route and invocation metrics", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "completed",
+        payload: {
+          status: "completed",
+          model: "ollama/qwen3-coder",
+          usage: { input_tokens: 1200, output_tokens: 300 },
+        },
+      },
+      outputChunks: ["done"],
+      sessionKey: "session-key",
+      strategy: "issue",
+      toolCallCount: 7,
+    });
+
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 8, tool_calls: 7 });
+    expect(result.resultJson?.execution_route).toEqual({
+      provider_id: "ollama",
+      model_id: "ollama/qwen3-coder",
+      transport: "api",
+      path_id: "ollama-cloud",
+    });
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {

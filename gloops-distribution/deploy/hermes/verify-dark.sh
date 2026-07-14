@@ -193,7 +193,8 @@ for required in \
   '--cpus 2.0' \
   '--pids-limit 512' \
   '--log-opt max-size=10m' \
-  '--log-opt max-file=3'; do
+  '--log-opt max-file=3' \
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace,readonly'; do
   if ! grep -Fq -- "${required}" "${unit_file}"; then
     echo "FAIL missing resource/security bound: ${required}" >&2
     failed=1
@@ -201,6 +202,13 @@ for required in \
 done
 if [[ "${failed}" -eq 0 ]]; then
   echo "PASS resource and container-security bounds are installed"
+fi
+
+if [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/workspace 2>/dev/null || true)" == '750:10000:985' ]]; then
+  echo "PASS host execution workspace is readable only by the Paperclip observer group"
+else
+  echo "FAIL host execution workspace observation permissions are not bounded" >&2
+  failed=1
 fi
 
 if /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source; then

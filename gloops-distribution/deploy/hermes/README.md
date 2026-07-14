@@ -8,7 +8,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - The service cannot start without both an operator-created activation marker and an explicit unmask/enable action.
 - Tailnet-only HTTPS 8443 is configured through Tailscale Serve without Funnel. While dark it returns an unavailable-backend response because no Paperclip container or loopback HTTP listener exists.
 - Grok/xAI API credentials are neither configured nor mounted. Any later Grok execution must use the separately governed Grok CLI path.
-- Installed Paperclip plugin packages are mounted read-only; provider credentials and host workspaces are not mounted.
+- Installed Paperclip plugin packages are mounted read-only. Provider credentials are never mounted. The Hermes execution workspace alone is mounted read-only so Paperclip can independently observe Git HEAD and dirtiness; all other Hermes state remains inaccessible.
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
 - A claim-time task execution gate applies one atomic run, retry, token, and wall-time budget across scheduler, continuation, and recovery paths. An exhausted task is terminally denied before adapter invocation; only an explicit user-authored reset epoch opens a new budget.
