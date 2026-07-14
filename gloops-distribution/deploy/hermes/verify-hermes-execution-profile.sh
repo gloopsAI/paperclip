@@ -177,6 +177,21 @@ if [[ "${MODE}" == '--live' ]]; then
     else
       fail 'live authenticated API boundary is not healthy'
     fi
+    if docker exec -i "${CONTAINER}" python - <<'PY'
+import urllib.error
+import urllib.request
+
+try:
+    urllib.request.urlopen("http://127.0.0.1:8642/v1/models", timeout=3)
+except urllib.error.HTTPError as error:
+    raise SystemExit(0 if error.code == 401 else 1)
+raise SystemExit(1)
+PY
+    then
+      pass 'live API rejects unauthenticated execution-plane access'
+    else
+      fail 'live API does not reject unauthenticated execution-plane access'
+    fi
   fi
 fi
 

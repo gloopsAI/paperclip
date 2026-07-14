@@ -242,6 +242,7 @@ for (const required of [
   "--security-opt no-new-privileges:true",
   "--env-file /etc/paperclip-gloops/hermes-execution.env",
   "--health-cmd",
+  "http://127.0.0.1:8642/v1/models",
   "--memory 2048m",
   "--memory-swap 2048m",
   "--cpus 2.0",
@@ -302,6 +303,7 @@ for (const required of [
   "credential pool is limited to Ollama Cloud and Codex subscription",
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
+  "live API rejects unauthenticated execution-plane access",
   "Grok is host-CLI-only with no API configuration",
 ]) {
   if (!verifyHermesExecution.includes(required)) {
