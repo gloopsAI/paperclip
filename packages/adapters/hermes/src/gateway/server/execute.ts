@@ -716,6 +716,7 @@ export function mapFinalResultForTest(input: {
   outputChunks: string[];
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
+  toolCallCount?: number;
   redactText?: TextRedactor;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
@@ -729,6 +730,8 @@ export function mapFinalResultForTest(input: {
   const payloadErrorCode = nonEmpty((payload as Record<string, unknown>).error_code);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const model = extractModel(payload);
+  const toolCallCount = Math.max(0, Math.floor(input.toolCallCount ?? 0));
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -737,7 +740,7 @@ export function mapFinalResultForTest(input: {
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
-    model: extractModel(payload),
+    model,
     ...(mapped.errorCode ? { errorCode: payloadErrorCode ?? mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
@@ -758,6 +761,16 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      execution_metrics: {
+        tool_calls: toolCallCount,
+        turns: toolCallCount + 1,
+      },
+      execution_route: {
+        provider_id: model?.includes("/") ? model.split("/", 1)[0] : "hermes",
+        model_id: model,
+        transport: "api",
+        path_id: model?.includes("/") ? `${model.split("/", 1)[0]}-cloud` : "hermes-gateway",
+      },
     },
   };
 }
@@ -1036,6 +1049,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
+    toolCallCount: state.toolCallCount,
     redactText,
   });
 }

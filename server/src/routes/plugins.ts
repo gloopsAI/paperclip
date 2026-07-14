@@ -747,26 +747,33 @@ export function pluginRoutes(
     return companyId === undefined ? base : { ...base, companyId };
   }
 
-  async function validateToolRunContextScope(runContext: ToolRunContext): Promise<string | null> {
+  async function validateToolRunContextScope(runContext: ToolRunContext): Promise<{
+    error: string | null;
+    issueId: string | null;
+  }> {
     const [agent] = await db
       .select({ companyId: agents.companyId })
       .from(agents)
       .where(eq(agents.id, runContext.agentId))
       .limit(1);
     if (!agent || agent.companyId !== runContext.companyId) {
-      return '"runContext.agentId" does not belong to "runContext.companyId"';
+      return { error: '"runContext.agentId" does not belong to "runContext.companyId"', issueId: null };
     }
 
     const [run] = await db
-      .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runContext.runId))
       .limit(1);
     if (!run || run.companyId !== runContext.companyId) {
-      return '"runContext.runId" does not belong to "runContext.companyId"';
+      return { error: '"runContext.runId" does not belong to "runContext.companyId"', issueId: null };
     }
     if (run.agentId !== runContext.agentId) {
-      return '"runContext.runId" does not belong to "runContext.agentId"';
+      return { error: '"runContext.runId" does not belong to "runContext.agentId"', issueId: null };
     }
 
     const [project] = await db
@@ -775,10 +782,20 @@ export function pluginRoutes(
       .where(eq(projects.id, runContext.projectId))
       .limit(1);
     if (!project || project.companyId !== runContext.companyId) {
-      return '"runContext.projectId" does not belong to "runContext.companyId"';
+      return { error: '"runContext.projectId" does not belong to "runContext.companyId"', issueId: null };
     }
 
-    return null;
+    const snapshot = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : {};
+    const issueId = typeof snapshot.issueId === "string" && snapshot.issueId.length > 0
+      ? snapshot.issueId
+      : null;
+    if (runContext.issueId && runContext.issueId !== issueId) {
+      return { error: '"runContext.issueId" does not match the persisted run issue', issueId };
+    }
+
+    return { error: null, issueId };
   }
 
   /**
@@ -974,12 +991,34 @@ export function pluginRoutes(
       return;
     }
 
-    assertCompanyAccess(req, runContext.companyId);
-    const scopeError = await validateToolRunContextScope(runContext);
-    if (scopeError) {
-      res.status(403).json({ error: scopeError });
+    // Agent tools are execution surfaces, not board-session actions. Company
+    // membership alone cannot authorize a caller to impersonate a valid run.
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Plugin agent tools require an authenticated agent run" });
       return;
     }
+    if (!req.actor.agentId || req.actor.agentId !== runContext.agentId) {
+      res.status(403).json({ error: '"runContext.agentId" does not match the authenticated agent' });
+      return;
+    }
+    if (!req.actor.runId || req.actor.runId !== runContext.runId) {
+      res.status(403).json({ error: '"runContext.runId" does not match the authenticated run' });
+      return;
+    }
+
+    assertCompanyAccess(req, runContext.companyId);
+    const scope = await validateToolRunContextScope(runContext);
+    if (scope.error) {
+      res.status(403).json({ error: scope.error });
+      return;
+    }
+    const boundRunContext: ToolRunContext = {
+      agentId: runContext.agentId,
+      runId: runContext.runId,
+      companyId: runContext.companyId,
+      projectId: runContext.projectId,
+      ...(scope.issueId ? { issueId: scope.issueId } : {}),
+    };
 
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
@@ -992,7 +1031,7 @@ export function pluginRoutes(
       const result = await toolDeps.toolDispatcher.executeTool(
         tool,
         parameters ?? {},
-        runContext,
+        boundRunContext,
       );
       res.json(result);
     } catch (err) {

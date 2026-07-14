@@ -254,6 +254,8 @@ export interface ToolRunContext {
   companyId: string;
   /** UUID of the project the run belongs to. */
   projectId: string;
+  /** Issue UUID derived by the host from the persisted run context, when present. */
+  issueId?: string;
 }
 
 /**
@@ -408,6 +410,18 @@ export interface PluginExecutionWorkspaceMetadata {
   providerType: string | null;
   /** Provider metadata already safe for plugin consumption. */
   providerMetadata: Record<string, unknown> | null;
+  /**
+   * Host-observed, read-only Git evidence. This is produced by Paperclip from
+   * the realized workspace and is not copied from an agent result.
+   */
+  gitObservation?: {
+    observedAt: string;
+    state: "available" | "missing" | "unknown";
+    headSha: string | null;
+    changedAt: string | null;
+    digest: string | null;
+    dirty: boolean | null;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1212,6 +1226,24 @@ export interface PluginIssueRunSummary {
   finishedAt: string | null;
   error: string | null;
   createdAt: string;
+  lastOutputAt?: string | null;
+  /** UTF-8 byte length of the persisted run context snapshot; content is not exposed. */
+  contextInputBytes?: number;
+  usage?: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+  };
+  executionMetrics?: {
+    turns: number;
+    toolCalls: number;
+  } | null;
+  route?: {
+    providerId: string;
+    modelId: string | null;
+    transport: "cli" | "api" | "local";
+    pathId: string;
+  } | null;
 }
 
 export interface PluginIssueApprovalSummary {

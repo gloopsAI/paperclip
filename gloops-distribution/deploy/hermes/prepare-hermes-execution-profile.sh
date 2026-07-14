@@ -23,9 +23,13 @@ done
 docker image inspect "${IMAGE}" >/dev/null
 
 install -d -m 0700 -o root -g root "${PROFILE_DIR}" "${STATE_DIR}" "${CONFIG_DIR}"
-for path in cache logs memories sessions workspace; do
+for path in cache logs memories sessions; do
   install -d -m 0700 -o root -g root "${STATE_DIR}/${path}"
 done
+# Paperclip observes this tree read-only as uid:gid 995:985. Hermes owns the
+# writable side as uid 10000. The shared group can traverse the bind-mount root
+# without exposing any credential-bearing state directory.
+install -d -m 0750 -o 10000 -g 985 "${STATE_DIR}/workspace"
 
 tmp_env="$(mktemp "${CONFIG_DIR}/.hermes-execution.env.XXXXXX")"
 tmp_auth="$(mktemp "${PROFILE_DIR}/.auth.json.XXXXXX")"
