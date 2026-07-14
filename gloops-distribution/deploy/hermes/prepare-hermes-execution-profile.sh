@@ -109,8 +109,8 @@ jq '{
 }' "${SOURCE_AUTH}" >"${tmp_auth}"
 
 install -m 0600 -o root -g root "${tmp_env}" "${RUNTIME_ENV}"
-install -m 0600 -o root -g root "${tmp_auth}" "${PROFILE_DIR}/auth.json"
-install -m 0600 -o root -g root "${LIB_DIR}/hermes-execution-config.yaml" "${PROFILE_DIR}/config.yaml"
+install -m 0600 -o 10000 -g 10000 "${tmp_auth}" "${PROFILE_DIR}/auth.json"
+install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-config.yaml" "${PROFILE_DIR}/config.yaml"
 install -m 0600 -o root -g root "${LIB_DIR}/hermes-execution-policy.json" "${PROFILE_DIR}/policy.json"
 rm -f "${PROFILE_DIR}/.env" "${STATE_DIR}/.env" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 
