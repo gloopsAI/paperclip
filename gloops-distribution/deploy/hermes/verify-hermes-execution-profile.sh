@@ -114,7 +114,7 @@ for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
 done
 mapfile -t profile_entries < <(find "${PROFILE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)
 if [[ "${profile_entries[*]}" == 'auth.json config.yaml gh gitconfig policy.json' ]] \
-  && [[ "$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null)" == 'hosts.yml' ]]; then
+  && [[ "$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | paste -sd ' ' -)" == 'config.yml hosts.yml' ]]; then
   pass 'execution profile contains only declared credential and policy artifacts'
 else
   fail "execution profile contains undeclared artifacts: ${profile_entries[*]:-none}"
@@ -128,6 +128,8 @@ for protected_file in "${RUNTIME_ENV}" "${PROFILE_DIR}/policy.json"; do
 done
 if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == '600:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh" 2>/dev/null || true)" == '500:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/config.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gitconfig" 2>/dev/null || true)" == '400:10000:10000' ]]; then
   pass 'runtime profile is readable only by the fixed Hermes identity'

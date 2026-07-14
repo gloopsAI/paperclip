@@ -40,6 +40,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.s
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-config.yaml" "${LIB_DIR}/hermes-execution-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${LIB_DIR}/hermes-execution-policy.json"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gitconfig"
+install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gh-config.yml" "${LIB_DIR}/hermes-execution-gh-config.yml"
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service

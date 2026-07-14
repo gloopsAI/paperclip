@@ -44,6 +44,10 @@ const hermesExecutionPolicyPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-execution-policy.json",
   import.meta.url,
 );
+const hermesExecutionGhConfigPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-execution-gh-config.yml",
+  import.meta.url,
+);
 const hermesExecutionServicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-hermes-execution.service",
   import.meta.url,
@@ -67,6 +71,7 @@ const verifyDark = readFileSync(verifyDarkPath, "utf8");
 const rollback = readFileSync(rollbackPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
+const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
 const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
@@ -217,6 +222,9 @@ if (
 ) {
   fail("Hermes third-pilot GitHub credential and no-fallback boundary is not exact");
 }
+if (hermesExecutionGhConfig !== 'version: "1"\n') {
+  fail("Hermes GitHub CLI config must be deterministic and contain no mutable settings");
+}
 if (
   hermesExecutionPolicy.grok?.mode !== "host-cli-only" ||
   hermesExecutionPolicy.grok?.apiEnvironmentAllowed !== false
@@ -283,6 +291,7 @@ for (const required of [
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
   "hermes-execution-gitconfig",
+  "hermes-execution-gh-config.yml",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
   "pre-provisioned immutable Hermes execution image is missing",
 ]) {
@@ -315,6 +324,7 @@ for (const required of [
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
   'base_url == "https://ollama.com/v1"',
   "GitHub credential is not the dedicated zach-hermes identity",
+  'chmod 0500 "${PROFILE_DIR}/gh"',
 ]) {
   if (!prepareHermesExecution.includes(required)) {
     fail(`Hermes profile preparation is missing ${required}`);
