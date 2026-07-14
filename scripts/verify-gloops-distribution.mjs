@@ -119,6 +119,9 @@ if (!gloopsStage) {
   if (!/ARG USER_UID=995\s+ARG USER_GID=985/.test(gloopsStage[1])) {
     fail("gloops-production image identity must match the Hermes runtime UID/GID");
   }
+  if (!/apt-get install[^\n]+locales/.test(gloopsStage[1]) || !/locale-gen en_US\.UTF-8/.test(gloopsStage[1])) {
+    fail("gloops-production must include the locale required by restored embedded Postgres clusters");
+  }
 }
 if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
   fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");

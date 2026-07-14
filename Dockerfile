@@ -121,7 +121,9 @@ ARG USER_GID=985
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates locales \
+  && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+  && locale-gen en_US.UTF-8 \
   && rm -rf /var/lib/apt/lists/* \
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
@@ -134,6 +136,8 @@ RUN apt-get update \
 COPY --chown=node:node --from=build /runtime /app
 
 ENV NODE_ENV=production \
+  LANG=en_US.UTF-8 \
+  LC_ALL=en_US.UTF-8 \
   HOME=/paperclip \
   HOST=0.0.0.0 \
   PORT=3100 \
