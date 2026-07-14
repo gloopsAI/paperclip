@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "gloops.hermes-execution-profile.v1",
+  "profile": "paperclip-execution-only",
+  "allowedProviders": ["ollama-cloud", "openai-codex"],
+  "allowedRuntimeEnvironment": ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"],
+  "allowedCredentialEnvironment": ["API_SERVER_KEY", "OLLAMA_API_KEY"],
+  "forbiddenProviders": ["anthropic", "openrouter", "xai", "xai-oauth", "grok"],
+  "forbiddenChannels": ["slack", "agentmail", "email", "telegram", "discord"],
+  "grok": {
+    "mode": "host-cli-only",
+    "binary": "/opt/grok-build/bin/grok",
+    "apiEnvironmentAllowed": false
+  },
+  "network": {
+    "name": "paperclip-execution",
+    "apiAlias": "hermes-execution",
+    "apiPort": 8642,
+    "apiAuthentication": "bearer-key-required",
+    "publishedPorts": [],
+    "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
+  },
+  "runtime": {
+    "image": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
+    "imageAcquisition": "preprovisioned-local-digest",
+    "broadHomeMounted": false,
+    "broadEnvironmentSourcedAtRuntime": false,
+    "rootHomeEphemeral": true,
+    "persistentPaths": ["cache", "logs", "memories", "sessions", "workspace"]
+  }
+}

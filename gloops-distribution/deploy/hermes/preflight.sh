@@ -73,6 +73,12 @@ fi
   exit 1
 }
 
+/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --live
+systemctl is-active --quiet paperclip-hermes-execution.service || {
+  echo "the Hermes execution-only sidecar must be active before Paperclip" >&2
+  exit 1
+}
+
 [[ -d "${STATE_DIR}" ]] || {
   echo "Paperclip state directory is missing" >&2
   exit 1

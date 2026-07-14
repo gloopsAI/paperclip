@@ -50,6 +50,42 @@ Publishing an image does not activate Paperclip. Production restart, schedules,
 heartbeats, agent wakes, provider credentials, MTE activation, and live mutation
 remain separate operator-controlled actions.
 
+## Hermes execution-only profile
+
+The Paperclip control plane and Hermes execution plane are separate containers
+on the named `paperclip-execution` Docker network. Hermes exposes its
+authenticated API only as `hermes-execution:8642` on that network and publishes
+no host port. Paperclip retains only the loopback-published UI/API port.
+
+The dark installer compiles a root-owned Hermes profile from an explicit
+allowlist. Runtime access is limited to Ollama Cloud subscription credentials,
+the Hermes API boundary key, and the sanitized Codex subscription credential
+pool. The broad host Hermes home is never mounted or sourced at runtime. Slack,
+AgentMail, email, Anthropic/OpenRouter, and Grok/xAI API credentials are absent.
+Grok remains a separately governed host CLI and is never represented as an API
+provider in this profile.
+
+The current Hermes artifact is a host-provisioned image pinned by local content
+digest, not a registry image. The installer verifies that exact digest before
+making any filesystem or systemd change and fails closed if it is absent. Image
+provisioning therefore remains an explicit host bootstrap responsibility rather
+than an undeclared network pull or mutable-tag dependency.
+
+The Docker network permits ordinary outbound transport; provider restriction is
+enforced by credential capability rather than an egress proxy. This limitation
+is explicit so the profile does not claim network isolation it does not provide.
+
+Activation is deliberately two-step and is not performed by installation:
+
+1. an operator unmasks and starts `paperclip-hermes-execution.service` with its
+   dedicated approval marker;
+2. the Paperclip preflight verifies that exact live sidecar before Paperclip can
+   start under its separate approval marker.
+
+Both services remain masked and both markers absent after a dark install. The
+rollback path removes the sidecar profile, credentials, state, and network while
+leaving all Paperclip services dark.
+
 Verify the local checkout with:
 
 ```sh
