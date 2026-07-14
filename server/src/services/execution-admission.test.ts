@@ -14,6 +14,10 @@ const enabledEnv = {
   PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "1000",
   PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "200",
   PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "60000",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "400",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "100",
+  PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "6",
+  PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "24",
 };
 
 function policy() {
@@ -89,6 +93,13 @@ describe("execution admission", () => {
     })).toThrow("only valid on a user-requested wake");
 
     expect(readExecutionAdmissionEnvelope(parent)).toEqual(parent);
+    expect(parent.reservation).toMatchObject({
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      maxInputTokens: 400,
+      maxOutputTokens: 100,
+      maxTurns: 6,
+      maxToolCalls: 24,
+    });
     expect(readExecutionAdmissionEnvelope({ ...parent, policyDigest: "forged" })).toBeNull();
     expect(readExecutionAdmissionEnvelope({ ...parent, observed: { ...parent.observed, runCount: -1 } })).toBeNull();
   });

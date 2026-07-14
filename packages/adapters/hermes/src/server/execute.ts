@@ -37,6 +37,13 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  assertPromptFitsInvocationBudget,
+  hasProhibitedGrokApiConfiguration,
+  readBoundExecutionContext,
+  renderBoundExecutionContext,
+} from "@paperclipai/adapter-utils/execution-envelope";
 
 import {
   HERMES_CLI,
@@ -329,12 +336,29 @@ export async function execute(
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
   const model = cfgString(config.model) || DEFAULT_MODEL;
-  const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
+  const configuredTimeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
+  const timeoutSec = ctx.executionBudget
+    ? Math.max(1, Math.min(configuredTimeoutSec, Math.ceil(ctx.executionBudget.maxWallMs / 1000)))
+    : configuredTimeoutSec;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
-  const maxTurns = cfgNumber(config.maxTurnsPerRun);
+  const configuredMaxTurns = cfgNumber(config.maxTurnsPerRun);
+  const maxTurns = ctx.executionBudget
+    ? Math.min(configuredMaxTurns && configuredMaxTurns > 0 ? configuredMaxTurns : ctx.executionBudget.maxTurns, ctx.executionBudget.maxTurns)
+    : configuredMaxTurns;
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
-  const persistSession = cfgBoolean(config.persistSession) !== false;
+  const rawBinding = ctx.context[PAPERCLIP_EXECUTION_CONTEXT_KEY];
+  const boundExecutionContext = readBoundExecutionContext(rawBinding);
+  if (rawBinding !== undefined && rawBinding !== null && !boundExecutionContext) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_context.invalid_binding",
+      errorMessage: "Bound execution context failed validation before provider dispatch.",
+    };
+  }
+  const persistSession = !boundExecutionContext && cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
   const prevSessionId = cfgString(
@@ -371,6 +395,19 @@ export async function execute(
     detectedApiMode: detectedConfig?.apiMode,
     model,
   });
+  if (hasProhibitedGrokApiConfiguration({
+    adapterConfig: config,
+    resolvedProvider,
+    detectedConfig,
+  })) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_route.prohibited_grok_api",
+      errorMessage: "Grok/xAI API configuration is forbidden before Hermes dispatch.",
+    };
+  }
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
   // Paperclip can materialize managed instructions into instructionsFilePath;
@@ -400,9 +437,22 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
-  if (agentInstructions) {
+  let prompt = boundExecutionContext
+    ? renderBoundExecutionContext(boundExecutionContext)
+    : buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
+  if (agentInstructions && !boundExecutionContext) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
+  }
+  try {
+    assertPromptFitsInvocationBudget(prompt, ctx.executionBudget);
+  } catch (error) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: (error as { code?: string }).code ?? "execution_admission.input_reservation_exceeded",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
   }
 
   // ── Build command args ─────────────────────────────────────────────────
@@ -461,6 +511,9 @@ export async function execute(
   };
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
+  if (ctx.executionBudget) {
+    env.PAPERCLIP_EXECUTION_BUDGET_JSON = JSON.stringify(ctx.executionBudget);
+  }
 
   // BUG FIX: Inject authToken as PAPERCLIP_API_KEY (matches adapter-claude-local behavior)
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;

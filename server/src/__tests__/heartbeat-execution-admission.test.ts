@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { inArray } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -19,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
+const mockAdapterState = vi.hoisted(() => ({ supportsBudget: true, includeUsage: true }));
 const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
   signal: null,
@@ -27,6 +28,9 @@ const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
   summary: "Execution admission integration run.",
   provider: "test",
   model: "test-model",
+  ...(mockAdapterState.includeUsage
+    ? { usage: { inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 100 } }
+    : {}),
 })));
 
 vi.mock("../adapters/index.js", async () => {
@@ -35,6 +39,7 @@ vi.mock("../adapters/index.js", async () => {
     ...actual,
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
+      supportsExecutionBudget: mockAdapterState.supportsBudget,
       execute: mockAdapterExecute,
     })),
   };
@@ -50,7 +55,12 @@ async function waitForTerminalRuns(db: ReturnType<typeof createDb>, ids: string[
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(inArray(heartbeatRuns.id, ids));
-    if (rows.length === ids.length && rows.every((row) => !["queued", "running"].includes(row.status))) return;
+    if (rows.length === ids.length && rows.every((row) => !["queued", "running"].includes(row.status))) {
+      // Terminal status is persisted immediately before the final lifecycle
+      // event. Let that receipt settle so database cleanup cannot race it.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error("execution admission runs did not reach terminal states");
@@ -69,6 +79,10 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "100000",
       PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "10000",
       PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "600000",
+      PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "30000",
+      PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "5000",
+      PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "8",
+      PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "32",
     });
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-admission-");
     db = createDb(tempDb.connectionString);
@@ -77,6 +91,12 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
   afterAll(async () => {
     process.env = previousEnv;
     await tempDb?.cleanup();
+  });
+
+  afterEach(() => {
+    mockAdapterState.supportsBudget = true;
+    mockAdapterState.includeUsage = true;
+    mockAdapterExecute.mockClear();
   });
 
   it("serializes direct recovery claims and invokes only the remaining allowed attempt", async () => {
@@ -160,10 +180,6 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
 
     await heartbeatService(db).resumeQueuedRuns();
     await waitForTerminalRuns(db, contenderRunIds);
-    // Terminal status is persisted immediately before the final lifecycle
-    // event; let the executor finish that receipt before the database closes.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
     const rows = await db
       .select({
         status: heartbeatRuns.status,
@@ -179,5 +195,61 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       const admission = row.contextSnapshot?.gloopsExecutionAdmission as { budgetId?: string } | undefined;
       return admission?.budgetId === `run:${parentRunId}:default`;
     })).toBe(true);
+  });
+
+  async function seedDirectAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Direct Admission Test",
+      issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "operator",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "DirectAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  it("refuses an adapter that cannot enforce the provider reservation", async () => {
+    mockAdapterState.supportsBudget = false;
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.errorCode).toBe("execution_admission.adapter_budget_unsupported");
+  });
+
+  it("fails closed when a supported adapter completes without usage reconciliation", async () => {
+    mockAdapterState.includeUsage = false;
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.errorCode).toBe("execution_admission.usage_missing");
+    expect(persisted?.usageJson).toMatchObject({
+      inputTokens: 30_000,
+      cachedInputTokens: 0,
+      outputTokens: 5_000,
+      usageSource: "reservation_fallback",
+    });
   });
 });

@@ -1391,6 +1391,8 @@ export interface PluginIssuesClient {
       blockedByIssueIds?: string[];
       labelIds?: string[];
       executionWorkspaceSettings?: Record<string, unknown> | null;
+      /** Trusted execution-truth projection. Requires `execution-truth.project`. */
+      executionTruthReceipt?: Record<string, unknown> | null;
     },
     companyId: string,
     actor?: PluginIssueMutationActor,

@@ -87,6 +87,10 @@ import {
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+import {
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  evaluateExecutionTruthTransition,
+} from "@paperclipai/adapter-utils/execution-envelope";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
@@ -184,6 +188,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { parseExecutionAdmissionPolicy } from "../services/execution-admission.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -5434,6 +5439,34 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+    if (req.actor.type === "agent" && parseExecutionAdmissionPolicy().enabled &&
+        (sourceIssueStatus === "in_review" || sourceIssueStatus === "done")) {
+      const runId = req.actor.runId?.trim();
+      if (!runId) {
+        throw unprocessable("Execution-truth transition requires X-Paperclip-Run-Id", {
+          code: "run_id_required",
+        });
+      }
+      const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, existing.companyId)))
+        .then((rows) => rows[0] ?? null);
+      const trustedReceipt = run?.contextSnapshot && typeof run.contextSnapshot === "object"
+        ? (run.contextSnapshot as Record<string, unknown>)[PAPERCLIP_EXECUTION_RECEIPT_KEY]
+        : null;
+      const decision = evaluateExecutionTruthTransition({
+        transition: sourceIssueStatus === "in_review" ? "ready" : "completed",
+        workId: existing.identifier ?? existing.id,
+        receipt: trustedReceipt,
+      });
+      if (!decision.allowed) {
+        throw unprocessable("Execution-truth recovery transition denied", {
+          code: "execution_truth_transition_denied",
+          transition: sourceIssueStatus,
+          reason: decision.reason,
+        });
+      }
+    }
     await assertAgentInReviewReviewPath({
       existing,
       updateFields,
@@ -7565,9 +7598,52 @@ export function issueRoutes(
       reopen: reopenRequested,
       resume: resumeRequested,
       interrupt: interruptRequested,
+      executionTruthReceipt,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (req.actor.type === "agent" && parseExecutionAdmissionPolicy().enabled) {
+      const transition = updateFields.status === "in_review"
+        ? "ready"
+        : updateFields.status === "done"
+          ? "completed"
+          : executionTruthReceipt
+            ? "retry"
+            : null;
+      if (transition) {
+        if (executionTruthReceipt !== undefined && executionTruthReceipt !== null) {
+          throw unprocessable("Agents cannot self-attest execution truth", {
+            code: "trusted_execution_truth_projector_required",
+          });
+        }
+        const runId = req.actor.runId?.trim();
+        if (!runId) {
+          throw unprocessable("Execution-truth transition requires X-Paperclip-Run-Id", {
+            code: "run_id_required",
+          });
+        }
+        const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, existing.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (!run) throw unprocessable("Execution-truth receipt run was not found", { code: "run_not_found" });
+        const trustedReceipt = run.contextSnapshot && typeof run.contextSnapshot === "object"
+          ? (run.contextSnapshot as Record<string, unknown>)[PAPERCLIP_EXECUTION_RECEIPT_KEY]
+          : null;
+        const decision = evaluateExecutionTruthTransition({
+          transition,
+          workId: existing.identifier ?? existing.id,
+          receipt: trustedReceipt,
+        });
+        if (!decision.allowed) {
+          throw unprocessable("Execution-truth transition denied", {
+            code: "execution_truth_transition_denied",
+            transition,
+            reason: decision.reason,
+          });
+        }
+      }
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {

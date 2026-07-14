@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { ExecutionInvocationBudget } from "./execution-envelope.js";
 
 export interface AdapterAgent {
   id: string;
@@ -133,6 +134,8 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  /** Fail-closed provider reservation made atomically by the control plane. */
+  executionBudget?: ExecutionInvocationBudget | null;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
@@ -374,6 +377,8 @@ export interface ServerAdapterModule {
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
+  /** True only when the adapter enforces every provider-invocation reservation before/during dispatch. */
+  supportsExecutionBudget?: boolean;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
   modelProfiles?: AdapterModelProfileDefinition[];

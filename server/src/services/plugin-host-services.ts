@@ -75,6 +75,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { sanitizeRecord } from "../redaction.js";
+import {
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  evaluateExecutionTruthTransition,
+} from "@paperclipai/adapter-utils/execution-envelope";
+import { parseExecutionAdmissionPolicy } from "./execution-admission.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -1585,17 +1590,68 @@ export function buildHostServices(
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
         const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;
+        const executionTruthReceipt = patch.executionTruthReceipt;
         delete patch.actorAgentId;
         delete patch.actorUserId;
         delete patch.actorRunId;
+        delete patch.executionTruthReceipt;
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }
-        const updated = (await issues.update(params.issueId, {
-          ...(patch as any),
-          actorAgentId,
-          actorUserId,
-        })) as Issue;
+        const governedTransition = patch.status === "in_review"
+          ? "ready"
+          : patch.status === "done"
+            ? "completed"
+            : null;
+        if (parseExecutionAdmissionPolicy().enabled && governedTransition) {
+          if (!options.manifest?.capabilities.includes("execution-truth.project")) {
+            throw new Error("Plugin lacks execution-truth.project capability");
+          }
+          if (!actorRunId) throw new Error("Trusted execution-truth projection requires actorRunId");
+          const decision = evaluateExecutionTruthTransition({
+            transition: governedTransition,
+            workId: existing.identifier ?? existing.id,
+            receipt: executionTruthReceipt,
+          });
+          if (!decision.allowed) {
+            throw new Error(`Execution-truth transition denied: ${decision.reason}`);
+          }
+        } else if (executionTruthReceipt !== undefined) {
+          throw new Error("Execution-truth receipts may only accompany governed readiness/completion transitions");
+        }
+        const updated = await db.transaction(async (tx) => {
+          if (parseExecutionAdmissionPolicy().enabled && governedTransition) {
+            const run = await tx.select({
+              agentId: heartbeatRuns.agentId,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+            })
+              .from(heartbeatRuns)
+              .where(and(eq(heartbeatRuns.id, actorRunId!), eq(heartbeatRuns.companyId, companyId)))
+              .then((rows) => rows[0] ?? null);
+            if (!run) throw new Error("Trusted execution-truth projection run was not found");
+            const runContext = run.contextSnapshot && typeof run.contextSnapshot === "object"
+              ? run.contextSnapshot as Record<string, unknown>
+              : {};
+            if (runContext.issueId !== existing.id) {
+              throw new Error("Trusted execution-truth projection run is not bound to this issue");
+            }
+            if (actorAgentId && run.agentId !== actorAgentId) {
+              throw new Error("Trusted execution-truth projection actor does not own this run");
+            }
+            await tx.update(heartbeatRuns).set({
+              contextSnapshot: {
+                ...runContext,
+                [PAPERCLIP_EXECUTION_RECEIPT_KEY]: executionTruthReceipt,
+              },
+              updatedAt: new Date(),
+            }).where(eq(heartbeatRuns.id, actorRunId!));
+          }
+          return (await issues.update(params.issueId, {
+            ...(patch as any),
+            actorAgentId,
+            actorUserId,
+          }, tx)) as Issue;
+        });
         await logPluginActivity({
           companyId,
           action: "issue.updated",

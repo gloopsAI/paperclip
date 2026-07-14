@@ -31,7 +31,11 @@ for required_execution_ceiling in \
   PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK \
   PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK \
   PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK \
-  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK; do
+  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK \
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION \
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION \
+  PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION \
+  PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION; do
   [[ "${!required_execution_ceiling:-}" =~ ^[1-9][0-9]*$ ]] || {
     echo "${required_execution_ceiling} must be a positive integer" >&2
     exit 1
@@ -43,6 +47,14 @@ done
 }
 ((PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK < PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK)) || {
   echo "task retries must be lower than total task runs" >&2
+  exit 1
+}
+((PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION <= PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK)) || {
+  echo "per-invocation input ceiling exceeds task ceiling" >&2
+  exit 1
+}
+((PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION <= PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK)) || {
+  echo "per-invocation output ceiling exceeds task ceiling" >&2
   exit 1
 }
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
@@ -66,6 +78,20 @@ done
 if ((${#existing_provider_config[@]} > 0)) \
   && grep -RIEq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)=' "${existing_provider_config[@]}"; then
   echo "Grok/xAI API configuration is forbidden" >&2
+  exit 1
+fi
+hermes_route_config=(
+  /opt/paperclip/hermes-home/config.yaml
+  /root/.hermes/config.yaml
+)
+existing_hermes_route_config=()
+for path in "${hermes_route_config[@]}"; do
+  [[ -f "${path}" ]] && existing_hermes_route_config+=("${path}")
+done
+if ((${#existing_hermes_route_config[@]} > 0)) \
+  && grep -Eiq '(api\.x\.ai|(^|[[:space:]])provider:[[:space:]]*(xai|grok)|(^|[[:space:]])base_url:.*x\.ai)' \
+    "${existing_hermes_route_config[@]}"; then
+  echo "Grok/xAI Hermes routing configuration is forbidden" >&2
   exit 1
 fi
 [[ -x /opt/grok-build/bin/grok ]] || {
