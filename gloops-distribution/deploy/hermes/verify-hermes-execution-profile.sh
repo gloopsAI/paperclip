@@ -105,17 +105,19 @@ fi
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
   [[ ! -e "${forbidden}" ]] || fail "forbidden environment file exists: ${forbidden}"
 done
-for protected_file in \
-  "${RUNTIME_ENV}" \
-  "${PROFILE_DIR}/auth.json" \
-  "${PROFILE_DIR}/config.yaml" \
-  "${PROFILE_DIR}/policy.json"; do
+for protected_file in "${RUNTIME_ENV}" "${PROFILE_DIR}/policy.json"; do
   if [[ "$(stat -c '%a:%U:%G' "${protected_file}" 2>/dev/null || true)" == '600:root:root' ]]; then
     pass "root-only file is protected: ${protected_file}"
   else
     fail "root-only file has unsafe ownership or mode: ${protected_file}"
   fi
 done
+if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == '600:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]]; then
+  pass 'runtime profile is readable only by the fixed Hermes identity'
+else
+  fail 'runtime profile ownership or modes do not match the fixed Hermes identity'
+fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
   || grep -Eq -- '--publish|-p[ =]' "${UNIT}"; then
@@ -128,6 +130,10 @@ for required in \
   '--read-only' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
   '--cap-drop ALL' \
+  '--cap-add CHOWN' \
+  '--cap-add DAC_OVERRIDE' \
+  '--cap-add SETGID' \
+  '--cap-add SETUID' \
   '--security-opt no-new-privileges:true' \
   '--memory 2048m' \
   '--cpus 2.0' \
@@ -180,7 +186,8 @@ if [[ "${MODE}" == '--live' ]]; then
     else
       fail 'live container uses the wrong network'
     fi
-    if [[ "$(docker inspect --format '{{json .HostConfig.PortBindings}}' "${CONTAINER}")" == 'null' ]]; then
+    port_bindings="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "${CONTAINER}")"
+    if [[ "${port_bindings}" == 'null' || "${port_bindings}" == '{}' ]]; then
       pass 'live container publishes no host ports'
     else
       fail 'live container publishes a host port'
