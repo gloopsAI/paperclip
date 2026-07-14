@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:b7ab5a223aa2d98d83877dc9b8c2e775d4f5f3c4db408f6d9ec4b7caccb773e5'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:9039376095314e0fd51ed7d853171be9f904555049a34dbedd7b8da9c04c3168'
 failed=0
 
 check_inactive() {
@@ -9,8 +9,11 @@ check_inactive() {
   if systemctl is-active --quiet "${unit}"; then
     echo "FAIL active unit: ${unit}" >&2
     failed=1
+  elif systemctl is-failed --quiet "${unit}"; then
+    echo "FAIL failed unit requires reconciliation: ${unit}" >&2
+    failed=1
   else
-    echo "PASS inactive unit: ${unit}"
+    echo "PASS inactive and non-failed unit: ${unit}"
   fi
 }
 
@@ -168,18 +171,18 @@ else
 fi
 
 if grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=(0|[1-9][0-9]*)$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS task and provider-invocation execution admission is installed with explicit ceilings"
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=1' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=0' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=50000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=16000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=3600000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION=30000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=8000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=8' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=32' /etc/paperclip-gloops/runtime.env; then
+  echo "PASS exact third-pilot task and provider-invocation execution envelope is installed"
 else
-  echo "FAIL task-level execution admission is missing or unbounded" >&2
+  echo "FAIL exact third-pilot execution envelope is missing or has drifted" >&2
   failed=1
 fi
 

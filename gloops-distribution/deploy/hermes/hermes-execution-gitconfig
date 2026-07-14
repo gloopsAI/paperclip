@@ -1,0 +1,6 @@
+[credential "https://github.com"]
+	helper =
+	helper = !/usr/bin/gh auth git-credential
+[user]
+	name = Paperclip Hermes
+	email = zach-hermes@users.noreply.github.com

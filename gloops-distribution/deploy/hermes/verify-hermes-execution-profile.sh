@@ -38,25 +38,17 @@ if [[ -f "${RUNTIME_ENV}" ]]; then
 fi
 
 if jq -e '
-  (.credential_pool | keys | sort) == ["ollama-cloud", "openai-codex"] and
+  (.credential_pool | keys) == ["ollama-cloud"] and
   (.credential_pool["ollama-cloud"] | length > 0) and
-  (.credential_pool["openai-codex"] | length > 0) and
   all(.credential_pool["ollama-cloud"][];
     .auth_type == "api_key" and
     .source == "env:OLLAMA_API_KEY" and
     .base_url == "https://ollama.com/v1" and
     ((keys - ["auth_type", "base_url", "id", "label", "last_error_code", "last_error_message", "last_error_reason", "last_error_reset_at", "last_status", "last_status_at", "priority", "request_count", "secret_fingerprint", "source"]) | length == 0)) and
-  all(.credential_pool["openai-codex"][];
-    .auth_type == "oauth" and
-    .source == "manual:device_code" and
-    .base_url == "https://chatgpt.com/backend-api/codex" and
-    (.access_token | type == "string" and length > 0) and
-    (.refresh_token | type == "string" and length > 0) and
-    ((keys - ["access_token", "auth_type", "base_url", "id", "label", "last_error_code", "last_error_message", "last_error_reason", "last_error_reset_at", "last_refresh", "last_status", "last_status_at", "priority", "refresh_token", "request_count", "source"]) | length == 0)) and
   (.providers == {}) and
   (.active_provider == "ollama-cloud")
 ' "${PROFILE_DIR}/auth.json" >/dev/null 2>&1; then
-  pass 'credential pool is limited to Ollama Cloud and Codex subscription'
+  pass 'credential pool is limited to Ollama Cloud with no fallback credential'
 else
   fail 'credential pool is missing, malformed, or over-broad'
 fi
@@ -69,8 +61,8 @@ if docker run --rm --network none --read-only -i \
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
-assert d["fallback_providers"] == [{"provider": "openai-codex", "model": "gpt-5.5", "base_url": "https://chatgpt.com/backend-api/codex"}]
-assert d["agent"]["max_turns"] <= 24 and d["agent"]["verify_on_stop"] is True
+assert "fallback_providers" not in d
+assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
 assert d["security"]["redact_secrets"] is True and d["security"]["tirith_fail_open"] is False
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
 PY
@@ -82,9 +74,16 @@ fi
 
 if jq -e '
   .schemaVersion == "gloops.hermes-execution-profile.v1" and
-  .allowedProviders == ["ollama-cloud", "openai-codex"] and
+  .allowedProviders == ["ollama-cloud"] and
   .allowedRuntimeEnvironment == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"] and
   .allowedCredentialEnvironment == ["API_SERVER_KEY", "OLLAMA_API_KEY"] and
+  .allowedCredentialFiles == ["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"] and
+  .github == {
+    "principal": "zach-hermes",
+    "allowedRepositories": ["gloopsAI/paperclip"],
+    "minimumPermission": "push",
+    "credentialMount": "read-only"
+  } and
   .grok.mode == "host-cli-only" and
   .grok.apiEnvironmentAllowed == false and
   .network.name == "paperclip-execution" and
@@ -113,6 +112,13 @@ fi
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
   [[ ! -e "${forbidden}" ]] || fail "forbidden environment file exists: ${forbidden}"
 done
+mapfile -t profile_entries < <(find "${PROFILE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)
+if [[ "${profile_entries[*]}" == 'auth.json config.yaml gh gitconfig policy.json' ]] \
+  && [[ "$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null)" == 'hosts.yml' ]]; then
+  pass 'execution profile contains only declared credential and policy artifacts'
+else
+  fail "execution profile contains undeclared artifacts: ${profile_entries[*]:-none}"
+fi
 for protected_file in "${RUNTIME_ENV}" "${PROFILE_DIR}/policy.json"; do
   if [[ "$(stat -c '%a:%U:%G' "${protected_file}" 2>/dev/null || true)" == '600:root:root' ]]; then
     pass "root-only file is protected: ${protected_file}"
@@ -121,10 +127,17 @@ for protected_file in "${RUNTIME_ENV}" "${PROFILE_DIR}/policy.json"; do
   fi
 done
 if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == '600:10000:10000' ]] \
-  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]]; then
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gitconfig" 2>/dev/null || true)" == '400:10000:10000' ]]; then
   pass 'runtime profile is readable only by the fixed Hermes identity'
 else
   fail 'runtime profile ownership or modes do not match the fixed Hermes identity'
+fi
+if [[ "$(GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api user --jq .login 2>/dev/null || true)" == 'zach-hermes' ]]; then
+  pass 'dedicated GitHub credential resolves to the declared service identity'
+else
+  fail 'dedicated GitHub service identity is missing'
 fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
@@ -148,6 +161,11 @@ for required in \
   '--pids-limit 512' \
   '--env-file /etc/paperclip-gloops/hermes-execution.env'; do
   grep -Fq -- "${required}" "${UNIT}" || fail "unit is missing: ${required}"
+done
+for required_credential_mount in \
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly' \
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
+  grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
 if grep -Fq -- '--health-cmd' "${UNIT}" \
   && grep -Fq -- 'gateway run --replace' "${UNIT}"; then
@@ -181,6 +199,12 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{range .Mounts}}{{println .Source " -> " .Destination " (" .RW ")"}}{{end}}' "${CONTAINER}" >"${live_mounts}"
+    if docker exec --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
+      sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/paperclip --jq "select(.private == false and .permissions.push == true)" >/dev/null'; then
+      pass 'live GitHub identity has write access to the declared public pilot boundary'
+    else
+      fail 'live GitHub identity or pilot repository write access is missing'
+    fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'
     else

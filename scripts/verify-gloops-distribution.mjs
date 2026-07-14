@@ -194,15 +194,28 @@ if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1"
 }
 if (
   JSON.stringify(hermesExecutionPolicy.allowedProviders) !==
-  JSON.stringify(["ollama-cloud", "openai-codex"])
+  JSON.stringify(["ollama-cloud"])
 ) {
-  fail("Hermes execution provider allowlist must contain only Ollama Cloud and Codex subscription");
+  fail("Hermes third-pilot provider allowlist must contain only Ollama Cloud");
 }
 if (
   JSON.stringify(hermesExecutionPolicy.allowedRuntimeEnvironment) !==
   JSON.stringify(["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"])
 ) {
   fail("Hermes execution runtime environment allowlist is not exact");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.allowedCredentialFiles) !==
+    JSON.stringify(["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"]) ||
+  JSON.stringify(hermesExecutionPolicy.github) !== JSON.stringify({
+    principal: "zach-hermes",
+    allowedRepositories: ["gloopsAI/paperclip"],
+    minimumPermission: "push",
+    credentialMount: "read-only",
+  }) ||
+  !hermesExecutionPolicy.forbiddenProviders?.includes("openai-codex")
+) {
+  fail("Hermes third-pilot GitHub credential and no-fallback boundary is not exact");
 }
 if (
   hermesExecutionPolicy.grok?.mode !== "host-cli-only" ||
@@ -227,9 +240,9 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "preprovisioned-local-di
 }
 if (
   !/^model:\n  provider: ollama-cloud\n  default: kimi-k2\.7-code$/m.test(hermesExecutionConfig) ||
-  !/provider: openai-codex\n    model: gpt-5\.5\n    base_url: https:\/\/chatgpt\.com\/backend-api\/codex/m.test(hermesExecutionConfig)
+  /fallback_providers|openai-codex|chatgpt\.com\/backend-api\/codex/m.test(hermesExecutionConfig)
 ) {
-  fail("Hermes model routing must prefer Ollama subscription and fall back to Codex subscription");
+  fail("Hermes third-pilot routing must use Ollama Cloud with no fallback provider");
 }
 for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
   if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
@@ -244,6 +257,8 @@ for (const required of [
   "--cap-drop ALL",
   "--security-opt no-new-privileges:true",
   "--env-file /etc/paperclip-gloops/hermes-execution.env",
+  "src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly",
+  "src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly",
   "--health-cmd",
   "http://127.0.0.1:8642/v1/models",
   "--memory 2048m",
@@ -267,6 +282,7 @@ for (const required of [
   "paperclip-hermes-execution.service",
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
+  "hermes-execution-gitconfig",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
   "pre-provisioned immutable Hermes execution image is missing",
 ]) {
@@ -297,16 +313,16 @@ for (const required of [
   "API_SERVER_PORT=8642",
   "secrets.token_hex(32)",
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
-  '"openai-codex": [.credential_pool["openai-codex"][]',
   'base_url == "https://ollama.com/v1"',
-  'base_url == "https://chatgpt.com/backend-api/codex"',
+  "GitHub credential is not the dedicated zach-hermes identity",
 ]) {
   if (!prepareHermesExecution.includes(required)) {
     fail(`Hermes profile preparation is missing ${required}`);
   }
 }
 for (const required of [
-  "credential pool is limited to Ollama Cloud and Codex subscription",
+  "credential pool is limited to Ollama Cloud with no fallback credential",
+  "live GitHub identity has write access to the declared public pilot boundary",
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
   "live API rejects unauthenticated execution-plane access",
