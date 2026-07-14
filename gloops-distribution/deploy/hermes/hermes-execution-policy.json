@@ -25,6 +25,14 @@
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
     "rootHomeEphemeral": true,
-    "persistentPaths": ["cache", "logs", "memories", "sessions", "workspace"]
+    "persistentPaths": ["cache", "logs", "memories", "sessions", "workspace"],
+    "providerInvocationBudget": {
+      "required": true,
+      "maxInputTokens": 30000,
+      "maxOutputTokens": 8000,
+      "maxTurns": 8,
+      "maxToolCalls": 32,
+      "maxWallMs": 3600000
+    }
   }
 }

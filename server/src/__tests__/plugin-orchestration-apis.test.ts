@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -41,6 +41,31 @@ function createEventBusStub() {
 
 function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+}
+
+function executionTruthReceipt(workId: string) {
+  const body = {
+    schemaVersion: "gloops.execution-truth.operator-receipt.v2",
+    work: { id: workId },
+    budget: { exhausted: [] },
+    route: { observedPathIds: ["ollama-cloud-cli"], prohibitedPathObserved: false },
+    continuation: { required: true, valid: true },
+    verification: {
+      exactHeadAligned: true,
+      exactHeadSha: "a".repeat(40),
+      allChecksPassed: true,
+      review: { status: "accepted", headSha: "a".repeat(40), unresolvedThreads: 0 },
+    },
+    authority: { humanRequired: false },
+    status: "built",
+  };
+  const stable = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(stable)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, stable(entry)]))
+      : value;
+  const digest = `sha256:${createHash("sha256").update(JSON.stringify(stable(body))).digest("hex")}`;
+  return { ...body, digest };
 }
 
 if (!embeddedPostgresSupport.supported) {
@@ -262,6 +287,93 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         patch: { originKind: "plugin:other.plugin:feature" },
       }),
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
+  });
+
+  it("accepts terminal truth only from a capability-scoped plugin projection bound to the run", async () => {
+    const previousEnv = { ...process.env };
+    Object.assign(process.env, {
+      PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "true",
+      PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "2",
+      PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "1",
+      PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "50000",
+      PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "16000",
+      PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "3600000",
+      PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "30000",
+      PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "8000",
+      PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "8",
+      PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "32",
+    });
+    try {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const runId = randomUUID();
+      const baseServices = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+      const issue = await baseServices.issues.create({
+        companyId,
+        title: "Governed terminal transition",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId: issue.id },
+      });
+      await expect(baseServices.issues.update({
+        issueId: issue.id,
+        companyId,
+        patch: {
+          status: "done",
+          executionTruthReceipt: executionTruthReceipt(issue.identifier),
+          actorRunId: runId,
+        },
+      })).rejects.toThrow("execution-truth.project");
+
+      const trustedServices = buildHostServices(
+        db,
+        "plugin-record-id",
+        "paperclip.missions",
+        createEventBusStub(),
+        undefined,
+        { manifest: { capabilities: ["issues.update", "execution-truth.project"] } as any },
+      );
+      const mismatchedRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: mismatchedRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId: randomUUID() },
+      });
+      await expect(trustedServices.issues.update({
+        issueId: issue.id,
+        companyId,
+        patch: {
+          status: "done",
+          executionTruthReceipt: executionTruthReceipt(issue.identifier),
+          actorAgentId: agentId,
+          actorRunId: mismatchedRunId,
+        },
+      })).rejects.toThrow("not bound to this issue");
+      const updated = await trustedServices.issues.update({
+        issueId: issue.id,
+        companyId,
+        patch: {
+          status: "done",
+          executionTruthReceipt: executionTruthReceipt(issue.identifier),
+          actorAgentId: agentId,
+          actorRunId: runId,
+        },
+      });
+      expect(updated.status).toBe("done");
+      const [persistedRun] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(persistedRun?.contextSnapshot).toHaveProperty("paperclipExecutionTruthReceipt");
+    } finally {
+      process.env = previousEnv;
+    }
   });
 
   it("creates plugin operation issues with the generic operation origin", async () => {

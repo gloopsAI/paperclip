@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import type { ExecutionInvocationBudget } from "@paperclipai/adapter-utils";
 
-export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v1" as const;
+export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v2" as const;
 export const EXECUTION_ADMISSION_CONTEXT_KEY = "gloopsExecutionAdmission" as const;
 export const EXECUTION_ADMISSION_RESET_CONTEXT_KEY = "gloopsExecutionBudgetResetId" as const;
 
@@ -13,6 +14,10 @@ export type ExecutionAdmissionPolicy =
       maxInputTokensPerTask: number;
       maxOutputTokensPerTask: number;
       maxWallMsPerTask: number;
+      maxInputTokensPerInvocation: number;
+      maxOutputTokensPerInvocation: number;
+      maxTurnsPerInvocation: number;
+      maxToolCallsPerInvocation: number;
       digest: string;
     };
 
@@ -21,7 +26,9 @@ export type ExecutionAdmissionReason =
   | "retry_limit_exhausted"
   | "input_token_limit_exhausted"
   | "output_token_limit_exhausted"
-  | "wall_time_limit_exhausted";
+  | "wall_time_limit_exhausted"
+  | "input_reservation_unavailable"
+  | "output_reservation_unavailable";
 
 export type ExecutionAdmissionUsage = {
   runCount: number;
@@ -41,6 +48,7 @@ export type ExecutionAdmissionEnvelope = {
   decision: "allowed" | "denied";
   reason: ExecutionAdmissionReason | null;
   observed: ExecutionAdmissionUsage;
+  reservation: ExecutionInvocationBudget | null;
   evaluatedAt: string;
 };
 
@@ -96,9 +104,19 @@ export function parseExecutionAdmissionPolicy(
     maxInputTokensPerTask: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK"),
     maxOutputTokensPerTask: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK"),
     maxWallMsPerTask: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK"),
+    maxInputTokensPerInvocation: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION"),
+    maxOutputTokensPerInvocation: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION"),
+    maxTurnsPerInvocation: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION"),
+    maxToolCallsPerInvocation: parsePositiveInteger(env, "PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION"),
   };
   if (values.maxRetriesPerTask >= values.maxRunsPerTask) {
     throw new Error("PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK must be lower than max runs per task");
+  }
+  if (values.maxInputTokensPerInvocation > values.maxInputTokensPerTask) {
+    throw new Error("PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION must not exceed the task input-token limit");
+  }
+  if (values.maxOutputTokensPerInvocation > values.maxOutputTokensPerTask) {
+    throw new Error("PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION must not exceed the task output-token limit");
   }
   return {
     enabled: true,
@@ -125,7 +143,19 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     "input_token_limit_exhausted",
     "output_token_limit_exhausted",
     "wall_time_limit_exhausted",
+    "input_reservation_unavailable",
+    "output_reservation_unavailable",
   ].includes(candidate.reason as string);
+  const reservation = candidate.reservation as Partial<ExecutionInvocationBudget> | null | undefined;
+  const validReservation = reservation === null || Boolean(
+    reservation &&
+    reservation.schemaVersion === "paperclip.provider-invocation-budget.v1" &&
+    typeof reservation.budgetId === "string" && reservation.budgetId === candidate.budgetId &&
+    typeof reservation.reservationId === "string" && /^[a-f0-9]{64}$/.test(reservation.reservationId) &&
+    [reservation.maxInputTokens, reservation.maxOutputTokens, reservation.maxTurns,
+      reservation.maxToolCalls, reservation.maxWallMs]
+      .every((item) => typeof item === "number" && Number.isSafeInteger(item) && item > 0)
+  );
   if (
     candidate.schemaVersion !== EXECUTION_ADMISSION_SCHEMA_VERSION ||
     typeof candidate.budgetId !== "string" || candidate.budgetId.length > 256 ||
@@ -135,6 +165,7 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     (candidate.decision !== "allowed" && candidate.decision !== "denied") ||
     !validReason ||
     !validObserved ||
+    !validReservation ||
     typeof candidate.evaluatedAt !== "string" || !Number.isFinite(Date.parse(candidate.evaluatedAt))
   ) {
     return null;
@@ -193,6 +224,8 @@ export function evaluateExecutionAdmission(
   priorRuns: PriorExecutionRun[],
 ): { allowed: boolean; reason: ExecutionAdmissionReason | null; observed: ExecutionAdmissionUsage } {
   const observed = summarizePriorExecution(priorRuns);
+  const remainingInputTokens = Math.max(0, policy.maxInputTokensPerTask - observed.inputTokens);
+  const remainingOutputTokens = Math.max(0, policy.maxOutputTokensPerTask - observed.outputTokens);
   const reason = observed.runCount >= policy.maxRunsPerTask
     ? "run_limit_exhausted"
     : observed.retryCount >= policy.maxRetriesPerTask
@@ -203,6 +236,10 @@ export function evaluateExecutionAdmission(
           ? "output_token_limit_exhausted"
           : observed.wallMs >= policy.maxWallMsPerTask
             ? "wall_time_limit_exhausted"
+            : remainingInputTokens <= 0
+              ? "input_reservation_unavailable"
+              : remainingOutputTokens <= 0
+                ? "output_reservation_unavailable"
             : null;
   return { allowed: reason === null, reason, observed };
 }
@@ -213,15 +250,50 @@ export function buildExecutionAdmissionEnvelope(input: {
   decision: ReturnType<typeof evaluateExecutionAdmission>;
   evaluatedAt: Date;
 }): ExecutionAdmissionEnvelope {
+  const attempt = input.decision.observed.runCount + 1;
+  const remainingInputTokens = Math.max(0, input.policy.maxInputTokensPerTask - input.decision.observed.inputTokens);
+  const remainingOutputTokens = Math.max(0, input.policy.maxOutputTokensPerTask - input.decision.observed.outputTokens);
+  const remainingWallMs = Math.max(0, input.policy.maxWallMsPerTask - input.decision.observed.wallMs);
+  const reservation = input.decision.allowed ? {
+    schemaVersion: "paperclip.provider-invocation-budget.v1" as const,
+    budgetId: input.identity.budgetId,
+    reservationId: createHash("sha256")
+      .update(`${input.identity.budgetId}:${input.identity.epoch}:${attempt}:${input.policy.digest}`)
+      .digest("hex"),
+    maxInputTokens: Math.min(input.policy.maxInputTokensPerInvocation, remainingInputTokens),
+    maxOutputTokens: Math.min(input.policy.maxOutputTokensPerInvocation, remainingOutputTokens),
+    maxTurns: input.policy.maxTurnsPerInvocation,
+    maxToolCalls: input.policy.maxToolCallsPerInvocation,
+    maxWallMs: remainingWallMs,
+  } : null;
   return {
     schemaVersion: EXECUTION_ADMISSION_SCHEMA_VERSION,
     budgetId: input.identity.budgetId,
     epoch: input.identity.epoch,
     policyDigest: input.policy.digest,
-    attempt: input.decision.observed.runCount + 1,
+    attempt,
     decision: input.decision.allowed ? "allowed" : "denied",
     reason: input.decision.reason,
     observed: input.decision.observed,
+    reservation,
     evaluatedAt: input.evaluatedAt.toISOString(),
   };
+}
+
+export function executionInvocationBudgetFromEnvelope(value: unknown): ExecutionInvocationBudget | null {
+  return readExecutionAdmissionEnvelope(value)?.reservation ?? null;
+}
+
+export function evaluateExecutionReservationUsage(input: {
+  reservation: ExecutionInvocationBudget;
+  inputTokens: number;
+  outputTokens: number;
+  wallMs: number;
+}) {
+  const exceeded = [
+    input.inputTokens > input.reservation.maxInputTokens ? "input_tokens" : null,
+    input.outputTokens > input.reservation.maxOutputTokens ? "output_tokens" : null,
+    input.wallMs > input.reservation.maxWallMs ? "wall_ms" : null,
+  ].filter((value): value is string => Boolean(value));
+  return { compliant: exceeded.length === 0, exceeded };
 }

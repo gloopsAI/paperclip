@@ -95,7 +95,15 @@ if jq -e '
   .runtime.image == "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78" and
   .runtime.imageAcquisition == "preprovisioned-local-digest" and
   .runtime.broadHomeMounted == false and
-  .runtime.broadEnvironmentSourcedAtRuntime == false
+  .runtime.broadEnvironmentSourcedAtRuntime == false and
+  .runtime.providerInvocationBudget == {
+    "required": true,
+    "maxInputTokens": 30000,
+    "maxOutputTokens": 8000,
+    "maxTurns": 8,
+    "maxToolCalls": 32,
+    "maxWallMs": 3600000
+  }
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal execution-only policy is installed'
 else
@@ -156,7 +164,9 @@ fi
 
 if env -u XAI_API_KEY -u GROK_API_KEY timeout 10 /opt/grok-build/bin/grok --version >/dev/null 2>&1 \
   && ! grep -RIEq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)=' \
-    "${RUNTIME_ENV}" "${PROFILE_DIR}"; then
+    "${RUNTIME_ENV}" "${PROFILE_DIR}" \
+  && ! grep -Eiq '(api\.x\.ai|(^|[[:space:]])provider:[[:space:]]*(xai|grok)|(^|[[:space:]])base_url:.*x\.ai)' \
+    "${PROFILE_DIR}/config.yaml"; then
   pass 'Grok is host-CLI-only with no API configuration'
 else
   fail 'Grok CLI is unavailable or API configuration is present'

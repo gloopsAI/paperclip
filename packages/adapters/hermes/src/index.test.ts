@@ -17,6 +17,7 @@ test("root package export exposes Paperclip external adapter entrypoint", () => 
   expect(typeof adapter.sessionCodec?.deserialize).toBe("function");
   expect(adapter.sessionManagement?.nativeContextManagement).toBe("confirmed");
   expect(adapter.supportsLocalAgentJwt).toBe(true);
+  expect(adapter.supportsExecutionBudget).not.toBe(true);
   expect(adapter.supportsInstructionsBundle).toBe(true);
   expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
   expect(adapter.getRuntimeCommandSpec?.({ command: "hermes-dev" })).toMatchObject({
@@ -36,6 +37,7 @@ test("root package export keeps explicit local and gateway adapter factories", (
   expect(gatewayAdapter.type).toBe("hermes_gateway");
   expect(hermesGatewayType).toBe("hermes_gateway");
   expect(gatewayAdapter.supportsLocalAgentJwt).toBe(false);
+  expect(gatewayAdapter.supportsExecutionBudget).toBe(true);
   expect(gatewayAdapter.supportsInstructionsBundle).toBe(false);
 });
 

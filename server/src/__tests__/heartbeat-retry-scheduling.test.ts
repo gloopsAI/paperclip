@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -31,6 +31,28 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import { buildBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
+
+function retryPacket(workId: string) {
+  const stable = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(stable)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, stable(v)]))
+      : value;
+  const serialize = (value: unknown) => JSON.stringify(stable(value));
+  const body = { schemaVersion: "gloops.continuation-packet.v1", work: { id: workId }, cursor: { next: "continue exact head" } };
+  const digest = `sha256:${createHash("sha256").update(serialize(body)).digest("hex")}`;
+  let serializedBytes = 1;
+  let result: Record<string, unknown> = {};
+  for (let i = 0; i < 10; i += 1) {
+    result = { ...body, digest, metrics: { serializedBytes, approximateTokens: Math.ceil(serializedBytes / 4) } };
+    const next = Buffer.byteLength(serialize(result));
+    if (next === serializedBytes) break;
+    serializedBytes = next;
+  }
+  result.metrics = { serializedBytes, approximateTokens: Math.ceil(serializedBytes / 4) };
+  return result;
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -274,6 +296,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     scheduledRetryAttempt?: number;
     runtimeConfig?: Record<string, unknown>;
     issueStatus?: string;
+    contextSnapshot?: Record<string, unknown>;
+    usageJson?: Record<string, unknown>;
   }) {
     const companyId = input?.companyId ?? randomUUID();
     const agentId = input?.agentId ?? randomUUID();
@@ -330,7 +354,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       contextSnapshot: {
         issueId,
         wakeReason: "issue_assigned",
+        ...(input?.contextSnapshot ?? {}),
       },
+      usageJson: input?.usageJson ?? null,
       updatedAt: now,
       createdAt: now,
     });
@@ -350,7 +376,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       identifier: `${issuePrefix}-1`,
     });
 
-    return { companyId, agentId, issueId, runId, now };
+    return { companyId, agentId, issueId, runId, now, identifier: `${issuePrefix}-1` };
   }
 
   it("schedules a retry with durable metadata and only promotes it when due", async () => {
@@ -500,6 +526,42 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
       scheduledRetryAttempt: 1,
     });
+  });
+
+  it("preserves a bound packet, owner, and exactly-one continuation ceiling", async () => {
+    const base = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId: base.issueId,
+        wakeReason: "issue_assigned",
+        paperclipExecutionContext: buildBoundExecutionContext(retryPacket(base.identifier)),
+      },
+      usageJson: { provider: "ollama-cloud-cli" },
+    }).where(eq(heartbeatRuns.id, base.runId));
+
+    const first = await heartbeat.scheduleBoundedRetry(base.runId, {
+      now: base.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 5,
+      delayMs: 1_000,
+    });
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+    expect(first.maxAttempts).toBe(1);
+    expect(first.run.agentId).toBe(base.agentId);
+    expect((first.run.contextSnapshot as Record<string, unknown>).paperclipExecutionContext).toBeTruthy();
+    expect((first.run.contextSnapshot as Record<string, unknown>).forceFreshSession).toBe(true);
+
+    await db.update(heartbeatRuns).set({ scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, base.runId));
+    const exhausted = await heartbeat.scheduleBoundedRetry(base.runId, {
+      now: base.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 5,
+      delayMs: 1_000,
+    });
+    expect(exhausted).toEqual({ outcome: "retry_exhausted", attempt: 2, maxAttempts: 1 });
   });
 
   it("schedules accepted interaction continuation infra retries while the issue is in_review", async () => {

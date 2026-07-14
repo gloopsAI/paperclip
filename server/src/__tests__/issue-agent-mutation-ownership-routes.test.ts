@@ -9,6 +9,31 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const executionAdmissionEnv = {
+  PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "true",
+  PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "2",
+  PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "1",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "50000",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "16000",
+  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "3600000",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "30000",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "8000",
+  PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "8",
+  PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "32",
+} as const;
+
+async function withExecutionAdmission<T>(callback: () => Promise<T>): Promise<T> {
+  const previous = Object.fromEntries(Object.keys(executionAdmissionEnv).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, executionAdmissionEnv);
+  try {
+    return await callback();
+  } finally {
+    for (const key of Object.keys(executionAdmissionEnv)) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+}
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -916,6 +941,18 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects an agent-self-attested execution-truth receipt", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+      const res = await request(await createApp(ownerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", executionTruthReceipt: { schemaVersion: "forged" } });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("trusted_execution_truth_projector_required");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
   it("denies cross-company agents before comment authorization is evaluated", async () => {
     const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
       .post(`/api/issues/${issueId}/comments`)
@@ -1570,6 +1607,28 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalled();
+  });
+
+  it("blocks a recovery-owner side door to done without trusted execution truth", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
+      );
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        ownerAgentId,
+      });
+      const res = await request(await createApp(ownerActor()))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({
+          actionId: recoveryActionId,
+          outcome: "restored",
+          sourceIssueStatus: "done",
+        });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("execution_truth_transition_denied");
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+    });
   });
 
   it("wakes the assigned agent when recovery resolution restores a source issue to todo", async () => {

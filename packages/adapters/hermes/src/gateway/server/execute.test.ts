@@ -2,6 +2,29 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
+import { buildBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
+import { createHash } from "node:crypto";
+
+function compactPacket() {
+  const stable = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(stable)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, stable(v)]))
+      : value;
+  const serialize = (value: unknown) => JSON.stringify(stable(value));
+  const body = { schemaVersion: "gloops.continuation-packet.v1", work: { id: "GLO-999" }, cursor: { next: "verify" } };
+  const digest = `sha256:${createHash("sha256").update(serialize(body)).digest("hex")}`;
+  let serializedBytes = 1;
+  let result: Record<string, unknown> = {};
+  for (let i = 0; i < 10; i += 1) {
+    result = { ...body, digest, metrics: { serializedBytes, approximateTokens: Math.ceil(serializedBytes / 4) } };
+    const next = Buffer.byteLength(serialize(result));
+    if (next === serializedBytes) break;
+    serializedBytes = next;
+  }
+  result.metrics = { serializedBytes, approximateTokens: Math.ceil(serializedBytes / 4) };
+  return result;
+}
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
   return {
@@ -80,6 +103,114 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("uses the bound compact packet as the sole work body with a fresh session and budget", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "bound-1" }), { status: 200 });
+      if (url.endsWith("/events")) return new Response(sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"), { status: 200 });
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.context.paperclipTaskMarkdown = "LEGACY TASK MUST NOT APPEAR";
+    ctx.context.paperclipExecutionContext = buildBoundExecutionContext(compactPacket());
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-1",
+      reservationId: "c".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 500,
+      maxTurns: 5,
+      maxToolCalls: 20,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    const createCall = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>).find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String(createCall?.[1]?.body));
+    expect(body.input).toContain("Bound continuation packet");
+    expect(body.input).not.toContain("LEGACY TASK MUST NOT APPEAR");
+    expect(body.session_id).toBeUndefined();
+    expect(body.execution_budget.maxToolCalls).toBe(20);
+    expect(createCall?.[1]?.headers).not.toMatchObject({ "X-Hermes-Session-Key": expect.anything() });
+  });
+
+  it("refuses invalid binding and oversized bound prompts before fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const invalid = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    invalid.context.paperclipExecutionContext = { schemaVersion: "paperclip.execution-context-binding.v1" };
+    expect((await execute(invalid)).errorCode).toBe("execution_context.invalid_binding");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const oversized = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    oversized.context.paperclipExecutionContext = buildBoundExecutionContext(compactPacket());
+    oversized.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-1",
+      reservationId: "d".repeat(64),
+      maxInputTokens: 1,
+      maxOutputTokens: 10,
+      maxTurns: 1,
+      maxToolCalls: 1,
+      maxWallMs: 1_000,
+    };
+    expect((await execute(oversized)).errorCode).toBe("execution_admission.input_reservation_exceeded");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { payloadTemplate: { provider: "xai", base_url: "https://api.x.ai/v1" } },
+    { payloadTemplate: { xai: { apiKey: "redacted" } } },
+    { payloadTemplate: { grok: { apiUrl: "https://example.invalid" } } },
+    { extraArgs: ["--provider", "xai"] },
+  ])("refuses Grok/xAI API routing configuration before fetch: %j", async (routeConfig) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      ...routeConfig,
+    });
+    expect((await execute(ctx)).errorCode).toBe("execution_route.prohibited_grok_api");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops the remote run when streamed tool usage exceeds the reservation", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "budget-1" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+        ].join("\n")), { status: 200 });
+      }
+      if (url.endsWith("/stop")) return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-1",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 500,
+      maxTurns: 5,
+      maxToolCalls: 1,
+      maxWallMs: 60_000,
+    };
+    const result = await execute(ctx);
+    expect(result.errorCode).toBe("execution_admission.provider_budget_exceeded");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/budget-1/stop"))).toBe(true);
+  });
+
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

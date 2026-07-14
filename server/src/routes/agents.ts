@@ -34,6 +34,10 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  buildBoundExecutionContext,
+} from "@paperclipai/adapter-utils/execution-envelope";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
@@ -3468,6 +3472,21 @@ export function agentRoutes(
       return;
     }
 
+    const packet = req.body.executionContextPacket ??
+      (req.body.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+        ? req.body.payload.executionContextPacket
+        : null);
+    let boundExecutionContext: ReturnType<typeof buildBoundExecutionContext> | null = null;
+    if (packet !== null && packet !== undefined) {
+      try {
+        boundExecutionContext = buildBoundExecutionContext(packet);
+      } catch (error) {
+        throw unprocessable("Invalid execution context packet", {
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
@@ -3479,7 +3498,8 @@ export function agentRoutes(
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-        forceFreshSession: req.body.forceFreshSession === true,
+        forceFreshSession: req.body.forceFreshSession === true || Boolean(boundExecutionContext),
+        ...(boundExecutionContext ? { [PAPERCLIP_EXECUTION_CONTEXT_KEY]: boundExecutionContext } : {}),
       },
     });
 
@@ -3548,6 +3568,7 @@ export function agentRoutes(
       idempotencyKey: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
+      executionContextPacket: unknown;
     }>;
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
@@ -3555,6 +3576,20 @@ export function agentRoutes(
     };
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
+    }
+    const packet = body.executionContextPacket ??
+      (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+        ? (body.payload as Record<string, unknown>).executionContextPacket
+        : null);
+    if (packet !== null && packet !== undefined) {
+      try {
+        contextSnapshot[PAPERCLIP_EXECUTION_CONTEXT_KEY] = buildBoundExecutionContext(packet);
+        contextSnapshot.forceFreshSession = true;
+      } catch (error) {
+        throw unprocessable("Invalid execution context packet", {
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",

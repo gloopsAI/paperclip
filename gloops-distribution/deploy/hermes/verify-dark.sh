@@ -172,8 +172,12 @@ if grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/
   && grep -Eq '^PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=(0|[1-9][0-9]*)$' /etc/paperclip-gloops/runtime.env \
   && grep -Eq '^PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
   && grep -Eq '^PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
-  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS task-level execution admission is installed with explicit ceilings"
+  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
+  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
+  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
+  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env \
+  && grep -Eq '^PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=[1-9][0-9]*$' /etc/paperclip-gloops/runtime.env; then
+  echo "PASS task and provider-invocation execution admission is installed with explicit ceilings"
 else
   echo "FAIL task-level execution admission is missing or unbounded" >&2
   failed=1
