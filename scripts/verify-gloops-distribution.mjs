@@ -12,9 +12,34 @@ const workflowPath = new URL(
   "../.github/workflows/gloops-distribution.yml",
   import.meta.url,
 );
+const runtimeEnvPath = new URL(
+  "../gloops-distribution/deploy/hermes/runtime.env",
+  import.meta.url,
+);
+const servicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-gloops.service",
+  import.meta.url,
+);
+const installDarkPath = new URL(
+  "../gloops-distribution/deploy/hermes/install-dark.sh",
+  import.meta.url,
+);
+const preflightPath = new URL(
+  "../gloops-distribution/deploy/hermes/preflight.sh",
+  import.meta.url,
+);
+const verifyDarkPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-dark.sh",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
+const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
+const service = readFileSync(servicePath, "utf8");
+const installDark = readFileSync(installDarkPath, "utf8");
+const preflight = readFileSync(preflightPath, "utf8");
+const verifyDark = readFileSync(verifyDarkPath, "utf8");
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
 try {
@@ -46,6 +71,9 @@ if (distribution.upstreamMirrorBranch !== "master") {
 }
 if (!/^ghcr\.io\/gloopsai\/[a-z0-9._-]+$/.test(distribution.image ?? "")) {
   fail("image must be an owned lowercase ghcr.io/gloopsai repository");
+}
+if (!/^sha256:[0-9a-f]{64}$/.test(distribution.digest ?? "")) {
+  fail("distribution digest must be an immutable SHA-256 digest");
 }
 if (!/^\d{4}\.\d{3}\.\d+-gloops\.\d+$/.test(distribution.version ?? "")) {
   fail("distribution version must use YYYY.DDD.PATCH-gloops.REVISION");
@@ -88,9 +116,18 @@ if (!gloopsStage) {
   if (!gloopsStage[1].includes('CMD ["node", "dist/index.js"]')) {
     fail("gloops-production must run the compiled server without a TypeScript loader");
   }
+  if (!/ARG USER_UID=995\s+ARG USER_GID=985/.test(gloopsStage[1])) {
+    fail("gloops-production image identity must match the Hermes runtime UID/GID");
+  }
+  if (!/apt-get install[^\n]+locales/.test(gloopsStage[1]) || !/locale-gen en_US\.UTF-8/.test(gloopsStage[1])) {
+    fail("gloops-production must include the locale required by restored embedded Postgres clusters");
+  }
 }
 if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
   fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");
+}
+if (!dockerfile.includes("await prepareEmbeddedPostgresNativeRuntime();")) {
+  fail("Dockerfile must prepare embedded Postgres shared-library aliases before read-only launch");
 }
 if (!/^\s+target: gloops-production$/m.test(workflow)) {
   fail("distribution workflow must build the gloops-production target");
@@ -100,6 +137,45 @@ if (/\b(CLAUDE_CODE|CODEX|OPENCODE|GEMINI_CLI)_VERSION=/m.test(workflow)) {
 }
 if (!gloopsStage?.[1].includes("/usr/local/lib/node_modules/npm")) {
   fail("gloops-production must remove the npm build/package-management toolchain");
+}
+if (!/^PAPERCLIP_HOME=\/home\/paperclip\/\.paperclip$/m.test(runtimeEnv)) {
+  fail("Hermes runtime must point PAPERCLIP_HOME at the writable state mount");
+}
+if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
+  fail("Hermes runtime HOME must contain the writable Paperclip state mount");
+}
+if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
+  fail("Hermes runtime must load the persisted instance configuration from the state mount");
+}
+if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
+  fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
+}
+if (!service.includes("--user 995:985")) {
+  fail("Hermes service UID/GID must match the GLoops image identity");
+}
+for (const providerConfigPath of [
+  "/opt/paperclip/hermes-home/.env",
+  "/opt/paperclip/hermes-home/config.yaml",
+  "/opt/paperclip/grok-shared-runner/runner.env",
+]) {
+  if (!verifyDark.includes(providerConfigPath)) {
+    fail(`dark verification must inspect ${providerConfigPath} for forbidden Grok/xAI API configuration`);
+  }
+  if (!preflight.includes(providerConfigPath)) {
+    fail(`activation preflight must inspect ${providerConfigPath} for forbidden Grok/xAI API configuration`);
+  }
+}
+const approvedImage = `${distribution.image}@${distribution.digest}`;
+for (const [label, contents] of [
+  ["install-dark.sh", installDark],
+  ["preflight.sh", preflight],
+  ["verify-dark.sh", verifyDark],
+  ["paperclip-gloops.service", service],
+]) {
+  const imageRefs = contents.match(/ghcr\.io\/gloopsai\/paperclip-gloops@sha256:[0-9a-f]{64}/g) ?? [];
+  if (imageRefs.length !== 1 || imageRefs[0] !== approvedImage) {
+    fail(`${label} must pin exactly the manifest-approved image digest`);
+  }
 }
 
 if (vex) {

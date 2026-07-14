@@ -54,6 +54,8 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 RUN PAPERCLIP_RELEASE_REUSE_UI_DIST=1 pnpm --filter @paperclipai/server prepare:ui-dist \
   && node scripts/prepare-gloops-runtime.mjs \
   && pnpm --config.auto-install-peers=false --filter @paperclipai/server deploy --prod --frozen-lockfile /runtime \
+  && cd /runtime \
+  && node --input-type=module -e "const { prepareEmbeddedPostgresNativeRuntime } = await import('@paperclipai/db'); await prepareEmbeddedPostgresNativeRuntime();" \
   && rm -rf \
     /runtime/node_modules/.pnpm/@esbuild+* \
     /runtime/node_modules/.pnpm/esbuild@* \
@@ -114,12 +116,14 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # image so the deployed control plane does not inherit coding CLIs, shells tools,
 # or credentials that belong to execution workers.
 FROM node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169 AS gloops-production
-ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_UID=995
+ARG USER_GID=985
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates locales \
+  && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+  && locale-gen en_US.UTF-8 \
   && rm -rf /var/lib/apt/lists/* \
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
@@ -132,6 +136,8 @@ RUN apt-get update \
 COPY --chown=node:node --from=build /runtime /app
 
 ENV NODE_ENV=production \
+  LANG=en_US.UTF-8 \
+  LC_ALL=en_US.UTF-8 \
   HOME=/paperclip \
   HOST=0.0.0.0 \
   PORT=3100 \

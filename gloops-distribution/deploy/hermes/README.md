@@ -12,6 +12,16 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
 
+The container receives the existing host state at
+`/home/paperclip/.paperclip`, and the runtime explicitly sets
+`PAPERCLIP_HOME=/home/paperclip/.paperclip`. Keep the environment and
+bind-mount target in lockstep. The target intentionally matches the compiled
+runtime's safe fallback as well, so logger initialization cannot escape the
+writable state mount under the read-only root filesystem.
+The image's `node` passwd entry and the service's explicit runtime identity are
+both `995:985`, matching the host `paperclip` owner; keep all three in lockstep
+so native PostgreSQL user discovery and persisted-state permissions remain valid.
+
 ## Install dark
 
 First capture and validate an offline rollback backup while both Paperclip services are inactive:
@@ -28,7 +38,7 @@ sudo ./install-dark.sh
 
 The installation succeeds only if `verify-dark.sh` proves that the service is masked, the activation marker is absent, no container or listener exists, and related services/timers remain inactive.
 
-Release `2026.713.0-gloops.2` is accepted for a later bounded pilot, not proven by one. Its compiled control-plane runtime contains no coding-agent CLI or build/test toolchain. The exact digest's raw Trivy inventory contains 26 HIGH/CRITICAL occurrences (16 unique IDs): all four application CRITICAL matches and three application HIGH matches are stale `0.3.1` metadata for repaired source paths with named regression tests, while the two remaining operating-system CRITICAL matches are not affected because Archive::Tar is absent and the published runtimes are 64-bit. The versioned OpenVEX ledger preserves those dispositions without hiding the raw scan. There is no known reachable, unmitigated critical finding; remaining HIGH operating-system matches stay visible for continuing base-image maintenance. This security acceptance does not activate Paperclip or satisfy the separate quality-first SDLC pilot.
+Release `2026.713.0-gloops.2` was accepted for a later bounded pilot, not proven by one. Candidate `2026.713.0-gloops.3` adds the read-only activation repairs and must receive the same exact-digest acceptance before installation. The compiled control-plane runtime contains no coding-agent CLI or build/test toolchain. The accepted `.2` digest's raw Trivy inventory contains 26 HIGH/CRITICAL occurrences (16 unique IDs): all four application CRITICAL matches and three application HIGH matches are stale `0.3.1` metadata for repaired source paths with named regression tests, while the two remaining operating-system CRITICAL matches are not affected because Archive::Tar is absent and the published runtimes are 64-bit. The versioned OpenVEX ledger preserves those dispositions without hiding the raw scan. There is no known reachable, unmitigated critical finding; remaining HIGH operating-system matches stay visible for continuing base-image maintenance. Security acceptance does not activate Paperclip or satisfy the separate quality-first SDLC pilot.
 
 ## Rollback evidence
 

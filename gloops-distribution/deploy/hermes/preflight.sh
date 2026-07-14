@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:75eecd6c29eb365c3361d68170b896e2f5b22019146df46381dd1ef1977af0c3'
+readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:395e63aa1d6fc7883d61fa55a9e59345f2416aa9511ad3cf56153f6c5b0f49aa'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
@@ -24,6 +24,25 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
   exit 1
 }
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
+  echo "Grok/xAI API configuration is forbidden" >&2
+  exit 1
+fi
+provider_config=(
+  /etc/paperclip-gloops
+  /etc/gloops-runner.env
+  /etc/hermes-agent.env
+  /opt/paperclip/hermes-home/.env
+  /opt/paperclip/hermes-home/config.yaml
+  /opt/paperclip/grok-shared-runner/runner.env
+  /root/.hermes/config.yaml
+  /root/.hermes/.env
+)
+existing_provider_config=()
+for path in "${provider_config[@]}"; do
+  [[ -e "${path}" ]] && existing_provider_config+=("${path}")
+done
+if ((${#existing_provider_config[@]} > 0)) \
+  && grep -RIEq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)=' "${existing_provider_config[@]}"; then
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1
 fi

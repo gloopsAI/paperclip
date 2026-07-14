@@ -3,10 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.713.0-gloops.2",
+    "version": "2026.713.0-gloops.3",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
-    "image": "ghcr.io/gloopsai/paperclip-gloops"
+    "image": "ghcr.io/gloopsai/paperclip-gloops",
+    "digest": "sha256:395e63aa1d6fc7883d61fa55a9e59345f2416aa9511ad3cf56153f6c5b0f49aa"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -16,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.713.0-gloops.2.json"
+    "vex": "gloops-distribution/security/vex-2026.713.0-gloops.3.json"
   },
   "patches": [
     {
@@ -68,6 +69,25 @@
       "integratedCommits": ["ceec206764047115cc07c3abecc57d32f2da47b0"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalently minimal compiled control-plane runtime target with no coding-agent CLIs or build/test toolchain, plus exact-digest SBOM, provenance, secret-scan, and VEX acceptance."
+    },
+    {
+      "id": "read-only-control-plane-activation",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "0ca09f6c816c63b997ff1d5d1847be08d1fd7527",
+      "sourceHead": "b75989308a70aae394e54ba44e78a78427afee88",
+      "patchDiffSha256": "cb9f11b286922f129b2ec77948bfdfc49f760f33449a5fb3d4245967636f2f2e",
+      "integratedCommits": [
+        "829e2fa48530c4c30e35c477a050db86af8ac1e6",
+        "185ada73db579742290d6400eae6a99a4bb0c9ef",
+        "1ee596fab67b7096bacff5f4b69e4b6149e76360",
+        "12c36745de117e752b2f05bcf303e4dce87784f6",
+        "a142a5017fdd66b1239530397af5d8b3faf6ed37",
+        "c43e4e60f99cb3f47898d13ed813be8a55cdbb28",
+        "b75989308a70aae394e54ba44e78a78427afee88"
+      ],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the production image starts from persisted legacy state under a read-only root filesystem, with build-time native-library preparation and state-path lockstep enforced by release verification."
     }
   ],
   "releasePolicy": {

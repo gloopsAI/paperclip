@@ -59,6 +59,8 @@ export async function ensureLinuxSharedLibraryAliases(libDir: string): Promise<s
 
     const aliasName = match[1];
     const aliasPath = path.join(libDir, aliasName);
+    if (await pathExists(aliasPath)) continue;
+
     try {
       await fs.symlink(entry.name, aliasPath);
       created.push(aliasPath);

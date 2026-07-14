@@ -60,6 +60,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const acceptedRunIds = new Set<string>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-rewake-throttle-");
@@ -68,12 +69,25 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
   }, 20_000);
 
   afterEach(async () => {
+    const agentIds = await db.select({ id: agents.id }).from(agents).then((rows) => rows.map((row) => row.id));
+    await db.update(agents).set({ status: "paused" });
+    await heartbeat.cancelInvocationsForAgents(agentIds, "test teardown");
     runningProcesses.clear();
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-      if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    const runIds = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).then((rows) => rows.map((row) => row.id));
+    for (const runId of new Set([...acceptedRunIds, ...runIds])) {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const status = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .limit(1)
+          .then((rows) => rows[0]?.status ?? null);
+        if (status !== "queued" && status !== "running") break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await heartbeat.waitForRunExecutionDrain(runId);
     }
+    acceptedRunIds.clear();
     await db.delete(environmentLeases);
     await db.delete(issueComments);
     await db.delete(issues);
@@ -162,8 +176,14 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     return runId;
   }
 
+  async function trackAcceptedWake(wakeup: ReturnType<typeof heartbeat.wakeup>) {
+    const run = await wakeup;
+    if (run) acceptedRunIds.add(run.id);
+    return run;
+  }
+
   function assignmentWake(agentId: string, issueId: string) {
-    return heartbeat.wakeup(agentId, {
+    return trackAcceptedWake(heartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -171,7 +191,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       requestedByActorType: "system",
       requestedByActorId: "test",
-    });
+    }));
   }
 
   async function latestWakeRequest(agentId: string) {
@@ -234,7 +254,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
-    const commentWake = await heartbeat.wakeup(agentId, {
+    const commentWake = await trackAcceptedWake(heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -242,7 +262,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       contextSnapshot: { issueId, wakeReason: "issue_commented" },
       requestedByActorType: "system",
       requestedByActorId: "test",
-    });
+    }));
     expect(commentWake).not.toBeNull();
   });
 
