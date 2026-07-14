@@ -6,7 +6,8 @@
     "version": "2026.713.0-gloops.3",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
-    "image": "ghcr.io/gloopsai/paperclip-gloops"
+    "image": "ghcr.io/gloopsai/paperclip-gloops",
+    "digest": "sha256:2687bdd253cb78d91389b5d410f5112588da869cfdb452b35e81b8bd54b2d3d6"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
