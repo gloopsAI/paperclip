@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:b7ab5a223aa2d98d83877dc9b8c2e775d4f5f3c4db408f6d9ec4b7caccb773e5'
+readonly HERMES_IMAGE='hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 
@@ -18,6 +19,10 @@ for unit in paperclip.service gloops-runner.service hermes-agent.service papercl
     exit 1
   fi
 done
+docker image inspect "${HERMES_IMAGE}" >/dev/null 2>&1 || {
+  echo "the pre-provisioned immutable Hermes execution image is missing: ${HERMES_IMAGE}" >&2
+  exit 1
+}
 
 install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"

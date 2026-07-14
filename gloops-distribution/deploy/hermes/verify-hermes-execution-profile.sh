@@ -41,6 +41,18 @@ if jq -e '
   (.credential_pool | keys | sort) == ["ollama-cloud", "openai-codex"] and
   (.credential_pool["ollama-cloud"] | length > 0) and
   (.credential_pool["openai-codex"] | length > 0) and
+  all(.credential_pool["ollama-cloud"][];
+    .auth_type == "api_key" and
+    .source == "env:OLLAMA_API_KEY" and
+    .base_url == "https://ollama.com/v1" and
+    ((keys - ["auth_type", "base_url", "id", "label", "last_error_code", "last_error_message", "last_error_reason", "last_error_reset_at", "last_status", "last_status_at", "priority", "request_count", "secret_fingerprint", "source"]) | length == 0)) and
+  all(.credential_pool["openai-codex"][];
+    .auth_type == "oauth" and
+    .source == "manual:device_code" and
+    .base_url == "https://chatgpt.com/backend-api/codex" and
+    (.access_token | type == "string" and length > 0) and
+    (.refresh_token | type == "string" and length > 0) and
+    ((keys - ["access_token", "auth_type", "base_url", "id", "label", "last_error_code", "last_error_message", "last_error_reason", "last_error_reset_at", "last_refresh", "last_status", "last_status_at", "priority", "refresh_token", "request_count", "source"]) | length == 0)) and
   (.providers == {}) and
   (.active_provider == "ollama-cloud")
 ' "${PROFILE_DIR}/auth.json" >/dev/null 2>&1; then
@@ -49,7 +61,11 @@ else
   fail 'credential pool is missing, malformed, or over-broad'
 fi
 
-if python3 - "${PROFILE_DIR}/config.yaml" <<'PY'
+if docker run --rm --network none --read-only -i \
+  --entrypoint /opt/hermes/.venv/bin/python \
+  --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
+  'hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78' \
+  - /config.yaml <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
@@ -77,6 +93,7 @@ if jq -e '
   .network.apiAuthentication == "bearer-key-required" and
   .network.publishedPorts == [] and
   .runtime.image == "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78" and
+  .runtime.imageAcquisition == "preprovisioned-local-digest" and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then

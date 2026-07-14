@@ -75,14 +75,33 @@ PY
 
 jq -e '
   (.credential_pool["ollama-cloud"] | type == "array" and length > 0) and
-  (.credential_pool["openai-codex"] | type == "array" and length > 0)
+  (.credential_pool["openai-codex"] | type == "array" and length > 0) and
+  all(.credential_pool["ollama-cloud"][];
+    .auth_type == "api_key" and
+    .source == "env:OLLAMA_API_KEY" and
+    .base_url == "https://ollama.com/v1") and
+  all(.credential_pool["openai-codex"][];
+    .auth_type == "oauth" and
+    .source == "manual:device_code" and
+    .base_url == "https://chatgpt.com/backend-api/codex" and
+    (.access_token | type == "string" and length > 0) and
+    (.refresh_token | type == "string" and length > 0))
 ' "${SOURCE_AUTH}" >/dev/null
 jq '{
   version,
   providers: {},
   credential_pool: {
-    "ollama-cloud": .credential_pool["ollama-cloud"],
-    "openai-codex": .credential_pool["openai-codex"]
+    "ollama-cloud": [.credential_pool["ollama-cloud"][] | {
+      id, label, auth_type, priority, source, base_url, last_status,
+      last_status_at, last_error_code, last_error_reason, last_error_message,
+      last_error_reset_at, request_count, secret_fingerprint
+    }],
+    "openai-codex": [.credential_pool["openai-codex"][] | {
+      id, label, auth_type, priority, source, access_token, refresh_token,
+      base_url, last_status, last_status_at, last_error_code,
+      last_error_reason, last_error_message, last_error_reset_at,
+      last_refresh, request_count
+    }]
   },
   updated_at,
   active_provider: "ollama-cloud",

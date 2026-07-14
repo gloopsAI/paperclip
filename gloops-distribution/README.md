@@ -65,6 +65,12 @@ AgentMail, email, Anthropic/OpenRouter, and Grok/xAI API credentials are absent.
 Grok remains a separately governed host CLI and is never represented as an API
 provider in this profile.
 
+The current Hermes artifact is a host-provisioned image pinned by local content
+digest, not a registry image. The installer verifies that exact digest before
+making any filesystem or systemd change and fails closed if it is absent. Image
+provisioning therefore remains an explicit host bootstrap responsibility rather
+than an undeclared network pull or mutable-tag dependency.
+
 The Docker network permits ordinary outbound transport; provider restriction is
 enforced by credential capability rather than an egress proxy. This limitation
 is explicit so the profile does not claim network isolation it does not provide.

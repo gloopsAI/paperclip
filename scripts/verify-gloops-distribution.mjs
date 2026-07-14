@@ -222,6 +222,9 @@ if (
 if (hermesExecutionPolicy.runtime?.image !== hermesExecutionImage) {
   fail("Hermes execution image must be immutable and exact");
 }
+if (hermesExecutionPolicy.runtime?.imageAcquisition !== "preprovisioned-local-digest") {
+  fail("Hermes execution image acquisition must be explicit");
+}
 if (
   !/^model:\n  provider: ollama-cloud\n  default: kimi-k2\.7-code$/m.test(hermesExecutionConfig) ||
   !/provider: openai-codex\n    model: gpt-5\.5\n    base_url: https:\/\/chatgpt\.com\/backend-api\/codex/m.test(hermesExecutionConfig)
@@ -265,6 +268,7 @@ for (const required of [
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
+  "pre-provisioned immutable Hermes execution image is missing",
 ]) {
   if (!installDark.includes(required)) {
     fail(`dark installer does not govern ${required}`);
@@ -292,8 +296,10 @@ for (const required of [
   "API_SERVER_HOST=0.0.0.0",
   "API_SERVER_PORT=8642",
   "secrets.token_hex(32)",
-  '"ollama-cloud": .credential_pool["ollama-cloud"]',
-  '"openai-codex": .credential_pool["openai-codex"]',
+  '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
+  '"openai-codex": [.credential_pool["openai-codex"][]',
+  'base_url == "https://ollama.com/v1"',
+  'base_url == "https://chatgpt.com/backend-api/codex"',
 ]) {
   if (!prepareHermesExecution.includes(required)) {
     fail(`Hermes profile preparation is missing ${required}`);
