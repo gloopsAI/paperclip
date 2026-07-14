@@ -116,6 +116,9 @@ if (!gloopsStage) {
   if (!gloopsStage[1].includes('CMD ["node", "dist/index.js"]')) {
     fail("gloops-production must run the compiled server without a TypeScript loader");
   }
+  if (!/ARG USER_UID=995\s+ARG USER_GID=985/.test(gloopsStage[1])) {
+    fail("gloops-production image identity must match the Hermes runtime UID/GID");
+  }
 }
 if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
   fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");
@@ -143,6 +146,9 @@ if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/conf
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
+}
+if (!service.includes("--user 995:985")) {
+  fail("Hermes service UID/GID must match the GLoops image identity");
 }
 const approvedImage = `${distribution.image}@${distribution.digest}`;
 for (const [label, contents] of [

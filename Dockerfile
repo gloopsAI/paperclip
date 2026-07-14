@@ -116,8 +116,8 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # image so the deployed control plane does not inherit coding CLIs, shells tools,
 # or credentials that belong to execution workers.
 FROM node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169 AS gloops-production
-ARG USER_UID=1000
-ARG USER_GID=1000
+ARG USER_UID=995
+ARG USER_GID=985
 WORKDIR /app
 
 RUN apt-get update \

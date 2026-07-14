@@ -18,6 +18,9 @@ The container receives the existing host state at
 bind-mount target in lockstep. The target intentionally matches the compiled
 runtime's safe fallback as well, so logger initialization cannot escape the
 writable state mount under the read-only root filesystem.
+The image's `node` passwd entry and the service's explicit runtime identity are
+both `995:985`, matching the host `paperclip` owner; keep all three in lockstep
+so native PostgreSQL user discovery and persisted-state permissions remain valid.
 
 ## Install dark
 
