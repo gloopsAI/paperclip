@@ -75,14 +75,15 @@
       "sourceKind": "downstream",
       "upstreamPullRequest": null,
       "sourceBase": "0ca09f6c816c63b997ff1d5d1847be08d1fd7527",
-      "sourceHead": "a142a5017fdd66b1239530397af5d8b3faf6ed37",
-      "patchDiffSha256": "4e9b36b8f7760221f6f9ae243dbd61c840d8081f5ab2f8cbe3c6b8f1ebc7de2a",
+      "sourceHead": "c43e4e60f99cb3f47898d13ed813be8a55cdbb28",
+      "patchDiffSha256": "ba075b94f45ebc8e28267ecd170375e8068bf8aba399e66f7ea485ce7193a247",
       "integratedCommits": [
         "829e2fa48530c4c30e35c477a050db86af8ac1e6",
         "185ada73db579742290d6400eae6a99a4bb0c9ef",
         "1ee596fab67b7096bacff5f4b69e4b6149e76360",
         "12c36745de117e752b2f05bcf303e4dce87784f6",
-        "a142a5017fdd66b1239530397af5d8b3faf6ed37"
+        "a142a5017fdd66b1239530397af5d8b3faf6ed37",
+        "c43e4e60f99cb3f47898d13ed813be8a55cdbb28"
       ],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the production image starts from persisted legacy state under a read-only root filesystem, with build-time native-library preparation and state-path lockstep enforced by release verification."
