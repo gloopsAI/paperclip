@@ -1,0 +1,15 @@
+model:
+  provider: ollama-cloud
+  default: kimi-k2.7-code
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.5
+    base_url: https://chatgpt.com/backend-api/codex
+agent:
+  max_turns: 24
+  verify_on_stop: true
+security:
+  redact_secrets: true
+  tirith_enabled: true
+  tirith_fail_open: false
+_config_version: 35

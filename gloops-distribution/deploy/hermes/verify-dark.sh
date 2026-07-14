@@ -14,7 +14,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-hermes-execution.service; do
   check_inactive "${unit}"
 done
 
@@ -22,6 +22,20 @@ if [[ "$(systemctl is-enabled paperclip-gloops.service 2>/dev/null || true)" == 
   echo "PASS paperclip-gloops.service is masked"
 else
   echo "FAIL paperclip-gloops.service is not masked" >&2
+  failed=1
+fi
+
+if [[ "$(systemctl is-enabled paperclip-hermes-execution.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-hermes-execution.service is masked"
+else
+  echo "FAIL paperclip-hermes-execution.service is not masked" >&2
+  failed=1
+fi
+
+if [[ ! -e /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED ]]; then
+  echo "PASS Hermes execution activation marker is absent"
+else
+  echo "FAIL Hermes execution activation marker exists" >&2
   failed=1
 fi
 
@@ -46,11 +60,18 @@ else
   echo "PASS no paperclip-gloops container exists"
 fi
 
-if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)3100$'; then
-  echo "FAIL Paperclip loopback HTTP port is listening" >&2
+if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-execution'; then
+  echo "FAIL paperclip-hermes-execution container exists" >&2
   failed=1
 else
-  echo "PASS no Paperclip loopback HTTP listener exists"
+  echo "PASS no paperclip-hermes-execution container exists"
+fi
+
+if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)(3100|8642)$'; then
+  echo "FAIL Paperclip or Hermes execution HTTP port is listening" >&2
+  failed=1
+else
+  echo "PASS no Paperclip or Hermes execution HTTP listener exists"
 fi
 
 serve_status="$(mktemp)"
@@ -176,6 +197,13 @@ for required in \
 done
 if [[ "${failed}" -eq 0 ]]; then
   echo "PASS resource and container-security bounds are installed"
+fi
+
+if /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source; then
+  echo "PASS Hermes execution-only profile is installed"
+else
+  echo "FAIL Hermes execution-only profile is invalid" >&2
+  failed=1
 fi
 
 exit "${failed}"

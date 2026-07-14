@@ -32,6 +32,30 @@ const verifyDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-dark.sh",
   import.meta.url,
 );
+const rollbackPath = new URL(
+  "../gloops-distribution/deploy/hermes/rollback.sh",
+  import.meta.url,
+);
+const hermesExecutionConfigPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-execution-config.yaml",
+  import.meta.url,
+);
+const hermesExecutionPolicyPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-execution-policy.json",
+  import.meta.url,
+);
+const hermesExecutionServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-hermes-execution.service",
+  import.meta.url,
+);
+const prepareHermesExecutionPath = new URL(
+  "../gloops-distribution/deploy/hermes/prepare-hermes-execution-profile.sh",
+  import.meta.url,
+);
+const verifyHermesExecutionPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-execution-profile.sh",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
@@ -40,6 +64,12 @@ const service = readFileSync(servicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
+const rollback = readFileSync(rollbackPath, "utf8");
+const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
+const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
+const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
+const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
+const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
 try {
@@ -152,6 +182,131 @@ if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paper
 }
 if (!service.includes("--user 995:985")) {
   fail("Hermes service UID/GID must match the GLoops image identity");
+}
+if (!service.includes("--network paperclip-execution")) {
+  fail("Paperclip and Hermes must share the named execution network");
+}
+
+const hermesExecutionImage =
+  "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78";
+if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
+  fail("Hermes execution policy schema is not pinned");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.allowedProviders) !==
+  JSON.stringify(["ollama-cloud", "openai-codex"])
+) {
+  fail("Hermes execution provider allowlist must contain only Ollama Cloud and Codex subscription");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.allowedRuntimeEnvironment) !==
+  JSON.stringify(["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"])
+) {
+  fail("Hermes execution runtime environment allowlist is not exact");
+}
+if (
+  hermesExecutionPolicy.grok?.mode !== "host-cli-only" ||
+  hermesExecutionPolicy.grok?.apiEnvironmentAllowed !== false
+) {
+  fail("Grok must remain host-CLI-only with API configuration forbidden");
+}
+if (
+  hermesExecutionPolicy.network?.name !== "paperclip-execution" ||
+  hermesExecutionPolicy.network?.apiAlias !== "hermes-execution" ||
+  hermesExecutionPolicy.network?.apiPort !== 8642 ||
+  hermesExecutionPolicy.network?.apiAuthentication !== "bearer-key-required" ||
+  JSON.stringify(hermesExecutionPolicy.network?.publishedPorts) !== "[]"
+) {
+  fail("Hermes inter-container network contract is incomplete");
+}
+if (hermesExecutionPolicy.runtime?.image !== hermesExecutionImage) {
+  fail("Hermes execution image must be immutable and exact");
+}
+if (
+  !/^model:\n  provider: ollama-cloud\n  default: kimi-k2\.7-code$/m.test(hermesExecutionConfig) ||
+  !/provider: openai-codex\n    model: gpt-5\.5\n    base_url: https:\/\/chatgpt\.com\/backend-api\/codex/m.test(hermesExecutionConfig)
+) {
+  fail("Hermes model routing must prefer Ollama subscription and fall back to Codex subscription");
+}
+for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
+  if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
+    fail(`Hermes execution configuration must not include ${forbidden}`);
+  }
+}
+for (const required of [
+  `Environment=HERMES_EXECUTION_IMAGE=${hermesExecutionImage}`,
+  "--network paperclip-execution",
+  "--network-alias hermes-execution",
+  "--read-only",
+  "--cap-drop ALL",
+  "--security-opt no-new-privileges:true",
+  "--env-file /etc/paperclip-gloops/hermes-execution.env",
+  "--health-cmd",
+  "--memory 2048m",
+  "--memory-swap 2048m",
+  "--cpus 2.0",
+  "--pids-limit 512",
+  "gateway run --replace",
+]) {
+  if (!hermesExecutionService.includes(required)) {
+    fail(`Hermes execution service is missing ${required}`);
+  }
+}
+for (const forbidden of ["/opt/paperclip/hermes-home", "--publish", "XAI_API_KEY", "GROK_API_KEY", "SLACK_"]) {
+  if (hermesExecutionService.includes(forbidden)) {
+    fail(`Hermes execution service contains forbidden runtime surface ${forbidden}`);
+  }
+}
+for (const required of [
+  "prepare-hermes-execution-profile.sh",
+  "verify-hermes-execution-profile.sh",
+  "paperclip-hermes-execution.service",
+  "hermes-execution-config.yaml",
+  "hermes-execution-policy.json",
+  "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
+]) {
+  if (!installDark.includes(required)) {
+    fail(`dark installer does not govern ${required}`);
+  }
+}
+if (!preflight.includes("verify-hermes-execution-profile.sh --live")) {
+  fail("Paperclip activation preflight must require a live verified Hermes execution profile");
+}
+if (!verifyDark.includes("verify-hermes-execution-profile.sh --source")) {
+  fail("dark verification must validate the installed Hermes execution profile");
+}
+for (const required of [
+  "HERMES_EXECUTION_APPROVED",
+  "paperclip-hermes-execution.service",
+  "hermes-execution-profile",
+  "hermes-execution-state",
+  "docker network rm paperclip-execution",
+]) {
+  if (!rollback.includes(required)) {
+    fail(`rollback does not remove ${required}`);
+  }
+}
+for (const required of [
+  "API_SERVER_ENABLED=true",
+  "API_SERVER_HOST=0.0.0.0",
+  "API_SERVER_PORT=8642",
+  "secrets.token_hex(32)",
+  '"ollama-cloud": .credential_pool["ollama-cloud"]',
+  '"openai-codex": .credential_pool["openai-codex"]',
+]) {
+  if (!prepareHermesExecution.includes(required)) {
+    fail(`Hermes profile preparation is missing ${required}`);
+  }
+}
+for (const required of [
+  "credential pool is limited to Ollama Cloud and Codex subscription",
+  "live container publishes no host ports",
+  "live authenticated API boundary is healthy",
+  "Grok is host-CLI-only with no API configuration",
+]) {
+  if (!verifyHermesExecution.includes(required)) {
+    fail(`Hermes execution verification is missing ${required}`);
+  }
 }
 for (const providerConfigPath of [
   "/opt/paperclip/hermes-home/.env",
