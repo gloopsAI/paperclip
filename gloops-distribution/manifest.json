@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.713.0-gloops.2",
+    "version": "2026.713.0-gloops.3",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops"
@@ -16,7 +16,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.713.0-gloops.2.json"
+    "vex": "gloops-distribution/security/vex-2026.713.0-gloops.3.json"
   },
   "patches": [
     {
@@ -68,6 +68,17 @@
       "integratedCommits": ["ceec206764047115cc07c3abecc57d32f2da47b0"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalently minimal compiled control-plane runtime target with no coding-agent CLIs or build/test toolchain, plus exact-digest SBOM, provenance, secret-scan, and VEX acceptance."
+    },
+    {
+      "id": "read-only-control-plane-activation",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "0ca09f6c816c63b997ff1d5d1847be08d1fd7527",
+      "sourceHead": "829e2fa48530c4c30e35c477a050db86af8ac1e6",
+      "patchDiffSha256": "5404c15fb40412e018520c05ba17407ba7eb68170d9dfe862d733a32cc725bd9",
+      "integratedCommits": ["829e2fa48530c4c30e35c477a050db86af8ac1e6"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the production image starts from persisted legacy state under a read-only root filesystem, with build-time native-library preparation and state-path lockstep enforced by release verification."
     }
   ],
   "releasePolicy": {
