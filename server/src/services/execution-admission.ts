@@ -110,15 +110,32 @@ export function parseExecutionAdmissionPolicy(
 export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissionEnvelope | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Partial<ExecutionAdmissionEnvelope>;
+  const observed = candidate.observed as Partial<ExecutionAdmissionUsage> | undefined;
+  const validObserved = observed && [
+    observed.runCount,
+    observed.retryCount,
+    observed.inputTokens,
+    observed.cachedInputTokens,
+    observed.outputTokens,
+    observed.wallMs,
+  ].every((item) => typeof item === "number" && Number.isSafeInteger(item) && item >= 0);
+  const validReason = candidate.reason === null || [
+    "run_limit_exhausted",
+    "retry_limit_exhausted",
+    "input_token_limit_exhausted",
+    "output_token_limit_exhausted",
+    "wall_time_limit_exhausted",
+  ].includes(candidate.reason as string);
   if (
     candidate.schemaVersion !== EXECUTION_ADMISSION_SCHEMA_VERSION ||
-    typeof candidate.budgetId !== "string" ||
-    typeof candidate.epoch !== "string" ||
-    typeof candidate.policyDigest !== "string" ||
-    !Number.isSafeInteger(candidate.attempt) ||
+    typeof candidate.budgetId !== "string" || candidate.budgetId.length > 256 ||
+    typeof candidate.epoch !== "string" || !RESET_ID.test(candidate.epoch) && candidate.epoch !== "default" ||
+    typeof candidate.policyDigest !== "string" || !/^[a-f0-9]{64}$/.test(candidate.policyDigest) ||
+    !Number.isSafeInteger(candidate.attempt) || (candidate.attempt ?? 0) < 1 ||
     (candidate.decision !== "allowed" && candidate.decision !== "denied") ||
-    !candidate.observed ||
-    typeof candidate.evaluatedAt !== "string"
+    !validReason ||
+    !validObserved ||
+    typeof candidate.evaluatedAt !== "string" || !Number.isFinite(Date.parse(candidate.evaluatedAt))
   ) {
     return null;
   }

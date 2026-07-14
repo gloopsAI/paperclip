@@ -9954,11 +9954,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     row: { usageJson: unknown; startedAt: Date | null; finishedAt: Date | null },
     now: Date,
   ): PriorExecutionRun {
-    const usage = readRawUsageTotals(row.usageJson);
+    const persistedUsage = parseObject(row.usageJson);
+    // Task budgets use the normalized per-run usage that also feeds Paperclip's
+    // cost ledger. Raw fields can be session-cumulative and would double-count
+    // resumed work. Fall back to raw only for legacy rows without normalized data.
+    const usage = {
+      inputTokens: Math.max(0, Math.floor(asNumber(
+        persistedUsage.inputTokens,
+        asNumber(persistedUsage.rawInputTokens, 0),
+      ))),
+      cachedInputTokens: Math.max(0, Math.floor(asNumber(
+        persistedUsage.cachedInputTokens,
+        asNumber(persistedUsage.rawCachedInputTokens, 0),
+      ))),
+      outputTokens: Math.max(0, Math.floor(asNumber(
+        persistedUsage.outputTokens,
+        asNumber(persistedUsage.rawOutputTokens, 0),
+      ))),
+    };
     return {
-      inputTokens: usage?.inputTokens ?? 0,
-      cachedInputTokens: usage?.cachedInputTokens ?? 0,
-      outputTokens: usage?.outputTokens ?? 0,
+      inputTokens: usage.inputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      outputTokens: usage.outputTokens,
       wallMs: row.startedAt
         ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
         : 0,

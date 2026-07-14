@@ -120,6 +120,11 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       status: "succeeded",
       startedAt: new Date("2026-07-13T00:00:00Z"),
       finishedAt: new Date("2026-07-13T00:00:01Z"),
+      usageJson: {
+        inputTokens: 1_000,
+        rawInputTokens: 200_000,
+        usageSource: "session_delta",
+      },
       contextSnapshot: { gloopsExecutionAdmission: parentEnvelope },
     });
 

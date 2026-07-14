@@ -3,6 +3,7 @@ import {
   buildExecutionAdmissionEnvelope,
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
+  readExecutionAdmissionEnvelope,
   resolveExecutionBudgetIdentity,
 } from "./execution-admission.js";
 
@@ -86,5 +87,9 @@ describe("execution admission", () => {
       resetId: "operator-2",
       requestedByActorType: "system",
     })).toThrow("only valid on a user-requested wake");
+
+    expect(readExecutionAdmissionEnvelope(parent)).toEqual(parent);
+    expect(readExecutionAdmissionEnvelope({ ...parent, policyDigest: "forged" })).toBeNull();
+    expect(readExecutionAdmissionEnvelope({ ...parent, observed: { ...parent.observed, runCount: -1 } })).toBeNull();
   });
 });
