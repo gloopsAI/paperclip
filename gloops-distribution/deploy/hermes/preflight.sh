@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:38e0bd4725377cb930290f033b19418e0ccb1c3efc773243f66d25f5fb6e3d9f'
+readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:75eecd6c29eb365c3361d68170b896e2f5b22019146df46381dd1ef1977af0c3'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
@@ -16,6 +16,19 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
 
 [[ "${PAPERCLIP_IMAGE:-}" == "${EXPECTED_IMAGE}" ]] || {
   echo "service image does not match the approved immutable digest" >&2
+  exit 1
+}
+
+[[ "${PAPERCLIP_MTE_ENABLED:-}" == 'false' ]] || {
+  echo "Maximum Token Efficiency must remain explicitly disabled" >&2
+  exit 1
+}
+if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
+  echo "Grok/xAI API configuration is forbidden" >&2
+  exit 1
+fi
+[[ -x /opt/grok-build/bin/grok ]] || {
+  echo "the governed Grok CLI is unavailable" >&2
   exit 1
 }
 

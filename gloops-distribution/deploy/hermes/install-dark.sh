@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:38e0bd4725377cb930290f033b19418e0ccb1c3efc773243f66d25f5fb6e3d9f'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:75eecd6c29eb365c3361d68170b896e2f5b22019146df46381dd1ef1977af0c3'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 
@@ -23,8 +23,10 @@ install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/failure-alert.mjs" "${LIB_DIR}/failure-alert.mjs"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/configure-tailnet-https.sh" "${LIB_DIR}/configure-tailnet-https.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-dark.sh" "${LIB_DIR}/verify-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rollback.sh" "${LIB_DIR}/rollback.sh"
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
@@ -41,4 +43,5 @@ systemctl disable --now paperclip.service gloops-runner.service hermes-agent.ser
 systemctl disable --now paperclip-gloops.service 2>/dev/null || true
 systemctl mask paperclip-gloops.service
 
+"${LIB_DIR}/configure-tailnet-https.sh"
 "${LIB_DIR}/verify-dark.sh"
