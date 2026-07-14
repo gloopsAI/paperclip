@@ -88,10 +88,7 @@
       "sourceBase": "2473fd3959fb61d0b9e5e705d992226f709690ef",
       "sourceHead": "cbc5d2dd99eec69da24f773735d214089babd2f4",
       "patchDiffSha256": "59fca9b1a401948029666eaa1a8aabe7f5472b66e9c492e61862c2e40f37930c",
-      "integratedCommits": [
-        "25384844b3a36652c3d7a366c24b70f27c1b8196",
-        "cbc5d2dd99eec69da24f773735d214089babd2f4"
-      ],
+      "integratedCommits": ["a5735da54ad5ae2a78eb4aa04ce2594b53fef9ee"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides one claim-time task execution budget spanning every retry and recovery producer, with atomic concurrent admission, operator-only reset epochs, and persisted allow/deny receipts."
     }
