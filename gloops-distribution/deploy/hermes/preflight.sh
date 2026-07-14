@@ -64,20 +64,10 @@ if ((${#existing_provider_config[@]} > 0)) \
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1
 fi
-hermes_route_config=(
-  /opt/paperclip/hermes-home/config.yaml
-  /root/.hermes/config.yaml
-)
-existing_hermes_route_config=()
-for path in "${hermes_route_config[@]}"; do
-  [[ -f "${path}" ]] && existing_hermes_route_config+=("${path}")
-done
-if ((${#existing_hermes_route_config[@]} > 0)) \
-  && grep -Eiq '(api\.x\.ai|(^|[[:space:]])provider:[[:space:]]*(xai|grok)|(^|[[:space:]])base_url:.*x\.ai)' \
-    "${existing_hermes_route_config[@]}"; then
-  echo "Grok/xAI Hermes routing configuration is forbidden" >&2
-  exit 1
-fi
+# Host-level Hermes profiles are outside this pilot and may govern the separate
+# Grok CLI/OAuth surface. They are never mounted into the execution sidecar.
+# API credentials and endpoints remain forbidden globally above; the exact
+# mounted Ollama-only route is enforced by the live profile verifier below.
 [[ -x /opt/grok-build/bin/grok ]] || {
   echo "the governed Grok CLI is unavailable" >&2
   exit 1

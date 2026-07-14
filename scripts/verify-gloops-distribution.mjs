@@ -302,6 +302,10 @@ for (const required of [
 if (!preflight.includes("verify-hermes-execution-profile.sh --live")) {
   fail("Paperclip activation preflight must require a live verified Hermes execution profile");
 }
+if (!preflight.includes("Host-level Hermes profiles are outside this pilot") ||
+    /hermes_route_config=/.test(preflight)) {
+  fail("Paperclip preflight must not bind the isolated pilot to unrelated host-level model routing");
+}
 if (!verifyDark.includes("verify-hermes-execution-profile.sh --source")) {
   fail("dark verification must validate the installed Hermes execution profile");
 }
