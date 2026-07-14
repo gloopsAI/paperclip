@@ -150,6 +150,18 @@ if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paper
 if (!service.includes("--user 995:985")) {
   fail("Hermes service UID/GID must match the GLoops image identity");
 }
+for (const providerConfigPath of [
+  "/opt/paperclip/hermes-home/.env",
+  "/opt/paperclip/hermes-home/config.yaml",
+  "/opt/paperclip/grok-shared-runner/runner.env",
+]) {
+  if (!verifyDark.includes(providerConfigPath)) {
+    fail(`dark verification must inspect ${providerConfigPath} for forbidden Grok/xAI API configuration`);
+  }
+  if (!preflight.includes(providerConfigPath)) {
+    fail(`activation preflight must inspect ${providerConfigPath} for forbidden Grok/xAI API configuration`);
+  }
+}
 const approvedImage = `${distribution.image}@${distribution.digest}`;
 for (const [label, contents] of [
   ["install-dark.sh", installDark],

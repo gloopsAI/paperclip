@@ -7,7 +7,7 @@
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:2687bdd253cb78d91389b5d410f5112588da869cfdb452b35e81b8bd54b2d3d6"
+    "digest": "sha256:4963ed91ce769ce37cae0e44b26289337058f09e5a347597f6b49fa6be22024e"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:2687bdd253cb78d91389b5d410f5112588da869cfdb452b35e81b8bd54b2d3d6'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:4963ed91ce769ce37cae0e44b26289337058f09e5a347597f6b49fa6be22024e'
 failed=0
 
 check_inactive() {
@@ -113,6 +113,9 @@ provider_config=(
   /usr/local/lib/systemd/system/paperclip-gloops.service
   /etc/gloops-runner.env
   /etc/hermes-agent.env
+  /opt/paperclip/hermes-home/.env
+  /opt/paperclip/hermes-home/config.yaml
+  /opt/paperclip/grok-shared-runner/runner.env
   /root/.hermes/config.yaml
   /root/.hermes/.env
 )
