@@ -464,6 +464,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  executionTruthReceipt: z.record(z.string(), z.unknown()).optional().nullable(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
 

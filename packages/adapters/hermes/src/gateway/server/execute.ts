@@ -12,6 +12,13 @@ import {
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  assertPromptFitsInvocationBudget,
+  hasProhibitedGrokApiConfiguration,
+  readBoundExecutionContext,
+  renderBoundExecutionContext,
+} from "@paperclipai/adapter-utils/execution-envelope";
+import {
   ADAPTER_TYPE,
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
@@ -53,6 +60,9 @@ type ExecutionState = {
   terminal: TerminalState | null;
   resolveTerminal: (state: TerminalState) => void;
   terminalPromise: Promise<TerminalState>;
+  toolCallCount: number;
+  toolCallIds: Set<string>;
+  outputBytes: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -261,7 +271,27 @@ function buildHeaders(input: {
   };
 }
 
-function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
+export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
+  const rawBinding = ctx.context[PAPERCLIP_EXECUTION_CONTEXT_KEY];
+  const binding = readBoundExecutionContext(rawBinding);
+  if (rawBinding !== undefined && rawBinding !== null && !binding) {
+    const error = new Error("Bound execution context failed validation") as Error & { code?: string };
+    error.code = "execution_context.invalid_binding";
+    throw error;
+  }
+  if (binding) {
+    return [
+      `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
+      "",
+      "Execution contract:",
+      "- Continue only the bound work packet below.",
+      "- Preserve its authority, exact-head, verification, and continuation constraints.",
+      "- Do not reconstruct or request legacy transcript/task context.",
+      "- Leave a terminal execution-truth receipt or an explicitly bounded continuation.",
+      "",
+      renderBoundExecutionContext(binding),
+    ].join("\n");
+  }
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
   const taskMarkdown = nonEmpty(ctx.context.paperclipTaskMarkdown);
@@ -299,10 +329,17 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
 }
 
-function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
+export function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  if (hasProhibitedGrokApiConfiguration({ adapterConfig: ctx.config, payloadTemplate })) {
+    const error = new Error("Grok/xAI API configuration is forbidden before Hermes dispatch") as Error & { code?: string };
+    error.code = "execution_route.prohibited_grok_api";
+    throw error;
+  }
+  const binding = readBoundExecutionContext(ctx.context[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
+  const input = binding ? buildInput(ctx, paperclipApiUrl) : nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  assertPromptFitsInvocationBudget(input, ctx.executionBudget);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -311,6 +348,7 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
     ...payloadTemplate,
     input,
     instructions,
+    ...(ctx.executionBudget ? { execution_budget: ctx.executionBudget } : {}),
     ...(sessionKey ? { session_id: sessionKey } : {}),
   };
 }
@@ -421,6 +459,9 @@ function createExecutionState(runId: string): ExecutionState {
     terminal: null,
     resolveTerminal,
     terminalPromise,
+    toolCallCount: 0,
+    toolCallIds: new Set<string>(),
+    outputBytes: 0,
   };
 }
 
@@ -468,7 +509,43 @@ async function handleEvent(
   if (eventName === "message.delta" && delta) {
     const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
+    state.outputBytes += Buffer.byteLength(sanitizedDelta, "utf8");
     await ctx.onLog("stdout", sanitizedDelta);
+  }
+
+  const toolCallId = nonEmpty(record?.toolCallId) ?? nonEmpty(record?.tool_call_id);
+  const toolStarted = eventName === "tool.started" ||
+    (eventName === "hermes.tool.progress" && record?.status === "running");
+  if (toolStarted && (!toolCallId || !state.toolCallIds.has(toolCallId))) {
+    if (toolCallId) state.toolCallIds.add(toolCallId);
+    state.toolCallCount += 1;
+  }
+
+  const budget = ctx.executionBudget;
+  const estimatedOutputTokens = Math.ceil(state.outputBytes / 4);
+  const exceeded = budget
+    ? state.toolCallCount > budget.maxToolCalls
+      ? "tool_calls"
+      : state.toolCallCount + 1 > budget.maxTurns
+        ? "turns"
+        : estimatedOutputTokens > budget.maxOutputTokens
+          ? "output_tokens"
+          : null
+    : null;
+  if (exceeded) {
+    markTerminal(state, {
+      runId: state.runId,
+      status: "failed",
+      eventName: "execution.budget_exceeded",
+      payload: {
+        error: `Hermes run stopped after exceeding reserved ${exceeded}`,
+        error_code: "execution_admission.provider_budget_exceeded",
+        exceeded,
+        tool_call_count: state.toolCallCount,
+        estimated_output_tokens: estimatedOutputTokens,
+      },
+    });
+    return;
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
@@ -649,6 +726,7 @@ export function mapFinalResultForTest(input: {
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
   const mapped = terminalResultCode(input.terminal.status);
+  const payloadErrorCode = nonEmpty((payload as Record<string, unknown>).error_code);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
   const errorMessage = mapped.errorCode
@@ -660,7 +738,7 @@ export function mapFinalResultForTest(input: {
     timedOut: false,
     provider: "hermes_gateway",
     model: extractModel(payload),
-    ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
+    ...(mapped.errorCode ? { errorCode: payloadErrorCode ?? mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
@@ -798,11 +876,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const timeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
+  const configuredTimeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
+  const timeoutSec = ctx.executionBudget
+    ? Math.max(0.001, Math.min(configuredTimeoutSec || Number.POSITIVE_INFINITY, ctx.executionBudget.maxWallMs / 1000))
+    : configuredTimeoutSec;
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const rawBinding = ctx.context[PAPERCLIP_EXECUTION_CONTEXT_KEY];
+  const binding = readBoundExecutionContext(rawBinding);
+  if (rawBinding !== undefined && rawBinding !== null && !binding) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_context.invalid_binding",
+      errorMessage: "Bound execution context failed validation before provider dispatch.",
+    };
+  }
+  const configuredStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const strategy: SessionKeyStrategy = binding ? "none" : configuredStrategy;
   const sessionKey = resolveSessionKey({
     strategy,
     companyId: ctx.agent.companyId,
@@ -832,7 +925,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  let body: Record<string, unknown>;
+  try {
+    body = buildRunBody(ctx, sessionKey);
+  } catch (error) {
+    return errorResult(error, redactText);
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -904,6 +1002,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
   controller.abort();
+
+  if (outcome !== "timeout" && outcome.eventName === "execution.budget_exceeded") {
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+  }
 
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });

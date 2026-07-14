@@ -65,6 +65,7 @@ export function createServerAdapter(): ServerAdapterModule {
     sessionManagement,
     models,
     supportsLocalAgentJwt: false,
+    supportsExecutionBudget: true,
     supportsInstructionsBundle: false,
     requiresMaterializedRuntimeSkills: false,
     agentConfigurationDoc,

@@ -182,6 +182,8 @@ import {
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
   buildExecutionAdmissionEnvelope,
   evaluateExecutionAdmission,
+  evaluateExecutionReservationUsage,
+  executionInvocationBudgetFromEnvelope,
   parseExecutionAdmissionPolicy,
   readExecutionAdmissionEnvelope,
   resolveExecutionBudgetIdentity,
@@ -189,6 +191,13 @@ import {
   type ExecutionAdmissionReason,
   type PriorExecutionRun,
 } from "./execution-admission.js";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  buildExecutionRetryReceipt,
+  evaluateExecutionTruthTransition,
+  readBoundExecutionContext,
+} from "@paperclipai/adapter-utils/execution-envelope";
 
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -8831,7 +8840,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const boundExecutionContext = readBoundExecutionContext(contextSnapshot[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
+    const requestedMaxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const maxAttempts = boundExecutionContext ? Math.min(1, requestedMaxAttempts) : requestedMaxAttempts;
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const computedBaseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
@@ -8856,8 +8868,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
-    const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (boundExecutionContext) {
+      const workId = readNonEmptyString((boundExecutionContext.packet.work as Record<string, unknown> | undefined)?.id)
+        ?? issueId
+        ?? run.id;
+      if (!contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY] && retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+        const routePathId = readNonEmptyString(parseObject(run.usageJson).provider) ?? agent.adapterType;
+        contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY] = buildExecutionRetryReceipt({
+          workId,
+          routePathIds: [routePathId],
+          continuationValid: true,
+        });
+        await db.update(heartbeatRuns).set({ contextSnapshot, updatedAt: now }).where(eq(heartbeatRuns.id, run.id));
+      }
+      const transitionDecision = evaluateExecutionTruthTransition({
+        transition: "retry",
+        workId,
+        receipt: contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY],
+      });
+      if (!transitionDecision.allowed) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Scheduled retry suppressed by the execution-truth transition gate",
+          payload: {
+            retryReason,
+            transition: "retry",
+            reason: transitionDecision.reason,
+            packetDigest: boundExecutionContext.digest,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: `Execution-truth retry gate denied: ${transitionDecision.reason}`,
+          errorCode: "execution_truth_transition_denied" as const,
+          issueId,
+        };
+      }
+    }
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -8978,6 +9028,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       Object.keys(workspaceValidationRetryPayload).length > 0;
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
+      ...(boundExecutionContext ? { forceFreshSession: true } : {}),
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
@@ -9951,10 +10002,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     | { kind: "lost_race" };
 
   function priorExecutionRun(
-    row: { usageJson: unknown; startedAt: Date | null; finishedAt: Date | null },
+    row: { usageJson: unknown; contextSnapshot: unknown; startedAt: Date | null; finishedAt: Date | null },
     now: Date,
   ): PriorExecutionRun {
     const persistedUsage = parseObject(row.usageJson);
+    const reservation = executionInvocationBudgetFromEnvelope(
+      parseObject(row.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
+    );
+    const useReservation = row.finishedAt === null || row.usageJson === null || row.usageJson === undefined;
     // Task budgets use the normalized per-run usage that also feeds Paperclip's
     // cost ledger. Raw fields can be session-cumulative and would double-count
     // resumed work. Fall back to raw only for legacy rows without normalized data.
@@ -9973,10 +10028,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ))),
     };
     return {
-      inputTokens: usage.inputTokens,
+      inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
-      outputTokens: usage.outputTokens,
-      wallMs: row.startedAt
+      outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
+      wallMs: useReservation && reservation
+        ? reservation.maxWallMs
+        : row.startedAt
         ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
         : 0,
     };
@@ -10078,6 +10135,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const priorRows = await tx
         .select({
           usageJson: heartbeatRuns.usageJson,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
           startedAt: heartbeatRuns.startedAt,
           finishedAt: heartbeatRuns.finishedAt,
         })
@@ -13025,13 +13083,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
-      try {
+      let adapterInvocationAttempted = false;
+      const invocationBudget = executionInvocationBudgetFromEnvelope(
+        parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
+      );
+      if (invocationBudget && adapter.supportsExecutionBudget !== true) {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "execution_admission.adapter_budget_unsupported",
+          errorMessage: `Adapter ${agent.adapterType} cannot prove provider-invocation budget enforcement`,
+          clearSession: true,
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else try {
+        adapterInvocationAttempted = true;
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context,
+          executionBudget: invocationBudget,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution
@@ -13139,7 +13213,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = "failed";
       }
 
-      const nextSessionState = resolveNextSessionState({
+      let nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
         codec: sessionCodec,
         adapterResult,
@@ -13157,6 +13231,66 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         usageBasis: adapterResult.usageBasis ?? null,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
+      let accountedUsage = normalizedUsage;
+      const reservationUsage = invocationBudget && normalizedUsage
+        ? evaluateExecutionReservationUsage({
+            reservation: invocationBudget,
+            inputTokens: normalizedUsage.inputTokens,
+            outputTokens: normalizedUsage.outputTokens,
+            wallMs: run.startedAt ? Math.max(0, Date.now() - new Date(run.startedAt).getTime()) : 0,
+          })
+        : null;
+      if (invocationBudget && adapterInvocationAttempted && !normalizedUsage) {
+        outcome = "failed";
+        // Missing provider usage cannot be treated as zero. Charge the full
+        // reservation to the task budget so a failed/malformed adapter cannot
+        // reopen capacity on a later retry.
+        accountedUsage = {
+          inputTokens: invocationBudget.maxInputTokens,
+          cachedInputTokens: 0,
+          outputTokens: invocationBudget.maxOutputTokens,
+        };
+        adapterResult = {
+          ...adapterResult,
+          errorCode: "execution_admission.usage_missing",
+          errorMessage: "Provider completed without usage needed to reconcile its execution reservation",
+          clearSession: true,
+          resultJson: {
+            ...parseObject(adapterResult.resultJson),
+            executionReservation: { compliant: false, exceeded: ["usage_missing"], reservation: invocationBudget },
+          },
+        };
+        nextSessionState = resolveNextSessionState({
+          adapterType: agent.adapterType,
+          codec: sessionCodec,
+          adapterResult,
+          outcome,
+          previousParams: previousSessionParams,
+          previousDisplayId: runtimeForAdapter.sessionDisplayId,
+          previousLegacySessionId: runtimeForAdapter.sessionId,
+        });
+      } else if (reservationUsage && !reservationUsage.compliant) {
+        outcome = "failed";
+        adapterResult = {
+          ...adapterResult,
+          errorCode: "execution_admission.reservation_exceeded",
+          errorMessage: `Provider usage exceeded its reserved execution envelope (${reservationUsage.exceeded.join(", ")})`,
+          clearSession: true,
+          resultJson: {
+            ...parseObject(adapterResult.resultJson),
+            executionReservation: { compliant: false, exceeded: reservationUsage.exceeded, reservation: invocationBudget },
+          },
+        };
+        nextSessionState = resolveNextSessionState({
+          adapterType: agent.adapterType,
+          codec: sessionCodec,
+          adapterResult,
+          outcome,
+          previousParams: previousSessionParams,
+          previousDisplayId: runtimeForAdapter.sessionDisplayId,
+          previousLegacySessionId: runtimeForAdapter.sessionId,
+        });
+      }
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
@@ -13197,15 +13331,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : "failed";
 
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
+        accountedUsage || adapterResult.costUsd != null
           ? ({
-              ...(normalizedUsage ?? {}),
+              ...(accountedUsage ?? {}),
               ...(rawUsage ? {
                 rawInputTokens: rawUsage.inputTokens,
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
                 rawOutputTokens: rawUsage.outputTokens,
               } : {}),
-              ...(sessionUsageResolution.derivedFromSessionTotals
+              ...(!normalizedUsage && accountedUsage
+                ? { usageSource: "reservation_fallback" }
+                : sessionUsageResolution.derivedFromSessionTotals
                 ? { usageSource: "session_delta" }
                 : adapterResult.usageBasis === "per_run"
                   ? { usageSource: "per_run" }
@@ -13224,6 +13360,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              ...(invocationBudget ? {
+                executionReservation: {
+                  ...invocationBudget,
+                  compliant: reservationUsage?.compliant ?? null,
+                  exceeded: reservationUsage?.exceeded ?? [],
+                },
+              } : {}),
             } as Record<string, unknown>)
           : null;
 
