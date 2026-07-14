@@ -11,6 +11,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - Installed Paperclip plugin packages are mounted read-only; provider credentials and host workspaces are not mounted.
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
+- A claim-time task execution gate applies one atomic run, retry, token, and wall-time budget across scheduler, continuation, and recovery paths. An exhausted task is terminally denied before adapter invocation; only an explicit user-authored reset epoch opens a new budget.
 
 The container receives the existing host state at
 `/home/paperclip/.paperclip`, and the runtime explicitly sets
