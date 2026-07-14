@@ -1,0 +1,67 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://gloops.ai/vex/paperclip-gloops/2026.713.0-gloops.4",
+  "author": "GLoops Platform",
+  "role": "Document Creator",
+  "timestamp": "2026-07-14T07:23:11Z",
+  "version": 1,
+  "tooling": "GLoops exact-digest release acceptance",
+  "statements": [
+    {
+      "vulnerability": { "@id": "CVE-2026-41679" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "The distribution source enforces authenticated, company-scoped, CEO-safe import preview and import behavior; test evidence: server/src/__tests__/company-portability-routes.test.ts and server/src/__tests__/company-portability.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "GHSA-3xx2-mqjm-hg9x" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "Agent key routes resolve the target agent and assert company access before key operations; test evidence: server/src/__tests__/agent-cross-tenant-authz-routes.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "GHSA-47wq-cj9q-wpmp" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "Agent API token creation is company-scoped through the same accessible-agent authorization boundary; test evidence: server/src/__tests__/agent-cross-tenant-authz-routes.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "GHSA-vr7g-88fq-vhq3" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "Agent actors are forbidden from mutating host-executed cleanup commands at all workspace mutation boundaries; test evidence: server/src/__tests__/workspace-runtime-routes-authz.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "CVE-2026-41208" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "Agent actors are forbidden from mutating host-executed provision commands in adapter, project, issue, and runtime configuration; test evidence: server/src/__tests__/workspace-runtime-routes-authz.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "GHSA-w8hx-hqjv-vjcq" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "Skill-driven workspace command mutation is governed by the host-command authorization boundary and agent configuration permissions; test evidence: server/src/__tests__/workspace-runtime-routes-authz.test.ts and server/src/__tests__/agent-permissions-routes.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "GHSA-xfqj-r5qw-8g4j" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "fixed",
+      "impact_statement": "Authenticated-mode operational endpoints assert board or company access, including heartbeat run reads and cancellation; test evidence: server/src/__tests__/agent-permissions-routes.test.ts and server/src/__tests__/agent-cross-tenant-authz-routes.test.ts. The scanner match is caused by the retained upstream package version 0.3.1 rather than the distributed source contents."
+    },
+    {
+      "vulnerability": { "@id": "CVE-2026-42496" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The affected Archive::Tar module is absent from both supported runtime architectures; evidence: exact-image module-load and filesystem probes fail to locate Archive/Tar.pm. The base package scanner reports perl-base because Debian tracks the issue at the perl source-package level."
+    },
+    {
+      "vulnerability": { "@id": "CVE-2026-8376" },
+      "products": [{ "@id": "pkg:oci/paperclip-gloops@2026.713.0-gloops.4" }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The affected regex compiler overflow is limited to 32-bit Perl builds, while the release publishes only linux/amd64 and linux/arm64 images; evidence: the release workflow platform declaration and exact-image architecture probe."
+    }
+  ]
+}
