@@ -64,9 +64,15 @@ if ((${#existing_provider_config[@]} > 0)) \
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1
 fi
+readonly FORBIDDEN_PROVIDER_ENDPOINT_PATTERN='api\.x\.ai|(^|[[:space:]])base_url:[[:space:]]*[^#]*x\.ai'
+if ((${#existing_provider_config[@]} > 0)) \
+  && grep -RIEq "${FORBIDDEN_PROVIDER_ENDPOINT_PATTERN}" "${existing_provider_config[@]}"; then
+  echo "Grok/xAI API endpoint configuration is forbidden" >&2
+  exit 1
+fi
 # Host-level Hermes profiles are outside this pilot and may govern the separate
 # Grok CLI/OAuth surface. They are never mounted into the execution sidecar.
-# API credentials and endpoints remain forbidden globally above; the exact
+# API credentials and literal endpoints remain forbidden globally above; the exact
 # mounted Ollama-only route is enforced by the live profile verifier below.
 [[ -x /opt/grok-build/bin/grok ]] || {
   echo "the governed Grok CLI is unavailable" >&2

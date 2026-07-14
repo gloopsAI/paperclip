@@ -306,6 +306,10 @@ if (!preflight.includes("Host-level Hermes profiles are outside this pilot") ||
     /hermes_route_config=/.test(preflight)) {
   fail("Paperclip preflight must not bind the isolated pilot to unrelated host-level model routing");
 }
+if (!preflight.includes("FORBIDDEN_PROVIDER_ENDPOINT_PATTERN=") ||
+    !preflight.includes("Grok/xAI API endpoint configuration is forbidden")) {
+  fail("Paperclip preflight must still reject literal Grok/xAI API endpoints globally");
+}
 if (!verifyDark.includes("verify-hermes-execution-profile.sh --source")) {
   fail("dark verification must validate the installed Hermes execution profile");
 }
