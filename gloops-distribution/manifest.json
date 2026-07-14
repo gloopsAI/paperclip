@@ -75,9 +75,13 @@
       "sourceKind": "downstream",
       "upstreamPullRequest": null,
       "sourceBase": "0ca09f6c816c63b997ff1d5d1847be08d1fd7527",
-      "sourceHead": "829e2fa48530c4c30e35c477a050db86af8ac1e6",
-      "patchDiffSha256": "5404c15fb40412e018520c05ba17407ba7eb68170d9dfe862d733a32cc725bd9",
-      "integratedCommits": ["829e2fa48530c4c30e35c477a050db86af8ac1e6"],
+      "sourceHead": "1ee596fab67b7096bacff5f4b69e4b6149e76360",
+      "patchDiffSha256": "39e9581ad0d4f7e45f3193d83aab01939ebaad9c05c2f356d9aa4418311c6590",
+      "integratedCommits": [
+        "829e2fa48530c4c30e35c477a050db86af8ac1e6",
+        "185ada73db579742290d6400eae6a99a4bb0c9ef",
+        "1ee596fab67b7096bacff5f4b69e4b6149e76360"
+      ],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the production image starts from persisted legacy state under a read-only root filesystem, with build-time native-library preparation and state-path lockstep enforced by release verification."
     }
