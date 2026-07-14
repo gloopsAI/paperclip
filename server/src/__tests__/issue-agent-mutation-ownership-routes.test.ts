@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
@@ -33,6 +34,33 @@ async function withExecutionAdmission<T>(callback: () => Promise<T>): Promise<T>
       else process.env[key] = previous[key];
     }
   }
+}
+
+function executionTruthReceipt(workId = "PAP-1649") {
+  const body = {
+    schemaVersion: "gloops.execution-truth.operator-receipt.v2",
+    work: { id: workId },
+    budget: { exhausted: [] },
+    route: { observedPathIds: ["ollama-cloud-cli"], prohibitedPathObserved: false },
+    continuation: { required: false },
+    verification: {
+      exactHeadAligned: true,
+      exactHeadSha: "a".repeat(40),
+      allChecksPassed: true,
+      review: { status: "accepted", headSha: "a".repeat(40), unresolvedThreads: 0 },
+    },
+    authority: { humanRequired: false },
+    status: "built",
+  };
+  const stable = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(stable)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, entry]) => [key, stable(entry)]))
+      : value;
+  const digest = `sha256:${createHash("sha256").update(JSON.stringify(stable(body))).digest("hex")}`;
+  return { ...body, digest };
 }
 
 const mockIssueService = vi.hoisted(() => ({
@@ -953,6 +981,53 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  it("rejects execution truth from a same-company run owned by another agent", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+      const db = createRunContextDb({
+        issueId,
+        paperclipExecutionTruthReceipt: executionTruthReceipt(),
+      }, peerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done" });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("execution_truth_run_binding_invalid");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  it("rejects execution truth from an actor-owned run bound to another issue", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+      const db = createRunContextDb({
+        issueId: "99999999-9999-4999-8999-999999999999",
+        paperclipExecutionTruthReceipt: executionTruthReceipt(),
+      }, ownerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done" });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("execution_truth_run_binding_invalid");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  it("accepts execution truth only from the exact actor and issue run", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+      const db = createRunContextDb({
+        issueId,
+        paperclipExecutionTruthReceipt: executionTruthReceipt(),
+      }, ownerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+  });
+
   it("denies cross-company agents before comment authorization is evaluated", async () => {
     const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
       .post(`/api/issues/${issueId}/comments`)
@@ -1618,7 +1693,8 @@ describe("agent issue mutation checkout ownership", () => {
         id: recoveryActionId,
         ownerAgentId,
       });
-      const res = await request(await createApp(ownerActor()))
+      const db = createRunContextDb({ issueId }, ownerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
         .post(`/api/issues/${issueId}/recovery-actions/resolve`)
         .send({
           actionId: recoveryActionId,
@@ -1627,6 +1703,32 @@ describe("agent issue mutation checkout ownership", () => {
         });
       expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body.details?.code).toBe("execution_truth_transition_denied");
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+    });
+  });
+
+  it("blocks recovery completion using another agent's same-company run", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
+      );
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        ownerAgentId,
+      });
+      const db = createRunContextDb({
+        issueId,
+        paperclipExecutionTruthReceipt: executionTruthReceipt(),
+      }, peerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({
+          actionId: recoveryActionId,
+          outcome: "restored",
+          sourceIssueStatus: "done",
+        });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("execution_truth_run_binding_invalid");
       expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
     });
   });

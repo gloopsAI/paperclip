@@ -3384,6 +3384,42 @@ export function issueRoutes(
     return null;
   }
 
+  async function trustedExecutionTruthReceiptForAgentRun(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      throw unprocessable("Execution-truth transition requires an authenticated agent", {
+        code: "agent_auth_required",
+      });
+    }
+    const runId = req.actor.runId?.trim();
+    if (!runId) {
+      throw unprocessable("Execution-truth transition requires X-Paperclip-Run-Id", {
+        code: "run_id_required",
+      });
+    }
+    const run = await db.select({
+      agentId: heartbeatRuns.agentId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!run) {
+      throw unprocessable("Execution-truth receipt run was not found", { code: "run_not_found" });
+    }
+    const runContext = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : {};
+    if (run.agentId !== req.actor.agentId || runContext.issueId !== issue.id) {
+      throw unprocessable("Execution-truth receipt run is not bound to this actor and issue", {
+        code: "execution_truth_run_binding_invalid",
+      });
+    }
+    return runContext[PAPERCLIP_EXECUTION_RECEIPT_KEY];
+  }
+
   async function hasActiveCheckoutManagementOverride(
     actorAgentId: string,
     companyId: string,
@@ -5441,19 +5477,7 @@ export function issueRoutes(
     const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
     if (req.actor.type === "agent" && parseExecutionAdmissionPolicy().enabled &&
         (sourceIssueStatus === "in_review" || sourceIssueStatus === "done")) {
-      const runId = req.actor.runId?.trim();
-      if (!runId) {
-        throw unprocessable("Execution-truth transition requires X-Paperclip-Run-Id", {
-          code: "run_id_required",
-        });
-      }
-      const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, existing.companyId)))
-        .then((rows) => rows[0] ?? null);
-      const trustedReceipt = run?.contextSnapshot && typeof run.contextSnapshot === "object"
-        ? (run.contextSnapshot as Record<string, unknown>)[PAPERCLIP_EXECUTION_RECEIPT_KEY]
-        : null;
+      const trustedReceipt = await trustedExecutionTruthReceiptForAgentRun(req, existing);
       const decision = evaluateExecutionTruthTransition({
         transition: sourceIssueStatus === "in_review" ? "ready" : "completed",
         workId: existing.identifier ?? existing.id,
@@ -7616,20 +7640,7 @@ export function issueRoutes(
             code: "trusted_execution_truth_projector_required",
           });
         }
-        const runId = req.actor.runId?.trim();
-        if (!runId) {
-          throw unprocessable("Execution-truth transition requires X-Paperclip-Run-Id", {
-            code: "run_id_required",
-          });
-        }
-        const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, existing.companyId)))
-          .then((rows) => rows[0] ?? null);
-        if (!run) throw unprocessable("Execution-truth receipt run was not found", { code: "run_not_found" });
-        const trustedReceipt = run.contextSnapshot && typeof run.contextSnapshot === "object"
-          ? (run.contextSnapshot as Record<string, unknown>)[PAPERCLIP_EXECUTION_RECEIPT_KEY]
-          : null;
+        const trustedReceipt = await trustedExecutionTruthReceiptForAgentRun(req, existing);
         const decision = evaluateExecutionTruthTransition({
           transition,
           workId: existing.identifier ?? existing.id,
