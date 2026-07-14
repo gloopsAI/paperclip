@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -177,6 +177,19 @@ import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
 } from "./execution-allowlist.js";
+import {
+  EXECUTION_ADMISSION_CONTEXT_KEY,
+  EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
+  buildExecutionAdmissionEnvelope,
+  evaluateExecutionAdmission,
+  parseExecutionAdmissionPolicy,
+  readExecutionAdmissionEnvelope,
+  resolveExecutionBudgetIdentity,
+  type ExecutionAdmissionEnvelope,
+  type ExecutionAdmissionReason,
+  type PriorExecutionRun,
+} from "./execution-admission.js";
+
 import {
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -5019,6 +5032,9 @@ export function resolveHeartbeatSchedulingSuppression(
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  // Constructed during server startup. Enabling the gate with incomplete
+  // ceilings fails closed before this service can invoke any adapter.
+  const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -9923,6 +9939,228 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  type ExecutionAdmissionClaim =
+    | { kind: "claimed"; run: typeof heartbeatRuns.$inferSelect }
+    | {
+        kind: "denied";
+        run: typeof heartbeatRuns.$inferSelect;
+        errorCode: string;
+        reason: string;
+        envelope: ExecutionAdmissionEnvelope | null;
+      }
+    | { kind: "lost_race" };
+
+  function priorExecutionRun(
+    row: { usageJson: unknown; startedAt: Date | null; finishedAt: Date | null },
+    now: Date,
+  ): PriorExecutionRun {
+    const usage = readRawUsageTotals(row.usageJson);
+    return {
+      inputTokens: usage?.inputTokens ?? 0,
+      cachedInputTokens: usage?.cachedInputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      wallMs: row.startedAt
+        ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
+        : 0,
+    };
+  }
+
+  async function claimQueuedRunWithExecutionAdmission(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    context: Record<string, unknown>;
+    issueId: string | null;
+    responsibleUserId: string | null;
+    claimedAt: Date;
+  }): Promise<ExecutionAdmissionClaim> {
+    const { run, context, issueId, responsibleUserId, claimedAt } = input;
+    if (!executionAdmissionPolicy.enabled) {
+      const claimed = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return claimed ? { kind: "claimed", run: claimed } : { kind: "lost_race" };
+    }
+
+    const [parentRun, wakeup] = await Promise.all([
+      run.retryOfRunId
+        ? db
+          .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.retryOfRunId)))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      run.wakeupRequestId
+        ? db
+          .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+    const parentEnvelope = readExecutionAdmissionEnvelope(
+      parseObject(parentRun?.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
+    );
+
+    let identity: { budgetId: string; epoch: string };
+    try {
+      identity = resolveExecutionBudgetIdentity({
+        issueId,
+        runId: run.id,
+        retryOfRunId: run.retryOfRunId,
+        parentEnvelope,
+        resetId: context[EXECUTION_ADMISSION_RESET_CONTEXT_KEY],
+        requestedByActorType: wakeup?.requestedByActorType ?? null,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Invalid execution budget reset";
+      const denied = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: claimedAt,
+          updatedAt: claimedAt,
+          error: reason,
+          errorCode: "execution_admission.invalid_reset",
+          resultJson: {
+            ...parseObject(run.resultJson),
+            stopReason: "execution_admission.invalid_reset",
+            timeoutFired: false,
+          },
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return denied
+        ? { kind: "denied", run: denied, errorCode: "execution_admission.invalid_reset", reason, envelope: null }
+        : { kind: "lost_race" };
+    }
+
+    return db.transaction(async (tx) => {
+      // Serialize decisions for a task budget so concurrent recovery paths
+      // cannot both spend the same remaining attempt.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity.budgetId}, 0))`);
+
+      const exactBudgetCondition = and(
+        sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'budgetId' = ${identity.budgetId}`,
+        sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'decision' = 'allowed'`,
+      );
+      const legacyDefaultIssueCondition = issueId && identity.epoch === "default"
+        ? and(
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} is null`,
+          isNotNull(heartbeatRuns.startedAt),
+        )
+        : undefined;
+      const priorRows = await tx
+        .select({
+          usageJson: heartbeatRuns.usageJson,
+          startedAt: heartbeatRuns.startedAt,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          sql`${heartbeatRuns.id} <> ${run.id}`,
+          legacyDefaultIssueCondition ? or(exactBudgetCondition, legacyDefaultIssueCondition) : exactBudgetCondition,
+        ))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      const decision = evaluateExecutionAdmission(
+        executionAdmissionPolicy,
+        priorRows.map((row) => priorExecutionRun(row, claimedAt)),
+      );
+      const envelope = buildExecutionAdmissionEnvelope({
+        identity,
+        policy: executionAdmissionPolicy,
+        decision,
+        evaluatedAt: claimedAt,
+      });
+      const nextContext = { ...context, [EXECUTION_ADMISSION_CONTEXT_KEY]: envelope };
+
+      if (!decision.allowed) {
+        const admissionReason: ExecutionAdmissionReason = decision.reason!;
+        const errorCode = `execution_admission.${admissionReason}`;
+        const reason = `Cancelled before adapter invocation because the task execution budget is exhausted (${admissionReason})`;
+        const denied = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            contextSnapshot: nextContext,
+            finishedAt: claimedAt,
+            updatedAt: claimedAt,
+            error: reason,
+            errorCode,
+            resultJson: {
+              ...parseObject(run.resultJson),
+              stopReason: errorCode,
+              executionAdmission: envelope,
+              timeoutFired: false,
+            },
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return denied
+          ? { kind: "denied" as const, run: denied, errorCode, reason, envelope }
+          : { kind: "lost_race" as const };
+      }
+
+      const claimed = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          contextSnapshot: nextContext,
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return claimed ? { kind: "claimed" as const, run: claimed } : { kind: "lost_race" as const };
+    });
+  }
+
+  async function finalizeExecutionAdmissionDenial(
+    result: Extract<ExecutionAdmissionClaim, { kind: "denied" }>,
+  ) {
+    await setWakeupStatus(result.run.wakeupRequestId, "skipped", {
+      finishedAt: result.run.finishedAt ?? new Date(),
+      error: result.reason,
+    });
+    await appendRunEvent(result.run, await nextRunEventSeq(result.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: result.reason,
+      payload: {
+        errorCode: result.errorCode,
+        executionAdmission: result.envelope,
+      },
+    });
+    await logActivity(db, {
+      companyId: result.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: result.run.agentId,
+      runId: result.run.id,
+      action: "heartbeat.execution_admission_denied",
+      entityType: "heartbeat_run",
+      entityId: result.run.id,
+      details: {
+        errorCode: result.errorCode,
+        executionAdmission: result.envelope,
+      },
+    });
+    await releaseIssueExecutionAndPromote(result.run, { suppressImmediateRecovery: true });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -10018,18 +10256,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+    const admissionClaim = await claimQueuedRunWithExecutionAdmission({
+      run,
+      context,
+      issueId,
+      responsibleUserId,
+      claimedAt,
+    });
+    if (admissionClaim.kind === "lost_race") return null;
+    if (admissionClaim.kind === "denied") {
+      await finalizeExecutionAdmissionDenial(admissionClaim);
+      return null;
+    }
+    const claimed = admissionClaim.run;
 
     publishLiveEvent({
       companyId: claimed.companyId,

@@ -23,6 +23,28 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
   echo "Maximum Token Efficiency must remain explicitly disabled" >&2
   exit 1
 }
+[[ "${PAPERCLIP_EXECUTION_ADMISSION_ENABLED:-}" == 'true' ]] || {
+  echo "task execution admission must remain explicitly enabled" >&2
+  exit 1
+}
+for required_execution_ceiling in \
+  PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK \
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK \
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK \
+  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK; do
+  [[ "${!required_execution_ceiling:-}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "${required_execution_ceiling} must be a positive integer" >&2
+    exit 1
+  }
+done
+[[ "${PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK:-}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+  echo "PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK must be a non-negative integer" >&2
+  exit 1
+}
+((PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK < PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK)) || {
+  echo "task retries must be lower than total task runs" >&2
+  exit 1
+}
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1
