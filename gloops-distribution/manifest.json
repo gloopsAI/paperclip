@@ -97,11 +97,12 @@
       "sourceKind": "downstream",
       "upstreamPullRequest": null,
       "sourceBase": "77576bdd27576d989f8b8d238b53943f948d764f",
-      "sourceHead": "9331f1415cffb1c73a141f8e2e2f7e41ed241500",
-      "patchDiffSha256": "e0a76233b4141856a98ca7de63ff858366414ba48f3c058e6645a147e3768ea5",
+      "sourceHead": "7404f56f4b4fc9aa043eaffe2c230c4b056e9726",
+      "patchDiffSha256": "64e79c1d237bbc0d3ff146c3bbc76cc393edf63ff25a0d4e53e905edb09151e1",
       "integratedCommits": [
         "676eed68fe4c40606d623580e2d4086fc49a651d",
-        "9331f1415cffb1c73a141f8e2e2f7e41ed241500"
+        "9331f1415cffb1c73a141f8e2e2f7e41ed241500",
+        "7404f56f4b4fc9aa043eaffe2c230c4b056e9726"
       ],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream or the selected execution runtime provides an equivalent immutable execution-only profile with explicit provider and credential allowlists, no broad-home inheritance, an authenticated private sidecar network, bounded resources, dark installation, and rollback proof."
