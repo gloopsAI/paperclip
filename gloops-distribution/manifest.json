@@ -91,6 +91,17 @@
       "integratedCommits": ["a5735da54ad5ae2a78eb4aa04ce2594b53fef9ee"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides one claim-time task execution budget spanning every retry and recovery producer, with atomic concurrent admission, operator-only reset epochs, and persisted allow/deny receipts."
+    },
+    {
+      "id": "hermes-execution-only-profile",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "77576bdd27576d989f8b8d238b53943f948d764f",
+      "sourceHead": "676eed68fe4c40606d623580e2d4086fc49a651d",
+      "patchDiffSha256": "050eb07171d19b21709ee5f329962ac772f0845024f33b78de26de6db1618f26",
+      "integratedCommits": ["676eed68fe4c40606d623580e2d4086fc49a651d"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until upstream or the selected execution runtime provides an equivalent immutable execution-only profile with explicit provider and credential allowlists, no broad-home inheritance, an authenticated private sidecar network, bounded resources, dark installation, and rollback proof."
     }
   ],
   "releasePolicy": {
