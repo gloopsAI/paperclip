@@ -12,6 +12,13 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
 
+The container receives the existing host state at
+`/home/paperclip/.paperclip`, and the runtime explicitly sets
+`PAPERCLIP_HOME=/home/paperclip/.paperclip`. Keep the environment and
+bind-mount target in lockstep. The target intentionally matches the compiled
+runtime's safe fallback as well, so logger initialization cannot escape the
+writable state mount under the read-only root filesystem.
+
 ## Install dark
 
 First capture and validate an offline rollback backup while both Paperclip services are inactive:

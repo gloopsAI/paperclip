@@ -12,9 +12,19 @@ const workflowPath = new URL(
   "../.github/workflows/gloops-distribution.yml",
   import.meta.url,
 );
+const runtimeEnvPath = new URL(
+  "../gloops-distribution/deploy/hermes/runtime.env",
+  import.meta.url,
+);
+const servicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-gloops.service",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
+const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
+const service = readFileSync(servicePath, "utf8");
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
 try {
@@ -92,6 +102,9 @@ if (!gloopsStage) {
 if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
   fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");
 }
+if (!dockerfile.includes("await prepareEmbeddedPostgresNativeRuntime();")) {
+  fail("Dockerfile must prepare embedded Postgres shared-library aliases before read-only launch");
+}
 if (!/^\s+target: gloops-production$/m.test(workflow)) {
   fail("distribution workflow must build the gloops-production target");
 }
@@ -100,6 +113,18 @@ if (/\b(CLAUDE_CODE|CODEX|OPENCODE|GEMINI_CLI)_VERSION=/m.test(workflow)) {
 }
 if (!gloopsStage?.[1].includes("/usr/local/lib/node_modules/npm")) {
   fail("gloops-production must remove the npm build/package-management toolchain");
+}
+if (!/^PAPERCLIP_HOME=\/home\/paperclip\/\.paperclip$/m.test(runtimeEnv)) {
+  fail("Hermes runtime must point PAPERCLIP_HOME at the writable state mount");
+}
+if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
+  fail("Hermes runtime HOME must contain the writable Paperclip state mount");
+}
+if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
+  fail("Hermes runtime must load the persisted instance configuration from the state mount");
+}
+if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
+  fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
 }
 
 if (vex) {

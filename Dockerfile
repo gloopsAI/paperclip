@@ -54,6 +54,8 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 RUN PAPERCLIP_RELEASE_REUSE_UI_DIST=1 pnpm --filter @paperclipai/server prepare:ui-dist \
   && node scripts/prepare-gloops-runtime.mjs \
   && pnpm --config.auto-install-peers=false --filter @paperclipai/server deploy --prod --frozen-lockfile /runtime \
+  && cd /runtime \
+  && node --input-type=module -e "const { prepareEmbeddedPostgresNativeRuntime } = await import('@paperclipai/db'); await prepareEmbeddedPostgresNativeRuntime();" \
   && rm -rf \
     /runtime/node_modules/.pnpm/@esbuild+* \
     /runtime/node_modules/.pnpm/esbuild@* \
