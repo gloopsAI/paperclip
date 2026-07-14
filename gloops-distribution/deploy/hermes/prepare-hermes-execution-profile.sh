@@ -46,8 +46,8 @@ done
 install -d -m 0750 -o 10000 -g 985 "${STATE_DIR}/workspace"
 
 tmp_env="$(mktemp "${CONFIG_DIR}/.hermes-execution.env.XXXXXX")"
-tmp_auth="$(mktemp "${PROFILE_DIR}/.auth.json.XXXXXX")"
-tmp_gh_hosts="$(mktemp "${PROFILE_DIR}/.gh-hosts.XXXXXX")"
+tmp_auth="$(mktemp "${CONFIG_DIR}/.hermes-execution-auth.XXXXXX")"
+tmp_gh_hosts="$(mktemp "${CONFIG_DIR}/.hermes-execution-gh-hosts.XXXXXX")"
 trap 'rm -f "${tmp_env}" "${tmp_auth}" "${tmp_gh_hosts}"' EXIT
 
 python3 - "${SOURCE_ENV}" "${RUNTIME_ENV}" "${tmp_env}" <<'PY'
@@ -120,8 +120,11 @@ printf 'github.com:\n  git_protocol: https\n  user: zach-hermes\n  oauth_token: 
 install -m 0600 -o root -g root "${tmp_env}" "${RUNTIME_ENV}"
 install -m 0600 -o 10000 -g 10000 "${tmp_auth}" "${PROFILE_DIR}/auth.json"
 install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-config.yaml" "${PROFILE_DIR}/config.yaml"
+rm -rf "${PROFILE_DIR}/gh"
 install -d -m 0700 -o 10000 -g 10000 "${PROFILE_DIR}/gh"
 install -m 0400 -o 10000 -g 10000 "${tmp_gh_hosts}" "${PROFILE_DIR}/gh/hosts.yml"
+install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-gh-config.yml" "${PROFILE_DIR}/gh/config.yml"
+chmod 0500 "${PROFILE_DIR}/gh"
 install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-gitconfig" "${PROFILE_DIR}/gitconfig"
 install -m 0600 -o root -g root "${LIB_DIR}/hermes-execution-policy.json" "${PROFILE_DIR}/policy.json"
 rm -f "${PROFILE_DIR}/.env" "${STATE_DIR}/.env" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
