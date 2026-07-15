@@ -39,6 +39,11 @@
     "broadEnvironmentSourcedAtRuntime": false,
     "rootHomeEphemeral": true,
     "persistentPaths": ["cache", "logs", "memories", "sessions", "workspace"],
+    "backgroundExecution": {
+      "cronProvider": "disabled",
+      "kanbanDispatcher": false,
+      "paperclipPluginScheduler": "empty-tables-locked-and-receipted"
+    },
     "providerInvocationBudget": {
       "required": true,
       "maxInputTokens": 30000,

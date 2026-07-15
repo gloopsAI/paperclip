@@ -85,6 +85,18 @@ const githubAppCredentialsTestPath = new URL(
   "../gloops-distribution/deploy/hermes/github_app_credentials_test.py",
   import.meta.url,
 );
+const stopHermesExecutionPath = new URL(
+  "../gloops-distribution/deploy/hermes/stop-hermes-execution.py",
+  import.meta.url,
+);
+const stopHermesExecutionTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/stop_hermes_execution_test.py",
+  import.meta.url,
+);
+const hermesCronDisabledPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-cron-disabled/__init__.py",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
@@ -104,6 +116,8 @@ const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
+const stopHermesExecution = readFileSync(stopHermesExecutionPath, "utf8");
+const hermesCronDisabled = readFileSync(hermesCronDisabledPath, "utf8");
 const githubAppConfig = JSON.parse(readFileSync(githubAppConfigPath, "utf8"));
 try {
   execFileSync("python3", [githubAppCredentialsTestPath.pathname], {
@@ -112,6 +126,14 @@ try {
   });
 } catch (error) {
   fail(`GitHub App broker unit tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("python3", [stopHermesExecutionTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Hermes stop helper unit tests failed: ${error instanceof Error ? error.message : error}`);
 }
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
@@ -240,6 +262,7 @@ for (const required of [
   "PAPERCLIP_MTE_ENABLED=false",
   "issue_recovery_actions",
   "agent_wakeup_requests",
+  "plugin_jobs, plugin_job_runs IN ACCESS EXCLUSIVE MODE",
   "timeout --signal=TERM --kill-after=5s 180s docker exec",
   "IN ACCESS EXCLUSIVE MODE",
   "evidence_pid=$!",
@@ -380,10 +403,26 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "preprovisioned-local-di
   fail("Hermes execution image acquisition must be explicit");
 }
 if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.backgroundExecution) !==
+  JSON.stringify({
+    cronProvider: "disabled",
+    kanbanDispatcher: false,
+    paperclipPluginScheduler: "empty-tables-locked-and-receipted",
+  })
+) {
+  fail("Hermes and Paperclip background execution containment is not explicit");
+}
+if (
   !/^model:\n  provider: ollama-cloud\n  default: kimi-k2\.7-code$/m.test(hermesExecutionConfig) ||
   /fallback_providers|openai-codex|chatgpt\.com\/backend-api\/codex/m.test(hermesExecutionConfig)
 ) {
   fail("Hermes bounded-pilot routing must use Ollama Cloud with no fallback provider");
+}
+if (
+  !/^cron:\n  provider: disabled$/m.test(hermesExecutionConfig) ||
+  !/^kanban:\n  dispatch_in_gateway: false$/m.test(hermesExecutionConfig)
+) {
+  fail("Hermes cron and kanban background execution must be disabled");
 }
 for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
   if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
@@ -401,6 +440,7 @@ for (const required of [
   "--env-file /etc/paperclip-gloops/hermes-execution.env",
   "src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly",
   "src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly",
+  "src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly",
   "--health-cmd",
   "http://127.0.0.1:8642/v1/models",
   "--memory 2048m",
@@ -410,7 +450,8 @@ for (const required of [
   "gateway run --replace",
   "ExecStartPost=/usr/local/lib/paperclip-gloops/restore-hermes-workspace-observer.sh",
   "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-hermes",
-  "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes",
+  "ExecStop=/usr/local/lib/paperclip-gloops/stop-hermes-execution.py",
+  "ExecStopPost=/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes",
   "TimeoutStopSec=90",
 ]) {
   if (!hermesExecutionService.includes(required)) {
@@ -436,6 +477,8 @@ for (const required of [
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
   "github-app-credentials.py",
+  "stop-hermes-execution.py",
+  "hermes-cron-disabled",
   "github-app.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
   "pre-provisioned immutable Hermes execution image is missing",
@@ -537,6 +580,8 @@ for (const required of [
   'except CredentialRetentionError as error:',
   'except Exception:',
   'record_revocation(token_path, token)',
+  'archive_completed_receipt()',
+  'credential-history.jsonl',
   '"revokedAt": None',
   'def read_root_secret(path: Path, label: str)',
   'mode not in {0o400, 0o600}',
@@ -549,6 +594,26 @@ for (const required of [
   if (!githubAppCredentials.includes(required)) {
     fail(`GitHub App broker is missing ${required}`);
   }
+}
+for (const required of [
+  '"gateway",',
+  '"stop",',
+  'gateway_state.json',
+  'receipt["gatewayState"] = "stopped" if graceful else None',
+  'hermes-stop-history.jsonl',
+  'receipt["plannedStopAccepted"] = graceful',
+  'receipt["containerStopped"] = stopped',
+]) {
+  if (!stopHermesExecution.includes(required)) {
+    fail(`Hermes stop helper is missing ${required}`);
+  }
+}
+if (
+  !hermesCronDisabled.includes("class DisabledCronScheduler(CronScheduler)") ||
+  !hermesCronDisabled.includes("stop_event.wait()") ||
+  /fire_due|on_jobs_changed|reconcile|cron_tick|while\s/.test(hermesCronDisabled)
+) {
+  fail("Hermes disabled cron provider must be shutdown-only and unable to fire work");
 }
 for (const forbidden of ["zach-hermes", "xai", "grok", "GITHUB_TOKEN", "GH_TOKEN"]) {
   if (githubAppCredentials.includes(forbidden)) {
@@ -570,6 +635,8 @@ if (hermesExecutionService.includes("revoke-projector")) {
 }
 for (const required of [
   "GitHub App credential receipt records both successful revocations",
+  "append-only GitHub credential lifecycle history is complete",
+  "append-only Hermes stop history is complete and digest-verified",
   ".hermes.revokedAt",
   ".projector.revokedAt",
 ]) {

@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -32,6 +32,7 @@ PROJECTOR_TOKEN = RUNTIME / "projector-github-token"
 PROJECTOR_ROTATED = RUNTIME / "projector-token-rotated"
 HERMES_HOSTS = Path("/opt/paperclip/hermes-execution-profile/gh/hosts.yml")
 RECEIPT = RUNTIME / "credential-receipt.json"
+HISTORY = Path("/var/lib/paperclip-gloops/credential-history.jsonl")
 API_BASE = "https://api.github.com"
 
 WRITE_PERMISSIONS = {
@@ -223,6 +224,61 @@ def receipt_base(config: dict[str, object]) -> dict[str, object]:
     }
 
 
+def timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def receipt_complete(receipt: object) -> bool:
+    if not isinstance(receipt, dict):
+        return False
+    for role in ("hermes", "projector"):
+        entry = receipt.get(role)
+        if not isinstance(entry, dict) or not isinstance(entry.get("revokedAt"), str):
+            return False
+    return True
+
+
+def archive_completed_receipt() -> None:
+    if not RECEIPT.exists():
+        return
+    receipt = json.loads(RECEIPT.read_text())
+    if not receipt_complete(receipt):
+        return
+    archived = dict(receipt)
+    archived.pop("receiptDigest", None)
+    if not isinstance(archived.get("lifecycleId"), str):
+        legacy = json.dumps(archived, sort_keys=True, separators=(",", ":"))
+        archived["lifecycleId"] = "legacy-" + hashlib.sha256(legacy.encode()).hexdigest()[:24]
+        archived["legacyReceipt"] = True
+    if not isinstance(archived.get("completedAt"), str):
+        archived["completedAt"] = timestamp()
+    canonical = json.dumps(archived, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    archived["receiptDigest"] = digest
+
+    existing = HISTORY.read_text() if HISTORY.exists() else ""
+    for line in existing.splitlines():
+        record = json.loads(line)
+        if not isinstance(record, dict):
+            raise CredentialError("GitHub credential history is malformed")
+        if record.get("receiptDigest") == digest:
+            if receipt.get("receiptDigest") != digest:
+                receipt["completedAt"] = archived["completedAt"]
+                receipt["receiptDigest"] = digest
+                receipt["lifecycleId"] = archived["lifecycleId"]
+                if archived.get("legacyReceipt") is True:
+                    receipt["legacyReceipt"] = True
+                atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+            return
+    atomic_write(HISTORY, existing + json.dumps(archived, sort_keys=True) + "\n", 0o600)
+    receipt["completedAt"] = archived["completedAt"]
+    receipt["receiptDigest"] = digest
+    receipt["lifecycleId"] = archived["lifecycleId"]
+    if archived.get("legacyReceipt") is True:
+        receipt["legacyReceipt"] = True
+    atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+
+
 def record_mint(
     config: dict[str, object],
     role: str,
@@ -236,8 +292,15 @@ def record_mint(
         existing = json.loads(RECEIPT.read_text())
         if not isinstance(existing, dict) or any(existing.get(key) != value for key, value in expected.items()):
             raise CredentialError("GitHub credential receipt boundary has drifted")
-        receipt = existing
+        if receipt_complete(existing):
+            archive_completed_receipt()
+        else:
+            receipt = existing
+    if "lifecycleId" not in receipt:
+        receipt["lifecycleId"] = str(uuid4())
+        receipt["startedAt"] = timestamp()
     receipt[role] = {
+        "mintedAt": timestamp(),
         "expiresAt": expires_at,
         "permissions": permissions,
         "revokedAt": None,
@@ -249,6 +312,7 @@ def record_mint(
 def refresh_role(config: dict[str, object], role: str) -> None:
     if role not in {"hermes", "projector"}:
         raise CredentialError("unknown GitHub token role")
+    archive_completed_receipt()
     token_path = HERMES_TOKEN if role == "hermes" else PROJECTOR_TOKEN
     permissions = WRITE_PERMISSIONS if role == "hermes" else READ_PERMISSIONS
     revoke(token_path)
@@ -379,11 +443,13 @@ def record_revocation(token_path: Path, token: str) -> None:
     fingerprint = hashlib.sha256(token.encode()).hexdigest()
     if not isinstance(entry, dict) or entry.get("tokenFingerprint") != fingerprint:
         raise CredentialError("GitHub token does not match its credential receipt")
-    entry["revokedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    entry["revokedAt"] = timestamp()
     atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+    archive_completed_receipt()
 
 
 def revoke(token_path: Path) -> None:
+    archive_completed_receipt()
     if not token_path.exists():
         return
     token = token_path.read_text().strip()

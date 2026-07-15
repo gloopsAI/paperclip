@@ -15,6 +15,7 @@ readonly APP_CONFIG='/etc/paperclip-gloops/github-app.json'
 readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/run/paperclip-gloops/hermes-github-token'
 readonly CREDENTIAL_RECEIPT='/run/paperclip-gloops/credential-receipt.json'
+readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -68,6 +69,8 @@ import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
+assert d["cron"] == {"provider": "disabled"}
+assert d["kanban"] == {"dispatch_in_gateway": False}
 assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
 assert d["security"]["redact_secrets"] is True and d["security"]["tirith_fail_open"] is False
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
@@ -107,6 +110,11 @@ if jq -e '
   .runtime.imageAcquisition == "preprovisioned-local-digest" and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
+  .runtime.backgroundExecution == {
+    "cronProvider": "disabled",
+    "kanbanDispatcher": false,
+    "paperclipPluginScheduler": "empty-tables-locked-and-receipted"
+  } and
   .runtime.providerInvocationBudget == {
     "required": true,
     "maxInputTokens": 30000,
@@ -126,7 +134,7 @@ for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
 done
 mapfile -t profile_entries < <(find "${PROFILE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)
 gh_entries="$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | paste -sd ' ' -)"
-if [[ "${profile_entries[*]}" == 'auth.json config.yaml gh gitconfig policy.json' ]] \
+if [[ "${profile_entries[*]}" == 'auth.json config.yaml cron-disabled gh gitconfig policy.json' ]] \
   && { [[ "${gh_entries}" == 'config.yml' ]] || [[ "${gh_entries}" == 'config.yml hosts.yml' ]]; }; then
   pass 'execution profile contains only declared credential and policy artifacts'
 else
@@ -141,6 +149,8 @@ for protected_file in "${RUNTIME_ENV}" "${PROFILE_DIR}/policy.json"; do
 done
 if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == '600:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/cron-disabled" 2>/dev/null || true)" == '500:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${CRON_PROVIDER}" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh" 2>/dev/null || true)" == '500:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/config.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && { [[ ! -e "${PROFILE_DIR}/gh/hosts.yml" ]] || [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]]; } \
@@ -201,6 +211,7 @@ for required in \
   grep -Fq -- "${required}" "${UNIT}" || fail "unit is missing: ${required}"
 done
 for required_credential_mount in \
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly' \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly' \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
@@ -210,6 +221,14 @@ if grep -Fq -- '--health-cmd' "${UNIT}" \
   pass 'unit declares a gateway health check and single-instance replacement'
 else
   fail 'unit is missing gateway lifecycle controls'
+fi
+
+if grep -Fq 'class DisabledCronScheduler(CronScheduler)' "${CRON_PROVIDER}" \
+  && grep -Fq 'stop_event.wait()' "${CRON_PROVIDER}" \
+  && ! grep -Eq 'fire_due|on_jobs_changed|reconcile|cron_tick|setInterval|while ' "${CRON_PROVIDER}"; then
+  pass 'Hermes cron execution is contained by an inert shutdown-only provider'
+else
+  fail 'Hermes cron provider is absent or can execute/poll work'
 fi
 
 if docker network inspect "${NETWORK}" >/dev/null 2>&1; then
@@ -269,6 +288,14 @@ if [[ "${MODE}" == '--live' ]]; then
       pass 'live home has no environment file'
     else
       fail 'live home contains an environment file'
+    fi
+    if docker exec --user 10000:10000 --env HOME=/opt/data --env HERMES_HOME=/opt/data \
+      "${CONTAINER}" /opt/hermes/.venv/bin/python -c \
+      'from cron.scheduler_provider import resolve_cron_scheduler; raise SystemExit(0 if resolve_cron_scheduler().name == "disabled" else 1)' \
+      && docker logs "${CONTAINER}" 2>&1 | grep -Fq 'kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false'; then
+      pass 'live cron and kanban background execution are disabled'
+    else
+      fail 'live cron or kanban background execution remains enabled'
     fi
     if [[ "$(docker inspect --format '{{.State.Health.Status}}' "${CONTAINER}")" == 'healthy' ]]; then
       pass 'live authenticated API boundary is healthy'

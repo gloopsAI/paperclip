@@ -68,13 +68,65 @@ if [[ -f /run/paperclip-gloops/credential-receipt.json ]]; then
     (.hermes.revokedAt | type == "string") and
     (.projector.revokedAt | type == "string") and
     (.hermes.tokenFingerprint | test("^[0-9a-f]{64}$")) and
-    (.projector.tokenFingerprint | test("^[0-9a-f]{64}$"))
+    (.projector.tokenFingerprint | test("^[0-9a-f]{64}$")) and
+    (.receiptDigest | test("^[0-9a-f]{64}$"))
   ' /run/paperclip-gloops/credential-receipt.json >/dev/null; then
     echo "PASS GitHub App credential receipt records both successful revocations"
   else
     echo "FAIL GitHub App credential receipt is incomplete while dark" >&2
     failed=1
   fi
+fi
+if [[ -s /var/lib/paperclip-gloops/credential-history.jsonl ]] \
+  && jq -se '
+    all(.[];
+      .schemaVersion == "gloops.github-app-credential-receipt.v1" and
+      (.lifecycleId | type == "string") and
+      (.hermes.revokedAt | type == "string") and
+      (.projector.revokedAt | type == "string") and
+      (.receiptDigest | test("^[0-9a-f]{64}$")))
+  ' /var/lib/paperclip-gloops/credential-history.jsonl >/dev/null \
+  && python3 - /var/lib/paperclip-gloops/credential-history.jsonl <<'PY'
+import hashlib, json, pathlib, sys
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    record = json.loads(line)
+    digest = record.pop("receiptDigest")
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(canonical.encode()).hexdigest() == digest
+PY
+then
+  echo "PASS append-only GitHub credential lifecycle history is complete"
+elif [[ -f /run/paperclip-gloops/credential-receipt.json ]]; then
+  echo "FAIL GitHub credential lifecycle history is absent or malformed" >&2
+  failed=1
+fi
+if [[ -s /var/lib/paperclip-gloops/hermes-stop-history.jsonl ]] \
+  && jq -se '
+    all(.[];
+      .schemaVersion == "gloops.hermes-stop-receipt.v1" and
+      (.status == "succeeded" or .status == "failed" or .status == "not-present") and
+      (if .status == "succeeded" then
+        .plannedStopAccepted == true and .gatewayState == "stopped" and .containerStopped == true
+       elif .status == "failed" then
+        .containerStopped == true and (.error | type == "string")
+       else .containerPresent == false end) and
+      (.receiptDigest | test("^[0-9a-f]{64}$")))
+  ' /var/lib/paperclip-gloops/hermes-stop-history.jsonl >/dev/null \
+  && python3 - /var/lib/paperclip-gloops/hermes-stop-history.jsonl <<'PY'
+import hashlib, json, pathlib, sys
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    record = json.loads(line)
+    digest = record.pop("receiptDigest")
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(canonical.encode()).hexdigest() == digest
+PY
+then
+  echo "PASS append-only Hermes stop history is complete and digest-verified"
+elif [[ -e /var/lib/paperclip-gloops/hermes-stop-history.jsonl ]]; then
+  echo "FAIL Hermes graceful-stop history exists but is empty or malformed" >&2
+  failed=1
+else
+  echo "PASS no Hermes execution lifecycle has been recorded by this installed release yet"
 fi
 
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then

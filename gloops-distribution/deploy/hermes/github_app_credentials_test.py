@@ -28,6 +28,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             PROJECTOR_ROTATED=root / "run/projector-rotated",
             HERMES_HOSTS=root / "profile/gh/hosts.yml",
             RECEIPT=root / "run/credential-receipt.json",
+            HISTORY=root / "state/credential-history.jsonl",
         )
 
     def test_post_mint_failure_revokes_the_token_and_leaves_no_artifact(self):
@@ -82,6 +83,8 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertIn('"hermes"', receipt)
             self.assertIn('"projector"', receipt)
             self.assertIn('"revokedAt": null', receipt)
+            self.assertIn('"lifecycleId"', receipt)
+            self.assertIn('"mintedAt"', receipt)
 
     def test_projector_token_is_revoked_even_when_secret_rotation_fails(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
@@ -180,6 +183,47 @@ class BrokerLifecycleTests(unittest.TestCase):
             updated = broker.json.loads((broker.RUNTIME / "credential-receipt.json").read_text())
             self.assertRegex(updated["projector"]["revokedAt"], r"Z$")
             self.assertIsNone(updated["hermes"]["revokedAt"])
+
+    def test_complete_lifecycle_is_archived_once_with_a_digest(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.RUNTIME.mkdir(parents=True)
+            receipt = {
+                "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                "appId": 1,
+                "installationId": 2,
+                "repositoryId": 3,
+                "repository": "gloopsAI/gloops-paperclip-plugin",
+                "lifecycleId": "one",
+                "startedAt": "2026-07-15T00:00:00Z",
+                "hermes": {"revokedAt": "2026-07-15T00:01:00Z"},
+                "projector": {"revokedAt": "2026-07-15T00:02:00Z"},
+            }
+            broker.RECEIPT.write_text(broker.json.dumps(receipt))
+            broker.archive_completed_receipt()
+            broker.archive_completed_receipt()
+            lines = broker.HISTORY.read_text().splitlines()
+            current = broker.json.loads(broker.RECEIPT.read_text())
+            archived = broker.json.loads(lines[0])
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(current["receiptDigest"], archived["receiptDigest"])
+            self.assertRegex(current["receiptDigest"], r"^[0-9a-f]{64}$")
+
+    def test_refresh_refuses_to_overwrite_complete_receipt_if_archive_fails(self):
+        config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            broker.RUNTIME.mkdir(parents=True)
+            complete = {
+                **broker.receipt_base(config),
+                "hermes": {"revokedAt": "2026-07-15T00:01:00Z"},
+                "projector": {"revokedAt": "2026-07-15T00:02:00Z"},
+            }
+            broker.RECEIPT.write_text(broker.json.dumps(complete))
+            with patch.object(broker, "archive_completed_receipt", side_effect=OSError("disk full")), \
+                    patch.object(broker, "mint") as mint:
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    broker.refresh_role(config, "hermes")
+            mint.assert_not_called()
 
     def test_failed_revocation_retains_the_token_for_retry_and_dark_refusal(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
