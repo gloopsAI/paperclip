@@ -466,6 +466,8 @@ def append_expiry_history_record(
             raise CredentialError("GitHub credential expiry record has no attempt identity")
         for existing in records:
             if existing.get("attemptId") == attempt_id:
+                if not isinstance(existing.get(idempotent_timestamp), str):
+                    raise CredentialError("GitHub credential expiry record has no terminal timestamp")
                 for key, value in record.items():
                     if key == idempotent_timestamp:
                         continue
@@ -497,7 +499,12 @@ def append_expiry_history_record(
         os.close(lock_fd)
 
 
-def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> dict[str, object]:
+def append_expiry_receipt(
+    role: str,
+    intent: dict[str, object],
+    token: str,
+    disposed_at: datetime,
+) -> dict[str, object]:
     attempt_id = str(intent["attemptId"])
     fingerprint = hashlib.sha256(token.encode()).hexdigest()
     return append_expiry_history_record({
@@ -505,13 +512,17 @@ def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> d
         "attemptId": attempt_id,
         "role": role,
         "safeAfter": intent["safeAfter"],
-        "disposedAt": timestamp(),
+        "disposedAt": disposed_at.isoformat().replace("+00:00", "Z"),
         "tokenFingerprint": fingerprint,
         "disposition": "expired-by-envelope",
     }, "disposedAt")
 
 
-def append_uncertainty_clearance(role: str, intent: dict[str, object]) -> dict[str, object]:
+def append_uncertainty_clearance(
+    role: str,
+    intent: dict[str, object],
+    cleared_at: datetime,
+) -> dict[str, object]:
     if "observedAt" not in intent:
         raise CredentialError("token-free uncertainty has no durable observation horizon")
     attempt_id = str(intent["attemptId"])
@@ -522,7 +533,7 @@ def append_uncertainty_clearance(role: str, intent: dict[str, object]) -> dict[s
         "startedAt": intent["startedAt"],
         "observedAt": intent["observedAt"],
         "safeAfter": intent["safeAfter"],
-        "clearedAt": timestamp(),
+        "clearedAt": cleared_at.isoformat().replace("+00:00", "Z"),
         "disposition": "token-free-uncertainty-cleared",
     }, "clearedAt")
 
@@ -562,7 +573,7 @@ def reconcile_expired_mint_intents() -> None:
                 if role == "hermes":
                     durable_unlink(HERMES_HOSTS)
                 continue
-            expiry_receipt = append_expiry_receipt(role, intent, token)
+            expiry_receipt = append_expiry_receipt(role, intent, token, now)
             record_expiration(token_path, token, expiry_receipt)
             durable_unlink(token_path)
             if role == "hermes":
@@ -583,7 +594,7 @@ def reconcile_expired_mint_intents() -> None:
                     "safeAfter": (observed + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)).isoformat().replace("+00:00", "Z"),
                 }
             else:
-                append_uncertainty_clearance(role, intent)
+                append_uncertainty_clearance(role, intent, now)
     write_mint_intents(retained)
     if (
         baseline is not None
