@@ -43,8 +43,15 @@ evidence_error="$(mktemp)"
 evidence_pid=''
 credential_history='/var/lib/paperclip-gloops/credential-history.jsonl'
 stop_history='/var/lib/paperclip-gloops/hermes-stop-history.jsonl'
+sessions_dir='/opt/paperclip/hermes-execution-state/sessions'
+provider_auth='/opt/paperclip/hermes-execution-profile/auth.json'
 credential_history_before="$([[ -f "${credential_history}" ]] && wc -l <"${credential_history}" || echo 0)"
 stop_history_before="$([[ -f "${stop_history}" ]] && wc -l <"${stop_history}" || echo 0)"
+if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
+  echo "refusing rehearsal because a persistent Hermes session could auto-resume" >&2
+  exit 1
+fi
+provider_requests_before="$(jq -r '[.credential_pool["ollama-cloud"][]?.request_count // 0] | add // 0' "${provider_auth}")"
 
 cleanup() {
   local status=$?
@@ -82,6 +89,7 @@ systemctl is-active --quiet "${HERMES_UNIT}"
 systemctl is-active --quiet "${PAPERCLIP_UNIT}"
 curl --fail --silent --show-error --max-time 5 \
   http://127.0.0.1:3100/api/health >/dev/null
+"${LIB_DIR}/verify-hermes-execution-profile.sh" --live
 
 sleep "${OBSERVE_SECONDS}"
 
@@ -213,4 +221,15 @@ print(json.dumps({
 }, sort_keys=True))
 PY
 
+provider_requests_after="$(jq -r '[.credential_pool["ollama-cloud"][]?.request_count // 0] | add // 0' "${provider_auth}")"
+[[ "${provider_requests_after}" == "${provider_requests_before}" ]] || {
+  echo "zero-work rehearsal changed the Ollama provider request counter" >&2
+  exit 1
+}
+if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
+  echo "zero-work rehearsal created persistent Hermes session state" >&2
+  exit 1
+fi
+
 echo "PASS closed-interval rehearsal created no issue, run, wakeup, recovery, cost, plugin-job, or plugin-job-run row"
+echo "PASS zero-work rehearsal admitted no Hermes continuation or Ollama provider request"

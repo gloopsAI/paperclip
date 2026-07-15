@@ -88,11 +88,18 @@ if [[ -s /var/lib/paperclip-gloops/credential-history.jsonl ]] \
   ' /var/lib/paperclip-gloops/credential-history.jsonl >/dev/null \
   && python3 - /var/lib/paperclip-gloops/credential-history.jsonl <<'PY'
 import hashlib, json, pathlib, sys
-for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+prior = None
+seen = set()
+for sequence, line in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(), 1):
     record = json.loads(line)
     digest = record.pop("receiptDigest")
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(canonical.encode()).hexdigest() == digest
+    assert record["sequence"] == sequence
+    assert record["previousReceiptDigest"] == prior
+    assert record["lifecycleId"] not in seen
+    seen.add(record["lifecycleId"])
+    prior = digest
 PY
 then
   echo "PASS append-only GitHub credential lifecycle history is complete"
@@ -114,11 +121,18 @@ if [[ -s /var/lib/paperclip-gloops/hermes-stop-history.jsonl ]] \
   ' /var/lib/paperclip-gloops/hermes-stop-history.jsonl >/dev/null \
   && python3 - /var/lib/paperclip-gloops/hermes-stop-history.jsonl <<'PY'
 import hashlib, json, pathlib, sys
-for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+prior = None
+seen = set()
+for sequence, line in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(), 1):
     record = json.loads(line)
     digest = record.pop("receiptDigest")
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(canonical.encode()).hexdigest() == digest
+    assert record["sequence"] == sequence
+    assert record["previousReceiptDigest"] == prior
+    assert record["attemptId"] not in seen
+    seen.add(record["attemptId"])
+    prior = digest
 PY
 then
   echo "PASS append-only Hermes stop history is complete and digest-verified"
@@ -127,6 +141,33 @@ elif [[ -e /var/lib/paperclip-gloops/hermes-stop-history.jsonl ]]; then
   failed=1
 else
   echo "PASS no Hermes execution lifecycle has been recorded by this installed release yet"
+fi
+if [[ -s /var/lib/paperclip-gloops/credential-history.jsonl ]] \
+  && [[ -s /var/lib/paperclip-gloops/hermes-stop-history.jsonl ]]; then
+  if python3 - \
+    /var/lib/paperclip-gloops/credential-history.jsonl \
+    /var/lib/paperclip-gloops/hermes-stop-history.jsonl \
+    /run/paperclip-gloops/credential-receipt.json <<'PY'
+import json, pathlib, sys
+credentials = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+stops = [json.loads(line) for line in pathlib.Path(sys.argv[2]).read_text().splitlines()]
+current = json.loads(pathlib.Path(sys.argv[3]).read_text())
+credential_ids = {entry["lifecycleId"] for entry in credentials}
+for stop in stops:
+    lifecycle = stop.get("lifecycleId")
+    if lifecycle is not None:
+        assert lifecycle in credential_ids
+for credential in credentials:
+    if credential.get("legacyReceipt") is not True:
+        assert any(stop.get("lifecycleId") == credential["lifecycleId"] for stop in stops)
+assert current["receiptDigest"] == credentials[-1]["receiptDigest"]
+PY
+  then
+    echo "PASS credential and Hermes stop histories are fully cross-correlated"
+  else
+    echo "FAIL credential and Hermes stop histories are not fully cross-correlated" >&2
+    failed=1
+  fi
 fi
 
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then

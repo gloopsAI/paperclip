@@ -42,7 +42,9 @@
     "backgroundExecution": {
       "cronProvider": "disabled",
       "kanbanDispatcher": false,
-      "paperclipPluginScheduler": "empty-tables-locked-and-receipted"
+      "paperclipPluginScheduler": "empty-tables-locked-and-receipted",
+      "resumePendingSessions": "empty-directory-precondition",
+      "providerInvocationEvidence": "credential-pool-request-count-unchanged"
     },
     "providerInvocationBudget": {
       "required": true,

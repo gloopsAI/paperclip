@@ -10,6 +10,7 @@ readonly CONTAINER='paperclip-hermes-execution'
 readonly NETWORK='paperclip-execution'
 readonly API_PORT='8642'
 readonly WORKSPACE="${STATE_DIR}/workspace"
+readonly SESSIONS="${STATE_DIR}/sessions"
 readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 readonly APP_CONFIG='/etc/paperclip-gloops/github-app.json'
 readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
@@ -113,7 +114,9 @@ if jq -e '
   .runtime.backgroundExecution == {
     "cronProvider": "disabled",
     "kanbanDispatcher": false,
-    "paperclipPluginScheduler": "empty-tables-locked-and-receipted"
+    "paperclipPluginScheduler": "empty-tables-locked-and-receipted",
+    "resumePendingSessions": "empty-directory-precondition",
+    "providerInvocationEvidence": "credential-pool-request-count-unchanged"
   } and
   .runtime.providerInvocationBudget == {
     "required": true,
@@ -127,6 +130,13 @@ if jq -e '
   pass 'formal execution-only policy is installed'
 else
   fail 'formal execution-only policy is missing or malformed'
+fi
+
+if [[ -d "${SESSIONS}" ]] \
+  && ! find "${SESSIONS}" -mindepth 1 -print -quit | grep -q .; then
+  pass 'persistent Hermes sessions are empty, so startup continuation is impossible'
+else
+  fail 'persistent Hermes sessions are absent or could auto-resume on startup'
 fi
 
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do

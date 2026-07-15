@@ -263,11 +263,15 @@ for (const required of [
   "issue_recovery_actions",
   "agent_wakeup_requests",
   "plugin_jobs, plugin_job_runs IN ACCESS EXCLUSIVE MODE",
+  "persistent Hermes session could auto-resume",
+  "zero-work rehearsal changed the Ollama provider request counter",
+  "zero-work rehearsal created persistent Hermes session state",
   "timeout --signal=TERM --kill-after=5s 180s docker exec",
   "IN ACCESS EXCLUSIVE MODE",
   "evidence_pid=$!",
   "kill -0 \"${evidence_pid}\"",
   '"${LIB_DIR}/github-app-credentials.py" clear-projector',
+  '"${LIB_DIR}/verify-hermes-execution-profile.sh" --live',
   "verify-dark.sh",
 ]) {
   if (!rehearseZeroWork.includes(required)) {
@@ -408,6 +412,8 @@ if (
     cronProvider: "disabled",
     kanbanDispatcher: false,
     paperclipPluginScheduler: "empty-tables-locked-and-receipted",
+    resumePendingSessions: "empty-directory-precondition",
+    providerInvocationEvidence: "credential-pool-request-count-unchanged",
   })
 ) {
   fail("Hermes and Paperclip background execution containment is not explicit");
@@ -599,6 +605,7 @@ for (const required of [
   '"gateway",',
   '"stop",',
   'gateway_state.json',
+  "'gateway_state':r.get('gateway_state')",
   'receipt["gatewayState"] = "stopped" if graceful else None',
   'hermes-stop-history.jsonl',
   'receipt["plannedStopAccepted"] = graceful',

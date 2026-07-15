@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,8 @@ class BrokerLifecycleTests(unittest.TestCase):
             HERMES_HOSTS=root / "profile/gh/hosts.yml",
             RECEIPT=root / "run/credential-receipt.json",
             HISTORY=root / "state/credential-history.jsonl",
+            HISTORY_LOCK=root / "state/credential-history.lock",
+            COMMAND_LOCK=root / "run/credential-lifecycle.lock",
         )
 
     def test_post_mint_failure_revokes_the_token_and_leaves_no_artifact(self):
@@ -208,6 +211,35 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             self.assertEqual(current["receiptDigest"], archived["receiptDigest"])
             self.assertRegex(current["receiptDigest"], r"^[0-9a-f]{64}$")
+            self.assertEqual(archived["sequence"], 1)
+            self.assertIsNone(archived["previousReceiptDigest"])
+
+    def test_concurrent_history_appends_preserve_both_lifecycles(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            barrier = threading.Barrier(2)
+            errors = []
+
+            def append(lifecycle):
+                try:
+                    barrier.wait()
+                    broker.append_credential_history({
+                        "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                        "lifecycleId": lifecycle,
+                        "completedAt": "2026-07-15T00:00:00Z",
+                    })
+                except Exception as error:  # pragma: no cover - asserted below
+                    errors.append(error)
+
+            threads = [threading.Thread(target=append, args=(value,)) for value in ("one", "two")]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            records = [broker.json.loads(line) for line in broker.HISTORY.read_text().splitlines()]
+            broker.validate_history(records)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(records), 2)
 
     def test_refresh_refuses_to_overwrite_complete_receipt_if_archive_fails(self):
         config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}

@@ -9,6 +9,7 @@ terminated, and it persists an append-only, non-secret lifecycle receipt.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from uuid import uuid4
 
 
 CONTAINER = "paperclip-hermes-execution"
@@ -24,10 +26,15 @@ DOCKER = "/usr/bin/docker"
 HERMES = "/opt/hermes/.venv/bin/hermes"
 CREDENTIAL_RECEIPT = Path("/run/paperclip-gloops/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
+HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
 STATE_COMMAND = (
-    "import json,pathlib; "
-    "p=pathlib.Path('/opt/data/gateway_state.json'); "
-    "print((json.loads(p.read_text()) if p.exists() else {}).get('state',''))"
+    "import json,os,pathlib; "
+    "p=pathlib.Path(os.environ.get('HERMES_HOME','/opt/data'))/'gateway_state.json'; "
+    "r=json.loads(p.read_text()) if p.exists() else {}; "
+    "pid=r.get('pid'); alive=False; "
+    "\ntry:\n os.kill(pid,0); alive=True\nexcept (OSError,TypeError):\n pass\n"
+    "print(json.dumps({'gateway_state':r.get('gateway_state'),"
+    "'pid':pid,'updated_at':r.get('updated_at'),'alive':alive},sort_keys=True))"
 )
 
 
@@ -71,21 +78,96 @@ def atomic_write(path: Path, value: str) -> None:
             os.unlink(temporary)
 
 
+def record_digest(record: dict[str, object]) -> str:
+    payload = dict(record)
+    payload.pop("receiptDigest", None)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def validate_history(records: list[dict[str, object]]) -> None:
+    prior: str | None = None
+    attempts: set[str] = set()
+    for sequence, record in enumerate(records, 1):
+        if record.get("sequence") != sequence or record.get("previousReceiptDigest") != prior:
+            raise StopError("Hermes stop history sequence or hash chain is malformed")
+        if record.get("receiptDigest") != record_digest(record):
+            raise StopError("Hermes stop history digest is malformed")
+        attempt = record.get("attemptId")
+        if not isinstance(attempt, str) or attempt in attempts:
+            raise StopError("Hermes stop history attempt identity is malformed")
+        attempts.add(attempt)
+        prior = str(record["receiptDigest"])
+
+
 def append_receipt(receipt: dict[str, object]) -> None:
-    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode()).hexdigest()
-    record = {**receipt, "receiptDigest": digest}
-    existing = HISTORY.read_text() if HISTORY.exists() else ""
-    for line in existing.splitlines():
-        try:
-            if json.loads(line).get("receiptDigest") == digest:
-                return
-        except (json.JSONDecodeError, AttributeError):
+    attempt_id = receipt.get("attemptId")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise StopError("Hermes stop receipt has no attempt identity")
+    HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.chmod(HISTORY_LOCK, 0o600)
+        os.chown(HISTORY_LOCK, 0, 0)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        records = [json.loads(line) for line in HISTORY.read_text().splitlines()] if HISTORY.exists() else []
+        if not all(isinstance(record, dict) for record in records):
             raise StopError("Hermes stop history is malformed")
-    atomic_write(HISTORY, existing + json.dumps(record, sort_keys=True) + "\n")
+        validate_history(records)
+        if any(record.get("attemptId") == attempt_id for record in records):
+            return
+        record = {
+            **receipt,
+            "sequence": len(records) + 1,
+            "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
+        }
+        record["receiptDigest"] = record_digest(record)
+        HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        history_fd = os.open(HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.chmod(HISTORY, 0o600)
+            os.chown(HISTORY, 0, 0)
+            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
+            if os.write(history_fd, payload) != len(payload):
+                raise StopError("Hermes stop history append was incomplete")
+            os.fsync(history_fd)
+        finally:
+            os.close(history_fd)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def read_gateway_record() -> dict[str, object] | None:
+    state = run(
+        [
+            DOCKER,
+            "exec",
+            "--user",
+            "10000:10000",
+            CONTAINER,
+            "/opt/hermes/.venv/bin/python",
+            "-c",
+            STATE_COMMAND,
+        ],
+        timeout=5,
+    )
+    if state.returncode != 0:
+        return None
+    value = json.loads(state.stdout)
+    return value if isinstance(value, dict) else None
 
 
 def planned_stop() -> tuple[bool, str]:
+    before = read_gateway_record()
+    if (
+        not isinstance(before, dict)
+        or before.get("gateway_state") != "running"
+        or before.get("alive") is not True
+        or not isinstance(before.get("pid"), int)
+        or not isinstance(before.get("updated_at"), str)
+    ):
+        return False, "gateway was not observably running before planned stop"
     command = run(
         [
             DOCKER,
@@ -110,20 +192,15 @@ def planned_stop() -> tuple[bool, str]:
     while time.monotonic() < deadline:
         if not container_exists():
             return False, "container exited before gateway_state=stopped was observed"
-        state = run(
-            [
-                DOCKER,
-                "exec",
-                "--user",
-                "10000:10000",
-                CONTAINER,
-                "/opt/hermes/.venv/bin/python",
-                "-c",
-                STATE_COMMAND,
-            ],
-            timeout=5,
-        )
-        if state.returncode == 0 and state.stdout.strip() == "stopped":
+        state = read_gateway_record()
+        if (
+            isinstance(state, dict)
+            and state.get("gateway_state") == "stopped"
+            and state.get("pid") == before["pid"]
+            and state.get("alive") is False
+            and isinstance(state.get("updated_at"), str)
+            and state["updated_at"] > before["updated_at"]
+        ):
             return True, ""
         time.sleep(0.25)
     return False, "gateway_state did not become stopped within 30 seconds"
@@ -144,6 +221,7 @@ def main() -> int:
 
     receipt: dict[str, object] = {
         "schemaVersion": "gloops.hermes-stop-receipt.v1",
+        "attemptId": str(uuid4()),
         "lifecycleId": read_lifecycle_id(),
         "requestedAt": now(),
         "containerPresent": container_exists(),
@@ -192,4 +270,3 @@ if __name__ == "__main__":
     except (StopError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         print(f"stop-hermes-execution: {error}", file=sys.stderr)
         raise SystemExit(1)
-

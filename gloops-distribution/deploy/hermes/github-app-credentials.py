@@ -10,6 +10,7 @@ Paperclip's encrypted secret store. No token is printed or placed in argv.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -33,6 +34,8 @@ PROJECTOR_ROTATED = RUNTIME / "projector-token-rotated"
 HERMES_HOSTS = Path("/opt/paperclip/hermes-execution-profile/gh/hosts.yml")
 RECEIPT = RUNTIME / "credential-receipt.json"
 HISTORY = Path("/var/lib/paperclip-gloops/credential-history.jsonl")
+HISTORY_LOCK = Path("/var/lib/paperclip-gloops/credential-history.lock")
+COMMAND_LOCK = RUNTIME / "credential-lifecycle.lock"
 API_BASE = "https://api.github.com"
 
 WRITE_PERMISSIONS = {
@@ -238,6 +241,68 @@ def receipt_complete(receipt: object) -> bool:
     return True
 
 
+def history_digest(record: dict[str, object]) -> str:
+    payload = dict(record)
+    payload.pop("receiptDigest", None)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def validate_history(records: list[dict[str, object]]) -> None:
+    prior: str | None = None
+    lifecycles: set[str] = set()
+    for sequence, record in enumerate(records, 1):
+        if record.get("sequence") != sequence or record.get("previousReceiptDigest") != prior:
+            raise CredentialError("GitHub credential history sequence or hash chain is malformed")
+        if record.get("receiptDigest") != history_digest(record):
+            raise CredentialError("GitHub credential history digest is malformed")
+        lifecycle = record.get("lifecycleId")
+        if not isinstance(lifecycle, str) or lifecycle in lifecycles:
+            raise CredentialError("GitHub credential history lifecycle identity is malformed")
+        lifecycles.add(lifecycle)
+        prior = str(record["receiptDigest"])
+
+
+def append_credential_history(archived: dict[str, object]) -> dict[str, object]:
+    lifecycle_id = archived.get("lifecycleId")
+    if not isinstance(lifecycle_id, str) or not lifecycle_id:
+        raise CredentialError("GitHub credential receipt has no lifecycle identity")
+    HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.chmod(HISTORY_LOCK, 0o600)
+        os.chown(HISTORY_LOCK, 0, 0)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        records = [json.loads(line) for line in HISTORY.read_text().splitlines()] if HISTORY.exists() else []
+        if not all(isinstance(record, dict) for record in records):
+            raise CredentialError("GitHub credential history is malformed")
+        validate_history(records)
+        for record in records:
+            if record.get("lifecycleId") == lifecycle_id:
+                return record
+        record = {
+            **archived,
+            "sequence": len(records) + 1,
+            "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
+        }
+        record["receiptDigest"] = history_digest(record)
+        HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        history_fd = os.open(HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.chmod(HISTORY, 0o600)
+            os.chown(HISTORY, 0, 0)
+            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
+            if os.write(history_fd, payload) != len(payload):
+                raise CredentialError("GitHub credential history append was incomplete")
+            os.fsync(history_fd)
+        finally:
+            os.close(history_fd)
+        return record
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
 def archive_completed_receipt() -> None:
     if not RECEIPT.exists():
         return
@@ -252,29 +317,13 @@ def archive_completed_receipt() -> None:
         archived["legacyReceipt"] = True
     if not isinstance(archived.get("completedAt"), str):
         archived["completedAt"] = timestamp()
-    canonical = json.dumps(archived, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode()).hexdigest()
-    archived["receiptDigest"] = digest
-
-    existing = HISTORY.read_text() if HISTORY.exists() else ""
-    for line in existing.splitlines():
-        record = json.loads(line)
-        if not isinstance(record, dict):
-            raise CredentialError("GitHub credential history is malformed")
-        if record.get("receiptDigest") == digest:
-            if receipt.get("receiptDigest") != digest:
-                receipt["completedAt"] = archived["completedAt"]
-                receipt["receiptDigest"] = digest
-                receipt["lifecycleId"] = archived["lifecycleId"]
-                if archived.get("legacyReceipt") is True:
-                    receipt["legacyReceipt"] = True
-                atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
-            return
-    atomic_write(HISTORY, existing + json.dumps(archived, sort_keys=True) + "\n", 0o600)
-    receipt["completedAt"] = archived["completedAt"]
-    receipt["receiptDigest"] = digest
-    receipt["lifecycleId"] = archived["lifecycleId"]
-    if archived.get("legacyReceipt") is True:
+    record = append_credential_history(archived)
+    receipt["completedAt"] = record["completedAt"]
+    receipt["receiptDigest"] = record["receiptDigest"]
+    receipt["lifecycleId"] = record["lifecycleId"]
+    receipt["sequence"] = record["sequence"]
+    receipt["previousReceiptDigest"] = record["previousReceiptDigest"]
+    if record.get("legacyReceipt") is True:
         receipt["legacyReceipt"] = True
     atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
 
@@ -516,16 +565,25 @@ def main() -> int:
         "revoke-hermes",
     }:
         raise CredentialError("usage: github-app-credentials.py refresh-projector|refresh-hermes|rotate-projector|clear-projector|revoke-projector|revoke-hermes")
-    config = load_config()
-    commands = {
-        "refresh-projector": command_refresh_projector,
-        "refresh-hermes": command_refresh_hermes,
-        "rotate-projector": command_rotate_projector,
-        "clear-projector": command_clear_projector,
-        "revoke-projector": command_revoke_projector,
-        "revoke-hermes": command_revoke_hermes,
-    }
-    commands[sys.argv[1]](config)
+    RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    command_fd = os.open(COMMAND_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.chmod(COMMAND_LOCK, 0o600)
+        os.chown(COMMAND_LOCK, 0, 0)
+        fcntl.flock(command_fd, fcntl.LOCK_EX)
+        config = load_config()
+        commands = {
+            "refresh-projector": command_refresh_projector,
+            "refresh-hermes": command_refresh_hermes,
+            "rotate-projector": command_rotate_projector,
+            "clear-projector": command_clear_projector,
+            "revoke-projector": command_revoke_projector,
+            "revoke-hermes": command_revoke_hermes,
+        }
+        commands[sys.argv[1]](config)
+    finally:
+        fcntl.flock(command_fd, fcntl.LOCK_UN)
+        os.close(command_fd)
     return 0
 
 
