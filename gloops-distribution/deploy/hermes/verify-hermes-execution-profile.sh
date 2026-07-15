@@ -10,11 +10,13 @@ readonly CONTAINER='paperclip-hermes-execution'
 readonly NETWORK='paperclip-execution'
 readonly API_PORT='8642'
 readonly WORKSPACE="${STATE_DIR}/workspace"
+readonly SESSIONS="${STATE_DIR}/sessions"
 readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 readonly APP_CONFIG='/etc/paperclip-gloops/github-app.json'
 readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
-readonly HERMES_TOKEN='/run/paperclip-gloops/hermes-github-token'
-readonly CREDENTIAL_RECEIPT='/run/paperclip-gloops/credential-receipt.json'
+readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
+readonly CREDENTIAL_RECEIPT='/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json'
+readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -59,7 +61,7 @@ else
   fail 'credential pool is missing, malformed, or over-broad'
 fi
 
-if docker run --rm --network none --read-only -i \
+if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
   'hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78' \
@@ -68,6 +70,8 @@ import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
+assert d["cron"] == {"provider": "disabled"}
+assert d["kanban"] == {"dispatch_in_gateway": False}
 assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
 assert d["security"]["redact_secrets"] is True and d["security"]["tirith_fail_open"] is False
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
@@ -107,6 +111,13 @@ if jq -e '
   .runtime.imageAcquisition == "preprovisioned-local-digest" and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
+  .runtime.backgroundExecution == {
+    "cronProvider": "disabled",
+    "kanbanDispatcher": false,
+    "paperclipPluginScheduler": "empty-tables-locked-and-receipted",
+    "resumePendingSessions": "empty-directory-precondition",
+    "zeroWorkEgress": "deny-before-start-with-zero-attempt-counter"
+  } and
   .runtime.providerInvocationBudget == {
     "required": true,
     "maxInputTokens": 30000,
@@ -121,12 +132,19 @@ else
   fail 'formal execution-only policy is missing or malformed'
 fi
 
+if [[ -d "${SESSIONS}" ]] \
+  && ! find "${SESSIONS}" -mindepth 1 -print -quit | grep -q .; then
+  pass 'persistent Hermes sessions are empty, so startup continuation is impossible'
+else
+  fail 'persistent Hermes sessions are absent or could auto-resume on startup'
+fi
+
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
   [[ ! -e "${forbidden}" ]] || fail "forbidden environment file exists: ${forbidden}"
 done
 mapfile -t profile_entries < <(find "${PROFILE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)
 gh_entries="$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | paste -sd ' ' -)"
-if [[ "${profile_entries[*]}" == 'auth.json config.yaml gh gitconfig policy.json' ]] \
+if [[ "${profile_entries[*]}" == 'auth.json config.yaml cron-disabled gh gitconfig policy.json' ]] \
   && { [[ "${gh_entries}" == 'config.yml' ]] || [[ "${gh_entries}" == 'config.yml hosts.yml' ]]; }; then
   pass 'execution profile contains only declared credential and policy artifacts'
 else
@@ -141,6 +159,8 @@ for protected_file in "${RUNTIME_ENV}" "${PROFILE_DIR}/policy.json"; do
 done
 if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == '600:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/cron-disabled" 2>/dev/null || true)" == '500:10000:10000' ]] \
+  && [[ "$(stat -c '%a:%u:%g' "${CRON_PROVIDER}" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh" 2>/dev/null || true)" == '500:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/config.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && { [[ ! -e "${PROFILE_DIR}/gh/hosts.yml" ]] || [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]]; } \
@@ -163,14 +183,21 @@ else
   fail 'GitHub App configuration or private-key protection is invalid'
 fi
 if [[ -f "${HERMES_TOKEN}" && -f "${PROFILE_DIR}/gh/hosts.yml" ]]; then
-  if GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api installation/repositories --jq \
-    'select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == "gloopsAI/gloops-paperclip-plugin")' >/dev/null \
-    && GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api repos/gloopsAI/gloops-paperclip-plugin --jq \
-      'select(.private == true and .id == 1297008772)' >/dev/null \
-    && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' "${CREDENTIAL_RECEIPT}" >/dev/null; then
-    pass 'short-lived GitHub App credential has one-repository private write scope'
+  if jq -e '
+    .schemaVersion == "gloops.github-app-credential-receipt.v1" and
+    .appId == 4307157 and
+    .installationId == 146796843 and
+    .repositoryId == 1297008772 and
+    .repository == "gloopsAI/gloops-paperclip-plugin" and
+    .hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"} and
+    (.hermes.tokenFingerprint | test("^[0-9a-f]{64}$")) and
+    (.hermes.mintedAt | type == "string") and
+    (.hermes.expiresAt | type == "string") and
+    .hermes.revokedAt == null
+  ' "${CREDENTIAL_RECEIPT}" >/dev/null; then
+    pass 'short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope'
   else
-    fail 'short-lived GitHub App credential is invalid or over/under-scoped'
+    fail 'short-lived GitHub App credential receipt is invalid or over/under-scoped'
   fi
 elif [[ "${MODE}" == '--source' && ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh/hosts.yml" ]]; then
   pass 'dark source profile retains no GitHub installation token'
@@ -201,6 +228,7 @@ for required in \
   grep -Fq -- "${required}" "${UNIT}" || fail "unit is missing: ${required}"
 done
 for required_credential_mount in \
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly' \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly' \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
@@ -210,6 +238,14 @@ if grep -Fq -- '--health-cmd' "${UNIT}" \
   pass 'unit declares a gateway health check and single-instance replacement'
 else
   fail 'unit is missing gateway lifecycle controls'
+fi
+
+if grep -Fq 'class DisabledCronScheduler(CronScheduler)' "${CRON_PROVIDER}" \
+  && grep -Fq 'stop_event.wait()' "${CRON_PROVIDER}" \
+  && ! grep -Eq 'fire_due|on_jobs_changed|reconcile|cron_tick|setInterval|while ' "${CRON_PROVIDER}"; then
+  pass 'Hermes cron execution is contained by an inert shutdown-only provider'
+else
+  fail 'Hermes cron provider is absent or can execute/poll work'
 fi
 
 if docker network inspect "${NETWORK}" >/dev/null 2>&1; then
@@ -237,12 +273,19 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{range .Mounts}}{{println .Source " -> " .Destination " (" .RW ")"}}{{end}}' "${CONTAINER}" >"${live_mounts}"
-    if docker exec --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
-      sh -lc 'gh api installation/repositories --jq "select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == \"gloopsAI/gloops-paperclip-plugin\")" >/dev/null && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == true and .id == 1297008772)" >/dev/null' \
-      && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' "${CREDENTIAL_RECEIPT}" >/dev/null; then
-      pass 'live GitHub App token has write access only to the declared private pilot boundary'
+    hermes_fingerprint="$(jq -r '.hermes.tokenFingerprint // empty' "${CREDENTIAL_RECEIPT}")"
+    if [[ "${hermes_fingerprint}" =~ ^[0-9a-f]{64}$ ]] \
+      && docker exec -i --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
+        /opt/hermes/.venv/bin/python - "${hermes_fingerprint}" <<'PY'
+import hashlib, pathlib, sys, yaml
+hosts = yaml.safe_load(pathlib.Path('/opt/data/.config/gh/hosts.yml').read_text())
+token = hosts['github.com']['oauth_token']
+raise SystemExit(0 if hashlib.sha256(token.encode()).hexdigest() == sys.argv[1] else 1)
+PY
+    then
+      pass 'live GitHub App token projection matches the broker-verified exact credential receipt'
     else
-      fail 'live GitHub App identity or private pilot repository write boundary is invalid'
+      fail 'live GitHub App token projection does not match its broker-verified receipt'
     fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'
@@ -269,6 +312,14 @@ if [[ "${MODE}" == '--live' ]]; then
       pass 'live home has no environment file'
     else
       fail 'live home contains an environment file'
+    fi
+    if docker exec --user 10000:10000 --env HOME=/opt/data --env HERMES_HOME=/opt/data \
+      "${CONTAINER}" /opt/hermes/.venv/bin/python -c \
+      'from cron.scheduler_provider import resolve_cron_scheduler; raise SystemExit(0 if resolve_cron_scheduler().name == "disabled" else 1)' \
+      && docker logs "${CONTAINER}" 2>&1 | grep -Fq 'kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false'; then
+      pass 'live cron and kanban background execution are disabled'
+    else
+      fail 'live cron or kanban background execution remains enabled'
     fi
     if [[ "$(docker inspect --format '{{.State.Health.Status}}' "${CONTAINER}")" == 'healthy' ]]; then
       pass 'live authenticated API boundary is healthy'

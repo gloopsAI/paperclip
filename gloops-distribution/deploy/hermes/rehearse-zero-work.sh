@@ -41,6 +41,19 @@ grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 evidence_output="$(mktemp)"
 evidence_error="$(mktemp)"
 evidence_pid=''
+credential_history='/var/lib/paperclip-gloops/credential-history.jsonl'
+stop_history='/var/lib/paperclip-gloops/hermes-stop-history.jsonl'
+sessions_dir='/opt/paperclip/hermes-execution-state/sessions'
+network='paperclip-execution'
+subnet=''
+egress_comment="gloops-zero-work-${BASHPID}"
+egress_rule_installed=0
+credential_history_before="$([[ -f "${credential_history}" ]] && wc -l <"${credential_history}" || echo 0)"
+stop_history_before="$([[ -f "${stop_history}" ]] && wc -l <"${stop_history}" || echo 0)"
+if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
+  echo "refusing rehearsal because a persistent Hermes session could auto-resume" >&2
+  exit 1
+fi
 
 cleanup() {
   local status=$?
@@ -52,6 +65,15 @@ cleanup() {
   fi
   systemctl stop "${PAPERCLIP_UNIT}"
   systemctl stop "${HERMES_UNIT}"
+  if ((egress_rule_installed == 1)); then
+    if iptables -D DOCKER-USER -s "${subnet}" ! -d "${subnet}" \
+      -m comment --comment "${egress_comment}" -j REJECT; then
+      egress_rule_installed=0
+    else
+      echo "failed to remove zero-work egress proof rule" >&2
+      status=1
+    fi
+  fi
   rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
   systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
   systemctl reset-failed "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
@@ -68,6 +90,19 @@ trap cleanup EXIT
 started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 echo "zero-work rehearsal started at ${started_at}"
 
+subnet="$(docker network inspect "${network}" --format '{{(index .IPAM.Config 0).Subnet}}')"
+[[ "${subnet}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || {
+  echo "paperclip-execution network has no valid IPv4 subnet" >&2
+  exit 1
+}
+[[ "$(docker network inspect "${network}" --format '{{.EnableIPv6}}')" == 'false' ]] || {
+  echo "paperclip-execution must have IPv6 disabled for exact egress accounting" >&2
+  exit 1
+}
+iptables -I DOCKER-USER 1 -s "${subnet}" ! -d "${subnet}" \
+  -m comment --comment "${egress_comment}" -j REJECT
+egress_rule_installed=1
+
 systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 systemctl start "${HERMES_UNIT}"
@@ -78,6 +113,7 @@ systemctl is-active --quiet "${HERMES_UNIT}"
 systemctl is-active --quiet "${PAPERCLIP_UNIT}"
 curl --fail --silent --show-error --max-time 5 \
   http://127.0.0.1:3100/api/health >/dev/null
+"${LIB_DIR}/verify-hermes-execution-profile.sh" --live
 
 sleep "${OBSERVE_SECONDS}"
 
@@ -105,7 +141,7 @@ timeout --signal=TERM --kill-after=5s 180s docker exec \
     await sql.begin(async (tx) => {
       await tx.unsafe(
         "LOCK TABLE agent_wakeup_requests, cost_events, heartbeat_runs, " +
-        "issue_recovery_actions, issues IN ACCESS EXCLUSIVE MODE",
+        "issue_recovery_actions, issues, plugin_jobs, plugin_job_runs IN ACCESS EXCLUSIVE MODE",
       );
       const counts = {
         issues: (await tx`select count(*)::int as count from issues where created_at >= ${since}`)[0].count,
@@ -113,6 +149,8 @@ timeout --signal=TERM --kill-after=5s 180s docker exec \
         wakeups: (await tx`select count(*)::int as count from agent_wakeup_requests where created_at >= ${since}`)[0].count,
         recoveryActions: (await tx`select count(*)::int as count from issue_recovery_actions where created_at >= ${since}`)[0].count,
         costEvents: (await tx`select count(*)::int as count from cost_events where created_at >= ${since}`)[0].count,
+        pluginJobs: (await tx`select count(*)::int as count from plugin_jobs`)[0].count,
+        pluginJobRuns: (await tx`select count(*)::int as count from plugin_job_runs where created_at >= ${since}`)[0].count,
       };
       process.stdout.write(`${JSON.stringify({ since, counts })}\n`);
       await new Promise(() => setInterval(() => {}, 1000));
@@ -168,7 +206,7 @@ const { readFileSync } = require("node:fs");
 const lines = readFileSync(process.argv[2], "utf8").trim().split("\n").filter(Boolean);
 if (lines.length !== 1) throw new Error("expected exactly one zero-work evidence receipt");
 const receipt = JSON.parse(lines[0]);
-const expected = ["issues", "runs", "wakeups", "recoveryActions", "costEvents"];
+const expected = ["issues", "runs", "wakeups", "recoveryActions", "costEvents", "pluginJobs", "pluginJobRuns"];
 if (Object.keys(receipt.counts).sort().join(",") !== expected.sort().join(",")) {
   throw new Error("zero-work evidence receipt has an unexpected shape");
 }
@@ -180,4 +218,42 @@ for (const [name, count] of Object.entries(receipt.counts)) {
 console.log(JSON.stringify(receipt));
 NODE
 
-echo "PASS closed-interval rehearsal created no issue, run, wakeup, recovery, or cost row"
+python3 - "${credential_history}" "${stop_history}" \
+  "${credential_history_before}" "${stop_history_before}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+credential_path, stop_path = map(Path, sys.argv[1:3])
+credential_before, stop_before = map(int, sys.argv[3:5])
+credentials = [json.loads(line) for line in credential_path.read_text().splitlines() if line]
+stops = [json.loads(line) for line in stop_path.read_text().splitlines() if line]
+assert len(credentials) == credential_before + 1, "expected one durable credential lifecycle receipt"
+assert len(stops) == stop_before + 1, "expected one durable Hermes stop receipt"
+credential, stop = credentials[-1], stops[-1]
+assert credential["lifecycleId"] == stop["lifecycleId"], "lifecycle receipts do not correlate"
+assert credential.get("legacyReceipt") is not True, "new lifecycle was classified as legacy"
+assert all(isinstance(credential[role]["revokedAt"], str) for role in ("hermes", "projector"))
+assert stop["status"] == "succeeded"
+assert stop["plannedStopAccepted"] is True
+assert stop["gatewayState"] == "stopped"
+assert stop["containerStopped"] is True
+print(json.dumps({
+    "lifecycleId": credential["lifecycleId"],
+    "credentialReceiptDigest": credential["receiptDigest"],
+    "stopReceiptDigest": stop["receiptDigest"],
+}, sort_keys=True))
+PY
+
+blocked_packets="$(iptables -L DOCKER-USER -v -n -x | awk -v marker="${egress_comment}" '$0 ~ marker {print $1}')"
+[[ "${blocked_packets}" == '0' ]] || {
+  echo "zero-work rehearsal attempted ${blocked_packets:-unknown} external network packet(s)" >&2
+  exit 1
+}
+if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
+  echo "zero-work rehearsal created persistent Hermes session state" >&2
+  exit 1
+fi
+
+echo "PASS closed-interval rehearsal created no issue, run, wakeup, recovery, cost, plugin-job, or plugin-job-run row"
+echo "PASS zero-work rehearsal admitted no Hermes continuation or external provider attempt"

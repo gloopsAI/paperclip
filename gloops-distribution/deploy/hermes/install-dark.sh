@@ -31,6 +31,7 @@ docker image inspect "${HERMES_IMAGE}" >/dev/null 2>&1 || {
 
 install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"
+install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
@@ -46,6 +47,11 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-hermes-execution.py" "${LIB_DIR}/stop-hermes-execution.py"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-lifecycle-history.py" "${LIB_DIR}/verify-lifecycle-history.py"
+rm -rf "${LIB_DIR}/hermes-cron-disabled"
+install -d -m 0755 -o root -g root "${LIB_DIR}/hermes-cron-disabled"
+install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-cron-disabled/__init__.py" "${LIB_DIR}/hermes-cron-disabled/__init__.py"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/github-app.json" "${CONFIG_DIR}/github-app.json"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-config.yaml" "${LIB_DIR}/hermes-execution-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${LIB_DIR}/hermes-execution-policy.json"
@@ -66,6 +72,13 @@ systemctl disable --now paperclip-gloops.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
 systemctl mask paperclip-gloops.service paperclip-hermes-execution.service
 systemctl reset-failed paperclip-gloops.service paperclip-hermes-execution.service 2>/dev/null || true
+
+# Reconcile any complete receipt left by the previously installed broker before
+# the first new lifecycle establishes its history baseline. No token is minted.
+"${LIB_DIR}/github-app-credentials.py" migrate-persistent-state
+"${LIB_DIR}/github-app-credentials.py" reconcile-expired-mint-intents
+"${LIB_DIR}/github-app-credentials.py" revoke-hermes
+"${LIB_DIR}/github-app-credentials.py" revoke-projector
 
 "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 
