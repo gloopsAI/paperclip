@@ -138,6 +138,18 @@ kill -0 "${evidence_pid}" 2>/dev/null || {
 systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"
 systemctl is-active --quiet "${HERMES_UNIT}" && exit 1
 systemctl is-active --quiet "${PAPERCLIP_UNIT}" && exit 1
+[[ "$(systemctl show --property=Result --value "${HERMES_UNIT}")" == 'success' ]] || {
+  echo "Hermes execution sidecar did not stop cleanly" >&2
+  exit 1
+}
+[[ "$(systemctl show --property=Result --value "${PAPERCLIP_UNIT}")" == 'success' ]] || {
+  echo "Paperclip control plane did not stop cleanly" >&2
+  exit 1
+}
+if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-execution'; then
+  echo "Hermes execution sidecar container remains after stop" >&2
+  exit 1
+fi
 wait "${evidence_pid}" 2>/dev/null || true
 evidence_pid=''
 

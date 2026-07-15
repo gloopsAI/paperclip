@@ -340,6 +340,7 @@ for (const required of [
   "--network-alias hermes-execution",
   "--read-only",
   "--cap-drop ALL",
+  "--cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID --cap-add KILL --security-opt no-new-privileges:true",
   "--security-opt no-new-privileges:true",
   "--env-file /etc/paperclip-gloops/hermes-execution.env",
   "src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly",
@@ -361,6 +362,12 @@ for (const forbidden of ["/opt/paperclip/hermes-home", "--publish", "XAI_API_KEY
   if (hermesExecutionService.includes(forbidden)) {
     fail(`Hermes execution service contains forbidden runtime surface ${forbidden}`);
   }
+}
+const hermesCapabilities = [...hermesExecutionService.matchAll(/--cap-add ([A-Z_]+)/g)].map(
+  (match) => match[1],
+);
+if (JSON.stringify(hermesCapabilities) !== JSON.stringify(["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID", "KILL"])) {
+  fail("Hermes execution service capability allowlist is not exact");
 }
 for (const required of [
   "prepare-hermes-execution-profile.sh",
