@@ -97,24 +97,40 @@ def verify_stops(records: list[dict[str, object]]) -> None:
 def verify_expirations(records: list[dict[str, object]]) -> None:
     verify_chain(records, "attemptId")
     for record in records:
-        if record.get("schemaVersion") != "gloops.github-app-expiry-receipt.v1":
-            raise HistoryError("expiry schema is malformed")
         if record.get("role") not in {"hermes", "projector"}:
             raise HistoryError("expiry role is malformed")
-        if record.get("disposition") != "expired-by-envelope":
-            raise HistoryError("expiry disposition is malformed")
-        fingerprint = record.get("tokenFingerprint")
-        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-            raise HistoryError("expiry fingerprint is malformed")
-        try:
-            safe_after = datetime.fromisoformat(str(record["safeAfter"]).replace("Z", "+00:00"))
-            disposed_at = datetime.fromisoformat(str(record["disposedAt"]).replace("Z", "+00:00"))
-        except (KeyError, ValueError) as error:
-            raise HistoryError("expiry timestamps are malformed") from error
-        if safe_after.tzinfo is None or disposed_at.tzinfo is None:
-            raise HistoryError("expiry timestamps are malformed")
-        if disposed_at < safe_after:
-            raise HistoryError("credential handle was disposed before its expiry envelope")
+        if record.get("schemaVersion") == "gloops.github-app-expiry-receipt.v1":
+            if record.get("disposition") != "expired-by-envelope":
+                raise HistoryError("expiry disposition is malformed")
+            fingerprint = record.get("tokenFingerprint")
+            if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+                raise HistoryError("expiry fingerprint is malformed")
+            try:
+                safe_after = datetime.fromisoformat(str(record["safeAfter"]).replace("Z", "+00:00"))
+                disposed_at = datetime.fromisoformat(str(record["disposedAt"]).replace("Z", "+00:00"))
+            except (KeyError, ValueError) as error:
+                raise HistoryError("expiry timestamps are malformed") from error
+            if safe_after.tzinfo is None or disposed_at.tzinfo is None or disposed_at < safe_after:
+                raise HistoryError("credential handle was disposed before its expiry envelope")
+        elif record.get("schemaVersion") == "gloops.github-app-uncertainty-clearance.v1":
+            if record.get("disposition") != "token-free-uncertainty-cleared" or "tokenFingerprint" in record:
+                raise HistoryError("token-free clearance disposition is malformed")
+            try:
+                started_at = datetime.fromisoformat(str(record["startedAt"]).replace("Z", "+00:00"))
+                observed_at = datetime.fromisoformat(str(record["observedAt"]).replace("Z", "+00:00"))
+                safe_after = datetime.fromisoformat(str(record["safeAfter"]).replace("Z", "+00:00"))
+                cleared_at = datetime.fromisoformat(str(record["clearedAt"]).replace("Z", "+00:00"))
+            except (KeyError, ValueError) as error:
+                raise HistoryError("token-free clearance timestamps are malformed") from error
+            if (
+                any(value.tzinfo is None for value in (started_at, observed_at, safe_after, cleared_at))
+                or observed_at < started_at
+                or (safe_after - observed_at).total_seconds() < 3900
+                or cleared_at < safe_after
+            ):
+                raise HistoryError("token-free uncertainty cleared before its observed expiry envelope")
+        else:
+            raise HistoryError("expiry schema is malformed")
 
 
 def verify_bundle(credential_path: Path, stop_path: Path, expiry_path: Path, current_path: Path) -> str:

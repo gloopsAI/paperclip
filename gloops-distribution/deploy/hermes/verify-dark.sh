@@ -88,15 +88,18 @@ if [[ ! -f "${baseline_file}" ]] || ! node - "${baseline_file}" <<'NODE'
 const { readFileSync } = require("node:fs");
 const value = JSON.parse(readFileSync(process.argv[2], "utf8"));
 if (
-  JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["basis", "completedAt", "createdAt", "schemaVersion", "status"]) ||
+  JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["basis", "completedAt", "createdAt", "safeAfter", "schemaVersion", "status"]) ||
   value.schemaVersion !== "gloops.github-app-migration-baseline.v1" ||
   value.status !== "complete" ||
   typeof value.createdAt !== "string" ||
+  typeof value.safeAfter !== "string" ||
   typeof value.completedAt !== "string" ||
   value.basis !== "expiry-quarantine-completed" ||
   !Number.isFinite(Date.parse(value.createdAt)) ||
+  !Number.isFinite(Date.parse(value.safeAfter)) ||
   !Number.isFinite(Date.parse(value.completedAt)) ||
-  Date.parse(value.completedAt) < Date.parse(value.createdAt)
+  Date.parse(value.safeAfter) - Date.parse(value.createdAt) < 3900000 ||
+  Date.parse(value.completedAt) < Date.parse(value.safeAfter)
 ) process.exit(1);
 NODE
 then

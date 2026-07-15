@@ -353,7 +353,7 @@ def load_migration_baseline() -> dict[str, object] | None:
     if baseline.get("status") == "pending":
         required = {"schemaVersion", "status", "createdAt", "safeAfter"}
     elif baseline.get("status") == "complete":
-        required = {"schemaVersion", "status", "createdAt", "completedAt", "basis"}
+        required = {"schemaVersion", "status", "createdAt", "safeAfter", "completedAt", "basis"}
     else:
         raise CredentialError("GitHub migration baseline status is malformed")
     if set(baseline) != required or not all(
@@ -363,12 +363,20 @@ def load_migration_baseline() -> dict[str, object] | None:
         raise CredentialError("GitHub migration baseline fields are malformed")
     try:
         created_at = datetime.fromisoformat(str(baseline["createdAt"]).replace("Z", "+00:00"))
-        terminal_at = datetime.fromisoformat(
-            str(baseline["safeAfter"] if baseline["status"] == "pending" else baseline["completedAt"]).replace("Z", "+00:00"),
+        safe_after = datetime.fromisoformat(str(baseline["safeAfter"]).replace("Z", "+00:00"))
+        completed_at = (
+            datetime.fromisoformat(str(baseline["completedAt"]).replace("Z", "+00:00"))
+            if baseline["status"] == "complete"
+            else None
         )
     except ValueError as error:
         raise CredentialError("GitHub migration baseline timestamps are malformed") from error
-    if created_at.tzinfo is None or terminal_at.tzinfo is None or terminal_at <= created_at:
+    if (
+        created_at.tzinfo is None
+        or safe_after.tzinfo is None
+        or safe_after < created_at + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)
+        or (completed_at is not None and (completed_at.tzinfo is None or completed_at < safe_after))
+    ):
         raise CredentialError("GitHub migration baseline timestamps are malformed")
     if baseline["status"] == "complete" and baseline["basis"] != "expiry-quarantine-completed":
         raise CredentialError("GitHub migration baseline completion basis is malformed")
@@ -414,6 +422,7 @@ def complete_migration_baseline(baseline: dict[str, object], basis: str) -> None
                 "schemaVersion": "gloops.github-app-migration-baseline.v1",
                 "status": "complete",
                 "createdAt": baseline["createdAt"],
+                "safeAfter": baseline["safeAfter"],
                 "completedAt": timestamp(),
                 "basis": basis,
             },
@@ -438,7 +447,10 @@ def validate_expiry_history(records: list[dict[str, object]]) -> None:
         prior = str(record["receiptDigest"])
 
 
-def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> dict[str, object]:
+def append_expiry_history_record(
+    record: dict[str, object],
+    idempotent_timestamp: str,
+) -> dict[str, object]:
     EXPIRY_HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(EXPIRY_HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -449,36 +461,29 @@ def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> d
         if not all(isinstance(record, dict) for record in records):
             raise CredentialError("GitHub credential expiry history is malformed")
         validate_expiry_history(records)
-        attempt_id = str(intent["attemptId"])
-        fingerprint = hashlib.sha256(token.encode()).hexdigest()
-        for record in records:
-            if record.get("attemptId") == attempt_id:
-                if (
-                    record.get("role") != role
-                    or record.get("safeAfter") != intent["safeAfter"]
-                    or record.get("tokenFingerprint") != fingerprint
-                    or record.get("disposition") != "expired-by-envelope"
-                ):
-                    raise CredentialError("GitHub credential expiry receipt does not match its cleanup handle")
-                return record
-        record: dict[str, object] = {
-            "schemaVersion": "gloops.github-app-expiry-receipt.v1",
-            "attemptId": attempt_id,
-            "role": role,
-            "safeAfter": intent["safeAfter"],
-            "disposedAt": timestamp(),
-            "tokenFingerprint": fingerprint,
-            "disposition": "expired-by-envelope",
+        attempt_id = record.get("attemptId")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            raise CredentialError("GitHub credential expiry record has no attempt identity")
+        for existing in records:
+            if existing.get("attemptId") == attempt_id:
+                for key, value in record.items():
+                    if key == idempotent_timestamp:
+                        continue
+                    if existing.get(key) != value:
+                        raise CredentialError("GitHub credential expiry record changed after archival")
+                return existing
+        archived = {
+            **record,
             "sequence": len(records) + 1,
             "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
         }
-        record["receiptDigest"] = history_digest(record)
+        archived["receiptDigest"] = history_digest(archived)
         history_created = not EXPIRY_HISTORY.exists()
         history_fd = os.open(EXPIRY_HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         try:
             os.chmod(EXPIRY_HISTORY, 0o600)
             os.chown(EXPIRY_HISTORY, 0, 0)
-            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
+            payload = (json.dumps(archived, sort_keys=True) + "\n").encode()
             if os.write(history_fd, payload) != len(payload):
                 raise CredentialError("GitHub credential expiry history append was incomplete")
             os.fsync(history_fd)
@@ -486,10 +491,40 @@ def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> d
             os.close(history_fd)
         if history_created:
             fsync_directory(EXPIRY_HISTORY.parent)
-        return record
+        return archived
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
+
+
+def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> dict[str, object]:
+    attempt_id = str(intent["attemptId"])
+    fingerprint = hashlib.sha256(token.encode()).hexdigest()
+    return append_expiry_history_record({
+        "schemaVersion": "gloops.github-app-expiry-receipt.v1",
+        "attemptId": attempt_id,
+        "role": role,
+        "safeAfter": intent["safeAfter"],
+        "disposedAt": timestamp(),
+        "tokenFingerprint": fingerprint,
+        "disposition": "expired-by-envelope",
+    }, "disposedAt")
+
+
+def append_uncertainty_clearance(role: str, intent: dict[str, object]) -> dict[str, object]:
+    if "observedAt" not in intent:
+        raise CredentialError("token-free uncertainty has no durable observation horizon")
+    attempt_id = str(intent["attemptId"])
+    return append_expiry_history_record({
+        "schemaVersion": "gloops.github-app-uncertainty-clearance.v1",
+        "attemptId": attempt_id,
+        "role": role,
+        "startedAt": intent["startedAt"],
+        "observedAt": intent["observedAt"],
+        "safeAfter": intent["safeAfter"],
+        "clearedAt": timestamp(),
+        "disposition": "token-free-uncertainty-cleared",
+    }, "clearedAt")
 
 
 def reconcile_expired_mint_intents() -> None:
@@ -539,13 +574,16 @@ def reconcile_expired_mint_intents() -> None:
             and intent.get("startedAt") == baseline.get("createdAt")
             and intent.get("safeAfter") == baseline.get("safeAfter")
         )
-        if not is_migration_quarantine and "observedAt" not in intent:
-            observed = datetime.now(timezone.utc)
-            retained[role] = {
-                **intent,
-                "observedAt": observed.isoformat().replace("+00:00", "Z"),
-                "safeAfter": (observed + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)).isoformat().replace("+00:00", "Z"),
-            }
+        if not is_migration_quarantine:
+            if "observedAt" not in intent:
+                observed = datetime.now(timezone.utc)
+                retained[role] = {
+                    **intent,
+                    "observedAt": observed.isoformat().replace("+00:00", "Z"),
+                    "safeAfter": (observed + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)).isoformat().replace("+00:00", "Z"),
+                }
+            else:
+                append_uncertainty_clearance(role, intent)
     write_mint_intents(retained)
     if (
         baseline is not None

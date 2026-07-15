@@ -652,6 +652,7 @@ for (const required of [
   'ensure_migration_quarantine_intents(baseline)',
   'complete_migration_baseline(baseline, "expiry-quarantine-completed")',
   'append_expiry_receipt(role, intent, token)',
+  'append_uncertainty_clearance(role, intent)',
   'migrate_persistent_state()',
   'reconcile_expired_mint_intents()',
   'fsync_directory(HISTORY.parent)',
@@ -740,7 +741,9 @@ for (const required of [
   'verify_expirations(expirations)',
   'credential handle was disposed before its expiry envelope',
   'gloops.github-app-expiry-receipt.v1',
+  'gloops.github-app-uncertainty-clearance.v1',
   'credential expiry binding has no exact expiry receipt',
+  'token-free uncertainty cleared before its observed expiry envelope',
   "PASS lifecycle histories are",
 ]) {
   if (!verifyLifecycleHistory.includes(required)) {

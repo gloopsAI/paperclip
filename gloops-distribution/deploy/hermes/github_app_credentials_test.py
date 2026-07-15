@@ -109,6 +109,10 @@ class BrokerLifecycleTests(unittest.TestCase):
             broker.write_mint_intents({"hermes": observed})
             broker.reconcile_expired_mint_intents()
             self.assertFalse(broker.MINT_INTENTS.exists())
+            clearance = broker.json.loads(broker.EXPIRY_HISTORY.read_text())
+            self.assertEqual(clearance["schemaVersion"], "gloops.github-app-uncertainty-clearance.v1")
+            self.assertEqual(clearance["disposition"], "token-free-uncertainty-cleared")
+            self.assertNotIn("tokenFingerprint", clearance)
 
     def test_token_handle_mtime_extends_the_offline_expiry_horizon(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -585,8 +589,10 @@ class BrokerLifecycleTests(unittest.TestCase):
                 for index, role in enumerate(("hermes", "projector"), 1)
             })
             broker.reconcile_expired_mint_intents()
-            self.assertEqual(broker.load_migration_baseline()["status"], "complete")
-            self.assertEqual(broker.load_migration_baseline()["basis"], "expiry-quarantine-completed")
+            completed = broker.load_migration_baseline()
+            self.assertEqual(completed["status"], "complete")
+            self.assertEqual(completed["basis"], "expiry-quarantine-completed")
+            self.assertEqual(completed["safeAfter"], "2026-07-15T01:05:00Z")
 
     def test_complete_legacy_receipt_still_requires_full_migration_quarantine(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -615,6 +621,7 @@ class BrokerLifecycleTests(unittest.TestCase):
                     "schemaVersion": "gloops.github-app-migration-baseline.v1",
                     "status": "complete",
                     "createdAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
                     "completedAt": "2026-07-15T01:05:00Z",
                     "basis": "expiry-quarantine-completed",
                 }) + "\n",
@@ -624,6 +631,21 @@ class BrokerLifecycleTests(unittest.TestCase):
             (broker.LEGACY_RUNTIME / "credential-receipt.json").write_text("{}")
             with self.assertRaisesRegex(broker.CredentialError, "reappeared"):
                 broker.migrate_persistent_state()
+
+    def test_completed_migration_baseline_cannot_precede_its_full_horizon(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.ensure_runtime()
+            broker.MIGRATION_BASELINE.write_text(broker.json.dumps({
+                "schemaVersion": "gloops.github-app-migration-baseline.v1",
+                "status": "complete",
+                "createdAt": "2026-07-15T00:00:00Z",
+                "safeAfter": "2026-07-15T00:00:01Z",
+                "completedAt": "2026-07-15T00:00:01Z",
+                "basis": "expiry-quarantine-completed",
+            }))
+            with self.assertRaisesRegex(broker.CredentialError, "timestamps are malformed"):
+                broker.load_migration_baseline()
 
     def test_projector_revoke_does_not_hide_an_uncleared_persistent_secret(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \

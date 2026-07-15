@@ -179,6 +179,32 @@ class LifecycleHistoryTests(unittest.TestCase):
             with self.assertRaisesRegex(verify.HistoryError, "no exact expiry receipt"):
                 verify.verify_bundle(credential_path, stop_path, expiry_path, current_path)
 
+    def test_token_free_uncertainty_clearance_requires_full_observed_horizon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path, stop_path, expiry_path, current_path = self.paths(Path(directory))
+            clearance = {
+                "schemaVersion": "gloops.github-app-uncertainty-clearance.v1",
+                "attemptId": "66666666-6666-4666-8666-666666666666",
+                "role": "projector",
+                "startedAt": "2026-07-15T00:00:00Z",
+                "observedAt": "2026-07-15T01:00:00Z",
+                "safeAfter": "2026-07-15T02:05:00Z",
+                "clearedAt": "2026-07-15T02:05:01Z",
+                "disposition": "token-free-uncertainty-cleared",
+            }
+            self.write(expiry_path, chain([clearance]))
+            self.assertEqual(verify.verify_bundle(credential_path, stop_path, expiry_path, current_path), "none")
+
+            clearance["safeAfter"] = "2026-07-15T01:00:01Z"
+            clearance["clearedAt"] = "2026-07-15T01:00:01Z"
+            clearance = {
+                key: value for key, value in clearance.items()
+                if key not in {"sequence", "previousReceiptDigest", "receiptDigest"}
+            }
+            self.write(expiry_path, chain([clearance]))
+            with self.assertRaisesRegex(verify.HistoryError, "before its observed expiry envelope"):
+                verify.verify_bundle(credential_path, stop_path, expiry_path, current_path)
+
 
 if __name__ == "__main__":
     unittest.main()
