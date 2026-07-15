@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:fef56db860cc006595d09b22cbd99081de4c2a3091a89e3bc7f7fa2da7fa581e'
+readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:f93ce4dc007e2c16c2acb9e806e8097332ca8636b039c9ad44f5c875145f610d'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
@@ -37,7 +37,7 @@ readonly -A EXPECTED_EXECUTION_ENVELOPE=(
 )
 for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
   [[ "${!execution_setting:-}" == "${EXPECTED_EXECUTION_ENVELOPE[${execution_setting}]}" ]] || {
-    echo "${execution_setting} has drifted from the accepted third-pilot envelope" >&2
+    echo "${execution_setting} has drifted from the accepted bounded-pilot envelope" >&2
     exit 1
   }
 done
@@ -85,7 +85,7 @@ systemctl is-active --quiet paperclip-hermes-execution.service || {
   exit 1
 }
 docker exec --user 10000:10000 --env HOME=/opt/data paperclip-hermes-execution \
-  sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/paperclip --jq "select(.private == false and .permissions.push == true)" >/dev/null' || {
+  sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == false and .permissions.push == true)" >/dev/null' || {
   echo "the live Hermes identity lacks bounded write access to the public pilot repository" >&2
   exit 1
 }

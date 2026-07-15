@@ -30,7 +30,7 @@ github_token="$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token --hostname github.
   echo 'GitHub credential is not the dedicated zach-hermes identity' >&2
   exit 1
 }
-GH_TOKEN="${github_token}" gh api repos/gloopsAI/paperclip --jq \
+GH_TOKEN="${github_token}" gh api repos/gloopsAI/gloops-paperclip-plugin --jq \
   'select(.private == false and .permissions.push == true)' >/dev/null || {
   echo 'zach-hermes lacks write access to the public pilot repository' >&2
   exit 1

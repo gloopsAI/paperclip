@@ -14,7 +14,7 @@
   },
   "github": {
     "principal": "zach-hermes",
-    "allowedRepositories": ["gloopsAI/paperclip"],
+    "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
     "minimumPermission": "push",
     "credentialMount": "read-only"
   },

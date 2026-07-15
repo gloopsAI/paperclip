@@ -279,7 +279,7 @@ if (
   JSON.stringify(hermesExecutionPolicy.allowedProviders) !==
   JSON.stringify(["ollama-cloud"])
 ) {
-  fail("Hermes third-pilot provider allowlist must contain only Ollama Cloud");
+  fail("Hermes bounded-pilot provider allowlist must contain only Ollama Cloud");
 }
 if (
   JSON.stringify(hermesExecutionPolicy.allowedRuntimeEnvironment) !==
@@ -292,13 +292,13 @@ if (
     JSON.stringify(["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"]) ||
   JSON.stringify(hermesExecutionPolicy.github) !== JSON.stringify({
     principal: "zach-hermes",
-    allowedRepositories: ["gloopsAI/paperclip"],
+    allowedRepositories: ["gloopsAI/gloops-paperclip-plugin"],
     minimumPermission: "push",
     credentialMount: "read-only",
   }) ||
   !hermesExecutionPolicy.forbiddenProviders?.includes("openai-codex")
 ) {
-  fail("Hermes third-pilot GitHub credential and no-fallback boundary is not exact");
+  fail("Hermes bounded-pilot GitHub credential and no-fallback boundary is not exact");
 }
 if (hermesExecutionGhConfig !== 'version: "1"\n') {
   fail("Hermes GitHub CLI config must be deterministic and contain no mutable settings");
@@ -328,7 +328,7 @@ if (
   !/^model:\n  provider: ollama-cloud\n  default: kimi-k2\.7-code$/m.test(hermesExecutionConfig) ||
   /fallback_providers|openai-codex|chatgpt\.com\/backend-api\/codex/m.test(hermesExecutionConfig)
 ) {
-  fail("Hermes third-pilot routing must use Ollama Cloud with no fallback provider");
+  fail("Hermes bounded-pilot routing must use Ollama Cloud with no fallback provider");
 }
 for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
   if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
@@ -390,7 +390,7 @@ for (const required of [
   "chmod 0750 \"${WORKSPACE}\"",
   "docker run --rm --pull never --user \"${PAPERCLIP_UID}:${PAPERCLIP_GID}\"",
   "--network none --read-only --cap-drop ALL --security-opt no-new-privileges:true",
-  "test -r /workspace/paperclip/.git/HEAD",
+  "test -r /workspace/gloops-paperclip-plugin/.git/HEAD",
 ]) {
   if (!restoreHermesWorkspaceObserver.includes(required)) {
     fail(`Hermes workspace observer restoration is missing ${required}`);
@@ -441,7 +441,7 @@ for (const required of [
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
   "live API rejects unauthenticated execution-plane access",
-  "live Paperclip observer can read the exact pilot repository",
+  "live Paperclip observer can read the exact plugin pilot repository",
   "Grok is host-CLI-only with no API configuration",
 ]) {
   if (!verifyHermesExecution.includes(required)) {
