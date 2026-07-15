@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.713.0-gloops.4",
+    "version": "2026.714.0-gloops.5",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:9039376095314e0fd51ed7d853171be9f904555049a34dbedd7b8da9c04c3168"
+    "digest": "sha256:c234d78b2988b07c6c43bc8dd191cce43c3b67257557c015ad5ec1e47a20d37c"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.713.0-gloops.4.json"
+    "vex": "gloops-distribution/security/vex-2026.714.0-gloops.5.json"
   },
   "patches": [
     {
@@ -109,6 +109,17 @@
       ],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream or the selected execution runtime provides an equivalent immutable execution-only profile with explicit provider and credential allowlists, no broad-home inheritance, an authenticated private sidecar network, bounded resources, dark installation, and rollback proof."
+    },
+    {
+      "id": "zero-retry-initial-admission-correction",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "aba18711d6bd00aee3efa98fc34c39b0f6217a34",
+      "sourceHead": "b2c9c6d4a7d4e29eff2d64dd6b1101fca5ef9f21",
+      "patchDiffSha256": "463803cac0107ae65842aae1f306d40d3f4ca9fd51f6475a8ab359d02402d284",
+      "integratedCommits": ["8944e9a6b802d06b8a86d2cd76cedb42cee7a56a"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected admission implementation proves that a zero-retry budget admits exactly one initial execution while every direct continuation, including legacy or corrupt-envelope parent chains, remains fail-closed."
     }
   ],
   "releasePolicy": {
