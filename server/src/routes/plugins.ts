@@ -82,9 +82,10 @@ import {
 } from "../services/plugin-local-folders.js";
 import {
   extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { isUuidSecretRef } from "../services/json-schema-secret-refs.js";
+import { secretService } from "../services/secrets.js";
+import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -510,6 +511,7 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
+  const secretsSvc = secretService(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
@@ -2214,22 +2216,23 @@ export function pluginRoutes(
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
+    const configJson = body.configJson;
 
     // Strip devUiUrl unless the caller is an instance admin. devUiUrl activates
     // a dev-proxy in the static file route that could be abused for SSRF if any
     // board-level user were allowed to set it.
     if (
-      "devUiUrl" in body.configJson &&
+      "devUiUrl" in configJson &&
       !(req.actor.type === "board" && req.actor.isInstanceAdmin)
     ) {
-      delete body.configJson.devUiUrl;
+      delete configJson.devUiUrl;
     }
 
     // Validate configJson against the plugin's instanceConfigSchema (if declared).
     // This ensures CLI/API callers get the same validation the UI performs client-side.
     const schema = plugin.manifestJson?.instanceConfigSchema;
     if (schema && Object.keys(schema).length > 0) {
-      const validation = validateInstanceConfig(body.configJson, schema);
+      const validation = validateInstanceConfig(configJson, schema);
       if (!validation.valid) {
         res.status(400).json({
           error: "Configuration does not match the plugin's instanceConfigSchema",
@@ -2240,19 +2243,70 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+      const secretRefsByPath = extractSecretRefPathsFromConfig(configJson, schema);
+      const target = { targetType: "plugin" as const, targetId: plugin.id };
+      const existingBindingCompanyIds = await secretsSvc.listBindingCompanyIdsForTarget(target);
+      const companyIdValue = configJson.companyId;
+      const companyId = typeof companyIdValue === "string" ? companyIdValue.trim() : "";
+
+      if (secretRefsByPath.size > 0 && (!schema || Object.keys(schema).length === 0)) {
+        res.status(422).json({
+          error: "Plugin secret references require a declared instanceConfigSchema",
+        });
         return;
       }
+      if (secretRefsByPath.size > 0 && !isUuidSecretRef(companyId)) {
+        res.status(422).json({
+          error: "Plugin configurations with secret references require a UUID companyId",
+        });
+        return;
+      }
+      if ([...secretRefsByPath.values()].some((paths) => paths.size !== 1)) {
+        res.status(422).json({
+          error: "Each plugin secret reference must bind to exactly one configuration path",
+        });
+        return;
+      }
+      if (secretRefsByPath.size > 0) assertCompanyAccess(req, companyId);
 
-      const result = await registry.upsertConfig(plugin.id, {
-        configJson: body.configJson,
+      const refs = [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
+        [...paths].map((configPath) => ({ secretId, configPath })),
+      );
+
+      // Persist config and its company-scoped secret bindings atomically. A
+      // failed cross-company or missing-secret check rolls back both changes;
+      // no worker can observe a config/binding mismatch.
+      const result = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const txRegistry = pluginRegistryService(txDb);
+        const txSecrets = secretService(txDb);
+
+        for (const oldCompanyId of existingBindingCompanyIds) {
+          if (oldCompanyId === companyId && refs.length > 0) continue;
+          await txSecrets.syncSecretRefsForTarget(
+            oldCompanyId,
+            target,
+            [],
+            { replaceAll: true, db: tx },
+          );
+        }
+        if (refs.length > 0) {
+          await txSecrets.syncSecretRefsForTarget(
+            companyId,
+            target,
+            refs,
+            { replaceAll: true, db: tx },
+          );
+        }
+
+        return txRegistry.upsertConfig(plugin.id, {
+          configJson,
+        });
       });
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
-        configKeyCount: Object.keys(body.configJson).length,
+        configKeyCount: Object.keys(configJson).length,
       });
 
       // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
@@ -2264,7 +2318,7 @@ export function pluginRoutes(
           await bridgeDeps.workerManager.call(
             plugin.id,
             "configChanged",
-            { config: body.configJson },
+            { config: configJson },
           );
         } catch (rpcErr) {
           if (
@@ -2285,6 +2339,7 @@ export function pluginRoutes(
 
       res.json(result);
     } catch (err) {
+      if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }

@@ -11,6 +11,10 @@ readonly NETWORK='paperclip-execution'
 readonly API_PORT='8642'
 readonly WORKSPACE="${STATE_DIR}/workspace"
 readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
+readonly APP_CONFIG='/etc/paperclip-gloops/github-app.json'
+readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
+readonly HERMES_TOKEN='/run/paperclip-gloops/hermes-github-token'
+readonly CREDENTIAL_RECEIPT='/run/paperclip-gloops/credential-receipt.json'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -81,10 +85,16 @@ if jq -e '
   .allowedCredentialEnvironment == ["API_SERVER_KEY", "OLLAMA_API_KEY"] and
   .allowedCredentialFiles == ["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"] and
   .github == {
-    "principal": "zach-hermes",
+    "principal": "gloops-autonomous-delivery[bot]",
+    "credentialType": "github-app-installation-token",
+    "appId": 4307157,
+    "installationId": 146796843,
+    "repositoryId": 1297008772,
     "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
     "minimumPermission": "push",
-    "credentialMount": "read-only"
+    "credentialMount": "read-only",
+    "maximumLifetimeSeconds": 3600,
+    "darkState": "revoked-and-absent"
   } and
   .grok.mode == "host-cli-only" and
   .grok.apiEnvironmentAllowed == false and
@@ -115,8 +125,9 @@ for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
   [[ ! -e "${forbidden}" ]] || fail "forbidden environment file exists: ${forbidden}"
 done
 mapfile -t profile_entries < <(find "${PROFILE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)
+gh_entries="$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | paste -sd ' ' -)"
 if [[ "${profile_entries[*]}" == 'auth.json config.yaml gh gitconfig policy.json' ]] \
-  && [[ "$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | paste -sd ' ' -)" == 'config.yml hosts.yml' ]]; then
+  && { [[ "${gh_entries}" == 'config.yml' ]] || [[ "${gh_entries}" == 'config.yml hosts.yml' ]]; }; then
   pass 'execution profile contains only declared credential and policy artifacts'
 else
   fail "execution profile contains undeclared artifacts: ${profile_entries[*]:-none}"
@@ -132,16 +143,39 @@ if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == 
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh" 2>/dev/null || true)" == '500:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/config.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
-  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && { [[ ! -e "${PROFILE_DIR}/gh/hosts.yml" ]] || [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]]; } \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gitconfig" 2>/dev/null || true)" == '400:10000:10000' ]]; then
-  pass 'runtime profile is readable only by the fixed Hermes identity'
+  pass 'runtime profile and any ephemeral gh token are readable only by the fixed Hermes identity'
 else
   fail 'runtime profile ownership or modes do not match the fixed Hermes identity'
 fi
-if [[ "$(GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api user --jq .login 2>/dev/null || true)" == 'zach-hermes' ]]; then
-  pass 'dedicated GitHub credential resolves to the declared service identity'
+if jq -e '
+  .appId == 4307157 and
+  .installationId == 146796843 and
+  .repositoryId == 1297008772 and
+  .repository == "gloopsAI/gloops-paperclip-plugin" and
+  .privateKeyPath == "/etc/paperclip-gloops/github-app/private-key.pem"
+' "${APP_CONFIG}" >/dev/null 2>&1 \
+  && [[ "$(stat -c '%a:%U:%G' "${APP_CONFIG}" 2>/dev/null || true)" == '600:root:root' ]] \
+  && [[ "$(stat -c '%a:%U:%G' "${APP_KEY}" 2>/dev/null || true)" =~ ^(400|600):root:root$ ]]; then
+  pass 'root-owned GitHub App identity is restricted to the declared installation and repository'
 else
-  fail 'dedicated GitHub service identity is missing'
+  fail 'GitHub App configuration or private-key protection is invalid'
+fi
+if [[ -f "${HERMES_TOKEN}" && -f "${PROFILE_DIR}/gh/hosts.yml" ]]; then
+  if GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api installation/repositories --jq \
+    'select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == "gloopsAI/gloops-paperclip-plugin")' >/dev/null \
+    && GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api repos/gloopsAI/gloops-paperclip-plugin --jq \
+      'select(.private == true and .id == 1297008772)' >/dev/null \
+    && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' "${CREDENTIAL_RECEIPT}" >/dev/null; then
+    pass 'short-lived GitHub App credential has one-repository private write scope'
+  else
+    fail 'short-lived GitHub App credential is invalid or over/under-scoped'
+  fi
+elif [[ "${MODE}" == '--source' && ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh/hosts.yml" ]]; then
+  pass 'dark source profile retains no GitHub installation token'
+else
+  fail 'GitHub installation token and gh credential file are inconsistent'
 fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
@@ -204,10 +238,11 @@ if [[ "${MODE}" == '--live' ]]; then
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{range .Mounts}}{{println .Source " -> " .Destination " (" .RW ")"}}{{end}}' "${CONTAINER}" >"${live_mounts}"
     if docker exec --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
-      sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == false and .permissions.push == true)" >/dev/null'; then
-      pass 'live GitHub identity has write access to the declared public pilot boundary'
+      sh -lc 'gh api installation/repositories --jq "select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == \"gloopsAI/gloops-paperclip-plugin\")" >/dev/null && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == true and .id == 1297008772)" >/dev/null' \
+      && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' "${CREDENTIAL_RECEIPT}" >/dev/null; then
+      pass 'live GitHub App token has write access only to the declared private pilot boundary'
     else
-      fail 'live GitHub identity or pilot repository write access is missing'
+      fail 'live GitHub App identity or private pilot repository write boundary is invalid'
     fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'

@@ -3,4 +3,4 @@
 	helper = !/usr/bin/gh auth git-credential
 [user]
 	name = Paperclip Hermes
-	email = zach-hermes@users.noreply.github.com
+	email = 4307157+gloops-autonomous-delivery[bot]@users.noreply.github.com

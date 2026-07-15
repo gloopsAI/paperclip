@@ -50,7 +50,8 @@ cleanup() {
     kill "${evidence_pid}" 2>/dev/null
     wait "${evidence_pid}" 2>/dev/null
   fi
-  systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"
+  systemctl stop "${PAPERCLIP_UNIT}"
+  systemctl stop "${HERMES_UNIT}"
   rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
   systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
   systemctl reset-failed "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
@@ -135,7 +136,8 @@ kill -0 "${evidence_pid}" 2>/dev/null || {
 
 # The table locks close the write interval. Stopping both services while those
 # locks remain held makes the captured receipt final before it is evaluated.
-systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"
+systemctl stop "${PAPERCLIP_UNIT}"
+systemctl stop "${HERMES_UNIT}"
 systemctl is-active --quiet "${HERMES_UNIT}" && exit 1
 systemctl is-active --quiet "${PAPERCLIP_UNIT}" && exit 1
 [[ "$(systemctl show --property=Result --value "${HERMES_UNIT}")" == 'success' ]] || {

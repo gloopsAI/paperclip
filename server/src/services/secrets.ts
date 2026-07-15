@@ -3443,7 +3443,7 @@ export function secretService(db: Db) {
         required?: boolean;
         label?: string | null;
       }>,
-      options?: { replaceAll?: boolean },
+      options?: { replaceAll?: boolean; db?: SecretBindingDb },
     ) => {
       const normalizedRefs: Array<{
         secretId: string;
@@ -3465,7 +3465,7 @@ export function secretService(db: Db) {
 
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
 
-      await db.transaction(async (tx) => {
+      const writeBindings = async (tx: SecretBindingDb) => {
         if (options?.replaceAll) {
           await tx
             .delete(companySecretBindings)
@@ -3516,7 +3516,12 @@ export function secretService(db: Db) {
             label: ref.label,
           })),
         );
-      });
+      };
+      if (options?.db) {
+        await writeBindings(options.db);
+      } else {
+        await db.transaction(writeBindings);
+      }
       return normalizedRefs;
     },
 

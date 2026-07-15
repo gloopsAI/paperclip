@@ -33,6 +33,10 @@ for unit in paperclip.service paperclip-gloops.service paperclip-hermes-executio
     exit 1
   fi
 done
+if [[ -x /usr/local/lib/paperclip-gloops/github-app-credentials.py ]]; then
+  /usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector
+  /usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes
+fi
 
 restore_stage="$(mktemp -d /home/paperclip/.paperclip.restore.XXXXXX)"
 trap 'rm -rf "${restore_stage}"' EXIT
@@ -55,6 +59,8 @@ systemctl disable --now paperclip.service paperclip-gloops.service paperclip-her
 systemctl mask paperclip-gloops.service paperclip-hermes-execution.service 2>/dev/null || true
 docker rm -f paperclip-hermes-execution 2>/dev/null || true
 rm -f /etc/paperclip-gloops/hermes-execution.env
+rm -f /etc/paperclip-gloops/operator-board-token /etc/paperclip-gloops/projector-github-secret-id
+rm -rf /run/paperclip-gloops
 rm -rf /opt/paperclip/hermes-execution-profile /opt/paperclip/hermes-execution-state
 docker network rm paperclip-execution >/dev/null 2>&1 || true
 echo "rollback restored the prior state and service definition; all Paperclip services remain dark"

@@ -7,6 +7,7 @@ readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:f93ce4dc007e2c16c2acb9e
 readonly HERMES_IMAGE='hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
+readonly APP_KEY="${CONFIG_DIR}/github-app/private-key.pem"
 
 [[ "${EUID}" -eq 0 ]] || {
   echo "run with sudo" >&2
@@ -21,6 +22,10 @@ for unit in paperclip.service gloops-runner.service hermes-agent.service papercl
 done
 docker image inspect "${HERMES_IMAGE}" >/dev/null 2>&1 || {
   echo "the pre-provisioned immutable Hermes execution image is missing: ${HERMES_IMAGE}" >&2
+  exit 1
+}
+[[ -f "${APP_KEY}" && "$(stat -c '%a:%U:%G' "${APP_KEY}")" =~ ^(400|600):root:root$ ]] || {
+  echo "the repository-scoped GitHub App private key is missing or not root-protected: ${APP_KEY}" >&2
   exit 1
 }
 
@@ -40,6 +45,8 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/rollback.sh" "${LIB_DIR}/rollback
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.sh" "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"
+install -m 0600 -o root -g root "${SCRIPT_DIR}/github-app.json" "${CONFIG_DIR}/github-app.json"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-config.yaml" "${LIB_DIR}/hermes-execution-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${LIB_DIR}/hermes-execution-policy.json"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gitconfig"
