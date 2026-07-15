@@ -73,6 +73,18 @@ const restoreHermesWorkspaceObserverPath = new URL(
   "../gloops-distribution/deploy/hermes/restore-hermes-workspace-observer.sh",
   import.meta.url,
 );
+const githubAppCredentialsPath = new URL(
+  "../gloops-distribution/deploy/hermes/github-app-credentials.py",
+  import.meta.url,
+);
+const githubAppConfigPath = new URL(
+  "../gloops-distribution/deploy/hermes/github-app.json",
+  import.meta.url,
+);
+const githubAppCredentialsTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/github_app_credentials_test.py",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
@@ -91,6 +103,16 @@ const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
+const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
+const githubAppConfig = JSON.parse(readFileSync(githubAppConfigPath, "utf8"));
+try {
+  execFileSync("python3", [githubAppCredentialsTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`GitHub App broker unit tests failed: ${error instanceof Error ? error.message : error}`);
+}
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
 try {
@@ -210,6 +232,9 @@ if (!service.includes("--network paperclip-execution")) {
 if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh")) {
   fail("Paperclip systemd readiness must wait for container health");
 }
+if (!service.includes("TimeoutStopSec=100")) {
+  fail("Paperclip stop budget must cover secret clearing, token revocation, and graceful container shutdown");
+}
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
   "PAPERCLIP_MTE_ENABLED=false",
@@ -228,7 +253,8 @@ for (const required of [
 const cleanupMatch = rehearseZeroWork.match(/cleanup\(\) \{([\s\S]*?)\n\}/);
 for (const required of [
   'kill "${evidence_pid}"',
-  'systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"',
+  'systemctl stop "${PAPERCLIP_UNIT}"',
+  'systemctl stop "${HERMES_UNIT}"',
   'rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
   'systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
   '"${LIB_DIR}/verify-dark.sh"',
@@ -242,8 +268,12 @@ const unmaskIndex = rehearseZeroWork.indexOf('systemctl unmask "${PAPERCLIP_UNIT
 const lockIndex = rehearseZeroWork.indexOf("IN ACCESS EXCLUSIVE MODE");
 const holderIndex = rehearseZeroWork.indexOf("evidence_pid=$!");
 const stopIndex = rehearseZeroWork.indexOf(
-  'systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"',
+  'systemctl stop "${PAPERCLIP_UNIT}"',
   holderIndex,
+);
+const hermesStopIndex = rehearseZeroWork.indexOf(
+  'systemctl stop "${HERMES_UNIT}"',
+  stopIndex + 1,
 );
 const inspectIndex = rehearseZeroWork.indexOf('node - "${evidence_output}"');
 if (
@@ -252,8 +282,9 @@ if (
   lockIndex < 0 ||
   holderIndex < 0 ||
   stopIndex < 0 ||
+  hermesStopIndex < 0 ||
   inspectIndex < 0 ||
-  !(trapIndex < unmaskIndex && lockIndex < holderIndex && holderIndex < stopIndex && stopIndex < inspectIndex)
+  !(trapIndex < unmaskIndex && lockIndex < holderIndex && holderIndex < stopIndex && stopIndex < hermesStopIndex && hermesStopIndex < inspectIndex)
 ) {
   fail("zero-work rehearsal must arm cleanup before activation and stop services under evidence locks before inspection");
 }
@@ -291,10 +322,16 @@ if (
   JSON.stringify(hermesExecutionPolicy.allowedCredentialFiles) !==
     JSON.stringify(["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"]) ||
   JSON.stringify(hermesExecutionPolicy.github) !== JSON.stringify({
-    principal: "zach-hermes",
+    principal: "gloops-autonomous-delivery[bot]",
+    credentialType: "github-app-installation-token",
+    appId: 4307157,
+    installationId: 146796843,
+    repositoryId: 1297008772,
     allowedRepositories: ["gloopsAI/gloops-paperclip-plugin"],
     minimumPermission: "push",
     credentialMount: "read-only",
+    maximumLifetimeSeconds: 3600,
+    darkState: "revoked-and-absent",
   }) ||
   !hermesExecutionPolicy.forbiddenProviders?.includes("openai-codex")
 ) {
@@ -302,6 +339,11 @@ if (
 }
 if (hermesExecutionGhConfig !== 'version: "1"\n') {
   fail("Hermes GitHub CLI config must be deterministic and contain no mutable settings");
+}
+if (!prepareHermesExecution.includes('install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-gitconfig"') ||
+    !readFileSync(new URL("../gloops-distribution/deploy/hermes/hermes-execution-gitconfig", import.meta.url), "utf8")
+      .includes("4307157+gloops-autonomous-delivery[bot]@users.noreply.github.com")) {
+  fail("Hermes git identity must use the exact GitHub App bot noreply address");
 }
 if (
   hermesExecutionPolicy.grok?.mode !== "host-cli-only" ||
@@ -354,6 +396,10 @@ for (const required of [
   "--pids-limit 512",
   "gateway run --replace",
   "ExecStartPost=/usr/local/lib/paperclip-gloops/restore-hermes-workspace-observer.sh",
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh",
+  "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector",
+  "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes",
+  "TimeoutStopSec=90",
 ]) {
   if (!hermesExecutionService.includes(required)) {
     fail(`Hermes execution service is missing ${required}`);
@@ -377,6 +423,8 @@ for (const required of [
   "hermes-execution-policy.json",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
+  "github-app-credentials.py",
+  "github-app.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
   "pre-provisioned immutable Hermes execution image is missing",
 ]) {
@@ -416,6 +464,9 @@ for (const required of [
   "hermes-execution-profile",
   "hermes-execution-state",
   "docker network rm paperclip-execution",
+  "github-app-credentials.py revoke-projector",
+  "github-app-credentials.py revoke-hermes",
+  "/run/paperclip-gloops",
 ]) {
   if (!rollback.includes(required)) {
     fail(`rollback does not remove ${required}`);
@@ -428,16 +479,19 @@ for (const required of [
   "secrets.token_hex(32)",
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
   'base_url == "https://ollama.com/v1"',
-  "GitHub credential is not the dedicated zach-hermes identity",
   'chmod 0500 "${PROFILE_DIR}/gh"',
 ]) {
   if (!prepareHermesExecution.includes(required)) {
     fail(`Hermes profile preparation is missing ${required}`);
   }
 }
+if (prepareHermesExecution.includes("github-app-credentials.py\" refresh")) {
+  fail("dark profile preparation must not mint a GitHub installation token");
+}
 for (const required of [
   "credential pool is limited to Ollama Cloud with no fallback credential",
-  "live GitHub identity has write access to the declared public pilot boundary",
+  "short-lived GitHub App credential has one-repository private write scope",
+  "live GitHub App token has write access only to the declared private pilot boundary",
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
   "live API rejects unauthenticated execution-plane access",
@@ -446,6 +500,73 @@ for (const required of [
 ]) {
   if (!verifyHermesExecution.includes(required)) {
     fail(`Hermes execution verification is missing ${required}`);
+  }
+}
+if (JSON.stringify(githubAppConfig) !== JSON.stringify({
+  appId: 4307157,
+  installationId: 146796843,
+  repositoryId: 1297008772,
+  repository: "gloopsAI/gloops-paperclip-plugin",
+  privateKeyPath: "/etc/paperclip-gloops/github-app/private-key.pem",
+  projectorSecretIdPath: "/etc/paperclip-gloops/projector-github-secret-id",
+  boardTokenPath: "/etc/paperclip-gloops/operator-board-token",
+})) {
+  fail("GitHub App broker configuration is not exact");
+}
+for (const required of [
+  '"repository_ids": [config["repositoryId"]]',
+  '"contents": "write"',
+  '"contents": "read"',
+  '"pull_requests": "write"',
+  '"pull_requests": "read"',
+  'seconds < 2700 or seconds > 3900',
+  'installation.get("total_count") != 1',
+  'detail.get("private") is not True',
+  'revoke_value(token)',
+  'retained.add(token_path)',
+  'record_revocation(token_path, token)',
+  '"revokedAt": None',
+  'def read_root_secret(path: Path, label: str)',
+  'mode not in {0o400, 0o600}',
+  'canonical_secret_id = str(UUID(secret_id))',
+  'PROJECTOR_ROTATED.unlink(missing_ok=True)',
+  'print(f"github-app-credentials: {error}", file=sys.stderr)',
+]) {
+  if (!githubAppCredentials.includes(required)) {
+    fail(`GitHub App broker is missing ${required}`);
+  }
+}
+for (const forbidden of ["zach-hermes", "xai", "grok", "GITHUB_TOKEN", "GH_TOKEN"]) {
+  if (githubAppCredentials.includes(forbidden)) {
+    fail(`GitHub App broker contains forbidden identity or provider surface ${forbidden}`);
+  }
+}
+for (const required of [
+  "ExecStartPost=/usr/local/lib/paperclip-gloops/github-app-credentials.py rotate-projector",
+  "ExecStop=/usr/local/lib/paperclip-gloops/github-app-credentials.py clear-projector",
+  "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector",
+]) {
+  if (!service.includes(required)) {
+    fail(`Paperclip service is missing projector credential lifecycle step ${required}`);
+  }
+}
+for (const required of [
+  "GitHub App credential receipt records both successful revocations",
+  ".hermes.revokedAt",
+  ".projector.revokedAt",
+]) {
+  if (!verifyDark.includes(required)) {
+    fail(`dark verification is missing revocation evidence ${required}`);
+  }
+}
+for (const required of [
+  "/run/paperclip-gloops/hermes-github-token",
+  "/run/paperclip-gloops/projector-github-token",
+  "/run/paperclip-gloops/projector-token-rotated",
+  "/opt/paperclip/hermes-execution-profile/gh/hosts.yml",
+]) {
+  if (!verifyDark.includes(required)) {
+    fail(`dark verification does not reject residual credential ${required}`);
   }
 }
 for (const providerConfigPath of [

@@ -11,6 +11,7 @@ StartLimitBurst=2
 [Service]
 Type=simple
 Environment=HERMES_EXECUTION_IMAGE=hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78
+ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source
 ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-execution
 # s6-supervise is root while the gateway child is uid 10000. CAP_KILL is the
@@ -18,11 +19,13 @@ ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-execution
 ExecStart=/usr/bin/docker run --rm --name paperclip-hermes-execution --pull never --read-only --tmpfs /run:rw,exec,nosuid,nodev,size=64m --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --tmpfs /opt/data:rw,nosuid,nodev,size=256m --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID --cap-add KILL --security-opt no-new-privileges:true --network paperclip-execution --network-alias hermes-execution --env-file /etc/paperclip-gloops/hermes-execution.env --env HOME=/opt/data --env HERMES_HOME=/opt/data --env HERMES_WRITE_SAFE_ROOT=/opt/data --env HERMES_DISABLE_LAZY_INSTALLS=1 --mount type=bind,src=/opt/paperclip/hermes-execution-profile/config.yaml,dst=/opt/data/config.yaml,readonly --mount type=bind,src=/opt/paperclip/hermes-execution-profile/auth.json,dst=/opt/data/auth.json --mount type=bind,src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly --mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly --mount type=bind,src=/opt/paperclip/hermes-execution-state/cache,dst=/opt/data/cache --mount type=bind,src=/opt/paperclip/hermes-execution-state/logs,dst=/opt/data/logs --mount type=bind,src=/opt/paperclip/hermes-execution-state/memories,dst=/opt/data/memories --mount type=bind,src=/opt/paperclip/hermes-execution-state/sessions,dst=/opt/data/sessions --mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace --memory 2048m --memory-swap 2048m --cpus 2.0 --pids-limit 512 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --health-cmd "python -c \"import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8642/v1/models',headers={'Authorization':'Bearer '+os.environ['API_SERVER_KEY']}); raise SystemExit(0 if urllib.request.urlopen(r,timeout=3).status == 200 else 1)\"" --health-interval 10s --health-timeout 5s --health-retries 6 --health-start-period 30s ${HERMES_EXECUTION_IMAGE} gateway run --replace
 ExecStartPost=/usr/local/lib/paperclip-gloops/restore-hermes-workspace-observer.sh
 ExecStop=/usr/bin/docker stop --time 30 paperclip-hermes-execution
+ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector
+ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes
 ExecStopPost=-/usr/bin/docker rm -f paperclip-hermes-execution
 Restart=on-failure
 RestartSec=15
 TimeoutStartSec=90
-TimeoutStopSec=45
+TimeoutStopSec=90
 
 [Install]
 WantedBy=multi-user.target

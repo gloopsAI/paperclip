@@ -49,6 +49,34 @@ else
   failed=1
 fi
 
+for ephemeral_credential in \
+  /run/paperclip-gloops/hermes-github-token \
+  /run/paperclip-gloops/projector-github-token \
+  /run/paperclip-gloops/projector-token-rotated \
+  /opt/paperclip/hermes-execution-profile/gh/hosts.yml; do
+  if [[ -e "${ephemeral_credential}" ]]; then
+    echo "FAIL ephemeral GitHub credential remains while dark: ${ephemeral_credential}" >&2
+    failed=1
+  fi
+done
+if [[ "${failed}" -eq 0 ]]; then
+  echo "PASS no GitHub App installation token remains while dark"
+fi
+if [[ -f /run/paperclip-gloops/credential-receipt.json ]]; then
+  if jq -e '
+    .schemaVersion == "gloops.github-app-credential-receipt.v1" and
+    (.hermes.revokedAt | type == "string") and
+    (.projector.revokedAt | type == "string") and
+    (.hermes.tokenFingerprint | test("^[0-9a-f]{64}$")) and
+    (.projector.tokenFingerprint | test("^[0-9a-f]{64}$"))
+  ' /run/paperclip-gloops/credential-receipt.json >/dev/null; then
+    echo "PASS GitHub App credential receipt records both successful revocations"
+  else
+    echo "FAIL GitHub App credential receipt is incomplete while dark" >&2
+    failed=1
+  fi
+fi
+
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
   echo "PASS exact image digest is installed"
 else

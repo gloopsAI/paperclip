@@ -13,10 +13,16 @@
     "apiEnvironmentAllowed": false
   },
   "github": {
-    "principal": "zach-hermes",
+    "principal": "gloops-autonomous-delivery[bot]",
+    "credentialType": "github-app-installation-token",
+    "appId": 4307157,
+    "installationId": 146796843,
+    "repositoryId": 1297008772,
     "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
     "minimumPermission": "push",
-    "credentialMount": "read-only"
+    "credentialMount": "read-only",
+    "maximumLifetimeSeconds": 3600,
+    "darkState": "revoked-and-absent"
   },
   "network": {
     "name": "paperclip-execution",

@@ -3,7 +3,6 @@ set -euo pipefail
 
 readonly SOURCE_ENV='/opt/paperclip/hermes-home/.env'
 readonly SOURCE_AUTH='/opt/paperclip/hermes-home/auth.json'
-readonly SOURCE_GH_HOSTS='/root/.config/gh/hosts.yml'
 readonly PROFILE_DIR='/opt/paperclip/hermes-execution-profile'
 readonly STATE_DIR='/opt/paperclip/hermes-execution-state'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
@@ -21,20 +20,7 @@ for unit in paperclip-gloops.service paperclip-hermes-execution.service; do
 done
 [[ -f "${SOURCE_ENV}" ]] || { echo "missing credential source: ${SOURCE_ENV}" >&2; exit 1; }
 [[ -f "${SOURCE_AUTH}" ]] || { echo "missing credential source: ${SOURCE_AUTH}" >&2; exit 1; }
-[[ -f "${SOURCE_GH_HOSTS}" ]] || { echo "missing credential source: ${SOURCE_GH_HOSTS}" >&2; exit 1; }
 docker image inspect "${IMAGE}" >/dev/null
-
-github_token="$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token --hostname github.com)"
-[[ "${github_token}" =~ ^[A-Za-z0-9_]+$ ]] || { echo 'GitHub token is malformed' >&2; exit 1; }
-[[ "$(GH_TOKEN="${github_token}" gh api user --jq .login)" == 'zach-hermes' ]] || {
-  echo 'GitHub credential is not the dedicated zach-hermes identity' >&2
-  exit 1
-}
-GH_TOKEN="${github_token}" gh api repos/gloopsAI/gloops-paperclip-plugin --jq \
-  'select(.private == false and .permissions.push == true)' >/dev/null || {
-  echo 'zach-hermes lacks write access to the public pilot repository' >&2
-  exit 1
-}
 
 install -d -m 0700 -o root -g root "${PROFILE_DIR}" "${STATE_DIR}" "${CONFIG_DIR}"
 for path in cache logs memories sessions; do
@@ -47,8 +33,7 @@ install -d -m 0750 -o 10000 -g 985 "${STATE_DIR}/workspace"
 
 tmp_env="$(mktemp "${CONFIG_DIR}/.hermes-execution.env.XXXXXX")"
 tmp_auth="$(mktemp "${CONFIG_DIR}/.hermes-execution-auth.XXXXXX")"
-tmp_gh_hosts="$(mktemp "${CONFIG_DIR}/.hermes-execution-gh-hosts.XXXXXX")"
-trap 'rm -f "${tmp_env}" "${tmp_auth}" "${tmp_gh_hosts}"' EXIT
+trap 'rm -f "${tmp_env}" "${tmp_auth}"' EXIT
 
 python3 - "${SOURCE_ENV}" "${RUNTIME_ENV}" "${tmp_env}" <<'PY'
 from pathlib import Path
@@ -114,15 +99,11 @@ jq '{
   suppressed_sources: ["anthropic", "copilot", "openai-codex", "openrouter", "xai", "xai-oauth"]
 }' "${SOURCE_AUTH}" >"${tmp_auth}"
 
-printf 'github.com:\n  git_protocol: https\n  user: zach-hermes\n  oauth_token: %s\n' \
-  "${github_token}" >"${tmp_gh_hosts}"
-
 install -m 0600 -o root -g root "${tmp_env}" "${RUNTIME_ENV}"
 install -m 0600 -o 10000 -g 10000 "${tmp_auth}" "${PROFILE_DIR}/auth.json"
 install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-config.yaml" "${PROFILE_DIR}/config.yaml"
 rm -rf "${PROFILE_DIR}/gh"
 install -d -m 0700 -o 10000 -g 10000 "${PROFILE_DIR}/gh"
-install -m 0400 -o 10000 -g 10000 "${tmp_gh_hosts}" "${PROFILE_DIR}/gh/hosts.yml"
 install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-gh-config.yml" "${PROFILE_DIR}/gh/config.yml"
 chmod 0500 "${PROFILE_DIR}/gh"
 install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-gitconfig" "${PROFILE_DIR}/gitconfig"
