@@ -17,4 +17,3 @@ class DisabledCronScheduler(CronScheduler):
     def start(self, stop_event, *, adapters=None, loop=None, interval=60) -> None:
         del adapters, loop, interval
         stop_event.wait()
-

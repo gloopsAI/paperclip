@@ -48,6 +48,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.s
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-hermes-execution.py" "${LIB_DIR}/stop-hermes-execution.py"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-lifecycle-history.py" "${LIB_DIR}/verify-lifecycle-history.py"
 rm -rf "${LIB_DIR}/hermes-cron-disabled"
 install -d -m 0755 -o root -g root "${LIB_DIR}/hermes-cron-disabled"
 install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-cron-disabled/__init__.py" "${LIB_DIR}/hermes-cron-disabled/__init__.py"

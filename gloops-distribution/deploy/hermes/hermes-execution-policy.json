@@ -44,7 +44,7 @@
       "kanbanDispatcher": false,
       "paperclipPluginScheduler": "empty-tables-locked-and-receipted",
       "resumePendingSessions": "empty-directory-precondition",
-      "providerInvocationEvidence": "credential-pool-request-count-unchanged"
+      "zeroWorkEgress": "deny-before-start-with-zero-attempt-counter"
     },
     "providerInvocationBudget": {
       "required": true,

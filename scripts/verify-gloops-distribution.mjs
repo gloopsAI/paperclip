@@ -93,6 +93,14 @@ const stopHermesExecutionTestPath = new URL(
   "../gloops-distribution/deploy/hermes/stop_hermes_execution_test.py",
   import.meta.url,
 );
+const verifyLifecycleHistoryPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-lifecycle-history.py",
+  import.meta.url,
+);
+const verifyLifecycleHistoryTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify_lifecycle_history_test.py",
+  import.meta.url,
+);
 const hermesCronDisabledPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-cron-disabled/__init__.py",
   import.meta.url,
@@ -117,6 +125,7 @@ const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
 const stopHermesExecution = readFileSync(stopHermesExecutionPath, "utf8");
+const verifyLifecycleHistory = readFileSync(verifyLifecycleHistoryPath, "utf8");
 const hermesCronDisabled = readFileSync(hermesCronDisabledPath, "utf8");
 const githubAppConfig = JSON.parse(readFileSync(githubAppConfigPath, "utf8"));
 try {
@@ -134,6 +143,14 @@ try {
   });
 } catch (error) {
   fail(`Hermes stop helper unit tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("python3", [verifyLifecycleHistoryTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`lifecycle history verifier unit tests failed: ${error instanceof Error ? error.message : error}`);
 }
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
@@ -264,7 +281,9 @@ for (const required of [
   "agent_wakeup_requests",
   "plugin_jobs, plugin_job_runs IN ACCESS EXCLUSIVE MODE",
   "persistent Hermes session could auto-resume",
-  "zero-work rehearsal changed the Ollama provider request counter",
+  "iptables -I DOCKER-USER 1",
+  "iptables -L DOCKER-USER -v -n -x",
+  "zero-work rehearsal attempted ${blocked_packets:-unknown} external network packet(s)",
   "zero-work rehearsal created persistent Hermes session state",
   "timeout --signal=TERM --kill-after=5s 180s docker exec",
   "IN ACCESS EXCLUSIVE MODE",
@@ -283,6 +302,7 @@ for (const required of [
   'kill "${evidence_pid}"',
   'systemctl stop "${PAPERCLIP_UNIT}"',
   'systemctl stop "${HERMES_UNIT}"',
+  "iptables -D DOCKER-USER",
   'rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
   'systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
   '"${LIB_DIR}/verify-dark.sh"',
@@ -292,6 +312,7 @@ for (const required of [
   }
 }
 const trapIndex = rehearseZeroWork.indexOf("trap cleanup EXIT");
+const egressDenyIndex = rehearseZeroWork.indexOf("iptables -I DOCKER-USER 1");
 const unmaskIndex = rehearseZeroWork.indexOf('systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"');
 const lockIndex = rehearseZeroWork.indexOf("IN ACCESS EXCLUSIVE MODE");
 const clearProjectorIndex = rehearseZeroWork.indexOf(
@@ -309,6 +330,7 @@ const hermesStopIndex = rehearseZeroWork.indexOf(
 const inspectIndex = rehearseZeroWork.indexOf('node - "${evidence_output}"');
 if (
   trapIndex < 0 ||
+  egressDenyIndex < 0 ||
   unmaskIndex < 0 ||
   clearProjectorIndex < 0 ||
   lockIndex < 0 ||
@@ -317,7 +339,8 @@ if (
   hermesStopIndex < 0 ||
   inspectIndex < 0 ||
   !(
-    trapIndex < unmaskIndex &&
+    trapIndex < egressDenyIndex &&
+    egressDenyIndex < unmaskIndex &&
     unmaskIndex < clearProjectorIndex &&
     clearProjectorIndex < lockIndex &&
     lockIndex < holderIndex &&
@@ -413,7 +436,7 @@ if (
     kanbanDispatcher: false,
     paperclipPluginScheduler: "empty-tables-locked-and-receipted",
     resumePendingSessions: "empty-directory-precondition",
-    providerInvocationEvidence: "credential-pool-request-count-unchanged",
+    zeroWorkEgress: "deny-before-start-with-zero-attempt-counter",
   })
 ) {
   fail("Hermes and Paperclip background execution containment is not explicit");
@@ -484,6 +507,7 @@ for (const required of [
   "hermes-execution-gh-config.yml",
   "github-app-credentials.py",
   "stop-hermes-execution.py",
+  "verify-lifecycle-history.py",
   "hermes-cron-disabled",
   "github-app.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
@@ -552,7 +576,8 @@ if (prepareHermesExecution.includes("github-app-credentials.py\" refresh")) {
 for (const required of [
   "credential pool is limited to Ollama Cloud with no fallback credential",
   "short-lived GitHub App credential has one-repository private write scope",
-  "live GitHub App token has write access only to the declared private pilot boundary",
+  "live GitHub App token projection matches the host-verified exact credential",
+  "docker exec -i --user 10000:10000",
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
   "live API rejects unauthenticated execution-plane access",
@@ -641,14 +666,26 @@ if (hermesExecutionService.includes("revoke-projector")) {
   fail("Hermes service must not own the independently restarted projector credential");
 }
 for (const required of [
-  "GitHub App credential receipt records both successful revocations",
-  "append-only GitHub credential lifecycle history is complete",
-  "append-only Hermes stop history is complete and digest-verified",
-  ".hermes.revokedAt",
-  ".projector.revokedAt",
+  "/usr/local/lib/paperclip-gloops/verify-lifecycle-history.py",
+  "/var/lib/paperclip-gloops/credential-history.jsonl",
+  "/var/lib/paperclip-gloops/hermes-stop-history.jsonl",
+  "/run/paperclip-gloops/credential-receipt.json",
+  "FAIL durable Hermes execution lifecycle evidence is invalid",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
+  }
+}
+for (const required of [
+  "verify_chain(records, \"lifecycleId\")",
+  "verify_chain(records, \"attemptId\")",
+  "ephemeral receipt does not exactly equal credential-history tail",
+  "credential lifecycle has no stop attempt",
+  "non-legacy credential history has no stop history",
+  "PASS lifecycle histories are",
+]) {
+  if (!verifyLifecycleHistory.includes(required)) {
+    fail(`lifecycle history verifier is missing ${required}`);
   }
 }
 for (const required of [

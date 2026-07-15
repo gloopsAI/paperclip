@@ -44,14 +44,15 @@ evidence_pid=''
 credential_history='/var/lib/paperclip-gloops/credential-history.jsonl'
 stop_history='/var/lib/paperclip-gloops/hermes-stop-history.jsonl'
 sessions_dir='/opt/paperclip/hermes-execution-state/sessions'
-provider_auth='/opt/paperclip/hermes-execution-profile/auth.json'
+network='paperclip-execution'
+egress_comment="gloops-zero-work-${BASHPID}"
+egress_rule_installed=0
 credential_history_before="$([[ -f "${credential_history}" ]] && wc -l <"${credential_history}" || echo 0)"
 stop_history_before="$([[ -f "${stop_history}" ]] && wc -l <"${stop_history}" || echo 0)"
 if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
   echo "refusing rehearsal because a persistent Hermes session could auto-resume" >&2
   exit 1
 fi
-provider_requests_before="$(jq -r '[.credential_pool["ollama-cloud"][]?.request_count // 0] | add // 0' "${provider_auth}")"
 
 cleanup() {
   local status=$?
@@ -63,6 +64,12 @@ cleanup() {
   fi
   systemctl stop "${PAPERCLIP_UNIT}"
   systemctl stop "${HERMES_UNIT}"
+  if ((egress_rule_installed == 1)); then
+    subnet="$(docker network inspect "${network}" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null)"
+    iptables -D DOCKER-USER -s "${subnet}" ! -d "${subnet}" \
+      -m comment --comment "${egress_comment}" -j REJECT
+    egress_rule_installed=0
+  fi
   rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
   systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
   systemctl reset-failed "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
@@ -78,6 +85,15 @@ trap cleanup EXIT
 
 started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 echo "zero-work rehearsal started at ${started_at}"
+
+subnet="$(docker network inspect "${network}" --format '{{(index .IPAM.Config 0).Subnet}}')"
+[[ "${subnet}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || {
+  echo "paperclip-execution network has no valid IPv4 subnet" >&2
+  exit 1
+}
+iptables -I DOCKER-USER 1 -s "${subnet}" ! -d "${subnet}" \
+  -m comment --comment "${egress_comment}" -j REJECT
+egress_rule_installed=1
 
 systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
@@ -221,9 +237,9 @@ print(json.dumps({
 }, sort_keys=True))
 PY
 
-provider_requests_after="$(jq -r '[.credential_pool["ollama-cloud"][]?.request_count // 0] | add // 0' "${provider_auth}")"
-[[ "${provider_requests_after}" == "${provider_requests_before}" ]] || {
-  echo "zero-work rehearsal changed the Ollama provider request counter" >&2
+blocked_packets="$(iptables -L DOCKER-USER -v -n -x | awk -v marker="${egress_comment}" '$0 ~ marker {print $1}')"
+[[ "${blocked_packets}" == '0' ]] || {
+  echo "zero-work rehearsal attempted ${blocked_packets:-unknown} external network packet(s)" >&2
   exit 1
 }
 if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
@@ -232,4 +248,4 @@ if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
 fi
 
 echo "PASS closed-interval rehearsal created no issue, run, wakeup, recovery, cost, plugin-job, or plugin-job-run row"
-echo "PASS zero-work rehearsal admitted no Hermes continuation or Ollama provider request"
+echo "PASS zero-work rehearsal admitted no Hermes continuation or external provider attempt"

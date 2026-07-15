@@ -116,7 +116,7 @@ if jq -e '
     "kanbanDispatcher": false,
     "paperclipPluginScheduler": "empty-tables-locked-and-receipted",
     "resumePendingSessions": "empty-directory-precondition",
-    "providerInvocationEvidence": "credential-pool-request-count-unchanged"
+    "zeroWorkEgress": "deny-before-start-with-zero-attempt-counter"
   } and
   .runtime.providerInvocationBudget == {
     "required": true,
@@ -266,12 +266,19 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{range .Mounts}}{{println .Source " -> " .Destination " (" .RW ")"}}{{end}}' "${CONTAINER}" >"${live_mounts}"
-    if docker exec --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
-      sh -lc 'gh api installation/repositories --jq "select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == \"gloopsAI/gloops-paperclip-plugin\")" >/dev/null && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == true and .id == 1297008772)" >/dev/null' \
-      && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' "${CREDENTIAL_RECEIPT}" >/dev/null; then
-      pass 'live GitHub App token has write access only to the declared private pilot boundary'
+    hermes_fingerprint="$(jq -r '.hermes.tokenFingerprint // empty' "${CREDENTIAL_RECEIPT}")"
+    if [[ "${hermes_fingerprint}" =~ ^[0-9a-f]{64}$ ]] \
+      && docker exec -i --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
+        /opt/hermes/.venv/bin/python - "${hermes_fingerprint}" <<'PY'
+import hashlib, pathlib, sys, yaml
+hosts = yaml.safe_load(pathlib.Path('/opt/data/.config/gh/hosts.yml').read_text())
+token = hosts['github.com']['oauth_token']
+raise SystemExit(0 if hashlib.sha256(token.encode()).hexdigest() == sys.argv[1] else 1)
+PY
+    then
+      pass 'live GitHub App token projection matches the host-verified exact credential'
     else
-      fail 'live GitHub App identity or private pilot repository write boundary is invalid'
+      fail 'live GitHub App token projection does not match its host-verified receipt'
     fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'
