@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.714.0-gloops.5",
+    "version": "2026.714.0-gloops.6",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:c234d78b2988b07c6c43bc8dd191cce43c3b67257557c015ad5ec1e47a20d37c"
+    "digest": "sha256:fef56db860cc006595d09b22cbd99081de4c2a3091a89e3bc7f7fa2da7fa581e"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.714.0-gloops.5.json"
+    "vex": "gloops-distribution/security/vex-2026.714.0-gloops.6.json"
   },
   "patches": [
     {
@@ -120,6 +120,17 @@
       "integratedCommits": ["8944e9a6b802d06b8a86d2cd76cedb42cee7a56a"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected admission implementation proves that a zero-retry budget admits exactly one initial execution while every direct continuation, including legacy or corrupt-envelope parent chains, remains fail-closed."
+    },
+    {
+      "id": "paperclip-hermes-execution-contract-certification",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "5bc39e96eabbfcab69e839e543e7c00d521496df",
+      "sourceHead": "0855ff58b3bb41d631ccca87b4aa4d604d0396cc",
+      "patchDiffSha256": "507fc69fb5014ffd0304580092a8bd0c75e64b4af54991d71cdc68a63eabfcba",
+      "integratedCommits": ["0855ff58b3bb41d631ccca87b4aa4d604d0396cc"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected Paperclip-to-Hermes execution boundary provides equivalent provider-invocation truth, exact clean-SHA admission, bounded one-run/zero-recovery behavior, absolute adapter deadlines, row-locked terminal transitions, and independently accepted evidence."
     }
   ],
   "releasePolicy": {
