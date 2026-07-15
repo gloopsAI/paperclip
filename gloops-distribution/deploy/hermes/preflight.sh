@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:f93ce4dc007e2c16c2acb9e806e8097332ca8636b039c9ad44f5c875145f610d'
+readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:4ad5881969635daec4194f7bb78df22a1768df4f74f574cc935647d24750a23d'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
