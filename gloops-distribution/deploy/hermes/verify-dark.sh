@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:fef56db860cc006595d09b22cbd99081de4c2a3091a89e3bc7f7fa2da7fa581e'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:f93ce4dc007e2c16c2acb9e806e8097332ca8636b039c9ad44f5c875145f610d'
 failed=0
 
 check_inactive() {
