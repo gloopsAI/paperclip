@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.714.0-gloops.7",
+    "version": "2026.715.0-gloops.8",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:f93ce4dc007e2c16c2acb9e806e8097332ca8636b039c9ad44f5c875145f610d"
+    "digest": "sha256:4ad5881969635daec4194f7bb78df22a1768df4f74f574cc935647d24750a23d"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.714.0-gloops.7.json"
+    "vex": "gloops-distribution/security/vex-2026.715.0-gloops.8.json"
   },
   "patches": [
     {
@@ -153,6 +153,17 @@
       "integratedCommits": ["41bfbb7dbf0eaab4d0ebcd45f16333e348100985"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the bounded execution profile derives its sole repository grant and observer path from the accepted work charter without admitting any undeclared repository or broader GitHub authority."
+    },
+    {
+      "id": "private-github-app-credential-boundary",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "b609136514e4176132790232815bd8071a97ac4a",
+      "sourceHead": "ebaa929944fbdc6bb5fd5bec11d68e20da01ab13",
+      "patchDiffSha256": "b12511e7d0ac39d2af5a32bb872eba037ded4f99b489fd1d2fb4bdcf69743fc8",
+      "integratedCommits": ["ebaa929944fbdc6bb5fd5bec11d68e20da01ab13"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected Paperclip and Hermes runtimes provide equivalent company-and-path-bound plugin secret resolution, independently owned one-repository GitHub App token lifecycles, stateless installation-token compatibility, and fail-closed cleanup retention."
     }
   ],
   "releasePolicy": {
