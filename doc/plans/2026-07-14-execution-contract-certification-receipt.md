@@ -44,7 +44,7 @@ dark installation, and three zero-work rehearsals that return the system to dark
   - 6 process-loss/graceful-shutdown tests per pass, including valid-strict and
     malformed-present bindings after admission is disabled
 - Affected heartbeat lifecycle regression tests: **67/67 passed**
-- Full heartbeat process-recovery suite: **86/86 passed**
+- Full heartbeat process-recovery suite: **90/90 passed**
 - Workspace typecheck: **passed across 29 projects**
 - Production build: **passed across the workspace**
 - Diff whitespace validation: **passed**
@@ -55,9 +55,11 @@ stale-workspace, dirty-workspace, and one-run/zero-recovery paths.
 
 ## Full-suite reconciliation
 
-The full unit run completed 2,272 tests: 2,268 passed, one skipped, and three
+The exact-head full unit run completed 2,388 tests: 2,384 passed, one skipped,
+and three
 failed. Each failure was isolated against the untouched base checkout and
-reproduced there without this change:
+reproduced there without this change. The three affected base test and runtime
+files are byte-identical to `origin/gloops/stable`:
 
 - one shared-service adoption test fails in both checkouts because the local
   runtime does not adopt the reset service;
