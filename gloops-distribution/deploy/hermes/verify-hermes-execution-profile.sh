@@ -9,6 +9,8 @@ readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-execution.service'
 readonly CONTAINER='paperclip-hermes-execution'
 readonly NETWORK='paperclip-execution'
 readonly API_PORT='8642'
+readonly WORKSPACE="${STATE_DIR}/workspace"
+readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -237,6 +239,17 @@ if [[ "${MODE}" == '--live' ]]; then
       pass 'live authenticated API boundary is healthy'
     else
       fail 'live authenticated API boundary is not healthy'
+    fi
+    observer_image="$(<"${APPROVED_IMAGE_FILE}")"
+    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '750:10000:985' ]] \
+      && docker run --rm --pull never --user 995:985 --network none --read-only \
+        --cap-drop ALL --security-opt no-new-privileges:true \
+        --mount "type=bind,src=${WORKSPACE},dst=/workspace,readonly" \
+        --entrypoint /bin/sh "${observer_image}" -c \
+        'test -r /workspace/paperclip/.git/HEAD'; then
+      pass 'live Paperclip observer can read the exact pilot repository'
+    else
+      fail 'live execution workspace is not readable by the bounded Paperclip observer'
     fi
     if docker exec -i "${CONTAINER}" python - <<'PY'
 import urllib.error
