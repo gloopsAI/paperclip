@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 import re
 import sys
@@ -56,11 +57,18 @@ def verify_credentials(records: list[dict[str, object]]) -> None:
             entry = record.get(role)
             if not isinstance(entry, dict):
                 raise HistoryError(f"credential role is missing: {role}")
-            if not isinstance(entry.get("revokedAt"), str):
-                raise HistoryError(f"credential role is not revoked: {role}")
+            if not (
+                isinstance(entry.get("revokedAt"), str)
+                or isinstance(entry.get("expiredAt"), str)
+            ):
+                raise HistoryError(f"credential role is not terminal: {role}")
             fingerprint = entry.get("tokenFingerprint")
             if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
                 raise HistoryError(f"credential fingerprint is malformed: {role}")
+            if isinstance(entry.get("expiredAt"), str):
+                expiry_digest = entry.get("expiryReceiptDigest")
+                if not isinstance(expiry_digest, str) or re.fullmatch(r"[0-9a-f]{64}", expiry_digest) is None:
+                    raise HistoryError(f"credential expiry receipt binding is malformed: {role}")
 
 
 def verify_stops(records: list[dict[str, object]]) -> None:
@@ -86,13 +94,52 @@ def verify_stops(records: list[dict[str, object]]) -> None:
             raise HistoryError("stop status is malformed")
 
 
-def verify_bundle(credential_path: Path, stop_path: Path, current_path: Path) -> str:
+def verify_expirations(records: list[dict[str, object]]) -> None:
+    verify_chain(records, "attemptId")
+    for record in records:
+        if record.get("schemaVersion") != "gloops.github-app-expiry-receipt.v1":
+            raise HistoryError("expiry schema is malformed")
+        if record.get("role") not in {"hermes", "projector"}:
+            raise HistoryError("expiry role is malformed")
+        if record.get("disposition") != "expired-by-envelope":
+            raise HistoryError("expiry disposition is malformed")
+        fingerprint = record.get("tokenFingerprint")
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+            raise HistoryError("expiry fingerprint is malformed")
+        try:
+            safe_after = datetime.fromisoformat(str(record["safeAfter"]).replace("Z", "+00:00"))
+            disposed_at = datetime.fromisoformat(str(record["disposedAt"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError) as error:
+            raise HistoryError("expiry timestamps are malformed") from error
+        if safe_after.tzinfo is None or disposed_at.tzinfo is None:
+            raise HistoryError("expiry timestamps are malformed")
+        if disposed_at < safe_after:
+            raise HistoryError("credential handle was disposed before its expiry envelope")
+
+
+def verify_bundle(credential_path: Path, stop_path: Path, expiry_path: Path, current_path: Path) -> str:
     credentials = load(credential_path)
     stops = load(stop_path)
+    expirations = load(expiry_path)
     if credentials:
         verify_credentials(credentials)
     if stops:
         verify_stops(stops)
+    if expirations:
+        verify_expirations(expirations)
+    expirations_by_digest = {record["receiptDigest"]: record for record in expirations}
+    for credential in credentials:
+        for role in ("hermes", "projector"):
+            entry = credential[role]
+            if not isinstance(entry.get("expiredAt"), str):
+                continue
+            expiration = expirations_by_digest.get(entry.get("expiryReceiptDigest"))
+            if not isinstance(expiration, dict) or not (
+                expiration.get("role") == role
+                and expiration.get("tokenFingerprint") == entry.get("tokenFingerprint")
+                and expiration.get("disposedAt") == entry.get("expiredAt")
+            ):
+                raise HistoryError("credential expiry binding has no exact expiry receipt")
 
     if stops and not credentials:
         raise HistoryError("stop history exists without credential history")
@@ -127,8 +174,8 @@ def verify_bundle(credential_path: Path, stop_path: Path, current_path: Path) ->
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
-        raise HistoryError("usage: verify-lifecycle-history.py CREDENTIAL_HISTORY STOP_HISTORY CURRENT_RECEIPT")
+    if len(sys.argv) != 5:
+        raise HistoryError("usage: verify-lifecycle-history.py CREDENTIAL_HISTORY STOP_HISTORY EXPIRY_HISTORY CURRENT_RECEIPT")
     disposition = verify_bundle(*(Path(value) for value in sys.argv[1:]))
     print(f"PASS lifecycle histories are {disposition}, chained, and exact")
     return 0

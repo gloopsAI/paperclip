@@ -34,6 +34,9 @@ class BrokerLifecycleTests(unittest.TestCase):
             HISTORY_LOCK=root / "state/credential-history.lock",
             COMMAND_LOCK=root / "state/credential-runtime/credential-lifecycle.lock",
             MINT_INTENTS=root / "state/credential-runtime/mint-intents.json",
+            MIGRATION_BASELINE=root / "state/credential-runtime/migration-baseline.json",
+            EXPIRY_HISTORY=root / "state/credential-expiry-history.jsonl",
+            EXPIRY_HISTORY_LOCK=root / "state/credential-expiry-history.lock",
         )
 
     def test_pre_mint_intent_is_durable_before_the_external_request(self):
@@ -52,6 +55,28 @@ class BrokerLifecycleTests(unittest.TestCase):
             broker.refresh_role(config, "hermes")
             self.assertFalse(broker.MINT_INTENTS.exists())
             self.assertEqual(broker.HERMES_TOKEN.read_text(), minted[0] + "\n")
+
+    def test_runtime_parent_is_fsynced_before_the_external_request(self):
+        config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
+        minted = ("ghs_durable_parent_token", "2026-07-15T10:00:00Z", {"contents": "write"})
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            events = []
+            real_fsync_directory = broker.fsync_directory
+
+            def fsync(path):
+                events.append(("fsync", path))
+                real_fsync_directory(path)
+
+            def mint(_config, _permissions):
+                events.append(("mint", None))
+                return minted
+
+            with patch.object(broker, "fsync_directory", side_effect=fsync), \
+                    patch.object(broker, "mint", side_effect=mint):
+                broker.refresh_role(config, "hermes")
+            mint_index = events.index(("mint", None))
+            self.assertIn(("fsync", broker.RUNTIME.parent), events[:mint_index])
 
     def test_uncertain_mint_failure_leaves_token_free_expiry_quarantine(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -75,6 +100,63 @@ class BrokerLifecycleTests(unittest.TestCase):
             })
             broker.reconcile_expired_mint_intents()
             self.assertFalse(broker.MINT_INTENTS.exists())
+
+    def test_expired_token_handle_is_disposed_offline_with_chained_evidence(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.write_mint_intents({
+                "hermes": {
+                    "attemptId": "22222222-2222-4222-8222-222222222222",
+                    "startedAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                },
+            })
+            broker.HERMES_TOKEN.write_text("ghs_expired_cleanup_handle\n")
+            broker.HERMES_HOSTS.parent.mkdir(parents=True)
+            broker.HERMES_HOSTS.write_text("secret projection")
+            with patch.object(broker, "revoke_value") as revoke:
+                broker.reconcile_expired_mint_intents()
+            revoke.assert_not_called()
+            self.assertFalse(broker.HERMES_TOKEN.exists())
+            self.assertFalse(broker.HERMES_HOSTS.exists())
+            self.assertFalse(broker.MINT_INTENTS.exists())
+            records = [broker.json.loads(line) for line in broker.EXPIRY_HISTORY.read_text().splitlines()]
+            broker.validate_expiry_history(records)
+            self.assertEqual(records[0]["disposition"], "expired-by-envelope")
+            self.assertEqual(records[0]["role"], "hermes")
+            self.assertNotIn("ghs_expired_cleanup_handle", broker.EXPIRY_HISTORY.read_text())
+
+    def test_expired_recorded_token_terminally_reconciles_its_lifecycle_receipt(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            token = "ghs_expired_recorded_handle"
+            fingerprint = broker.hashlib.sha256(token.encode()).hexdigest()
+            broker.write_mint_intents({
+                "hermes": {
+                    "attemptId": "33333333-3333-4333-8333-333333333333",
+                    "startedAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                },
+            })
+            broker.HERMES_TOKEN.write_text(token + "\n")
+            broker.RECEIPT.write_text(broker.json.dumps({
+                "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                "appId": 1,
+                "installationId": 2,
+                "repositoryId": 3,
+                "repository": "gloopsAI/gloops-paperclip-plugin",
+                "lifecycleId": "expired-recorded-lifecycle",
+                "startedAt": "2026-07-15T00:00:00Z",
+                "hermes": {"revokedAt": None, "expiredAt": None, "tokenFingerprint": fingerprint},
+                "projector": {"revokedAt": "2026-07-15T00:01:00Z", "tokenFingerprint": "b" * 64},
+            }))
+            broker.reconcile_expired_mint_intents()
+            receipt = broker.json.loads(broker.RECEIPT.read_text())
+            self.assertIsInstance(receipt["hermes"]["expiredAt"], str)
+            self.assertRegex(receipt["hermes"]["expiryReceiptDigest"], r"^[0-9a-f]{64}$")
+            history = [broker.json.loads(line) for line in broker.HISTORY.read_text().splitlines()]
+            broker.validate_history(history)
+            self.assertEqual(receipt, history[-1])
 
     def test_post_mint_failure_revokes_the_token_and_leaves_no_artifact(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -208,6 +290,34 @@ class BrokerLifecycleTests(unittest.TestCase):
                 with self.assertRaises(broker.CredentialRetentionError):
                     broker.refresh_role({}, "projector")
             self.assertEqual(broker.PROJECTOR_TOKEN.read_text(), token + "\n")
+            self.assertEqual(set(broker.load_mint_intents()), {"projector"})
+
+    def test_mint_intent_remains_until_receipt_is_durable(self):
+        config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
+        minted = ("ghs_receipt_order_token", "2026-07-15T10:00:00Z", {"contents": "write"})
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            def record(*_args):
+                self.assertTrue(broker.HERMES_TOKEN.exists())
+                self.assertEqual(set(broker.load_mint_intents()), {"hermes"})
+
+            with patch.object(broker, "mint", return_value=minted), patch.object(broker, "record_mint", side_effect=record):
+                broker.refresh_role(config, "hermes")
+            self.assertFalse(broker.MINT_INTENTS.exists())
+
+    def test_failure_after_receipt_persistence_records_revocation_before_cleanup(self):
+        config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
+        minted = ("ghs_recorded_before_cleanup", "2026-07-15T10:00:00Z", {"contents": "write"})
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"), patch.object(broker, "mint", return_value=minted), \
+                patch.object(broker, "revoke_value") as revoke, \
+                patch.object(broker, "clear_mint_intent", side_effect=[OSError("clear failed"), None]):
+            with self.assertRaisesRegex(OSError, "clear failed"):
+                broker.refresh_role(config, "hermes")
+            revoke.assert_called_once_with(minted[0])
+            receipt = broker.json.loads(broker.RECEIPT.read_text())
+            self.assertIsInstance(receipt["hermes"]["revokedAt"], str)
+            self.assertFalse(broker.HERMES_TOKEN.exists())
 
     def test_revocation_receipt_is_bound_to_the_exact_token_fingerprint(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
@@ -355,6 +465,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertTrue(broker.RECEIPT.exists())
             self.assertFalse(legacy_token.exists())
             self.assertFalse(legacy_receipt.exists())
+            self.assertEqual(broker.load_migration_baseline()["status"], "pending")
 
     def test_missing_legacy_current_receipt_creates_full_expiry_quarantine(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -367,6 +478,79 @@ class BrokerLifecycleTests(unittest.TestCase):
             broker.migrate_persistent_state()
             self.assertTrue(broker.RECEIPT.exists())
             self.assertEqual(set(broker.load_mint_intents()), {"hermes", "projector"})
+
+    def test_first_ever_missing_legacy_state_creates_full_expiry_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.migrate_persistent_state()
+            baseline = broker.load_migration_baseline()
+            self.assertEqual(baseline["status"], "pending")
+            self.assertEqual(set(broker.load_mint_intents()), {"hermes", "projector"})
+            self.assertFalse(broker.RECEIPT.exists())
+
+    def test_expired_quarantine_completes_migration_baseline(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.ensure_runtime()
+            broker.atomic_write(
+                broker.MIGRATION_BASELINE,
+                broker.json.dumps({
+                    "schemaVersion": "gloops.github-app-migration-baseline.v1",
+                    "status": "pending",
+                    "createdAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                }) + "\n",
+                0o600,
+            )
+            broker.write_mint_intents({
+                role: {
+                    "attemptId": f"{index}" * 8 + "-1111-4111-8111-111111111111",
+                    "startedAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                }
+                for index, role in enumerate(("hermes", "projector"), 1)
+            })
+            broker.reconcile_expired_mint_intents()
+            self.assertEqual(broker.load_migration_baseline()["status"], "complete")
+            self.assertEqual(broker.load_migration_baseline()["basis"], "expiry-quarantine-completed")
+
+    def test_complete_legacy_receipt_is_a_trusted_migration_baseline(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.LEGACY_RUNTIME.mkdir(parents=True)
+            (broker.LEGACY_RUNTIME / "credential-receipt.json").write_text(broker.json.dumps({
+                "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                "appId": 1,
+                "installationId": 2,
+                "repositoryId": 3,
+                "repository": "gloopsAI/gloops-paperclip-plugin",
+                "hermes": {"revokedAt": "2026-07-15T00:00:01Z", "tokenFingerprint": "a" * 64},
+                "projector": {"revokedAt": "2026-07-15T00:00:02Z", "tokenFingerprint": "b" * 64},
+            }))
+            broker.migrate_persistent_state()
+            self.assertEqual(broker.load_migration_baseline()["status"], "complete")
+            self.assertEqual(broker.load_migration_baseline()["basis"], "legacy-complete-receipt")
+            self.assertFalse(broker.MINT_INTENTS.exists())
+
+    def test_legacy_artifacts_cannot_reappear_after_migration_completed(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.ensure_runtime()
+            broker.atomic_write(
+                broker.MIGRATION_BASELINE,
+                broker.json.dumps({
+                    "schemaVersion": "gloops.github-app-migration-baseline.v1",
+                    "status": "complete",
+                    "createdAt": "2026-07-15T00:00:00Z",
+                    "completedAt": "2026-07-15T01:05:00Z",
+                    "basis": "expiry-quarantine-completed",
+                }) + "\n",
+                0o600,
+            )
+            broker.LEGACY_RUNTIME.mkdir(parents=True)
+            (broker.LEGACY_RUNTIME / "credential-receipt.json").write_text("{}")
+            with self.assertRaisesRegex(broker.CredentialError, "reappeared"):
+                broker.migrate_persistent_state()
 
     def test_projector_revoke_does_not_hide_an_uncleared_persistent_secret(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \

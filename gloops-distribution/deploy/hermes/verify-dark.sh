@@ -77,12 +77,39 @@ if find "${credential_runtime}" -mindepth 1 -maxdepth 1 ! -type f -print -quit 2
 fi
 while IFS= read -r state_file; do
   case "$(basename "${state_file}")" in
-    credential-lifecycle.lock|credential-receipt.json) ;;
+    credential-lifecycle.lock|credential-receipt.json|migration-baseline.json) ;;
     *) credential_runtime_valid=0 ;;
   esac
   [[ "$(stat -c '%a:%U:%G' "${state_file}" 2>/dev/null || true)" == '600:root:root' ]] \
     || credential_runtime_valid=0
 done < <(find "${credential_runtime}" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null)
+baseline_file="${credential_runtime}/migration-baseline.json"
+if [[ ! -f "${baseline_file}" ]] || ! node - "${baseline_file}" <<'NODE'
+const { readFileSync } = require("node:fs");
+const value = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (
+  JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["basis", "completedAt", "createdAt", "schemaVersion", "status"]) ||
+  value.schemaVersion !== "gloops.github-app-migration-baseline.v1" ||
+  value.status !== "complete" ||
+  typeof value.createdAt !== "string" ||
+  typeof value.completedAt !== "string" ||
+  !["legacy-complete-receipt", "expiry-quarantine-completed"].includes(value.basis) ||
+  !Number.isFinite(Date.parse(value.createdAt)) ||
+  !Number.isFinite(Date.parse(value.completedAt)) ||
+  Date.parse(value.completedAt) < Date.parse(value.createdAt)
+) process.exit(1);
+NODE
+then
+  credential_runtime_valid=0
+fi
+for evidence_file in \
+  /var/lib/paperclip-gloops/credential-expiry-history.jsonl \
+  /var/lib/paperclip-gloops/credential-expiry-history.lock; do
+  if [[ -e "${evidence_file}" ]] \
+    && [[ "$(stat -c '%a:%U:%G' "${evidence_file}" 2>/dev/null || true)" != '600:root:root' ]]; then
+    credential_runtime_valid=0
+  fi
+done
 if ((credential_runtime_valid == 1)); then
   echo "PASS durable credential cleanup state is root-only"
 else
@@ -92,6 +119,7 @@ fi
 if /usr/local/lib/paperclip-gloops/verify-lifecycle-history.py \
   /var/lib/paperclip-gloops/credential-history.jsonl \
   /var/lib/paperclip-gloops/hermes-stop-history.jsonl \
+  /var/lib/paperclip-gloops/credential-expiry-history.jsonl \
   /var/lib/paperclip-gloops/credential-runtime/credential-receipt.json; then
   :
 else

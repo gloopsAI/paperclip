@@ -627,6 +627,8 @@ for (const required of [
   'archive_completed_receipt()',
   'credential-history.jsonl',
   '"revokedAt": None',
+  '"expiredAt": None',
+  'record_expiration(token_path, token, expiry_receipt)',
   'def read_root_secret(path: Path, label: str)',
   'mode not in {0o400, 0o600}',
   'def resolve_bound_projector_secret(config: dict[str, object], board_token: str)',
@@ -637,18 +639,36 @@ for (const required of [
   'RUNTIME = Path("/var/lib/paperclip-gloops/credential-runtime")',
   'LEGACY_RUNTIME = Path("/run/paperclip-gloops")',
   'MINT_INTENTS = RUNTIME / "mint-intents.json"',
+  'MIGRATION_BASELINE = RUNTIME / "migration-baseline.json"',
+  'EXPIRY_HISTORY = Path("/var/lib/paperclip-gloops/credential-expiry-history.jsonl")',
+  'def ensure_runtime() -> None:',
   'begin_mint_intent(role)',
   'clear_mint_intent(role)',
   'safeAfter',
+  'begin_migration_quarantine()',
+  'ensure_migration_quarantine_intents(baseline)',
+  'complete_migration_baseline(baseline, "expiry-quarantine-completed")',
+  'append_expiry_receipt(role, intent, token)',
   'migrate_persistent_state()',
   'reconcile_expired_mint_intents()',
   'fsync_directory(HISTORY.parent)',
   'token_revocation_is_recorded(token_path, token)',
+  'token_mint_is_recorded(token_path, token)',
   'error.status not in {401, 404}',
 ]) {
   if (!githubAppCredentials.includes(required)) {
     fail(`GitHub App broker is missing ${required}`);
   }
+}
+const refreshRole = githubAppCredentials.match(/def refresh_role\([\s\S]*?\n\ndef paperclip_request/)?.[0] ?? "";
+const intentIndex = refreshRole.indexOf("begin_mint_intent(role)");
+const handleIndex = refreshRole.indexOf("atomic_write(token_path, token");
+const receiptIndex = refreshRole.indexOf("record_mint(config, role, token");
+const clearIntentIndex = refreshRole.indexOf("clear_mint_intent(role)");
+if (
+  intentIndex < 0 || handleIndex < intentIndex || receiptIndex < handleIndex || clearIntentIndex < receiptIndex
+) {
+  fail("GitHub App mint lifecycle must retain its intent through durable handle and receipt persistence");
 }
 for (const required of [
   '"gateway",',
@@ -694,7 +714,10 @@ for (const required of [
   "/usr/local/lib/paperclip-gloops/verify-lifecycle-history.py",
   "/var/lib/paperclip-gloops/credential-history.jsonl",
   "/var/lib/paperclip-gloops/hermes-stop-history.jsonl",
+  "/var/lib/paperclip-gloops/credential-expiry-history.jsonl",
   "/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json",
+  "migration-baseline.json",
+  'value.status !== "complete"',
   "FAIL durable Hermes execution lifecycle evidence is invalid",
   "PASS durable credential cleanup state is root-only",
   "FAIL a zero-work egress proof rule remains installed while dark",
@@ -710,6 +733,10 @@ for (const required of [
   "durable current receipt is missing despite credential history",
   "credential lifecycle has no stop attempt",
   "non-legacy credential history has no stop history",
+  'verify_expirations(expirations)',
+  'credential handle was disposed before its expiry envelope',
+  'gloops.github-app-expiry-receipt.v1',
+  'credential expiry binding has no exact expiry receipt',
   "PASS lifecycle histories are",
 ]) {
   if (!verifyLifecycleHistory.includes(required)) {

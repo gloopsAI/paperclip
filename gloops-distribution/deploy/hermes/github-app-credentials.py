@@ -38,6 +38,9 @@ HISTORY = Path("/var/lib/paperclip-gloops/credential-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/credential-history.lock")
 COMMAND_LOCK = RUNTIME / "credential-lifecycle.lock"
 MINT_INTENTS = RUNTIME / "mint-intents.json"
+MIGRATION_BASELINE = RUNTIME / "migration-baseline.json"
+EXPIRY_HISTORY = Path("/var/lib/paperclip-gloops/credential-expiry-history.jsonl")
+EXPIRY_HISTORY_LOCK = Path("/var/lib/paperclip-gloops/credential-expiry-history.lock")
 API_BASE = "https://api.github.com"
 MAX_TOKEN_LIFETIME_SECONDS = 3900
 
@@ -207,6 +210,19 @@ def fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def ensure_runtime() -> None:
+    parent_created = not RUNTIME.parent.exists()
+    RUNTIME.parent.mkdir(parents=True, exist_ok=True)
+    if parent_created:
+        fsync_directory(RUNTIME.parent.parent)
+    runtime_created = not RUNTIME.exists()
+    RUNTIME.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(RUNTIME, 0o700)
+    os.chown(RUNTIME, 0, 0)
+    if runtime_created:
+        fsync_directory(RUNTIME.parent)
+
+
 def atomic_write(path: Path, value: str, mode: int, uid: int = 0, gid: int = 0) -> None:
     parent_created = not path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,6 +323,141 @@ def clear_mint_intent(role: str) -> None:
         write_mint_intents(intents)
 
 
+def load_migration_baseline() -> dict[str, object] | None:
+    if not MIGRATION_BASELINE.exists():
+        return None
+    baseline = json.loads(MIGRATION_BASELINE.read_text())
+    if not isinstance(baseline, dict) or baseline.get("schemaVersion") != "gloops.github-app-migration-baseline.v1":
+        raise CredentialError("GitHub migration baseline is malformed")
+    if baseline.get("status") == "pending":
+        required = {"schemaVersion", "status", "createdAt", "safeAfter"}
+    elif baseline.get("status") == "complete":
+        required = {"schemaVersion", "status", "createdAt", "completedAt", "basis"}
+    else:
+        raise CredentialError("GitHub migration baseline status is malformed")
+    if set(baseline) != required or not all(
+        isinstance(baseline[key], str) and baseline[key]
+        for key in required - {"schemaVersion", "status"}
+    ):
+        raise CredentialError("GitHub migration baseline fields are malformed")
+    return baseline
+
+
+def begin_migration_quarantine() -> dict[str, object]:
+    created = datetime.now(timezone.utc)
+    baseline = {
+        "schemaVersion": "gloops.github-app-migration-baseline.v1",
+        "status": "pending",
+        "createdAt": created.isoformat().replace("+00:00", "Z"),
+        "safeAfter": (created + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)).isoformat().replace("+00:00", "Z"),
+    }
+    atomic_write(MIGRATION_BASELINE, json.dumps(baseline, sort_keys=True) + "\n", 0o600)
+    return baseline
+
+
+def ensure_migration_quarantine_intents(baseline: dict[str, object]) -> None:
+    if baseline.get("status") != "pending":
+        return
+    intents = load_mint_intents()
+    changed = False
+    for role in ("hermes", "projector"):
+        if role not in intents:
+            intents[role] = {
+                "attemptId": str(uuid4()),
+                "startedAt": str(baseline["createdAt"]),
+                "safeAfter": str(baseline["safeAfter"]),
+            }
+            changed = True
+    if changed:
+        write_mint_intents(intents)
+
+
+def complete_migration_baseline(baseline: dict[str, object], basis: str) -> None:
+    atomic_write(
+        MIGRATION_BASELINE,
+        json.dumps(
+            {
+                "schemaVersion": "gloops.github-app-migration-baseline.v1",
+                "status": "complete",
+                "createdAt": baseline["createdAt"],
+                "completedAt": timestamp(),
+                "basis": basis,
+            },
+            sort_keys=True,
+        ) + "\n",
+        0o600,
+    )
+
+
+def validate_expiry_history(records: list[dict[str, object]]) -> None:
+    prior: str | None = None
+    attempts: set[str] = set()
+    for sequence, record in enumerate(records, 1):
+        if record.get("sequence") != sequence or record.get("previousReceiptDigest") != prior:
+            raise CredentialError("GitHub credential expiry history sequence or hash chain is malformed")
+        if record.get("receiptDigest") != history_digest(record):
+            raise CredentialError("GitHub credential expiry history digest is malformed")
+        attempt = record.get("attemptId")
+        if not isinstance(attempt, str) or attempt in attempts:
+            raise CredentialError("GitHub credential expiry attempt identity is malformed")
+        attempts.add(attempt)
+        prior = str(record["receiptDigest"])
+
+
+def append_expiry_receipt(role: str, intent: dict[str, object], token: str) -> dict[str, object]:
+    EXPIRY_HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(EXPIRY_HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.chmod(EXPIRY_HISTORY_LOCK, 0o600)
+        os.chown(EXPIRY_HISTORY_LOCK, 0, 0)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        records = [json.loads(line) for line in EXPIRY_HISTORY.read_text().splitlines()] if EXPIRY_HISTORY.exists() else []
+        if not all(isinstance(record, dict) for record in records):
+            raise CredentialError("GitHub credential expiry history is malformed")
+        validate_expiry_history(records)
+        attempt_id = str(intent["attemptId"])
+        fingerprint = hashlib.sha256(token.encode()).hexdigest()
+        for record in records:
+            if record.get("attemptId") == attempt_id:
+                if (
+                    record.get("role") != role
+                    or record.get("safeAfter") != intent["safeAfter"]
+                    or record.get("tokenFingerprint") != fingerprint
+                    or record.get("disposition") != "expired-by-envelope"
+                ):
+                    raise CredentialError("GitHub credential expiry receipt does not match its cleanup handle")
+                return record
+        record: dict[str, object] = {
+            "schemaVersion": "gloops.github-app-expiry-receipt.v1",
+            "attemptId": attempt_id,
+            "role": role,
+            "safeAfter": intent["safeAfter"],
+            "disposedAt": timestamp(),
+            "tokenFingerprint": fingerprint,
+            "disposition": "expired-by-envelope",
+            "sequence": len(records) + 1,
+            "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
+        }
+        record["receiptDigest"] = history_digest(record)
+        history_created = not EXPIRY_HISTORY.exists()
+        history_fd = os.open(EXPIRY_HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.chmod(EXPIRY_HISTORY, 0o600)
+            os.chown(EXPIRY_HISTORY, 0, 0)
+            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
+            if os.write(history_fd, payload) != len(payload):
+                raise CredentialError("GitHub credential expiry history append was incomplete")
+            os.fsync(history_fd)
+        finally:
+            os.close(history_fd)
+        if history_created:
+            fsync_directory(EXPIRY_HISTORY.parent)
+        return record
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
 def reconcile_expired_mint_intents() -> None:
     intents = load_mint_intents()
     now = datetime.now(timezone.utc)
@@ -317,20 +468,47 @@ def reconcile_expired_mint_intents() -> None:
             safe_after = datetime.fromisoformat(str(intent["safeAfter"]).replace("Z", "+00:00"))
         except ValueError as error:
             raise CredentialError(f"GitHub mint intent expiry is malformed: {role}") from error
-        if token_path.exists() or now < safe_after:
+        if safe_after.tzinfo is None:
+            raise CredentialError(f"GitHub mint intent expiry is malformed: {role}")
+        if now < safe_after:
             retained[role] = intent
+            continue
+        if token_path.exists():
+            token = token_path.read_text().strip()
+            expiry_receipt = append_expiry_receipt(role, intent, token)
+            record_expiration(token_path, token, expiry_receipt)
+            durable_unlink(token_path)
+            if role == "hermes":
+                durable_unlink(HERMES_HOSTS)
     write_mint_intents(retained)
+    baseline = load_migration_baseline()
+    if (
+        baseline is not None
+        and baseline.get("status") == "pending"
+        and not retained
+        and not HERMES_TOKEN.exists()
+        and not PROJECTOR_TOKEN.exists()
+        and not PROJECTOR_ROTATED.exists()
+    ):
+        complete_migration_baseline(baseline, "expiry-quarantine-completed")
 
 
 def migrate_persistent_state() -> None:
-    RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(RUNTIME, 0o700)
+    ensure_runtime()
     legacy_artifacts = {
         LEGACY_RUNTIME / "hermes-github-token": HERMES_TOKEN,
         LEGACY_RUNTIME / "projector-github-token": PROJECTOR_TOKEN,
         LEGACY_RUNTIME / "projector-token-rotated": PROJECTOR_ROTATED,
         LEGACY_RUNTIME / "credential-receipt.json": RECEIPT,
     }
+    baseline = load_migration_baseline()
+    if (
+        baseline is not None
+        and baseline.get("status") == "complete"
+        and any(source.exists() for source in legacy_artifacts)
+    ):
+        raise CredentialError("legacy credential artifacts reappeared after migration completed")
+    legacy_receipt_present = (LEGACY_RUNTIME / "credential-receipt.json").exists()
     for source, destination in legacy_artifacts.items():
         if not source.exists():
             continue
@@ -338,17 +516,26 @@ def migrate_persistent_state() -> None:
             raise CredentialError(f"both legacy and durable credential artifacts exist: {destination.name}")
         atomic_write(destination, source.read_text(), 0o600)
         source.unlink()
+        fsync_directory(source.parent)
+    if baseline is None:
+        trusted_legacy_receipt = False
+        if legacy_receipt_present and RECEIPT.exists():
+            trusted_legacy_receipt = receipt_is_trusted_migration_baseline(json.loads(RECEIPT.read_text()))
+        if trusted_legacy_receipt:
+            provisional = {
+                "createdAt": timestamp(),
+            }
+            complete_migration_baseline(provisional, "legacy-complete-receipt")
+            baseline = load_migration_baseline()
+        else:
+            baseline = begin_migration_quarantine()
+    if baseline is not None and baseline.get("status") == "pending":
+        ensure_migration_quarantine_intents(baseline)
     if not RECEIPT.exists() and HISTORY.exists() and HISTORY.stat().st_size > 0:
         records = [json.loads(line) for line in HISTORY.read_text().splitlines()]
         if not all(isinstance(record, dict) for record in records):
             raise CredentialError("GitHub credential history is malformed")
         validate_history(records)
-        # A missing legacy /run receipt may mean reboot erased an in-flight
-        # lifecycle. Quarantine both roles for a full maximum token lifetime
-        # before the completed history tail may become the durable baseline.
-        for role in ("hermes", "projector"):
-            if role not in load_mint_intents():
-                begin_mint_intent(role)
         atomic_write(RECEIPT, json.dumps(records[-1], sort_keys=True) + "\n", 0o600)
 
 
@@ -357,7 +544,26 @@ def receipt_complete(receipt: object) -> bool:
         return False
     for role in ("hermes", "projector"):
         entry = receipt.get(role)
-        if not isinstance(entry, dict) or not isinstance(entry.get("revokedAt"), str):
+        if not isinstance(entry, dict) or not (
+            isinstance(entry.get("revokedAt"), str)
+            or isinstance(entry.get("expiredAt"), str)
+        ):
+            return False
+    return True
+
+
+def receipt_is_trusted_migration_baseline(receipt: object) -> bool:
+    if not receipt_complete(receipt) or not isinstance(receipt, dict):
+        return False
+    if (
+        receipt.get("schemaVersion") != "gloops.github-app-credential-receipt.v1"
+        or receipt.get("repository") != "gloopsAI/gloops-paperclip-plugin"
+        or not all(type(receipt.get(key)) is int and receipt[key] > 0 for key in ("appId", "installationId", "repositoryId"))
+    ):
+        return False
+    for role in ("hermes", "projector"):
+        fingerprint = receipt[role].get("tokenFingerprint")
+        if not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(character not in "0123456789abcdef" for character in fingerprint):
             return False
     return True
 
@@ -480,6 +686,7 @@ def record_mint(
         "expiresAt": expires_at,
         "permissions": permissions,
         "revokedAt": None,
+        "expiredAt": None,
         "tokenFingerprint": hashlib.sha256(token.encode()).hexdigest(),
     }
     atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
@@ -493,18 +700,16 @@ def refresh_role(config: dict[str, object], role: str) -> None:
     permissions = WRITE_PERMISSIONS if role == "hermes" else READ_PERMISSIONS
     revoke(token_path)
     if role == "hermes":
-        HERMES_HOSTS.unlink(missing_ok=True)
+        durable_unlink(HERMES_HOSTS)
 
     token: str | None = None
     begin_mint_intent(role)
     try:
-        RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(RUNTIME, 0o700)
+        ensure_runtime()
         token, expires_at, actual_permissions = mint(config, permissions)
         # The pre-mint intent closes the response-before-fsync crash window.
-        # Once this protected cleanup handle is durable, the intent can clear.
+        # It remains until the protected cleanup handle and receipt are durable.
         atomic_write(token_path, token + "\n", 0o600)
-        clear_mint_intent(role)
         if role == "hermes":
             atomic_write(
                 HERMES_HOSTS,
@@ -514,22 +719,26 @@ def refresh_role(config: dict[str, object], role: str) -> None:
                 10000,
             )
         record_mint(config, role, token, expires_at, actual_permissions)
+        clear_mint_intent(role)
     except CredentialRetentionError as error:
         atomic_write(token_path, error.token + "\n", 0o600)
-        clear_mint_intent(role)
         raise
     except Exception:
         if token is not None:
             try:
-                revoke_value(token)
+                if token_mint_is_recorded(token_path, token):
+                    revoke(token_path)
+                else:
+                    revoke_value(token)
             except Exception:
                 # token_path is durable before projection or receipt work and
                 # remains the root-only cleanup handle.
                 raise
-            durable_unlink(token_path)
-            clear_mint_intent(role)
+            if token_path.exists():
+                durable_unlink(token_path)
+                clear_mint_intent(role)
         if role == "hermes":
-            HERMES_HOSTS.unlink(missing_ok=True)
+            durable_unlink(HERMES_HOSTS)
         raise
 
 
@@ -623,7 +832,24 @@ def token_revocation_is_recorded(token_path: Path, token: str) -> bool:
     return bool(
         isinstance(entry, dict)
         and entry.get("tokenFingerprint") == hashlib.sha256(token.encode()).hexdigest()
-        and isinstance(entry.get("revokedAt"), str)
+        and (
+            isinstance(entry.get("revokedAt"), str)
+            or isinstance(entry.get("expiredAt"), str)
+        )
+    )
+
+
+def token_mint_is_recorded(token_path: Path, token: str) -> bool:
+    if not RECEIPT.exists():
+        return False
+    role = "hermes" if token_path == HERMES_TOKEN else "projector" if token_path == PROJECTOR_TOKEN else None
+    if role is None:
+        raise CredentialError("unknown GitHub token role")
+    receipt = json.loads(RECEIPT.read_text())
+    entry = receipt.get(role) if isinstance(receipt, dict) else None
+    return bool(
+        isinstance(entry, dict)
+        and entry.get("tokenFingerprint") == hashlib.sha256(token.encode()).hexdigest()
     )
 
 
@@ -639,6 +865,25 @@ def record_revocation(token_path: Path, token: str) -> None:
     if not isinstance(entry, dict) or entry.get("tokenFingerprint") != fingerprint:
         raise CredentialError("GitHub token does not match its credential receipt")
     entry["revokedAt"] = timestamp()
+    atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+    archive_completed_receipt()
+
+
+def record_expiration(token_path: Path, token: str, expiry_receipt: dict[str, object]) -> None:
+    if not RECEIPT.exists():
+        return
+    role = "hermes" if token_path == HERMES_TOKEN else "projector" if token_path == PROJECTOR_TOKEN else None
+    if role is None:
+        raise CredentialError("unknown GitHub token role")
+    receipt = json.loads(RECEIPT.read_text())
+    entry = receipt.get(role) if isinstance(receipt, dict) else None
+    fingerprint = hashlib.sha256(token.encode()).hexdigest()
+    if not isinstance(entry, dict) or entry.get("tokenFingerprint") != fingerprint:
+        return
+    if expiry_receipt.get("tokenFingerprint") != fingerprint or expiry_receipt.get("role") != role:
+        raise CredentialError("GitHub credential expiry receipt boundary does not match the current lifecycle")
+    entry["expiredAt"] = expiry_receipt["disposedAt"]
+    entry["expiryReceiptDigest"] = expiry_receipt["receiptDigest"]
     atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
     archive_completed_receipt()
 
@@ -702,7 +947,7 @@ def command_revoke_hermes(_config: dict[str, object]) -> None:
     try:
         revoke(HERMES_TOKEN)
     finally:
-        HERMES_HOSTS.unlink(missing_ok=True)
+        durable_unlink(HERMES_HOSTS)
 
 
 def command_migrate(_config: dict[str, object]) -> None:
@@ -727,9 +972,7 @@ def main() -> int:
         "reconcile-expired-mint-intents",
     }:
         raise CredentialError("usage: github-app-credentials.py refresh-projector|refresh-hermes|rotate-projector|clear-projector|revoke-projector|revoke-hermes|migrate-persistent-state|reconcile-expired-mint-intents")
-    RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(RUNTIME, 0o700)
-    os.chown(RUNTIME, 0, 0)
+    ensure_runtime()
     command_fd = os.open(COMMAND_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         os.chmod(COMMAND_LOCK, 0o600)
