@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   buildExecutionAdmissionEnvelope,
@@ -19,8 +20,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const mockAdapterState = vi.hoisted(() => ({ supportsBudget: true, includeUsage: true }));
-const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
+const mockAdapterState = vi.hoisted(() => ({
+  supportsBudget: true,
+  includeUsage: true,
+  resultOverride: null as Record<string, unknown> | null,
+}));
+const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => mockAdapterState.resultOverride ?? ({
   exitCode: 0,
   signal: null,
   timedOut: false,
@@ -96,6 +101,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
   afterEach(() => {
     mockAdapterState.supportsBudget = true;
     mockAdapterState.includeUsage = true;
+    mockAdapterState.resultOverride = null;
     mockAdapterExecute.mockClear();
   });
 
@@ -251,6 +257,121 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       outputTokens: 5_000,
       usageSource: "reservation_fallback",
     });
+  });
+
+  it("preserves a provider failure while conservatively settling missing usage", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_run_failed",
+      errorMessage: "Hermes failed before returning usage",
+      providerInvocationAttempted: true,
+      provider: "hermes_gateway",
+    };
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.errorCode).toBe("hermes_gateway_run_failed");
+    expect(persisted?.usageJson).toMatchObject({
+      inputTokens: 30_000,
+      outputTokens: 5_000,
+      usageSource: "reservation_fallback",
+      providerInvocationAttempted: true,
+    });
+  });
+
+  it("records deterministic pre-dispatch refusal as zero use without reservation fallback", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "workspace_validation_failed",
+      errorMessage: "Workspace head is stale",
+      providerInvocationAttempted: false,
+      provider: "hermes_gateway",
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      usageBasis: "per_run",
+    };
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.errorCode).toBe("workspace_validation_failed");
+    expect(persisted?.usageJson).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      usageSource: "per_run",
+      providerInvocationAttempted: false,
+    });
+  });
+
+  it("creates no recovery run when a one-run task fails", async () => {
+    const previousMaxRuns = process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK;
+    const previousMaxRetries = process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK;
+    process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = "1";
+    process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = "0";
+    try {
+      mockAdapterState.resultOverride = {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "hermes_gateway_run_failed",
+        errorMessage: "Hermes failed",
+        providerInvocationAttempted: true,
+        provider: "hermes_gateway",
+      };
+      const { companyId, agentId } = await seedDirectAgent();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "One run only",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "operator",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `ONE-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      });
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.invoke(
+        agentId,
+        "assignment",
+        { issueId, wakeReason: "issue_assigned" },
+        "system",
+        { actorType: "system", actorId: "test" },
+      );
+      expect(run).not.toBeNull();
+      await waitForTerminalRuns(db, [run!.id]);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const companyRuns = await db.select().from(heartbeatRuns);
+      const issueRuns = companyRuns.filter((row) =>
+        row.companyId === companyId &&
+        (row.contextSnapshot as Record<string, unknown> | null)?.issueId === issueId,
+      );
+      expect(issueRuns.map((row) => ({
+        id: row.id,
+        status: row.status,
+        retryOfRunId: row.retryOfRunId,
+        errorCode: row.errorCode,
+        invocationSource: row.invocationSource,
+        contextSnapshot: row.contextSnapshot,
+      }))).toEqual([expect.objectContaining({ id: run!.id })]);
+      const issue = (await db.select().from(issues)).find((row) => row.id === issueId);
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
+    } finally {
+      process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = previousMaxRuns;
+      process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = previousMaxRetries;
+    }
   });
 
   it("invokes the initial run when the task permits zero retries", async () => {

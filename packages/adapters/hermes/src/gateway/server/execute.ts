@@ -3,6 +3,8 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   asNumber,
   asString,
@@ -51,6 +53,14 @@ type TerminalState = {
   eventName?: string | null;
   payload?: Record<string, unknown> | null;
   output?: string | null;
+};
+
+const execFileAsync = promisify(execFile);
+const GIT_SHA = /^[0-9a-f]{40}$/;
+const ZERO_USAGE: UsageSummary = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cachedInputTokens: 0,
 };
 
 type ExecutionState = {
@@ -704,6 +714,114 @@ function extractErrorMessage(value: unknown): string | null {
   return nonEmpty(record?.error) ?? nonEmpty(record?.message) ?? nonEmpty(record?.detail) ?? extractOutput(value);
 }
 
+function executionRoute(model: string | null) {
+  const providerId = model?.includes("/") ? model.split("/", 1)[0] : "hermes";
+  return {
+    provider_id: providerId,
+    model_id: model,
+    transport: "api",
+    path_id: model?.includes("/") ? `${providerId}-cloud` : "hermes-gateway",
+  };
+}
+
+function deterministicRefusal(input: {
+  errorCode: string;
+  errorMessage: string;
+  model?: string | null;
+  resultJson?: Record<string, unknown>;
+}): AdapterExecutionResult {
+  const model = input.model ?? null;
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    providerInvocationAttempted: false,
+    provider: "hermes_gateway",
+    model,
+    usage: ZERO_USAGE,
+    usageBasis: "per_run",
+    resultJson: {
+      provider_invocation: { attempted: false },
+      execution_route: executionRoute(model),
+      ...input.resultJson,
+    },
+  };
+}
+
+function mergeTerminalPayload(
+  terminal: TerminalState,
+  finalStatus: Record<string, unknown> | null,
+): TerminalState {
+  if (!finalStatus) return terminal;
+  const current = terminal.payload ?? {};
+  const currentUsage = parseUsage(current);
+  const finalUsage = parseUsage(finalStatus);
+  return {
+    ...terminal,
+    status: extractStatus(finalStatus) ?? terminal.status,
+    payload: {
+      ...finalStatus,
+      ...current,
+      ...(!currentUsage && finalUsage ? { usage: finalStatus.usage } : {}),
+      ...(!extractModel(current) && extractModel(finalStatus) ? { model: extractModel(finalStatus) } : {}),
+    },
+    output: terminal.output ?? extractOutput(finalStatus),
+  };
+}
+
+function expectedWorkspaceHead(
+  ctx: AdapterExecutionContext,
+  binding: ReturnType<typeof readBoundExecutionContext>,
+): { error: string } | { expected: string | null } {
+  const configured = nonEmpty(ctx.config.expectedWorkspaceHeadSha)?.toLowerCase() ?? null;
+  const packet: Record<string, unknown> = binding?.packet ?? {};
+  const verification = asRecord(packet.verification);
+  const workspace = asRecord(packet.workspace);
+  const packetHead = (
+    nonEmpty(verification?.exactHeadSha) ??
+    nonEmpty(workspace?.exactHeadSha) ??
+    nonEmpty(workspace?.headSha)
+  )?.toLowerCase() ?? null;
+  if (configured && packetHead && configured !== packetHead) {
+    return { error: `Configured workspace head ${configured} does not match bound packet head ${packetHead}.` };
+  }
+  const expected = configured ?? packetHead;
+  if (!expected) return { expected: null };
+  if (!GIT_SHA.test(expected)) return { error: `Expected workspace head must be a full 40-character commit SHA; received ${expected}.` };
+  return { expected };
+}
+
+async function verifyWorkspaceBeforeDispatch(
+  ctx: AdapterExecutionContext,
+  binding: ReturnType<typeof readBoundExecutionContext>,
+): Promise<{ expected: string; actual: string; clean: true } | { error: string; expected?: string | null; actual?: string | null } | null> {
+  const resolved = expectedWorkspaceHead(ctx, binding);
+  if ("error" in resolved) return { error: resolved.error };
+  const expected = resolved.expected;
+  if (!expected) return null;
+  const workspace = asRecord(ctx.context.paperclipWorkspace);
+  const cwd = nonEmpty(workspace?.cwd);
+  if (!cwd) return { error: "Exact workspace head was declared, but Paperclip did not provide a workspace cwd.", expected };
+  try {
+    const [{ stdout: headOutput }, { stdout: statusOutput }] = await Promise.all([
+      execFileAsync("git", ["rev-parse", "HEAD"], { cwd }),
+      execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], { cwd }),
+    ]);
+    const actual = headOutput.trim().toLowerCase();
+    if (actual !== expected) {
+      return { error: `Workspace HEAD ${actual || "unknown"} does not match declared head ${expected}.`, expected, actual: actual || null };
+    }
+    if (statusOutput.trim()) {
+      return { error: "Workspace contains uncommitted or untracked changes.", expected, actual };
+    }
+    return { expected, actual, clean: true };
+  } catch (error) {
+    return { error: `Workspace Git validation failed: ${error instanceof Error ? error.message : String(error)}`, expected };
+  }
+}
+
 function terminalResultCode(status: string): { exitCode: number; signal: string | null; errorCode: string | null } {
   if (status === "completed") return { exitCode: 0, signal: null, errorCode: null };
   if (FAILURE_STATUSES.has(status)) return { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" };
@@ -739,11 +857,12 @@ export function mapFinalResultForTest(input: {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
     timedOut: false,
+    providerInvocationAttempted: true,
     provider: "hermes_gateway",
     model,
     ...(mapped.errorCode ? { errorCode: payloadErrorCode ?? mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
-    ...(usage ? { usage } : {}),
+    ...(usage ? { usage, usageBasis: "per_run" as const } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
     ...(output ? { summary: output.slice(0, 2_000) } : {}),
     sessionId: sessionDisplayId,
@@ -765,12 +884,8 @@ export function mapFinalResultForTest(input: {
         tool_calls: toolCallCount,
         turns: toolCallCount + 1,
       },
-      execution_route: {
-        provider_id: model?.includes("/") ? model.split("/", 1)[0] : "hermes",
-        model_id: model,
-        transport: "api",
-        path_id: model?.includes("/") ? `${model.split("/", 1)[0]}-cloud` : "hermes-gateway",
-      },
+      provider_invocation: { attempted: true },
+      execution_route: executionRoute(model),
     },
   };
 }
@@ -824,7 +939,11 @@ function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSen
   return redactText(String(err));
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+function errorResult(
+  err: unknown,
+  redactText: TextRedactor = sanitizeSensitiveText,
+  providerInvocationAttempted = true,
+): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
@@ -835,6 +954,18 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     exitCode: 1,
     signal: null,
     timedOut: false,
+    providerInvocationAttempted,
+    ...(providerInvocationAttempted
+      ? {}
+      : {
+          provider: "hermes_gateway",
+          usage: ZERO_USAGE,
+          usageBasis: "per_run" as const,
+          resultJson: {
+            provider_invocation: { attempted: false },
+            execution_route: executionRoute(null),
+          },
+        }),
     errorCode: code,
     errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
     retryNotBefore: hermesError.retryNotBefore ?? null,
@@ -849,44 +980,32 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
+    return deterministicRefusal({
       errorCode: "hermes_gateway_api_base_url_missing",
       errorMessage: "Hermes gateway adapter requires apiBaseUrl.",
-    };
+    });
   }
 
   const baseUrl = normalizeBaseUrl(apiBaseUrlValue);
   if (!baseUrl) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
+    return deterministicRefusal({
       errorCode: "hermes_gateway_api_base_url_invalid",
       errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
-    };
+    });
   }
   if (isRemotePlainHttp(baseUrl) && !allowsInsecureRemoteHttp(ctx.config)) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
+    return deterministicRefusal({
       errorCode: "hermes_gateway_plain_http_remote_denied",
       errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
-    };
+    });
   }
 
   const apiKey = nonEmpty(ctx.config.apiKey) ?? nonEmpty(ctx.config.token);
   if (!apiKey) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
+    return deterministicRefusal({
       errorCode: "hermes_gateway_api_key_missing",
       errorMessage: "Hermes gateway adapter requires apiKey.",
-    };
+    });
   }
 
   const configuredTimeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
@@ -899,13 +1018,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const rawBinding = ctx.context[PAPERCLIP_EXECUTION_CONTEXT_KEY];
   const binding = readBoundExecutionContext(rawBinding);
   if (rawBinding !== undefined && rawBinding !== null && !binding) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
+    return deterministicRefusal({
       errorCode: "execution_context.invalid_binding",
       errorMessage: "Bound execution context failed validation before provider dispatch.",
-    };
+    });
   }
   const configuredStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const strategy: SessionKeyStrategy = binding ? "none" : configuredStrategy;
@@ -942,7 +1058,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   try {
     body = buildRunBody(ctx, sessionKey);
   } catch (error) {
-    return errorResult(error, redactText);
+    return errorResult(error, redactText, false);
+  }
+  const workspaceVerification = await verifyWorkspaceBeforeDispatch(ctx, binding);
+  if (workspaceVerification && "error" in workspaceVerification) {
+    return deterministicRefusal({
+      errorCode: "workspace_validation_failed",
+      errorMessage: workspaceVerification.error,
+      model: nonEmpty(parseObject(body).model),
+      resultJson: { workspace: workspaceVerification },
+    });
   }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
@@ -974,6 +1099,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: 1,
         signal: null,
         timedOut: false,
+        providerInvocationAttempted: true,
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
         errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
@@ -1027,6 +1153,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: 1,
       signal: null,
       timedOut: true,
+      providerInvocationAttempted: true,
       errorCode: "hermes_gateway_timeout",
       errorMessage: `Hermes gateway run timed out after ${timeoutSec}s.`,
       provider: "hermes_gateway",
@@ -1035,6 +1162,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        provider_invocation: { attempted: true },
+        execution_route: executionRoute(extractModel(finalStatus)),
+        ...(workspaceVerification ? { workspace: workspaceVerification } : {}),
       },
       sessionParams: {
         hermesRunId: runId,
@@ -1044,12 +1174,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  return mapFinalResultForTest({
-    terminal: outcome,
+  const needsFinalReconciliation = !parseUsage(outcome.payload) || !extractModel(outcome.payload);
+  const finalStatus = needsFinalReconciliation
+    ? await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: Math.min(STOP_GRACE_MS, 2_000) })
+    : null;
+  const result = mapFinalResultForTest({
+    terminal: mergeTerminalPayload(outcome, finalStatus),
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
     toolCallCount: state.toolCallCount,
     redactText,
   });
+  result.resultJson = {
+    ...parseObject(result.resultJson),
+    ...(workspaceVerification ? { workspace: workspaceVerification } : {}),
+    ...(finalStatus ? { final_status_reconciled: true } : {}),
+  };
+  return result;
 }

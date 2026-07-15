@@ -4,6 +4,13 @@ import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKe
 import { testEnvironment } from "./test.js";
 import { buildBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 function compactPacket() {
   const stable = (value: unknown): unknown => Array.isArray(value)
@@ -141,7 +148,12 @@ describe("execute", () => {
     vi.stubGlobal("fetch", fetchMock);
     const invalid = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
     invalid.context.paperclipExecutionContext = { schemaVersion: "paperclip.execution-context-binding.v1" };
-    expect((await execute(invalid)).errorCode).toBe("execution_context.invalid_binding");
+    const invalidResult = await execute(invalid);
+    expect(invalidResult.errorCode).toBe("execution_context.invalid_binding");
+    expect(invalidResult).toMatchObject({
+      providerInvocationAttempted: false,
+      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+    });
     expect(fetchMock).not.toHaveBeenCalled();
 
     const oversized = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
@@ -273,6 +285,107 @@ describe("execute", () => {
     const body = JSON.parse(String(init.body));
     expect(body.input).toContain("Do the thing");
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  });
+
+  it("reconciles usage and route from final status when the terminal event is sparse", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-reconcile" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        return new Response(sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: "done",
+        model: "ollama/qwen3-coder",
+        usage: { input_tokens: 17, output_tokens: 5 },
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }));
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      providerInvocationAttempted: true,
+      usage: { inputTokens: 17, outputTokens: 5 },
+      usageBasis: "per_run",
+      model: "ollama/qwen3-coder",
+    });
+    expect(result.resultJson).toMatchObject({
+      final_status_reconciled: true,
+      execution_route: {
+        provider_id: "ollama",
+        transport: "api",
+        path_id: "ollama-cloud",
+      },
+    });
+  });
+
+  it("refuses a stale or dirty declared workspace before provider dispatch", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "paperclip-hermes-workspace-"));
+    try {
+      await execFileAsync("git", ["init", "-q"], { cwd });
+      await execFileAsync("git", ["config", "user.email", "paperclip@example.invalid"], { cwd });
+      await execFileAsync("git", ["config", "user.name", "Paperclip Test"], { cwd });
+      await writeFile(join(cwd, "README.md"), "one\n");
+      await execFileAsync("git", ["add", "README.md"], { cwd });
+      await execFileAsync("git", ["commit", "-qm", "initial"], { cwd });
+      const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+      const head = stdout.trim();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const stale = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        expectedWorkspaceHeadSha: "f".repeat(40),
+      });
+      stale.context.paperclipWorkspace = { cwd };
+      expect(await execute(stale)).toMatchObject({
+        errorCode: "workspace_validation_failed",
+        providerInvocationAttempted: false,
+        usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+      });
+
+      await writeFile(join(cwd, "untracked.txt"), "dirty\n");
+      const dirty = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        expectedWorkspaceHeadSha: head,
+      });
+      dirty.context.paperclipWorkspace = { cwd };
+      expect(await execute(dirty)).toMatchObject({
+        errorCode: "workspace_validation_failed",
+        errorMessage: "Workspace contains uncommitted or untracked changes.",
+        providerInvocationAttempted: false,
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await rm(join(cwd, "untracked.txt"));
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "workspace-ok" }), { status: 200 });
+        if (url.endsWith("/events")) {
+          return new Response(sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n"), { status: 200 });
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      const clean = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        expectedWorkspaceHeadSha: head,
+      });
+      clean.context.paperclipWorkspace = { cwd };
+      const cleanResult = await execute(clean);
+      expect(cleanResult.exitCode).toBe(0);
+      expect(cleanResult.resultJson).toMatchObject({
+        workspace: { expected: head, actual: head, clean: true },
+      });
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allowsAutomaticRecoveryCreation,
   buildExecutionAdmissionEnvelope,
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
@@ -64,6 +65,27 @@ describe("execution admission", () => {
       reason: "retry_limit_exhausted",
       observed: { runCount: 1, retryCount: 0 },
     });
+  });
+
+  it("suppresses automatic recovery before row creation when retries are disabled or runs are exhausted", () => {
+    const zeroRecovery = parseExecutionAdmissionPolicy({
+      ...enabledEnv,
+      PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "1",
+      PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "0",
+    });
+    const multiRun = policy();
+    const first = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:abc:default", epoch: "default" },
+      policy: multiRun,
+      decision: evaluateExecutionAdmission(multiRun, []),
+      evaluatedAt: new Date("2026-07-13T00:00:00Z"),
+    });
+    const last = { ...first, attempt: multiRun.maxRunsPerTask };
+
+    expect(allowsAutomaticRecoveryCreation({ enabled: false }, null)).toBe(true);
+    expect(allowsAutomaticRecoveryCreation(zeroRecovery, first)).toBe(false);
+    expect(allowsAutomaticRecoveryCreation(multiRun, first)).toBe(true);
+    expect(allowsAutomaticRecoveryCreation(multiRun, last)).toBe(false);
   });
 
   it("denies when token or wall ceilings are already spent", () => {
