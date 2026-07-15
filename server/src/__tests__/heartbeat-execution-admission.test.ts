@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -368,6 +369,19 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       }))).toEqual([expect.objectContaining({ id: run!.id })]);
       const issue = (await db.select().from(issues)).find((row) => row.id === issueId);
       expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]).toMatchObject({ createdByRunId: run!.id, authorType: "system" });
+
+      await heartbeat.reconcileStrandedAssignedIssues();
+      const commentsAfterReconciliation = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      expect(commentsAfterReconciliation).toHaveLength(1);
     } finally {
       process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = previousMaxRuns;
       process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = previousMaxRetries;

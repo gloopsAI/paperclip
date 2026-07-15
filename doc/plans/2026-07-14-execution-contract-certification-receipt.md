@@ -24,18 +24,23 @@ dark installation, and three zero-work rehearsals that return the system to dark
    the reservation. Deterministic pre-dispatch refusals record zero use without a
    reservation fallback.
 3. One-run/zero-recovery policy suppresses recovery row creation before insertion
-   and leaves the original run as the sole execution record.
+   across normal, process-loss, and graceful-shutdown paths and leaves the
+   original run as the sole execution record.
 4. A declared exact workspace head is validated as a clean git checkout at the
    exact 40-character SHA before provider dispatch; validation never mutates the
    workspace.
+5. Stop and final-status HTTP reconciliation aborts at a shared absolute deadline;
+   terminal issue blocking is committed under the issue row lock.
 
 ## Deterministic evidence
 
 - Certification harness: **20/20 consecutive passes**
-- Assertions exercised by the harness: **900**
-  - 31 Hermes gateway adapter tests per pass
+- Deterministic test executions exercised by the harness: **960**
+  - 32 Hermes gateway adapter tests per pass
   - 14 execution-admission/heartbeat tests per pass
+  - 2 process-loss/graceful-shutdown tests per pass
 - Affected heartbeat lifecycle regression tests: **67/67 passed**
+- Full heartbeat process-recovery suite: **86/86 passed**
 - Workspace typecheck: **passed across 29 projects**
 - Production build: **passed across the workspace**
 - Diff whitespace validation: **passed**

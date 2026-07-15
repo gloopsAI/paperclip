@@ -415,6 +415,22 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   return body;
 }
 
+async function fetchJsonBeforeDeadline(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  deadlineAt: number,
+): Promise<unknown> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) throw new Error("Hermes gateway reconciliation deadline expired");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remainingMs);
+  try {
+    return await fetchJson(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function extractRunId(value: unknown): string | null {
   const record = asRecord(value);
   return nonEmpty(record?.run_id) ?? nonEmpty(record?.runId) ?? nonEmpty(record?.id);
@@ -895,13 +911,15 @@ async function stopRun(input: {
   baseUrl: URL;
   headers: Record<string, string>;
   runId: string;
+  deadlineAt: number;
   redactText?: TextRedactor;
 }): Promise<Record<string, unknown> | null> {
   try {
-    const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
-      method: "POST",
-      headers: input.headers,
-    });
+    const stopped = await fetchJsonBeforeDeadline(
+      apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`),
+      { method: "POST", headers: input.headers },
+      input.deadlineAt,
+    );
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
@@ -914,22 +932,23 @@ async function fetchFinalStatus(input: {
   baseUrl: URL;
   headers: Record<string, string>;
   runId: string;
-  deadlineMs: number;
+  deadlineAt: number;
 }): Promise<Record<string, unknown> | null> {
-  const deadline = Date.now() + input.deadlineMs;
-  while (Date.now() < deadline) {
+  while (Date.now() < input.deadlineAt) {
     try {
-      const status = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
-        method: "GET",
-        headers: input.headers,
-      });
+      const status = await fetchJsonBeforeDeadline(
+        apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`),
+        { method: "GET", headers: input.headers },
+        input.deadlineAt,
+      );
       const record = asRecord(status);
       const normalized = extractStatus(status);
       if (normalized && TERMINAL_STATUSES.has(normalized)) return record;
     } catch {
       return null;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    const delayMs = Math.min(500, Math.max(0, input.deadlineAt - Date.now()));
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   return null;
 }
@@ -1143,12 +1162,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   controller.abort();
 
   if (outcome !== "timeout" && outcome.eventName === "execution.budget_exceeded") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    await stopRun({
+      ctx,
+      baseUrl,
+      headers: eventHeaders,
+      runId,
+      deadlineAt: Date.now() + STOP_GRACE_MS,
+      redactText,
+    });
   }
 
   if (outcome === "timeout") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const cleanupDeadline = Date.now() + STOP_GRACE_MS;
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, deadlineAt: cleanupDeadline, redactText });
+    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineAt: cleanupDeadline });
     return {
       exitCode: 1,
       signal: null,
@@ -1175,8 +1202,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const needsFinalReconciliation = !parseUsage(outcome.payload) || !extractModel(outcome.payload);
+  const reconciliationDeadline = Date.now() + Math.min(STOP_GRACE_MS, 2_000);
   const finalStatus = needsFinalReconciliation
-    ? await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: Math.min(STOP_GRACE_MS, 2_000) })
+    ? await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineAt: reconciliationDeadline })
     : null;
   const result = mapFinalResultForTest({
     terminal: mergeTerminalPayload(outcome, finalStatus),

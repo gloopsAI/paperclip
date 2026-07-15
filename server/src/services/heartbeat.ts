@@ -8278,6 +8278,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    if (!allowsAutomaticRecoveryCreation(
+      executionAdmissionPolicy,
+      readExecutionAdmissionEnvelope(contextSnapshot[EXECUTION_ADMISSION_CONTEXT_KEY]),
+    )) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed before row creation by the execution-admission policy",
+        payload: {
+          maxRunsPerTask: executionAdmissionPolicy.enabled
+            ? executionAdmissionPolicy.maxRunsPerTask
+            : null,
+          maxRetriesPerTask: executionAdmissionPolicy.enabled
+            ? executionAdmissionPolicy.maxRetriesPerTask
+            : null,
+        },
+      });
+      return null;
+    }
+
     const existingRetry = await db
       .select()
       .from(heartbeatRuns)
@@ -8316,7 +8338,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -14163,12 +14184,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !automaticRecoveryCreationAllowed &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
+        (issue.status === "todo" || issue.status === "in_progress" || issue.status === "in_review") &&
         (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled")
       ) {
         const failureSummary = summarizeRunFailureForIssueComment(run);
+        const blockedIssue = await tx
+          .update(issues)
+          .set({
+            status: "blocked",
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+            eq(issues.assigneeAgentId, run.agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!blockedIssue) return null;
         return {
           kind: "blocked_terminal" as const,
-          issue,
+          issue: blockedIssue,
           comment:
             "Paperclip did not create a continuation because this task's execution policy permits no automatic recovery." +
             `${failureSummary ?? ""} Moving it to \`blocked\` with the original run as the terminal execution record.`,
@@ -14777,19 +14818,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (promotionResult?.kind === "blocked_terminal") {
-      await db
-        .update(issues)
-        .set({
-          status: "blocked",
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issues.id, promotionResult.issue.id),
-          eq(issues.companyId, promotionResult.issue.companyId),
-        ));
       await issuesSvc.addComment(
         promotionResult.issue.id,
         promotionResult.comment,

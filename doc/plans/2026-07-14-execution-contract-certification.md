@@ -21,6 +21,7 @@ The GLoops fork may add admission and evidence requirements, but it must adapt t
 ### 1. Route and usage reconciliation
 
 - A terminal Hermes result is reconciled with `GET /v1/runs/{run_id}` before it is mapped when the streamed terminal event is missing route or usage fields.
+- Stop and final-status reconciliation requests share an absolute deadline and abort a stalled HTTP response instead of extending run finalization indefinitely.
 - A successful provider invocation without usage remains a fail-closed contract violation.
 - A failed or timed-out provider invocation without observed usage charges the full reservation without replacing the original failure reason.
 - A deterministic pre-dispatch refusal records zero observed usage and `providerInvocationAttempted=false`; it must not consume a provider reservation as though a provider ran.
@@ -31,6 +32,8 @@ The GLoops fork may add admission and evidence requirements, but it must adapt t
 - With execution admission set to `maxRunsPerTask=1` and `maxRetriesPerTask=0`, terminal finalization must not create a recovery wakeup or heartbeat row.
 - The original issue is reconciled to a visible terminal or blocked state through the existing liveness path; absence of a recovery run must not leave an unexplained execution lock.
 - The rule is enforced before any recovery row is inserted, not by inserting a row that is later denied.
+- Process-loss and graceful-shutdown recovery obey the same pre-insertion rule.
+- Terminal issue blocking occurs while the issue row is locked, so a later reassignment or claim cannot be overwritten by a post-transaction cleanup write.
 
 ### 3. Immutable workspace head
 
@@ -52,7 +55,10 @@ The certification suite runs without a real model and covers:
 7. clean exact-head workspace;
 8. stale-head workspace;
 9. dirty workspace;
-10. one-run/zero-recovery terminal reconciliation.
+10. one-run/zero-recovery terminal reconciliation;
+11. process-loss recovery under one-run/zero-recovery;
+12. graceful-shutdown recovery under one-run/zero-recovery;
+13. a stalled final-status HTTP response.
 
 Each scenario must prove the route/usage receipt, provider-invocation state, reservation settlement, run count, recovery-row count, lock release, and terminal issue state that apply to it.
 

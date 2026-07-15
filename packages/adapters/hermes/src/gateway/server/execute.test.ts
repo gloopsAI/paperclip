@@ -322,6 +322,43 @@ describe("execute", () => {
     });
   });
 
+  it("bounds final-status reconciliation when Hermes never responds", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hung-reconcile" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"),
+          { status: 200 },
+        );
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const startedAt = Date.now();
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+    }));
+
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(result).toMatchObject({
+      exitCode: 0,
+      providerInvocationAttempted: true,
+    });
+    expect(result.usage).toBeUndefined();
+    expect(result.resultJson).not.toMatchObject({ final_status_reconciled: true });
+  }, 5_000);
+
   it("refuses a stale or dirty declared workspace before provider dispatch", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "paperclip-hermes-workspace-"));
     try {

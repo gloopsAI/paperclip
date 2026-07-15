@@ -20,6 +20,10 @@ for ((iteration = 1; iteration <= iterations; iteration += 1)); do
     server/src/services/execution-admission.test.ts \
     server/src/__tests__/heartbeat-execution-admission.test.ts \
     --pool=threads --maxWorkers=1
+  pnpm exec vitest run \
+    server/src/__tests__/heartbeat-process-recovery.test.ts \
+    -t 'automatic recovery is prohibited' \
+    --pool=threads --maxWorkers=1
 done
 
 echo "execution-contract certification complete: ${iterations}/${iterations} passes"
