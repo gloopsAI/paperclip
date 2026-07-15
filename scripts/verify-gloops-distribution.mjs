@@ -244,6 +244,7 @@ for (const required of [
   "IN ACCESS EXCLUSIVE MODE",
   "evidence_pid=$!",
   "kill -0 \"${evidence_pid}\"",
+  '"${LIB_DIR}/github-app-credentials.py" clear-projector',
   "verify-dark.sh",
 ]) {
   if (!rehearseZeroWork.includes(required)) {
@@ -266,6 +267,9 @@ for (const required of [
 const trapIndex = rehearseZeroWork.indexOf("trap cleanup EXIT");
 const unmaskIndex = rehearseZeroWork.indexOf('systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"');
 const lockIndex = rehearseZeroWork.indexOf("IN ACCESS EXCLUSIVE MODE");
+const clearProjectorIndex = rehearseZeroWork.indexOf(
+  '"${LIB_DIR}/github-app-credentials.py" clear-projector',
+);
 const holderIndex = rehearseZeroWork.indexOf("evidence_pid=$!");
 const stopIndex = rehearseZeroWork.indexOf(
   'systemctl stop "${PAPERCLIP_UNIT}"',
@@ -279,14 +283,23 @@ const inspectIndex = rehearseZeroWork.indexOf('node - "${evidence_output}"');
 if (
   trapIndex < 0 ||
   unmaskIndex < 0 ||
+  clearProjectorIndex < 0 ||
   lockIndex < 0 ||
   holderIndex < 0 ||
   stopIndex < 0 ||
   hermesStopIndex < 0 ||
   inspectIndex < 0 ||
-  !(trapIndex < unmaskIndex && lockIndex < holderIndex && holderIndex < stopIndex && stopIndex < hermesStopIndex && hermesStopIndex < inspectIndex)
+  !(
+    trapIndex < unmaskIndex &&
+    unmaskIndex < clearProjectorIndex &&
+    clearProjectorIndex < lockIndex &&
+    lockIndex < holderIndex &&
+    holderIndex < stopIndex &&
+    stopIndex < hermesStopIndex &&
+    hermesStopIndex < inspectIndex
+  )
 ) {
-  fail("zero-work rehearsal must arm cleanup before activation and stop services under evidence locks before inspection");
+  fail("zero-work rehearsal must clear the projector before locking, then stop services under evidence locks before inspection");
 }
 if (!installDark.includes('rehearse-zero-work.sh')) {
   fail("dark installer must install the zero-work rehearsal harness");
