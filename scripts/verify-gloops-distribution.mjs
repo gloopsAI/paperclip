@@ -60,6 +60,10 @@ const verifyHermesExecutionPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-execution-profile.sh",
   import.meta.url,
 );
+const restoreHermesWorkspaceObserverPath = new URL(
+  "../gloops-distribution/deploy/hermes/restore-hermes-workspace-observer.sh",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
@@ -75,6 +79,7 @@ const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8"
 const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
+const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const vexPath = new URL(`../${manifest.buildInputs?.vex ?? ""}`, import.meta.url);
 let vex = null;
 try {
@@ -274,6 +279,7 @@ for (const required of [
   "--cpus 2.0",
   "--pids-limit 512",
   "gateway run --replace",
+  "ExecStartPost=/usr/local/lib/paperclip-gloops/restore-hermes-workspace-observer.sh",
 ]) {
   if (!hermesExecutionService.includes(required)) {
     fail(`Hermes execution service is missing ${required}`);
@@ -287,6 +293,7 @@ for (const forbidden of ["/opt/paperclip/hermes-home", "--publish", "XAI_API_KEY
 for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
+  "restore-hermes-workspace-observer.sh",
   "paperclip-hermes-execution.service",
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
@@ -297,6 +304,18 @@ for (const required of [
 ]) {
   if (!installDark.includes(required)) {
     fail(`dark installer does not govern ${required}`);
+  }
+}
+for (const required of [
+  "did not become healthy within",
+  "chown \"${HERMES_UID}:${PAPERCLIP_GID}\" \"${WORKSPACE}\"",
+  "chmod 0750 \"${WORKSPACE}\"",
+  "docker run --rm --pull never --user \"${PAPERCLIP_UID}:${PAPERCLIP_GID}\"",
+  "--network none --read-only --cap-drop ALL --security-opt no-new-privileges:true",
+  "test -r /workspace/paperclip/.git/HEAD",
+]) {
+  if (!restoreHermesWorkspaceObserver.includes(required)) {
+    fail(`Hermes workspace observer restoration is missing ${required}`);
   }
 }
 if (!preflight.includes("verify-hermes-execution-profile.sh --live")) {
@@ -344,6 +363,7 @@ for (const required of [
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
   "live API rejects unauthenticated execution-plane access",
+  "live Paperclip observer can read the exact pilot repository",
   "Grok is host-CLI-only with no API configuration",
 ]) {
   if (!verifyHermesExecution.includes(required)) {
