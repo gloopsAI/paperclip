@@ -6,6 +6,8 @@ dist/
 ui/storybook-static/
 .env
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 drizzle/meta/
 .vite/
 coverage/
