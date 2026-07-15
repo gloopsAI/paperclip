@@ -81,6 +81,12 @@ curl --fail --silent --show-error --max-time 5 \
 
 sleep "${OBSERVE_SECONDS}"
 
+# Clear and revoke the trusted projector credential while Paperclip can still
+# service the secret rotation. The evidence locks below intentionally remain
+# held through service shutdown; pre-clearing makes systemd's ExecStop cleanup
+# idempotent instead of forcing that rotation to wait behind the closed interval.
+"${LIB_DIR}/github-app-credentials.py" clear-projector
+
 timeout --signal=TERM --kill-after=5s 180s docker exec \
   --env "ZERO_WORK_STARTED_AT=${started_at}" \
   paperclip-gloops \
@@ -134,8 +140,10 @@ kill -0 "${evidence_pid}" 2>/dev/null || {
   exit 1
 }
 
-# The table locks close the write interval. Stopping both services while those
+# The table locks close the work interval. Stopping both services while those
 # locks remain held makes the captured receipt final before it is evaluated.
+# Paperclip's projector credential is already cleared, so ExecStop is a safe,
+# non-blocking no-op for that credential lifecycle step.
 systemctl stop "${PAPERCLIP_UNIT}"
 systemctl stop "${HERMES_UNIT}"
 systemctl is-active --quiet "${HERMES_UNIT}" && exit 1
