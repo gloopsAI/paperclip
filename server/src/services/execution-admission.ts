@@ -183,8 +183,8 @@ export function allowsAutomaticRecoveryCreation(
   envelope: ExecutionAdmissionEnvelope | null,
 ): boolean {
   if (!policy.enabled) return true;
+  if (!envelope || envelope.policyDigest !== policy.digest) return false;
   if (policy.maxRetriesPerTask === 0) return false;
-  if (!envelope) return true;
   return envelope.decision === "allowed" && envelope.attempt < policy.maxRunsPerTask;
 }
 

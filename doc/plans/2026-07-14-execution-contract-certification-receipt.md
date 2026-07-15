@@ -25,7 +25,8 @@ dark installation, and three zero-work rehearsals that return the system to dark
    reservation fallback.
 3. One-run/zero-recovery policy suppresses recovery row creation before insertion
    across normal, process-loss, and graceful-shutdown paths and leaves the
-   original run as the sole execution record.
+   original run as the sole execution record. Missing or policy-drifted admission
+   envelopes fail closed before automatic recovery-row insertion.
 4. A declared exact workspace head is validated as a clean git checkout at the
    exact 40-character SHA before provider dispatch; validation never mutates the
    workspace.
