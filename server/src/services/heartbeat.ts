@@ -181,6 +181,7 @@ import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
   buildExecutionAdmissionEnvelope,
+  allowsAutomaticRecoveryCreation,
   evaluateExecutionAdmission,
   evaluateExecutionReservationUsage,
   executionInvocationBudgetFromEnvelope,
@@ -5044,6 +5045,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // Constructed during server startup. Enabling the gate with incomplete
   // ceilings fails closed before this service can invoke any adapter.
   const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
+  const allowsAutomaticRecoveryForContext = (context: Record<string, unknown>) => {
+    const bindingPresent = Object.prototype.hasOwnProperty.call(
+      context,
+      EXECUTION_ADMISSION_CONTEXT_KEY,
+    );
+    return allowsAutomaticRecoveryCreation(
+      executionAdmissionPolicy,
+      readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
+      bindingPresent,
+    );
+  };
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7324,6 +7336,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
+    if (!allowsAutomaticRecoveryForContext(context)) {
+      await setRunStatus(run.id, run.status, {
+        livenessReason: `${run.livenessReason ?? "Run ended without concrete progress"}; automatic continuation prohibited by execution-admission policy`,
+      });
+      await addContinuationExhaustedCommentOnce({
+        run,
+        issueId,
+        comment: "Bounded liveness continuation exhausted before row creation because this task permits no automatic recovery.",
+      });
+      return;
+    }
 
     const [issue, agent] = await Promise.all([
       db
@@ -7720,6 +7743,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (decision.kind !== "enqueue" || !issue) return;
 
+    if (!allowsAutomaticRecoveryForContext(context)) {
+      await db
+        .update(issues)
+        .set({
+          status: "blocked",
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+      await addSuccessfulRunHandoffCommentOnce({
+        issue,
+        run,
+        agent,
+        detectedProgressSummary:
+          detectedProgressSummary ?? "The run reported progress, but did not choose a terminal issue disposition.",
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Successful-run handoff blocked before row creation by the execution-admission policy",
+        payload: {
+          issueId: issue.id,
+          maxRetriesPerTask: executionAdmissionPolicy.enabled
+            ? executionAdmissionPolicy.maxRetriesPerTask
+            : null,
+        },
+      });
+      return;
+    }
+
     if (hasUnmanagedBackgroundTaskEvidence(parseObject(run.resultJson))) {
       await db
         .update(heartbeatRuns)
@@ -7975,6 +8031,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     issueId: string,
   ) {
+    const sourceContext = parseObject(run.contextSnapshot);
+    if (!allowsAutomaticRecoveryForContext(sourceContext)) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Missing-comment retry suppressed before row creation by the execution-admission policy",
+        payload: { issueId },
+      });
+      return null;
+    }
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -7991,7 +8058,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
+    const contextSnapshot = sourceContext;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
@@ -8213,6 +8280,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    if (!allowsAutomaticRecoveryForContext(contextSnapshot)) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed before row creation by the execution-admission policy",
+        payload: {
+          maxRunsPerTask: executionAdmissionPolicy.enabled
+            ? executionAdmissionPolicy.maxRunsPerTask
+            : null,
+          maxRetriesPerTask: executionAdmissionPolicy.enabled
+            ? executionAdmissionPolicy.maxRetriesPerTask
+            : null,
+        },
+      });
+      return null;
+    }
+
     const existingRetry = await db
       .select()
       .from(heartbeatRuns)
@@ -8251,7 +8337,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -8841,6 +8926,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const contextSnapshot = parseObject(run.contextSnapshot);
+    const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryForContext(contextSnapshot);
     const boundExecutionContext = readBoundExecutionContext(contextSnapshot[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
     const requestedMaxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const maxAttempts = boundExecutionContext ? Math.min(1, requestedMaxAttempts) : requestedMaxAttempts;
@@ -8869,6 +8955,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!automaticRecoveryCreationAllowed) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic retry suppressed before row creation by the execution-admission policy",
+        payload: {
+          retryReason,
+          maxRunsPerTask: executionAdmissionPolicy.enabled ? executionAdmissionPolicy.maxRunsPerTask : null,
+          maxRetriesPerTask: executionAdmissionPolicy.enabled ? executionAdmissionPolicy.maxRetriesPerTask : null,
+        },
+      });
+      return { outcome: "retry_exhausted" as const, attempt: nextAttempt, maxAttempts: 0 };
+    }
     if (boundExecutionContext) {
       const workId = readNonEmptyString((boundExecutionContext.packet.work as Record<string, unknown> | undefined)?.id)
         ?? issueId
@@ -13245,6 +13345,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
       let accountedUsage = normalizedUsage;
+      const effectiveProviderInvocationAttempted =
+        adapterResult.providerInvocationAttempted ?? adapterInvocationAttempted;
       const reservationUsage = invocationBudget && normalizedUsage
         ? evaluateExecutionReservationUsage({
             reservation: invocationBudget,
@@ -13253,24 +13355,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wallMs: run.startedAt ? Math.max(0, Date.now() - new Date(run.startedAt).getTime()) : 0,
           })
         : null;
-      if (invocationBudget && adapterInvocationAttempted && !normalizedUsage) {
-        outcome = "failed";
+      if (invocationBudget && effectiveProviderInvocationAttempted && !normalizedUsage) {
         // Missing provider usage cannot be treated as zero. Charge the full
         // reservation to the task budget so a failed/malformed adapter cannot
-        // reopen capacity on a later retry.
+        // reopen capacity on a later retry. Preserve an adapter's original
+        // failure/timeout diagnosis; only a nominal success is reclassified as
+        // usage_missing.
         accountedUsage = {
           inputTokens: invocationBudget.maxInputTokens,
           cachedInputTokens: 0,
           outputTokens: invocationBudget.maxOutputTokens,
         };
+        const providerCompletedNominally = outcome === "succeeded";
+        if (providerCompletedNominally) outcome = "failed";
         adapterResult = {
           ...adapterResult,
-          errorCode: "execution_admission.usage_missing",
-          errorMessage: "Provider completed without usage needed to reconcile its execution reservation",
-          clearSession: true,
+          ...(providerCompletedNominally
+            ? {
+                errorCode: "execution_admission.usage_missing",
+                errorMessage: "Provider completed without usage needed to reconcile its execution reservation",
+                clearSession: true,
+              }
+            : {}),
           resultJson: {
             ...parseObject(adapterResult.resultJson),
-            executionReservation: { compliant: false, exceeded: ["usage_missing"], reservation: invocationBudget },
+            provider_invocation: { attempted: true },
+            executionReservation: {
+              compliant: false,
+              exceeded: ["usage_missing"],
+              reservation: invocationBudget,
+              accounting: "reservation_fallback",
+              originalOutcomePreserved: !providerCompletedNominally,
+            },
           },
         };
         nextSessionState = resolveNextSessionState({
@@ -13368,6 +13484,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
               configFreshness: configFreshnessResultMetadata,
+              providerInvocationAttempted: effectiveProviderInvocationAttempted,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
@@ -13376,8 +13493,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(invocationBudget ? {
                 executionReservation: {
                   ...invocationBudget,
-                  compliant: reservationUsage?.compliant ?? null,
-                  exceeded: reservationUsage?.exceeded ?? [],
+                  compliant: reservationUsage?.compliant ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? false : null),
+                  exceeded: reservationUsage?.exceeded ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? ["usage_missing"] : []),
                 },
               } : {}),
             } as Record<string, unknown>)
@@ -14053,6 +14170,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
+      const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryForContext(
+        parseObject(run.contextSnapshot),
+      );
+      if (
+        !automaticRecoveryCreationAllowed &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId &&
+        (issue.status === "todo" || issue.status === "in_progress" || issue.status === "in_review") &&
+        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled")
+      ) {
+        const failureSummary = summarizeRunFailureForIssueComment(run);
+        const blockedIssue = await tx
+          .update(issues)
+          .set({
+            status: "blocked",
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+            eq(issues.assigneeAgentId, run.agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!blockedIssue) return null;
+        return {
+          kind: "blocked_terminal" as const,
+          issue: blockedIssue,
+          comment:
+            "Paperclip did not create a continuation because this task's execution policy permits no automatic recovery." +
+            `${failureSummary ?? ""} Moving it to \`blocked\` with the original run as the terminal execution record.`,
+        };
+      }
 
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
@@ -14407,6 +14562,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         const shouldBlockReviewRecovery =
+          !automaticRecoveryCreationAllowed ||
           !recoveryAgentInvokable ||
           !recoveryAgent ||
           isExecutionReviewParticipantRecoveryRun(run);
@@ -14528,6 +14684,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldBlockImmediately =
+        !automaticRecoveryCreationAllowed ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
@@ -14652,6 +14809,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run: queuedRun,
       };
     });
+
+    if (promotionResult?.kind === "blocked_terminal") {
+      await issuesSvc.addComment(
+        promotionResult.issue.id,
+        promotionResult.comment,
+        { runId: run.id },
+        { authorType: "system" },
+      );
+      return;
+    }
 
     if (promotionResult?.kind === "blocked") {
       await recovery.escalateStrandedAssignedIssue({

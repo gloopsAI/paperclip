@@ -86,6 +86,14 @@ export interface AdapterExecutionResult {
    */
   usageBasis?: "per_run" | "session_cumulative" | null;
   /**
+   * Whether the adapter crossed the provider-dispatch boundary. `false` is a
+   * strong assertion that no remote/provider run was created (for example, a
+   * deterministic workspace or configuration refusal). When absent, the
+   * control plane conservatively assumes an invocation was attempted once it
+   * called the adapter.
+   */
+  providerInvocationAttempted?: boolean;
+  /**
    * Legacy single session id output. Prefer `sessionParams` + `sessionDisplayId`.
    */
   sessionId?: string | null;

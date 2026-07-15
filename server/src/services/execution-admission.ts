@@ -173,6 +173,25 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
   return candidate as ExecutionAdmissionEnvelope;
 }
 
+/**
+ * Decide before any wake/run insertion whether automatic recovery is legal.
+ * Admission at claim time remains the final concurrency guard; this earlier
+ * gate prevents knowingly impossible continuation rows from being created.
+ */
+export function allowsAutomaticRecoveryCreation(
+  policy: ExecutionAdmissionPolicy,
+  envelope: ExecutionAdmissionEnvelope | null,
+  bindingPresent = envelope !== null,
+): boolean {
+  // Preserve upstream behavior only when no execution-admission authority was
+  // ever bound. Once a binding exists, disabling or misconfiguring admission
+  // must not widen the authority granted to the original run.
+  if (!policy.enabled) return !bindingPresent;
+  if (!envelope || envelope.policyDigest !== policy.digest) return false;
+  if (policy.maxRetriesPerTask === 0) return false;
+  return envelope.decision === "allowed" && envelope.attempt < policy.maxRunsPerTask;
+}
+
 export function resolveExecutionBudgetIdentity(input: {
   issueId: string | null;
   runId: string;

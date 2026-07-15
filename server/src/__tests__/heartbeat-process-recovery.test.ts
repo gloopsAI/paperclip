@@ -100,6 +100,12 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
+import {
+  EXECUTION_ADMISSION_CONTEXT_KEY,
+  buildExecutionAdmissionEnvelope,
+  evaluateExecutionAdmission,
+  parseExecutionAdmissionPolicy,
+} from "../services/execution-admission.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -117,6 +123,57 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres heartbeat recovery tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+const ZERO_RECOVERY_EXECUTION_ENV = {
+  PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "true",
+  PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "1",
+  PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "0",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "50000",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "16000",
+  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "3600000",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "30000",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "8000",
+  PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "8",
+  PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "32",
+} as const;
+
+const DISABLED_EXECUTION_ENV = {
+  PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "false",
+} as const;
+
+function strictExecutionAdmissionEnvelope() {
+  const policy = parseExecutionAdmissionPolicy(ZERO_RECOVERY_EXECUTION_ENV);
+  if (!policy.enabled) throw new Error("expected strict execution-admission policy");
+  return buildExecutionAdmissionEnvelope({
+    identity: { budgetId: "issue:strict-bound:default", epoch: "default" },
+    policy,
+    decision: evaluateExecutionAdmission(policy, []),
+    evaluatedAt: new Date("2026-03-19T00:00:00.000Z"),
+  });
+}
+
+const DISABLED_POLICY_BINDINGS = [
+  ["a strict valid binding", strictExecutionAdmissionEnvelope()],
+  ["a malformed present binding", { schemaVersion: "malformed" }],
+] as const;
+
+async function withExecutionEnvironment<T>(
+  values: Record<string, string>,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = new Map(
+    Object.keys(values).map((key) => [key, process.env[key]] as const),
+  );
+  Object.assign(process.env, values);
+  try {
+    return await operation();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 function spawnAliveProcess() {
@@ -1303,6 +1360,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("does not create process-loss recovery rows when automatic recovery is prohibited", async () => {
+    await withExecutionEnvironment(ZERO_RECOVERY_EXECUTION_ENV, async () => {
+      const { agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+        agentStatus: "idle",
+        processPid: 999_999_999,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: runId, status: "failed", errorCode: "process_lost" });
+
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      expect(wakeups).toHaveLength(1);
+      expect(wakeups[0]).toMatchObject({ id: wakeupRequestId, status: "failed" });
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.executionRunId).toBeNull();
+      expect(issue?.checkoutRunId).toBeNull();
+    });
+  });
+
+  it.each(DISABLED_POLICY_BINDINGS)(
+    "does not widen process-loss recovery authority when admission is disabled with %s",
+    async (_label, binding) => {
+      await withExecutionEnvironment(DISABLED_EXECUTION_ENV, async () => {
+        const { agentId, runId, wakeupRequestId } = await seedRunFixture({
+          agentStatus: "idle",
+          processPid: 999_999_999,
+          contextSnapshot: { [EXECUTION_ADMISSION_CONTEXT_KEY]: binding },
+        });
+        const heartbeat = heartbeatService(db);
+
+        expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+          .toHaveLength(1);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId)))
+          .toMatchObject([{ id: wakeupRequestId, status: "failed" }]);
+      });
+    },
+  );
+
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
@@ -1367,6 +1479,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBeNull();
     expect(issue?.executionRunId).toBe(retryRun?.id);
   });
+
+  it("does not create graceful-shutdown recovery rows when automatic recovery is prohibited", async () => {
+    await withExecutionEnvironment(ZERO_RECOVERY_EXECUTION_ENV, async () => {
+      const { agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+        agentStatus: "running",
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.drainRunningRunsForShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+      expect(result).toEqual({
+        interrupted: 1,
+        interruptedRunIds: [runId],
+        retryRunIds: [],
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        id: runId,
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      expect(wakeups).toHaveLength(1);
+      expect(wakeups[0]).toMatchObject({ id: wakeupRequestId, status: "cancelled" });
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.executionRunId).toBeNull();
+      expect(issue?.checkoutRunId).toBeNull();
+    });
+  });
+
+  it.each(DISABLED_POLICY_BINDINGS)(
+    "does not widen graceful-shutdown recovery authority when admission is disabled with %s",
+    async (_label, binding) => {
+      await withExecutionEnvironment(DISABLED_EXECUTION_ENV, async () => {
+        const { agentId, runId, wakeupRequestId } = await seedRunFixture({
+          agentStatus: "running",
+          contextSnapshot: { [EXECUTION_ADMISSION_CONTEXT_KEY]: binding },
+        });
+        const heartbeat = heartbeatService(db);
+
+        expect(await heartbeat.drainRunningRunsForShutdown(
+          "SIGTERM",
+          new Date("2026-03-19T00:06:00.000Z"),
+        )).toEqual({ interrupted: 1, interruptedRunIds: [runId], retryRunIds: [] });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+          .toHaveLength(1);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId)))
+          .toMatchObject([{ id: wakeupRequestId, status: "cancelled" }]);
+      });
+    },
+  );
 
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
     const { runId, wakeupRequestId } = await seedRunFixture({
