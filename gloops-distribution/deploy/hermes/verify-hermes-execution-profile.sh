@@ -14,8 +14,8 @@ readonly SESSIONS="${STATE_DIR}/sessions"
 readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 readonly APP_CONFIG='/etc/paperclip-gloops/github-app.json'
 readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
-readonly HERMES_TOKEN='/run/paperclip-gloops/hermes-github-token'
-readonly CREDENTIAL_RECEIPT='/run/paperclip-gloops/credential-receipt.json'
+readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
+readonly CREDENTIAL_RECEIPT='/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 failed=0
 

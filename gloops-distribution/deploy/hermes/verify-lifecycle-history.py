@@ -115,12 +115,14 @@ def verify_bundle(credential_path: Path, stop_path: Path, current_path: Path) ->
     else:
         disposition = "none"
 
+    if credentials and not current_path.exists():
+        raise HistoryError("durable current receipt is missing despite credential history")
     if current_path.exists():
         if not credentials:
-            raise HistoryError("ephemeral receipt exists without persistent history")
+            raise HistoryError("durable current receipt exists without persistent history")
         current = json.loads(current_path.read_text())
         if current != credentials[-1]:
-            raise HistoryError("ephemeral receipt does not exactly equal credential-history tail")
+            raise HistoryError("durable current receipt does not exactly equal credential-history tail")
     return disposition
 
 

@@ -58,12 +58,22 @@ class LifecycleHistoryTests(unittest.TestCase):
     def write(self, path, records):
         path.write_text("".join(json.dumps(record, sort_keys=True) + "\n" for record in records))
 
-    def test_valid_history_remains_authoritative_after_reboot_removes_current_receipt(self):
+    def test_valid_history_requires_its_durable_current_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path, stop_path, current_path = self.paths(Path(directory))
+            credentials = chain([credential()])
+            self.write(credential_path, credentials)
+            self.write(stop_path, chain([stop()]))
+            current_path.write_text(json.dumps(credentials[-1]))
+            self.assertEqual(verify.verify_bundle(credential_path, stop_path, current_path), "correlated")
+
+    def test_missing_durable_current_receipt_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             credential_path, stop_path, current_path = self.paths(Path(directory))
             self.write(credential_path, chain([credential()]))
             self.write(stop_path, chain([stop()]))
-            self.assertEqual(verify.verify_bundle(credential_path, stop_path, current_path), "correlated")
+            with self.assertRaisesRegex(verify.HistoryError, "durable current receipt is missing"):
+                verify.verify_bundle(credential_path, stop_path, current_path)
 
     def test_nonlegacy_credential_without_stop_history_fails(self):
         with tempfile.TemporaryDirectory() as directory:

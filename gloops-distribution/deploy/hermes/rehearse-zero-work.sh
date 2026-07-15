@@ -45,6 +45,7 @@ credential_history='/var/lib/paperclip-gloops/credential-history.jsonl'
 stop_history='/var/lib/paperclip-gloops/hermes-stop-history.jsonl'
 sessions_dir='/opt/paperclip/hermes-execution-state/sessions'
 network='paperclip-execution'
+subnet=''
 egress_comment="gloops-zero-work-${BASHPID}"
 egress_rule_installed=0
 credential_history_before="$([[ -f "${credential_history}" ]] && wc -l <"${credential_history}" || echo 0)"
@@ -65,10 +66,13 @@ cleanup() {
   systemctl stop "${PAPERCLIP_UNIT}"
   systemctl stop "${HERMES_UNIT}"
   if ((egress_rule_installed == 1)); then
-    subnet="$(docker network inspect "${network}" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null)"
-    iptables -D DOCKER-USER -s "${subnet}" ! -d "${subnet}" \
-      -m comment --comment "${egress_comment}" -j REJECT
-    egress_rule_installed=0
+    if iptables -D DOCKER-USER -s "${subnet}" ! -d "${subnet}" \
+      -m comment --comment "${egress_comment}" -j REJECT; then
+      egress_rule_installed=0
+    else
+      echo "failed to remove zero-work egress proof rule" >&2
+      status=1
+    fi
   fi
   rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
   systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
@@ -89,6 +93,10 @@ echo "zero-work rehearsal started at ${started_at}"
 subnet="$(docker network inspect "${network}" --format '{{(index .IPAM.Config 0).Subnet}}')"
 [[ "${subnet}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || {
   echo "paperclip-execution network has no valid IPv4 subnet" >&2
+  exit 1
+}
+[[ "$(docker network inspect "${network}" --format '{{.EnableIPv6}}')" == 'false' ]] || {
+  echo "paperclip-execution must have IPv6 disabled for exact egress accounting" >&2
   exit 1
 }
 iptables -I DOCKER-USER 1 -s "${subnet}" ! -d "${subnet}" \

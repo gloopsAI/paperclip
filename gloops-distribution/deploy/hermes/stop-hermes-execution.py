@@ -24,7 +24,7 @@ from uuid import uuid4
 CONTAINER = "paperclip-hermes-execution"
 DOCKER = "/usr/bin/docker"
 HERMES = "/opt/hermes/.venv/bin/hermes"
-CREDENTIAL_RECEIPT = Path("/run/paperclip-gloops/credential-receipt.json")
+CREDENTIAL_RECEIPT = Path("/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
 STATE_COMMAND = (
@@ -62,8 +62,19 @@ def read_lifecycle_id() -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def atomic_write(path: Path, value: str) -> None:
+    parent_created = not path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if parent_created:
+        fsync_directory(path.parent.parent)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as handle:
@@ -73,6 +84,7 @@ def atomic_write(path: Path, value: str) -> None:
         os.chmod(temporary, 0o600)
         os.chown(temporary, 0, 0)
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -122,7 +134,11 @@ def append_receipt(receipt: dict[str, object]) -> None:
             "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
         }
         record["receiptDigest"] = record_digest(record)
+        history_parent_created = not HISTORY.parent.exists()
         HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        if history_parent_created:
+            fsync_directory(HISTORY.parent.parent)
+        history_created = not HISTORY.exists()
         history_fd = os.open(HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         try:
             os.chmod(HISTORY, 0o600)
@@ -133,6 +149,8 @@ def append_receipt(receipt: dict[str, object]) -> None:
             os.fsync(history_fd)
         finally:
             os.close(history_fd)
+        if history_created:
+            fsync_directory(HISTORY.parent)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)

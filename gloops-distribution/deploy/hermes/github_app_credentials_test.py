@@ -23,16 +23,58 @@ class BrokerLifecycleTests(unittest.TestCase):
     def paths(self, root: Path):
         return patch.multiple(
             broker,
-            RUNTIME=root / "run",
-            HERMES_TOKEN=root / "run/hermes-token",
-            PROJECTOR_TOKEN=root / "run/projector-token",
-            PROJECTOR_ROTATED=root / "run/projector-rotated",
+            LEGACY_RUNTIME=root / "run",
+            RUNTIME=root / "state/credential-runtime",
+            HERMES_TOKEN=root / "state/credential-runtime/hermes-token",
+            PROJECTOR_TOKEN=root / "state/credential-runtime/projector-token",
+            PROJECTOR_ROTATED=root / "state/credential-runtime/projector-rotated",
             HERMES_HOSTS=root / "profile/gh/hosts.yml",
-            RECEIPT=root / "run/credential-receipt.json",
+            RECEIPT=root / "state/credential-runtime/credential-receipt.json",
             HISTORY=root / "state/credential-history.jsonl",
             HISTORY_LOCK=root / "state/credential-history.lock",
-            COMMAND_LOCK=root / "run/credential-lifecycle.lock",
+            COMMAND_LOCK=root / "state/credential-runtime/credential-lifecycle.lock",
+            MINT_INTENTS=root / "state/credential-runtime/mint-intents.json",
         )
+
+    def test_pre_mint_intent_is_durable_before_the_external_request(self):
+        config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
+        minted = ("ghs_durable_intent_token", "2026-07-15T10:00:00Z", {"contents": "write"})
+
+        def mint(_config, _permissions):
+            ledger = broker.json.loads(broker.MINT_INTENTS.read_text())
+            intent = ledger["intents"]["hermes"]
+            self.assertRegex(intent["attemptId"], r"^[0-9a-f-]{36}$")
+            self.assertLess(intent["startedAt"], intent["safeAfter"])
+            return minted
+
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker, "mint", side_effect=mint), patch.object(broker.os, "chown"):
+            broker.refresh_role(config, "hermes")
+            self.assertFalse(broker.MINT_INTENTS.exists())
+            self.assertEqual(broker.HERMES_TOKEN.read_text(), minted[0] + "\n")
+
+    def test_uncertain_mint_failure_leaves_token_free_expiry_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker, "mint", side_effect=broker.CredentialError("response lost")), \
+                patch.object(broker.os, "chown"):
+            with self.assertRaisesRegex(broker.CredentialError, "response lost"):
+                broker.refresh_role({}, "projector")
+            intents = broker.load_mint_intents()
+            self.assertEqual(set(intents), {"projector"})
+            self.assertFalse(broker.PROJECTOR_TOKEN.exists())
+
+    def test_expired_token_free_mint_intent_can_be_reconciled_offline(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.write_mint_intents({
+                "hermes": {
+                    "attemptId": "11111111-1111-4111-8111-111111111111",
+                    "startedAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                },
+            })
+            broker.reconcile_expired_mint_intents()
+            self.assertFalse(broker.MINT_INTENTS.exists())
 
     def test_post_mint_failure_revokes_the_token_and_leaves_no_artifact(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -275,6 +317,43 @@ class BrokerLifecycleTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "disk failure"):
                     broker.revoke(broker.HERMES_TOKEN)
             self.assertFalse(broker.HERMES_TOKEN.exists())
+
+    def test_legacy_runtime_receipt_and_cleanup_handle_migrate_durably(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.LEGACY_RUNTIME.mkdir(parents=True)
+            legacy_token = broker.LEGACY_RUNTIME / "hermes-github-token"
+            legacy_receipt = broker.LEGACY_RUNTIME / "credential-receipt.json"
+            legacy_token.write_text("ghs_legacy_cleanup_handle\n")
+            legacy_receipt.write_text('{"schemaVersion":"gloops.github-app-credential-receipt.v1"}\n')
+            broker.migrate_persistent_state()
+            self.assertEqual(broker.HERMES_TOKEN.read_text(), "ghs_legacy_cleanup_handle\n")
+            self.assertTrue(broker.RECEIPT.exists())
+            self.assertFalse(legacy_token.exists())
+            self.assertFalse(legacy_receipt.exists())
+
+    def test_missing_legacy_current_receipt_creates_full_expiry_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.append_credential_history({
+                "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                "lifecycleId": "completed-before-reboot",
+                "completedAt": "2026-07-15T00:00:00Z",
+            })
+            broker.migrate_persistent_state()
+            self.assertTrue(broker.RECEIPT.exists())
+            self.assertEqual(set(broker.load_mint_intents()), {"hermes", "projector"})
+
+    def test_projector_revoke_does_not_hide_an_uncleared_persistent_secret(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker, "revoke_value"), patch.object(broker.os, "chown"):
+            broker.RUNTIME.mkdir(parents=True)
+            broker.PROJECTOR_TOKEN.write_text("ghs_projector_installation_token\n")
+            broker.PROJECTOR_ROTATED.write_text("rotated\n")
+            with self.assertRaisesRegex(broker.CredentialError, "must be cleared"):
+                broker.command_revoke_projector({})
+            self.assertFalse(broker.PROJECTOR_TOKEN.exists())
+            self.assertTrue(broker.PROJECTOR_ROTATED.exists())
 
 
 if __name__ == "__main__":

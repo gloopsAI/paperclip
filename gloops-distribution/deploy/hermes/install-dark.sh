@@ -75,7 +75,10 @@ systemctl reset-failed paperclip-gloops.service paperclip-hermes-execution.servi
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.
+"${LIB_DIR}/github-app-credentials.py" migrate-persistent-state
+"${LIB_DIR}/github-app-credentials.py" reconcile-expired-mint-intents
 "${LIB_DIR}/github-app-credentials.py" revoke-hermes
+"${LIB_DIR}/github-app-credentials.py" revoke-projector
 
 "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 

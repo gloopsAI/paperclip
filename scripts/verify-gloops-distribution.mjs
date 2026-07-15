@@ -283,6 +283,7 @@ for (const required of [
   "persistent Hermes session could auto-resume",
   "iptables -I DOCKER-USER 1",
   "iptables -L DOCKER-USER -v -n -x",
+  "paperclip-execution must have IPv6 disabled for exact egress accounting",
   "zero-work rehearsal attempted ${blocked_packets:-unknown} external network packet(s)",
   "zero-work rehearsal created persistent Hermes session state",
   "timeout --signal=TERM --kill-after=5s 180s docker exec",
@@ -303,6 +304,7 @@ for (const required of [
   'systemctl stop "${PAPERCLIP_UNIT}"',
   'systemctl stop "${HERMES_UNIT}"',
   "iptables -D DOCKER-USER",
+  "failed to remove zero-work egress proof rule",
   'rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
   'systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
   '"${LIB_DIR}/verify-dark.sh"',
@@ -508,6 +510,9 @@ for (const required of [
   "github-app-credentials.py",
   "stop-hermes-execution.py",
   "verify-lifecycle-history.py",
+  "github-app-credentials.py\" migrate-persistent-state",
+  "github-app-credentials.py\" reconcile-expired-mint-intents",
+  "github-app-credentials.py\" revoke-projector",
   "hermes-cron-disabled",
   "github-app.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
@@ -627,8 +632,17 @@ for (const required of [
   'def resolve_bound_projector_secret(config: dict[str, object], board_token: str)',
   '"/plugins/gloops.trusted-execution-projector/config"',
   'f"/companies/{company_id}/secrets"',
-  'PROJECTOR_ROTATED.unlink(missing_ok=True)',
+  'durable_unlink(PROJECTOR_ROTATED)',
   'print(f"github-app-credentials: {error}", file=sys.stderr)',
+  'RUNTIME = Path("/var/lib/paperclip-gloops/credential-runtime")',
+  'LEGACY_RUNTIME = Path("/run/paperclip-gloops")',
+  'MINT_INTENTS = RUNTIME / "mint-intents.json"',
+  'begin_mint_intent(role)',
+  'clear_mint_intent(role)',
+  'safeAfter',
+  'migrate_persistent_state()',
+  'reconcile_expired_mint_intents()',
+  'fsync_directory(HISTORY.parent)',
 ]) {
   if (!githubAppCredentials.includes(required)) {
     fail(`GitHub App broker is missing ${required}`);
@@ -643,6 +657,7 @@ for (const required of [
   'hermes-stop-history.jsonl',
   'receipt["plannedStopAccepted"] = graceful',
   'receipt["containerStopped"] = stopped',
+  "fsync_directory(HISTORY.parent)",
 ]) {
   if (!stopHermesExecution.includes(required)) {
     fail(`Hermes stop helper is missing ${required}`);
@@ -677,8 +692,10 @@ for (const required of [
   "/usr/local/lib/paperclip-gloops/verify-lifecycle-history.py",
   "/var/lib/paperclip-gloops/credential-history.jsonl",
   "/var/lib/paperclip-gloops/hermes-stop-history.jsonl",
-  "/run/paperclip-gloops/credential-receipt.json",
+  "/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json",
   "FAIL durable Hermes execution lifecycle evidence is invalid",
+  "PASS durable credential cleanup state is root-only",
+  "FAIL a zero-work egress proof rule remains installed while dark",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
@@ -687,7 +704,8 @@ for (const required of [
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",
   "verify_chain(records, \"attemptId\")",
-  "ephemeral receipt does not exactly equal credential-history tail",
+  "durable current receipt does not exactly equal credential-history tail",
+  "durable current receipt is missing despite credential history",
   "credential lifecycle has no stop attempt",
   "non-legacy credential history has no stop history",
   "PASS lifecycle histories are",
@@ -697,6 +715,10 @@ for (const required of [
   }
 }
 for (const required of [
+  "/var/lib/paperclip-gloops/credential-runtime/hermes-github-token",
+  "/var/lib/paperclip-gloops/credential-runtime/projector-github-token",
+  "/var/lib/paperclip-gloops/credential-runtime/projector-token-rotated",
+  "/var/lib/paperclip-gloops/credential-runtime/mint-intents.json",
   "/run/paperclip-gloops/hermes-github-token",
   "/run/paperclip-gloops/projector-github-token",
   "/run/paperclip-gloops/projector-token-rotated",

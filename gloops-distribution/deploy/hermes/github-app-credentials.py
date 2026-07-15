@@ -20,14 +20,15 @@ import stat
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 CONFIG = Path("/etc/paperclip-gloops/github-app.json")
-RUNTIME = Path("/run/paperclip-gloops")
+LEGACY_RUNTIME = Path("/run/paperclip-gloops")
+RUNTIME = Path("/var/lib/paperclip-gloops/credential-runtime")
 HERMES_TOKEN = RUNTIME / "hermes-github-token"
 PROJECTOR_TOKEN = RUNTIME / "projector-github-token"
 PROJECTOR_ROTATED = RUNTIME / "projector-token-rotated"
@@ -36,7 +37,9 @@ RECEIPT = RUNTIME / "credential-receipt.json"
 HISTORY = Path("/var/lib/paperclip-gloops/credential-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/credential-history.lock")
 COMMAND_LOCK = RUNTIME / "credential-lifecycle.lock"
+MINT_INTENTS = RUNTIME / "mint-intents.json"
 API_BASE = "https://api.github.com"
+MAX_TOKEN_LIFETIME_SECONDS = 3900
 
 WRITE_PERMISSIONS = {
     "checks": "read",
@@ -190,8 +193,19 @@ def verify_repository(config: dict[str, object], token: str) -> None:
         raise CredentialError("GitHub App private repository boundary is unobservable")
 
 
+def fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def atomic_write(path: Path, value: str, mode: int, uid: int = 0, gid: int = 0) -> None:
+    parent_created = not path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if parent_created:
+        fsync_directory(path.parent.parent)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as handle:
@@ -201,6 +215,7 @@ def atomic_write(path: Path, value: str, mode: int, uid: int = 0, gid: int = 0) 
         os.chmod(temporary, mode)
         os.chown(temporary, uid, gid)
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -229,6 +244,106 @@ def receipt_base(config: dict[str, object]) -> dict[str, object]:
 
 def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def durable_unlink(path: Path) -> None:
+    if not path.exists():
+        return
+    path.unlink()
+    fsync_directory(path.parent)
+
+
+def load_mint_intents() -> dict[str, dict[str, object]]:
+    if not MINT_INTENTS.exists():
+        return {}
+    raw = json.loads(MINT_INTENTS.read_text())
+    if not isinstance(raw, dict) or raw.get("schemaVersion") != "gloops.github-app-mint-intents.v1":
+        raise CredentialError("GitHub mint-intent ledger is malformed")
+    intents = raw.get("intents")
+    if not isinstance(intents, dict) or not set(intents).issubset({"hermes", "projector"}):
+        raise CredentialError("GitHub mint-intent roles are malformed")
+    for role, intent in intents.items():
+        if not isinstance(intent, dict) or set(intent) != {"attemptId", "startedAt", "safeAfter"}:
+            raise CredentialError(f"GitHub mint intent is malformed: {role}")
+        if not all(isinstance(intent[key], str) and intent[key] for key in intent):
+            raise CredentialError(f"GitHub mint intent values are malformed: {role}")
+    return intents
+
+
+def write_mint_intents(intents: dict[str, dict[str, object]]) -> None:
+    if intents:
+        atomic_write(
+            MINT_INTENTS,
+            json.dumps({"schemaVersion": "gloops.github-app-mint-intents.v1", "intents": intents}, sort_keys=True) + "\n",
+            0o600,
+        )
+    else:
+        durable_unlink(MINT_INTENTS)
+
+
+def begin_mint_intent(role: str) -> None:
+    intents = load_mint_intents()
+    if role in intents:
+        raise CredentialError(f"unreconciled GitHub mint intent exists: {role}")
+    started = datetime.now(timezone.utc)
+    intents[role] = {
+        "attemptId": str(uuid4()),
+        "startedAt": started.isoformat().replace("+00:00", "Z"),
+        "safeAfter": (started + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)).isoformat().replace("+00:00", "Z"),
+    }
+    write_mint_intents(intents)
+
+
+def clear_mint_intent(role: str) -> None:
+    intents = load_mint_intents()
+    if role in intents:
+        del intents[role]
+        write_mint_intents(intents)
+
+
+def reconcile_expired_mint_intents() -> None:
+    intents = load_mint_intents()
+    now = datetime.now(timezone.utc)
+    retained: dict[str, dict[str, object]] = {}
+    for role, intent in intents.items():
+        token_path = HERMES_TOKEN if role == "hermes" else PROJECTOR_TOKEN
+        try:
+            safe_after = datetime.fromisoformat(str(intent["safeAfter"]).replace("Z", "+00:00"))
+        except ValueError as error:
+            raise CredentialError(f"GitHub mint intent expiry is malformed: {role}") from error
+        if token_path.exists() or now < safe_after:
+            retained[role] = intent
+    write_mint_intents(retained)
+
+
+def migrate_persistent_state() -> None:
+    RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(RUNTIME, 0o700)
+    legacy_artifacts = {
+        LEGACY_RUNTIME / "hermes-github-token": HERMES_TOKEN,
+        LEGACY_RUNTIME / "projector-github-token": PROJECTOR_TOKEN,
+        LEGACY_RUNTIME / "projector-token-rotated": PROJECTOR_ROTATED,
+        LEGACY_RUNTIME / "credential-receipt.json": RECEIPT,
+    }
+    for source, destination in legacy_artifacts.items():
+        if not source.exists():
+            continue
+        if destination.exists():
+            raise CredentialError(f"both legacy and durable credential artifacts exist: {destination.name}")
+        atomic_write(destination, source.read_text(), 0o600)
+        source.unlink()
+    if not RECEIPT.exists() and HISTORY.exists() and HISTORY.stat().st_size > 0:
+        records = [json.loads(line) for line in HISTORY.read_text().splitlines()]
+        if not all(isinstance(record, dict) for record in records):
+            raise CredentialError("GitHub credential history is malformed")
+        validate_history(records)
+        # A missing legacy /run receipt may mean reboot erased an in-flight
+        # lifecycle. Quarantine both roles for a full maximum token lifetime
+        # before the completed history tail may become the durable baseline.
+        for role in ("hermes", "projector"):
+            if role not in load_mint_intents():
+                begin_mint_intent(role)
+        atomic_write(RECEIPT, json.dumps(records[-1], sort_keys=True) + "\n", 0o600)
 
 
 def receipt_complete(receipt: object) -> bool:
@@ -286,7 +401,11 @@ def append_credential_history(archived: dict[str, object]) -> dict[str, object]:
             "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
         }
         record["receiptDigest"] = history_digest(record)
+        history_parent_created = not HISTORY.parent.exists()
         HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        if history_parent_created:
+            fsync_directory(HISTORY.parent.parent)
+        history_created = not HISTORY.exists()
         history_fd = os.open(HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
         try:
             os.chmod(HISTORY, 0o600)
@@ -297,6 +416,8 @@ def append_credential_history(archived: dict[str, object]) -> dict[str, object]:
             os.fsync(history_fd)
         finally:
             os.close(history_fd)
+        if history_created:
+            fsync_directory(HISTORY.parent)
         return record
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -367,17 +488,17 @@ def refresh_role(config: dict[str, object], role: str) -> None:
     revoke(token_path)
     if role == "hermes":
         HERMES_HOSTS.unlink(missing_ok=True)
-    else:
-        PROJECTOR_ROTATED.unlink(missing_ok=True)
 
     token: str | None = None
+    begin_mint_intent(role)
     try:
         RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(RUNTIME, 0o700)
         token, expires_at, actual_permissions = mint(config, permissions)
-        # Persist the cleanup handle immediately. Any later exception either
-        # revokes it successfully or leaves this root-only handle for retry.
+        # The pre-mint intent closes the response-before-fsync crash window.
+        # Once this protected cleanup handle is durable, the intent can clear.
         atomic_write(token_path, token + "\n", 0o600)
+        clear_mint_intent(role)
         if role == "hermes":
             atomic_write(
                 HERMES_HOSTS,
@@ -389,20 +510,20 @@ def refresh_role(config: dict[str, object], role: str) -> None:
         record_mint(config, role, token, expires_at, actual_permissions)
     except CredentialRetentionError as error:
         atomic_write(token_path, error.token + "\n", 0o600)
+        clear_mint_intent(role)
         raise
     except Exception:
         if token is not None:
             try:
                 revoke_value(token)
             except Exception:
-                # token_path was written before any projection or receipt work
-                # and remains the durable root-only cleanup handle.
+                # token_path is durable before projection or receipt work and
+                # remains the root-only cleanup handle.
                 raise
-            token_path.unlink(missing_ok=True)
+            durable_unlink(token_path)
+            clear_mint_intent(role)
         if role == "hermes":
             HERMES_HOSTS.unlink(missing_ok=True)
-        else:
-            PROJECTOR_ROTATED.unlink(missing_ok=True)
         raise
 
 
@@ -506,7 +627,8 @@ def revoke(token_path: Path) -> None:
     try:
         record_revocation(token_path, token)
     finally:
-        token_path.unlink(missing_ok=True)
+        durable_unlink(token_path)
+        clear_mint_intent("hermes" if token_path == HERMES_TOKEN else "projector")
 
 
 def command_refresh_projector(config: dict[str, object]) -> None:
@@ -536,14 +658,15 @@ def command_clear_projector(config: dict[str, object]) -> None:
         try:
             revoke(PROJECTOR_TOKEN)
         finally:
-            PROJECTOR_ROTATED.unlink(missing_ok=True)
+            durable_unlink(PROJECTOR_ROTATED)
     if rotation_error is not None:
         raise CredentialError("projector secret could not be cleared before token revocation") from rotation_error
 
 
 def command_revoke_projector(_config: dict[str, object]) -> None:
     revoke(PROJECTOR_TOKEN)
-    PROJECTOR_ROTATED.unlink(missing_ok=True)
+    if PROJECTOR_ROTATED.exists():
+        raise CredentialError("projector secret remains rotated to a token and must be cleared while Paperclip is available")
 
 
 def command_revoke_hermes(_config: dict[str, object]) -> None:
@@ -551,6 +674,14 @@ def command_revoke_hermes(_config: dict[str, object]) -> None:
         revoke(HERMES_TOKEN)
     finally:
         HERMES_HOSTS.unlink(missing_ok=True)
+
+
+def command_migrate(_config: dict[str, object]) -> None:
+    migrate_persistent_state()
+
+
+def command_reconcile_expired_intents(_config: dict[str, object]) -> None:
+    reconcile_expired_mint_intents()
 
 
 def main() -> int:
@@ -563,9 +694,13 @@ def main() -> int:
         "clear-projector",
         "revoke-projector",
         "revoke-hermes",
+        "migrate-persistent-state",
+        "reconcile-expired-mint-intents",
     }:
-        raise CredentialError("usage: github-app-credentials.py refresh-projector|refresh-hermes|rotate-projector|clear-projector|revoke-projector|revoke-hermes")
+        raise CredentialError("usage: github-app-credentials.py refresh-projector|refresh-hermes|rotate-projector|clear-projector|revoke-projector|revoke-hermes|migrate-persistent-state|reconcile-expired-mint-intents")
     RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(RUNTIME, 0o700)
+    os.chown(RUNTIME, 0, 0)
     command_fd = os.open(COMMAND_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         os.chmod(COMMAND_LOCK, 0o600)
@@ -579,6 +714,8 @@ def main() -> int:
             "clear-projector": command_clear_projector,
             "revoke-projector": command_revoke_projector,
             "revoke-hermes": command_revoke_hermes,
+            "migrate-persistent-state": command_migrate,
+            "reconcile-expired-mint-intents": command_reconcile_expired_intents,
         }
         commands[sys.argv[1]](config)
     finally:

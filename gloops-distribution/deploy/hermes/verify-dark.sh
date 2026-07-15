@@ -50,9 +50,14 @@ else
 fi
 
 for ephemeral_credential in \
+  /var/lib/paperclip-gloops/credential-runtime/hermes-github-token \
+  /var/lib/paperclip-gloops/credential-runtime/projector-github-token \
+  /var/lib/paperclip-gloops/credential-runtime/projector-token-rotated \
+  /var/lib/paperclip-gloops/credential-runtime/mint-intents.json \
   /run/paperclip-gloops/hermes-github-token \
   /run/paperclip-gloops/projector-github-token \
   /run/paperclip-gloops/projector-token-rotated \
+  /run/paperclip-gloops/credential-receipt.json \
   /opt/paperclip/hermes-execution-profile/gh/hosts.yml; do
   if [[ -e "${ephemeral_credential}" ]]; then
     echo "FAIL ephemeral GitHub credential remains while dark: ${ephemeral_credential}" >&2
@@ -62,14 +67,46 @@ done
 if [[ "${failed}" -eq 0 ]]; then
   echo "PASS no GitHub App installation token remains while dark"
 fi
+credential_runtime='/var/lib/paperclip-gloops/credential-runtime'
+credential_runtime_valid=1
+if [[ "$(stat -c '%a:%U:%G' "${credential_runtime}" 2>/dev/null || true)" != '700:root:root' ]]; then
+  credential_runtime_valid=0
+fi
+if find "${credential_runtime}" -mindepth 1 -maxdepth 1 ! -type f -print -quit 2>/dev/null | grep -q .; then
+  credential_runtime_valid=0
+fi
+while IFS= read -r state_file; do
+  case "$(basename "${state_file}")" in
+    credential-lifecycle.lock|credential-receipt.json) ;;
+    *) credential_runtime_valid=0 ;;
+  esac
+  [[ "$(stat -c '%a:%U:%G' "${state_file}" 2>/dev/null || true)" == '600:root:root' ]] \
+    || credential_runtime_valid=0
+done < <(find "${credential_runtime}" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null)
+if ((credential_runtime_valid == 1)); then
+  echo "PASS durable credential cleanup state is root-only"
+else
+  echo "FAIL durable credential cleanup state is absent, unprotected, or undeclared" >&2
+  failed=1
+fi
 if /usr/local/lib/paperclip-gloops/verify-lifecycle-history.py \
   /var/lib/paperclip-gloops/credential-history.jsonl \
   /var/lib/paperclip-gloops/hermes-stop-history.jsonl \
-  /run/paperclip-gloops/credential-receipt.json; then
+  /var/lib/paperclip-gloops/credential-runtime/credential-receipt.json; then
   :
 else
   echo "FAIL durable Hermes execution lifecycle evidence is invalid" >&2
   failed=1
+fi
+
+if ! firewall_rules="$(iptables -S DOCKER-USER 2>/dev/null)"; then
+  echo "FAIL Docker egress-policy chain is unavailable" >&2
+  failed=1
+elif grep -Fq 'gloops-zero-work-' <<<"${firewall_rules}"; then
+  echo "FAIL a zero-work egress proof rule remains installed while dark" >&2
+  failed=1
+else
+  echo "PASS no zero-work egress proof rule remains installed"
 fi
 
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
