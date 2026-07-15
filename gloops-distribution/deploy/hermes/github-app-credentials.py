@@ -61,6 +61,12 @@ class CredentialError(RuntimeError):
     pass
 
 
+class GitHubAPIError(CredentialError):
+    def __init__(self, method: str, path: str, status: int):
+        super().__init__(f"GitHub API {method} {path} returned {status}")
+        self.status = status
+
+
 class CredentialRetentionError(CredentialError):
     """A minted token could not be validated or revoked; caller must retain it."""
 
@@ -138,7 +144,7 @@ def request_json(method: str, path: str, token: str, body: object | None = None)
             payload = response.read()
             return {} if not payload else json.loads(payload)
     except HTTPError as error:
-        raise CredentialError(f"GitHub API {method} {path} returned {error.code}") from error
+        raise GitHubAPIError(method, path, error.code) from error
     except URLError as error:
         raise CredentialError(f"GitHub API {method} {path} was unavailable") from error
 
@@ -599,7 +605,26 @@ def rotate_projector(config: dict[str, object], value: str) -> None:
 
 def revoke_value(token: str) -> None:
     if token.startswith("ghs_"):
-        request_json("DELETE", "/installation/token", token)
+        try:
+            request_json("DELETE", "/installation/token", token)
+        except GitHubAPIError as error:
+            if error.status not in {401, 404}:
+                raise
+
+
+def token_revocation_is_recorded(token_path: Path, token: str) -> bool:
+    if not RECEIPT.exists():
+        return False
+    role = "hermes" if token_path == HERMES_TOKEN else "projector" if token_path == PROJECTOR_TOKEN else None
+    if role is None:
+        raise CredentialError("unknown GitHub token role")
+    receipt = json.loads(RECEIPT.read_text())
+    entry = receipt.get(role) if isinstance(receipt, dict) else None
+    return bool(
+        isinstance(entry, dict)
+        and entry.get("tokenFingerprint") == hashlib.sha256(token.encode()).hexdigest()
+        and isinstance(entry.get("revokedAt"), str)
+    )
 
 
 def record_revocation(token_path: Path, token: str) -> None:
@@ -623,6 +648,10 @@ def revoke(token_path: Path) -> None:
     if not token_path.exists():
         return
     token = token_path.read_text().strip()
+    if token_revocation_is_recorded(token_path, token):
+        durable_unlink(token_path)
+        clear_mint_intent("hermes" if token_path == HERMES_TOKEN else "projector")
+        return
     revoke_value(token)
     try:
         record_revocation(token_path, token)

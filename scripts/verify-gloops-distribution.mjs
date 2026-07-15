@@ -643,6 +643,8 @@ for (const required of [
   'migrate_persistent_state()',
   'reconcile_expired_mint_intents()',
   'fsync_directory(HISTORY.parent)',
+  'token_revocation_is_recorded(token_path, token)',
+  'error.status not in {401, 404}',
 ]) {
   if (!githubAppCredentials.includes(required)) {
     fail(`GitHub App broker is missing ${required}`);

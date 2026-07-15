@@ -308,6 +308,30 @@ class BrokerLifecycleTests(unittest.TestCase):
                     broker.revoke(broker.HERMES_TOKEN)
             self.assertEqual(broker.HERMES_TOKEN.read_text(), "ghs_retryable_write_token\n")
 
+    def test_reboot_after_recorded_revocation_clears_handle_without_second_api_call(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            token = "ghs_already_revoked_write_token"
+            broker.RUNTIME.mkdir(parents=True)
+            broker.HERMES_TOKEN.write_text(token + "\n")
+            broker.RECEIPT.write_text(broker.json.dumps({
+                "hermes": {
+                    "tokenFingerprint": broker.hashlib.sha256(token.encode()).hexdigest(),
+                    "revokedAt": "2026-07-15T00:00:00Z",
+                },
+            }))
+            with patch.object(broker, "revoke_value") as revoke, patch.object(broker.os, "chown"):
+                broker.revoke(broker.HERMES_TOKEN)
+            revoke.assert_not_called()
+            self.assertFalse(broker.HERMES_TOKEN.exists())
+
+    def test_invalid_remote_token_is_terminal_revocation_evidence(self):
+        with patch.object(
+            broker,
+            "request_json",
+            side_effect=broker.GitHubAPIError("DELETE", "/installation/token", 401),
+        ):
+            broker.revoke_value("ghs_expired_or_revoked_token")
+
     def test_revoked_token_is_removed_even_when_receipt_persistence_fails(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
             broker.RUNTIME.mkdir(parents=True)
