@@ -180,9 +180,9 @@ if grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=8000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=8' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=32' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS exact third-pilot task and provider-invocation execution envelope is installed"
+  echo "PASS exact bounded-pilot task and provider-invocation execution envelope is installed"
 else
-  echo "FAIL exact third-pilot execution envelope is missing or has drifted" >&2
+  echo "FAIL exact bounded-pilot execution envelope is missing or has drifted" >&2
   failed=1
 fi
 

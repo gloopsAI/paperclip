@@ -82,7 +82,7 @@ if jq -e '
   .allowedCredentialFiles == ["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"] and
   .github == {
     "principal": "zach-hermes",
-    "allowedRepositories": ["gloopsAI/paperclip"],
+    "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
     "minimumPermission": "push",
     "credentialMount": "read-only"
   } and
@@ -204,7 +204,7 @@ if [[ "${MODE}" == '--live' ]]; then
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{range .Mounts}}{{println .Source " -> " .Destination " (" .RW ")"}}{{end}}' "${CONTAINER}" >"${live_mounts}"
     if docker exec --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
-      sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/paperclip --jq "select(.private == false and .permissions.push == true)" >/dev/null'; then
+      sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == false and .permissions.push == true)" >/dev/null'; then
       pass 'live GitHub identity has write access to the declared public pilot boundary'
     else
       fail 'live GitHub identity or pilot repository write access is missing'
@@ -246,8 +246,8 @@ if [[ "${MODE}" == '--live' ]]; then
         --cap-drop ALL --security-opt no-new-privileges:true \
         --mount "type=bind,src=${WORKSPACE},dst=/workspace,readonly" \
         --entrypoint /bin/sh "${observer_image}" -c \
-        'test -r /workspace/paperclip/.git/HEAD'; then
-      pass 'live Paperclip observer can read the exact pilot repository'
+        'test -r /workspace/gloops-paperclip-plugin/.git/HEAD'; then
+      pass 'live Paperclip observer can read the exact plugin pilot repository'
     else
       fail 'live execution workspace is not readable by the bounded Paperclip observer'
     fi

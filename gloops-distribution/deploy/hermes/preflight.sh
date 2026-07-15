@@ -37,7 +37,7 @@ readonly -A EXPECTED_EXECUTION_ENVELOPE=(
 )
 for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
   [[ "${!execution_setting:-}" == "${EXPECTED_EXECUTION_ENVELOPE[${execution_setting}]}" ]] || {
-    echo "${execution_setting} has drifted from the accepted third-pilot envelope" >&2
+    echo "${execution_setting} has drifted from the accepted bounded-pilot envelope" >&2
     exit 1
   }
 done
@@ -85,7 +85,7 @@ systemctl is-active --quiet paperclip-hermes-execution.service || {
   exit 1
 }
 docker exec --user 10000:10000 --env HOME=/opt/data paperclip-hermes-execution \
-  sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/paperclip --jq "select(.private == false and .permissions.push == true)" >/dev/null' || {
+  sh -lc '[ "$(gh api user --jq .login)" = "zach-hermes" ] && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == false and .permissions.push == true)" >/dev/null' || {
   echo "the live Hermes identity lacks bounded write access to the public pilot repository" >&2
   exit 1
 }

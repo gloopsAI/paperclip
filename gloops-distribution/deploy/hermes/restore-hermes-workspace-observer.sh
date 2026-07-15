@@ -38,8 +38,8 @@ docker run --rm --pull never --user "${PAPERCLIP_UID}:${PAPERCLIP_GID}" \
   --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --mount "type=bind,src=${WORKSPACE},dst=/workspace,readonly" \
   --entrypoint /bin/sh "${observer_image}" -c \
-  'test -r /workspace/paperclip/.git/HEAD' || {
-  echo 'Paperclip observer identity cannot read the exact pilot repository' >&2
+  'test -r /workspace/gloops-paperclip-plugin/.git/HEAD' || {
+  echo 'Paperclip observer identity cannot read the exact plugin pilot repository' >&2
   exit 1
 }
 
