@@ -211,10 +211,10 @@ def fsync_directory(path: Path) -> None:
 
 
 def ensure_runtime() -> None:
-    parent_created = not RUNTIME.parent.exists()
     RUNTIME.parent.mkdir(parents=True, exist_ok=True)
-    if parent_created:
-        fsync_directory(RUNTIME.parent.parent)
+    # The installer may have created RUNTIME.parent without syncing its parent.
+    # Re-sync unconditionally before any external mint can begin.
+    fsync_directory(RUNTIME.parent.parent)
     runtime_created = not RUNTIME.exists()
     RUNTIME.mkdir(mode=0o700, exist_ok=True)
     os.chmod(RUNTIME, 0o700)
@@ -285,10 +285,31 @@ def load_mint_intents() -> dict[str, dict[str, object]]:
     if not isinstance(intents, dict) or not set(intents).issubset({"hermes", "projector"}):
         raise CredentialError("GitHub mint-intent roles are malformed")
     for role, intent in intents.items():
-        if not isinstance(intent, dict) or set(intent) != {"attemptId", "startedAt", "safeAfter"}:
+        if not isinstance(intent, dict) or set(intent) not in (
+            {"attemptId", "startedAt", "safeAfter"},
+            {"attemptId", "startedAt", "safeAfter", "observedAt"},
+        ):
             raise CredentialError(f"GitHub mint intent is malformed: {role}")
         if not all(isinstance(intent[key], str) and intent[key] for key in intent):
             raise CredentialError(f"GitHub mint intent values are malformed: {role}")
+        try:
+            started_at = datetime.fromisoformat(str(intent["startedAt"]).replace("Z", "+00:00"))
+            safe_after = datetime.fromisoformat(str(intent["safeAfter"]).replace("Z", "+00:00"))
+            observed_at = (
+                datetime.fromisoformat(str(intent["observedAt"]).replace("Z", "+00:00"))
+                if "observedAt" in intent
+                else started_at
+            )
+        except ValueError as error:
+            raise CredentialError(f"GitHub mint intent timestamps are malformed: {role}") from error
+        if (
+            started_at.tzinfo is None
+            or safe_after.tzinfo is None
+            or observed_at.tzinfo is None
+            or safe_after <= started_at
+            or safe_after <= observed_at
+        ):
+            raise CredentialError(f"GitHub mint intent timestamps are malformed: {role}")
     return intents
 
 
@@ -340,6 +361,17 @@ def load_migration_baseline() -> dict[str, object] | None:
         for key in required - {"schemaVersion", "status"}
     ):
         raise CredentialError("GitHub migration baseline fields are malformed")
+    try:
+        created_at = datetime.fromisoformat(str(baseline["createdAt"]).replace("Z", "+00:00"))
+        terminal_at = datetime.fromisoformat(
+            str(baseline["safeAfter"] if baseline["status"] == "pending" else baseline["completedAt"]).replace("Z", "+00:00"),
+        )
+    except ValueError as error:
+        raise CredentialError("GitHub migration baseline timestamps are malformed") from error
+    if created_at.tzinfo is None or terminal_at.tzinfo is None or terminal_at <= created_at:
+        raise CredentialError("GitHub migration baseline timestamps are malformed")
+    if baseline["status"] == "complete" and baseline["basis"] != "expiry-quarantine-completed":
+        raise CredentialError("GitHub migration baseline completion basis is malformed")
     return baseline
 
 
@@ -373,6 +405,8 @@ def ensure_migration_quarantine_intents(baseline: dict[str, object]) -> None:
 
 
 def complete_migration_baseline(baseline: dict[str, object], basis: str) -> None:
+    if basis != "expiry-quarantine-completed":
+        raise CredentialError("GitHub migration baseline completion basis is not allowed")
     atomic_write(
         MIGRATION_BASELINE,
         json.dumps(
@@ -462,6 +496,7 @@ def reconcile_expired_mint_intents() -> None:
     intents = load_mint_intents()
     now = datetime.now(timezone.utc)
     retained: dict[str, dict[str, object]] = {}
+    baseline = load_migration_baseline()
     for role, intent in intents.items():
         token_path = HERMES_TOKEN if role == "hermes" else PROJECTOR_TOKEN
         try:
@@ -470,18 +505,48 @@ def reconcile_expired_mint_intents() -> None:
             raise CredentialError(f"GitHub mint intent expiry is malformed: {role}") from error
         if safe_after.tzinfo is None:
             raise CredentialError(f"GitHub mint intent expiry is malformed: {role}")
+        if token_path.exists():
+            handle_observed_at = datetime.fromtimestamp(token_path.stat().st_mtime, timezone.utc)
+            handle_safe_after = handle_observed_at + timedelta(
+                seconds=MAX_TOKEN_LIFETIME_SECONDS,
+            )
+            if handle_safe_after > safe_after:
+                safe_after = handle_safe_after
+                intent = {
+                    **intent,
+                    "observedAt": handle_observed_at.isoformat().replace("+00:00", "Z"),
+                    "safeAfter": safe_after.isoformat().replace("+00:00", "Z"),
+                }
         if now < safe_after:
             retained[role] = intent
             continue
         if token_path.exists():
             token = token_path.read_text().strip()
+            if token_revocation_is_recorded(token_path, token):
+                durable_unlink(token_path)
+                if role == "hermes":
+                    durable_unlink(HERMES_HOSTS)
+                continue
             expiry_receipt = append_expiry_receipt(role, intent, token)
             record_expiration(token_path, token, expiry_receipt)
             durable_unlink(token_path)
             if role == "hermes":
                 durable_unlink(HERMES_HOSTS)
+            continue
+        is_migration_quarantine = bool(
+            baseline is not None
+            and baseline.get("status") == "pending"
+            and intent.get("startedAt") == baseline.get("createdAt")
+            and intent.get("safeAfter") == baseline.get("safeAfter")
+        )
+        if not is_migration_quarantine and "observedAt" not in intent:
+            observed = datetime.now(timezone.utc)
+            retained[role] = {
+                **intent,
+                "observedAt": observed.isoformat().replace("+00:00", "Z"),
+                "safeAfter": (observed + timedelta(seconds=MAX_TOKEN_LIFETIME_SECONDS)).isoformat().replace("+00:00", "Z"),
+            }
     write_mint_intents(retained)
-    baseline = load_migration_baseline()
     if (
         baseline is not None
         and baseline.get("status") == "pending"
@@ -508,7 +573,6 @@ def migrate_persistent_state() -> None:
         and any(source.exists() for source in legacy_artifacts)
     ):
         raise CredentialError("legacy credential artifacts reappeared after migration completed")
-    legacy_receipt_present = (LEGACY_RUNTIME / "credential-receipt.json").exists()
     for source, destination in legacy_artifacts.items():
         if not source.exists():
             continue
@@ -518,17 +582,10 @@ def migrate_persistent_state() -> None:
         source.unlink()
         fsync_directory(source.parent)
     if baseline is None:
-        trusted_legacy_receipt = False
-        if legacy_receipt_present and RECEIPT.exists():
-            trusted_legacy_receipt = receipt_is_trusted_migration_baseline(json.loads(RECEIPT.read_text()))
-        if trusted_legacy_receipt:
-            provisional = {
-                "createdAt": timestamp(),
-            }
-            complete_migration_baseline(provisional, "legacy-complete-receipt")
-            baseline = load_migration_baseline()
-        else:
-            baseline = begin_migration_quarantine()
+        # A legacy receipt proves only the lifecycle it records. It cannot
+        # prove that a newer mint did not begin before reboot erased /run.
+        # First migration therefore always takes the full expiry quarantine.
+        baseline = begin_migration_quarantine()
     if baseline is not None and baseline.get("status") == "pending":
         ensure_migration_quarantine_intents(baseline)
     if not RECEIPT.exists() and HISTORY.exists() and HISTORY.stat().st_size > 0:
@@ -548,22 +605,6 @@ def receipt_complete(receipt: object) -> bool:
             isinstance(entry.get("revokedAt"), str)
             or isinstance(entry.get("expiredAt"), str)
         ):
-            return False
-    return True
-
-
-def receipt_is_trusted_migration_baseline(receipt: object) -> bool:
-    if not receipt_complete(receipt) or not isinstance(receipt, dict):
-        return False
-    if (
-        receipt.get("schemaVersion") != "gloops.github-app-credential-receipt.v1"
-        or receipt.get("repository") != "gloopsAI/gloops-paperclip-plugin"
-        or not all(type(receipt.get(key)) is int and receipt[key] > 0 for key in ("appId", "installationId", "repositoryId"))
-    ):
-        return False
-    for role in ("hermes", "projector"):
-        fingerprint = receipt[role].get("tokenFingerprint")
-        if not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(character not in "0123456789abcdef" for character in fingerprint):
             return False
     return True
 
@@ -606,6 +647,14 @@ def append_credential_history(archived: dict[str, object]) -> dict[str, object]:
         validate_history(records)
         for record in records:
             if record.get("lifecycleId") == lifecycle_id:
+                candidate = {
+                    **archived,
+                    "sequence": record["sequence"],
+                    "previousReceiptDigest": record["previousReceiptDigest"],
+                }
+                candidate["receiptDigest"] = history_digest(candidate)
+                if candidate != record:
+                    raise CredentialError("GitHub credential lifecycle changed after archival")
                 return record
         record = {
             **archived,

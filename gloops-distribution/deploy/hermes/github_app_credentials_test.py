@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -76,6 +77,7 @@ class BrokerLifecycleTests(unittest.TestCase):
                     patch.object(broker, "mint", side_effect=mint):
                 broker.refresh_role(config, "hermes")
             mint_index = events.index(("mint", None))
+            self.assertIn(("fsync", broker.RUNTIME.parent.parent), events[:mint_index])
             self.assertIn(("fsync", broker.RUNTIME.parent), events[:mint_index])
 
     def test_uncertain_mint_failure_leaves_token_free_expiry_quarantine(self):
@@ -88,7 +90,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertEqual(set(intents), {"projector"})
             self.assertFalse(broker.PROJECTOR_TOKEN.exists())
 
-    def test_expired_token_free_mint_intent_can_be_reconciled_offline(self):
+    def test_token_free_uncertain_mint_gets_a_post_crash_expiry_horizon(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker.os, "chown"):
             broker.write_mint_intents({
@@ -99,7 +101,34 @@ class BrokerLifecycleTests(unittest.TestCase):
                 },
             })
             broker.reconcile_expired_mint_intents()
+            observed = broker.load_mint_intents()["hermes"]
+            self.assertIn("observedAt", observed)
+            self.assertGreater(observed["safeAfter"], observed["observedAt"])
+            observed["observedAt"] = "2026-07-15T00:00:00Z"
+            observed["safeAfter"] = "2026-07-15T01:05:00Z"
+            broker.write_mint_intents({"hermes": observed})
+            broker.reconcile_expired_mint_intents()
             self.assertFalse(broker.MINT_INTENTS.exists())
+
+    def test_token_handle_mtime_extends_the_offline_expiry_horizon(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.write_mint_intents({
+                "projector": {
+                    "attemptId": "11111111-1111-4111-8111-111111111111",
+                    "startedAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                },
+            })
+            broker.PROJECTOR_TOKEN.write_text("ghs_delayed_response_handle\n")
+            broker.reconcile_expired_mint_intents()
+            intent = broker.load_mint_intents()["projector"]
+            self.assertTrue(broker.PROJECTOR_TOKEN.exists())
+            self.assertIn("observedAt", intent)
+            self.assertGreater(
+                datetime.fromisoformat(intent["safeAfter"].replace("Z", "+00:00")),
+                datetime.now(timezone.utc) + timedelta(seconds=3800),
+            )
 
     def test_expired_token_handle_is_disposed_offline_with_chained_evidence(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
@@ -112,6 +141,7 @@ class BrokerLifecycleTests(unittest.TestCase):
                 },
             })
             broker.HERMES_TOKEN.write_text("ghs_expired_cleanup_handle\n")
+            os.utime(broker.HERMES_TOKEN, (0, 0))
             broker.HERMES_HOSTS.parent.mkdir(parents=True)
             broker.HERMES_HOSTS.write_text("secret projection")
             with patch.object(broker, "revoke_value") as revoke:
@@ -139,6 +169,7 @@ class BrokerLifecycleTests(unittest.TestCase):
                 },
             })
             broker.HERMES_TOKEN.write_text(token + "\n")
+            os.utime(broker.HERMES_TOKEN, (0, 0))
             broker.RECEIPT.write_text(broker.json.dumps({
                 "schemaVersion": "gloops.github-app-credential-receipt.v1",
                 "appId": 1,
@@ -366,6 +397,49 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertEqual(archived["sequence"], 1)
             self.assertIsNone(archived["previousReceiptDigest"])
 
+    def test_archived_lifecycle_cannot_be_mutated_under_its_existing_identity(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            original = {
+                "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                "lifecycleId": "immutable",
+                "completedAt": "2026-07-15T00:00:00Z",
+            }
+            broker.append_credential_history(original)
+            with self.assertRaisesRegex(broker.CredentialError, "changed after archival"):
+                broker.append_credential_history({**original, "unexpected": True})
+
+    def test_reconcile_after_recorded_revocation_preserves_exact_history_tail(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            token = "ghs_already_terminal_handle"
+            fingerprint = broker.hashlib.sha256(token.encode()).hexdigest()
+            archived = broker.append_credential_history({
+                "schemaVersion": "gloops.github-app-credential-receipt.v1",
+                "lifecycleId": "terminal-before-crash",
+                "completedAt": "2026-07-15T00:02:00Z",
+                "hermes": {"revokedAt": "2026-07-15T00:01:00Z", "tokenFingerprint": fingerprint},
+                "projector": {"revokedAt": "2026-07-15T00:02:00Z", "tokenFingerprint": "b" * 64},
+            })
+            broker.RECEIPT.parent.mkdir(parents=True, exist_ok=True)
+            broker.RECEIPT.write_text(broker.json.dumps(archived))
+            broker.write_mint_intents({
+                "hermes": {
+                    "attemptId": "55555555-5555-4555-8555-555555555555",
+                    "startedAt": "2026-07-15T00:00:00Z",
+                    "safeAfter": "2026-07-15T01:05:00Z",
+                },
+            })
+            broker.HERMES_TOKEN.write_text(token + "\n")
+            os.utime(broker.HERMES_TOKEN, (0, 0))
+            broker.reconcile_expired_mint_intents()
+            current = broker.json.loads(broker.RECEIPT.read_text())
+            tail = broker.json.loads(broker.HISTORY.read_text().splitlines()[-1])
+            self.assertFalse(broker.HERMES_TOKEN.exists())
+            self.assertFalse(broker.MINT_INTENTS.exists())
+            self.assertEqual(current, tail)
+            self.assertEqual(current["receiptDigest"], broker.history_digest(current))
+
     def test_concurrent_history_appends_preserve_both_lifecycles(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker.os, "chown"):
@@ -514,7 +588,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertEqual(broker.load_migration_baseline()["status"], "complete")
             self.assertEqual(broker.load_migration_baseline()["basis"], "expiry-quarantine-completed")
 
-    def test_complete_legacy_receipt_is_a_trusted_migration_baseline(self):
+    def test_complete_legacy_receipt_still_requires_full_migration_quarantine(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker.os, "chown"):
             broker.LEGACY_RUNTIME.mkdir(parents=True)
@@ -528,9 +602,8 @@ class BrokerLifecycleTests(unittest.TestCase):
                 "projector": {"revokedAt": "2026-07-15T00:00:02Z", "tokenFingerprint": "b" * 64},
             }))
             broker.migrate_persistent_state()
-            self.assertEqual(broker.load_migration_baseline()["status"], "complete")
-            self.assertEqual(broker.load_migration_baseline()["basis"], "legacy-complete-receipt")
-            self.assertFalse(broker.MINT_INTENTS.exists())
+            self.assertEqual(broker.load_migration_baseline()["status"], "pending")
+            self.assertEqual(set(broker.load_mint_intents()), {"hermes", "projector"})
 
     def test_legacy_artifacts_cannot_reappear_after_migration_completed(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \

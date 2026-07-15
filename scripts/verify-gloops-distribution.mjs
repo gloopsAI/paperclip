@@ -642,10 +642,13 @@ for (const required of [
   'MIGRATION_BASELINE = RUNTIME / "migration-baseline.json"',
   'EXPIRY_HISTORY = Path("/var/lib/paperclip-gloops/credential-expiry-history.jsonl")',
   'def ensure_runtime() -> None:',
+  'fsync_directory(RUNTIME.parent.parent)',
   'begin_mint_intent(role)',
   'clear_mint_intent(role)',
   'safeAfter',
+  'observedAt',
   'begin_migration_quarantine()',
+  'if basis != "expiry-quarantine-completed":',
   'ensure_migration_quarantine_intents(baseline)',
   'complete_migration_baseline(baseline, "expiry-quarantine-completed")',
   'append_expiry_receipt(role, intent, token)',
@@ -654,6 +657,7 @@ for (const required of [
   'fsync_directory(HISTORY.parent)',
   'token_revocation_is_recorded(token_path, token)',
   'token_mint_is_recorded(token_path, token)',
+  'GitHub credential lifecycle changed after archival',
   'error.status not in {401, 404}',
 ]) {
   if (!githubAppCredentials.includes(required)) {

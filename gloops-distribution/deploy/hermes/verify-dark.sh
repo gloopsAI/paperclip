@@ -93,7 +93,7 @@ if (
   value.status !== "complete" ||
   typeof value.createdAt !== "string" ||
   typeof value.completedAt !== "string" ||
-  !["legacy-complete-receipt", "expiry-quarantine-completed"].includes(value.basis) ||
+  value.basis !== "expiry-quarantine-completed" ||
   !Number.isFinite(Date.parse(value.createdAt)) ||
   !Number.isFinite(Date.parse(value.completedAt)) ||
   Date.parse(value.completedAt) < Date.parse(value.createdAt)
