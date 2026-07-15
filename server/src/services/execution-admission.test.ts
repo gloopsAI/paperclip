@@ -83,6 +83,8 @@ describe("execution admission", () => {
     const last = { ...first, attempt: multiRun.maxRunsPerTask };
 
     expect(allowsAutomaticRecoveryCreation({ enabled: false }, null)).toBe(true);
+    expect(allowsAutomaticRecoveryCreation({ enabled: false }, first)).toBe(false);
+    expect(allowsAutomaticRecoveryCreation({ enabled: false }, null, true)).toBe(false);
     expect(allowsAutomaticRecoveryCreation(multiRun, null)).toBe(false);
     expect(allowsAutomaticRecoveryCreation(multiRun, { ...first, policyDigest: "0".repeat(64) })).toBe(false);
     expect(allowsAutomaticRecoveryCreation(zeroRecovery, first)).toBe(false);

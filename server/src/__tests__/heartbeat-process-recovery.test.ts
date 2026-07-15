@@ -100,6 +100,12 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
+import {
+  EXECUTION_ADMISSION_CONTEXT_KEY,
+  buildExecutionAdmissionEnvelope,
+  evaluateExecutionAdmission,
+  parseExecutionAdmissionPolicy,
+} from "../services/execution-admission.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -131,6 +137,26 @@ const ZERO_RECOVERY_EXECUTION_ENV = {
   PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "8",
   PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "32",
 } as const;
+
+const DISABLED_EXECUTION_ENV = {
+  PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "false",
+} as const;
+
+function strictExecutionAdmissionEnvelope() {
+  const policy = parseExecutionAdmissionPolicy(ZERO_RECOVERY_EXECUTION_ENV);
+  if (!policy.enabled) throw new Error("expected strict execution-admission policy");
+  return buildExecutionAdmissionEnvelope({
+    identity: { budgetId: "issue:strict-bound:default", epoch: "default" },
+    policy,
+    decision: evaluateExecutionAdmission(policy, []),
+    evaluatedAt: new Date("2026-03-19T00:00:00.000Z"),
+  });
+}
+
+const DISABLED_POLICY_BINDINGS = [
+  ["a strict valid binding", strictExecutionAdmissionEnvelope()],
+  ["a malformed present binding", { schemaVersion: "malformed" }],
+] as const;
 
 async function withExecutionEnvironment<T>(
   values: Record<string, string>,
@@ -1369,6 +1395,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it.each(DISABLED_POLICY_BINDINGS)(
+    "does not widen process-loss recovery authority when admission is disabled with %s",
+    async (_label, binding) => {
+      await withExecutionEnvironment(DISABLED_EXECUTION_ENV, async () => {
+        const { agentId, runId, wakeupRequestId } = await seedRunFixture({
+          agentStatus: "idle",
+          processPid: 999_999_999,
+          contextSnapshot: { [EXECUTION_ADMISSION_CONTEXT_KEY]: binding },
+        });
+        const heartbeat = heartbeatService(db);
+
+        expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+          .toHaveLength(1);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId)))
+          .toMatchObject([{ id: wakeupRequestId, status: "failed" }]);
+      });
+    },
+  );
+
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
@@ -1478,6 +1524,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(issue?.checkoutRunId).toBeNull();
     });
   });
+
+  it.each(DISABLED_POLICY_BINDINGS)(
+    "does not widen graceful-shutdown recovery authority when admission is disabled with %s",
+    async (_label, binding) => {
+      await withExecutionEnvironment(DISABLED_EXECUTION_ENV, async () => {
+        const { agentId, runId, wakeupRequestId } = await seedRunFixture({
+          agentStatus: "running",
+          contextSnapshot: { [EXECUTION_ADMISSION_CONTEXT_KEY]: binding },
+        });
+        const heartbeat = heartbeatService(db);
+
+        expect(await heartbeat.drainRunningRunsForShutdown(
+          "SIGTERM",
+          new Date("2026-03-19T00:06:00.000Z"),
+        )).toEqual({ interrupted: 1, interruptedRunIds: [runId], retryRunIds: [] });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+          .toHaveLength(1);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId)))
+          .toMatchObject([{ id: wakeupRequestId, status: "cancelled" }]);
+      });
+    },
+  );
 
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
     const { runId, wakeupRequestId } = await seedRunFixture({

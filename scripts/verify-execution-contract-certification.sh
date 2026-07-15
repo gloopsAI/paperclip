@@ -22,7 +22,7 @@ for ((iteration = 1; iteration <= iterations; iteration += 1)); do
     --pool=threads --maxWorkers=1
   pnpm exec vitest run \
     server/src/__tests__/heartbeat-process-recovery.test.ts \
-    -t 'automatic recovery is prohibited' \
+    -t 'automatic recovery is prohibited|does not widen .* recovery authority' \
     --pool=threads --maxWorkers=1
 done
 

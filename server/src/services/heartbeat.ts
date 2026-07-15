@@ -5045,6 +5045,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // Constructed during server startup. Enabling the gate with incomplete
   // ceilings fails closed before this service can invoke any adapter.
   const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
+  const allowsAutomaticRecoveryForContext = (context: Record<string, unknown>) => {
+    const bindingPresent = Object.prototype.hasOwnProperty.call(
+      context,
+      EXECUTION_ADMISSION_CONTEXT_KEY,
+    );
+    return allowsAutomaticRecoveryCreation(
+      executionAdmissionPolicy,
+      readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
+      bindingPresent,
+    );
+  };
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7325,10 +7336,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
-    if (!allowsAutomaticRecoveryCreation(
-      executionAdmissionPolicy,
-      readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
-    )) {
+    if (!allowsAutomaticRecoveryForContext(context)) {
       await setRunStatus(run.id, run.status, {
         livenessReason: `${run.livenessReason ?? "Run ended without concrete progress"}; automatic continuation prohibited by execution-admission policy`,
       });
@@ -7735,10 +7743,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (decision.kind !== "enqueue" || !issue) return;
 
-    if (!allowsAutomaticRecoveryCreation(
-      executionAdmissionPolicy,
-      readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
-    )) {
+    if (!allowsAutomaticRecoveryForContext(context)) {
       await db
         .update(issues)
         .set({
@@ -8027,10 +8032,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string,
   ) {
     const sourceContext = parseObject(run.contextSnapshot);
-    if (!allowsAutomaticRecoveryCreation(
-      executionAdmissionPolicy,
-      readExecutionAdmissionEnvelope(sourceContext[EXECUTION_ADMISSION_CONTEXT_KEY]),
-    )) {
+    if (!allowsAutomaticRecoveryForContext(sourceContext)) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -8279,10 +8281,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     now: Date,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    if (!allowsAutomaticRecoveryCreation(
-      executionAdmissionPolicy,
-      readExecutionAdmissionEnvelope(contextSnapshot[EXECUTION_ADMISSION_CONTEXT_KEY]),
-    )) {
+    if (!allowsAutomaticRecoveryForContext(contextSnapshot)) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -8927,10 +8926,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryCreation(
-      executionAdmissionPolicy,
-      readExecutionAdmissionEnvelope(contextSnapshot[EXECUTION_ADMISSION_CONTEXT_KEY]),
-    );
+    const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryForContext(contextSnapshot);
     const boundExecutionContext = readBoundExecutionContext(contextSnapshot[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
     const requestedMaxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const maxAttempts = boundExecutionContext ? Math.min(1, requestedMaxAttempts) : requestedMaxAttempts;
@@ -14174,11 +14170,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
-      const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryCreation(
-        executionAdmissionPolicy,
-        readExecutionAdmissionEnvelope(
-          parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
-        ),
+      const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryForContext(
+        parseObject(run.contextSnapshot),
       );
       if (
         !automaticRecoveryCreationAllowed &&

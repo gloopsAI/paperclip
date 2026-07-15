@@ -25,8 +25,10 @@ dark installation, and three zero-work rehearsals that return the system to dark
    reservation fallback.
 3. One-run/zero-recovery policy suppresses recovery row creation before insertion
    across normal, process-loss, and graceful-shutdown paths and leaves the
-   original run as the sole execution record. Missing or policy-drifted admission
-   envelopes fail closed before automatic recovery-row insertion.
+   original run as the sole execution record. Missing, malformed, policy-drifted,
+   and previously bound envelopes whose current policy is disabled fail closed
+   before automatic recovery-row insertion; legacy unbound runs retain upstream
+   recovery behavior.
 4. A declared exact workspace head is validated as a clean git checkout at the
    exact 40-character SHA before provider dispatch; validation never mutates the
    workspace.
@@ -36,10 +38,11 @@ dark installation, and three zero-work rehearsals that return the system to dark
 ## Deterministic evidence
 
 - Certification harness: **20/20 consecutive passes**
-- Deterministic test executions exercised by the harness: **960**
+- Deterministic test executions exercised by the harness: **1,040**
   - 32 Hermes gateway adapter tests per pass
   - 14 execution-admission/heartbeat tests per pass
-  - 2 process-loss/graceful-shutdown tests per pass
+  - 6 process-loss/graceful-shutdown tests per pass, including valid-strict and
+    malformed-present bindings after admission is disabled
 - Affected heartbeat lifecycle regression tests: **67/67 passed**
 - Full heartbeat process-recovery suite: **86/86 passed**
 - Workspace typecheck: **passed across 29 projects**

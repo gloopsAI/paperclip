@@ -32,7 +32,7 @@ The GLoops fork may add admission and evidence requirements, but it must adapt t
 - With execution admission set to `maxRunsPerTask=1` and `maxRetriesPerTask=0`, terminal finalization must not create a recovery wakeup or heartbeat row.
 - The original issue is reconciled to a visible terminal or blocked state through the existing liveness path; absence of a recovery run must not leave an unexplained execution lock.
 - The rule is enforced before any recovery row is inserted, not by inserting a row that is later denied.
-- When admission is enabled, missing, invalid, or policy-drifted admission envelopes fail closed before recovery-row insertion.
+- Missing, invalid, policy-drifted, or previously bound envelopes whose current policy is disabled fail closed before recovery-row insertion. Disabling admission preserves legacy recovery only for runs that never carried an admission binding.
 - Process-loss and graceful-shutdown recovery obey the same pre-insertion rule.
 - Terminal issue blocking occurs while the issue row is locked, so a later reassignment or claim cannot be overwritten by a post-transaction cleanup write.
 

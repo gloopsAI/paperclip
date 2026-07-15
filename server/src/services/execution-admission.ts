@@ -181,8 +181,12 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
 export function allowsAutomaticRecoveryCreation(
   policy: ExecutionAdmissionPolicy,
   envelope: ExecutionAdmissionEnvelope | null,
+  bindingPresent = envelope !== null,
 ): boolean {
-  if (!policy.enabled) return true;
+  // Preserve upstream behavior only when no execution-admission authority was
+  // ever bound. Once a binding exists, disabling or misconfiguring admission
+  // must not widen the authority granted to the original run.
+  if (!policy.enabled) return !bindingPresent;
   if (!envelope || envelope.policyDigest !== policy.digest) return false;
   if (policy.maxRetriesPerTask === 0) return false;
   return envelope.decision === "allowed" && envelope.attempt < policy.maxRunsPerTask;
