@@ -10132,6 +10132,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           isNotNull(heartbeatRuns.startedAt),
         )
         : undefined;
+      // A direct retry can inherit from a legacy or corrupt parent that has no
+      // readable admission envelope. Count that explicit parent as prior
+      // execution so the continuation cannot be mistaken for an initial run.
+      const legacyDirectParentCondition = run.retryOfRunId && !parentEnvelope
+        ? eq(heartbeatRuns.id, run.retryOfRunId)
+        : undefined;
+      const priorBudgetCondition = legacyDefaultIssueCondition
+        ? legacyDirectParentCondition
+          ? or(exactBudgetCondition, legacyDefaultIssueCondition, legacyDirectParentCondition)
+          : or(exactBudgetCondition, legacyDefaultIssueCondition)
+        : legacyDirectParentCondition
+          ? or(exactBudgetCondition, legacyDirectParentCondition)
+          : exactBudgetCondition;
       const priorRows = await tx
         .select({
           usageJson: heartbeatRuns.usageJson,
@@ -10143,7 +10156,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(
           eq(heartbeatRuns.companyId, run.companyId),
           sql`${heartbeatRuns.id} <> ${run.id}`,
-          legacyDefaultIssueCondition ? or(exactBudgetCondition, legacyDefaultIssueCondition) : exactBudgetCondition,
+          priorBudgetCondition,
         ))
         .orderBy(asc(heartbeatRuns.createdAt));
       const decision = evaluateExecutionAdmission(

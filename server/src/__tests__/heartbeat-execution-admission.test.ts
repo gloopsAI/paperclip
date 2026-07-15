@@ -252,4 +252,95 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       usageSource: "reservation_fallback",
     });
   });
+
+  it("invokes the initial run when the task permits zero retries", async () => {
+    const previousMaxRuns = process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK;
+    const previousMaxRetries = process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK;
+    process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = "1";
+    process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = "0";
+    try {
+      const { agentId } = await seedDirectAgent();
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      expect(run).not.toBeNull();
+      await waitForTerminalRuns(db, [run!.id]);
+      const persisted = await heartbeat.getRun(run!.id);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      expect(persisted?.status).toBe("succeeded");
+      expect(persisted?.contextSnapshot).toMatchObject({
+        gloopsExecutionAdmission: {
+          attempt: 1,
+          decision: "allowed",
+          reason: null,
+          observed: { runCount: 0, retryCount: 0 },
+        },
+      });
+    } finally {
+      process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = previousMaxRuns;
+      process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = previousMaxRetries;
+    }
+  });
+
+  it("denies a direct retry whose legacy parent has no admission envelope", async () => {
+    const previousMaxRuns = process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK;
+    const previousMaxRetries = process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK;
+    process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = "1";
+    process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = "0";
+    try {
+      const { companyId, agentId } = await seedDirectAgent();
+      const parentRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: parentRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date("2026-07-13T00:00:00Z"),
+        finishedAt: new Date("2026-07-13T00:00:01Z"),
+        contextSnapshot: {},
+      });
+
+      const retryRunId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "legacy_parent_retry",
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: "recovery",
+        runId: retryRunId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: retryRunId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        retryOfRunId: parentRunId,
+        wakeupRequestId,
+        contextSnapshot: { wakeReason: "legacy_parent_retry" },
+      });
+
+      await heartbeatService(db).resumeQueuedRuns();
+      await waitForTerminalRuns(db, [retryRunId]);
+      const persisted = await heartbeatService(db).getRun(retryRunId);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(persisted?.status).toBe("cancelled");
+      expect(persisted?.errorCode).toBe("execution_admission.run_limit_exhausted");
+      expect(persisted?.contextSnapshot).toMatchObject({
+        gloopsExecutionAdmission: {
+          attempt: 2,
+          decision: "denied",
+          observed: { runCount: 1, retryCount: 0 },
+        },
+      });
+    } finally {
+      process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = previousMaxRuns;
+      process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = previousMaxRetries;
+    }
+  });
 });

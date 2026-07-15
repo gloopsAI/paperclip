@@ -46,6 +46,26 @@ describe("execution admission", () => {
     });
   });
 
+  it("allows the initial run when retries are disabled, then denies a continuation", () => {
+    const parsed = parseExecutionAdmissionPolicy({
+      ...enabledEnv,
+      PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "2",
+      PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "0",
+    });
+    if (!parsed.enabled) throw new Error("expected enabled policy");
+
+    expect(evaluateExecutionAdmission(parsed, [])).toMatchObject({
+      allowed: true,
+      reason: null,
+      observed: { runCount: 0, retryCount: 0 },
+    });
+    expect(evaluateExecutionAdmission(parsed, [{}])).toMatchObject({
+      allowed: false,
+      reason: "retry_limit_exhausted",
+      observed: { runCount: 1, retryCount: 0 },
+    });
+  });
+
   it("denies when token or wall ceilings are already spent", () => {
     expect(evaluateExecutionAdmission(policy(), [{ inputTokens: 1000 }]).reason).toBe(
       "input_token_limit_exhausted",
