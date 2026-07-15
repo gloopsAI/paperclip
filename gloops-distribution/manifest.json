@@ -142,6 +142,17 @@
       "integratedCommits": ["cb742d542c23c7922c1ec2e828e2c97eb91c45a7"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Hermes runtime proves graceful cross-UID supervisor shutdown with an exact capability allowlist, no privileged or host-PID mode, and zero-work rehearsal rejection of forced, failed, or residual-container shutdown."
+    },
+    {
+      "id": "plugin-pilot-repository-boundary",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "ddfe9fcb86123118bd6280001f4d3c0ce38202b7",
+      "sourceHead": "41bfbb7dbf0eaab4d0ebcd45f16333e348100985",
+      "patchDiffSha256": "fcd86849f5f7e0f1ea4428a3189aee6e31c7e8d9c97f7abf05140e5bd14e0d51",
+      "integratedCommits": ["41bfbb7dbf0eaab4d0ebcd45f16333e348100985"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the bounded execution profile derives its sole repository grant and observer path from the accepted work charter without admitting any undeclared repository or broader GitHub authority."
     }
   ],
   "releasePolicy": {
