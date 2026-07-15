@@ -37,9 +37,8 @@ import type { Db } from "@paperclipai/db";
 import {
   isUuidSecretRef,
 } from "./json-schema-secret-refs.js";
-
-export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are disabled until company-scoped plugin config lands";
+import { pluginRegistryService } from "./plugin-registry.js";
+import { secretService } from "./secrets.js";
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -48,6 +47,18 @@ export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
 function invalidSecretRef(secretRef: string): Error {
   const err = new Error(`Invalid secret reference: ${secretRef}`);
   err.name = "InvalidSecretRefError";
+  return err;
+}
+
+function unboundSecretRef(): Error {
+  const err = new Error("Secret reference is not bound to exactly one plugin configuration path");
+  err.name = "SecretReferenceNotBoundError";
+  return err;
+}
+
+function invalidCompanyScope(): Error {
+  const err = new Error("Plugin secret resolution requires a UUID company scope");
+  err.name = "InvalidPluginCompanyScopeError";
   return err;
 }
 
@@ -262,7 +273,9 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { db, pluginId } = options;
+  const registry = pluginRegistryService(db);
+  const secrets = secretService(db);
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
@@ -293,9 +306,37 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      // ---------------------------------------------------------------
+      // 2. Bind resolution to the plugin's persisted, schema-declared config
+      // ---------------------------------------------------------------
+      const [plugin, config] = await Promise.all([
+        registry.getById(pluginId),
+        registry.getConfig(pluginId),
+      ]);
+      if (!plugin || !config) throw unboundSecretRef();
+
+      const configJson = config.configJson as Record<string, unknown>;
+      const companyId = configJson.companyId;
+      if (typeof companyId !== "string" || !isUuidSecretRef(companyId.trim())) {
+        throw invalidCompanyScope();
+      }
+
+      const schema = plugin.manifestJson?.instanceConfigSchema;
+      const paths = extractSecretRefPathsFromConfig(configJson, schema).get(trimmedRef);
+      if (!paths || paths.size !== 1) throw unboundSecretRef();
+      const configPath = [...paths][0]!;
+
+      // The secret service independently verifies company ownership and the
+      // exact plugin/config-path binding before returning plaintext. The
+      // plaintext remains in-memory and is never logged or persisted here.
+      return secrets.resolveSecretValue(companyId.trim(), trimmedRef, "latest", {
+        consumerType: "plugin",
+        consumerId: pluginId,
+        configPath,
+        actorType: "plugin",
+        actorId: pluginId,
+        pluginId,
+      });
     },
   };
 }

@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 
 
 MODULE_PATH = Path(__file__).with_name("github-app-credentials.py")
@@ -26,65 +27,61 @@ class BrokerLifecycleTests(unittest.TestCase):
             PROJECTOR_TOKEN=root / "run/projector-token",
             PROJECTOR_ROTATED=root / "run/projector-rotated",
             HERMES_HOSTS=root / "profile/gh/hosts.yml",
+            RECEIPT=root / "run/credential-receipt.json",
         )
 
-    def test_partial_mint_revokes_the_first_token_and_leaves_no_artifact(self):
-        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
-            first = ("ghs_first_installation_token", "2026-07-15T10:00:00Z", {"contents": "write"})
-            with patch.object(broker, "mint", side_effect=[first, broker.CredentialError("second mint failed")]), \
-                    patch.object(broker, "revoke_value") as revoke:
-                with self.assertRaisesRegex(broker.CredentialError, "second mint failed"):
-                    broker.refresh({})
-            revoke.assert_called_once_with(first[0])
-            self.assertFalse(broker.HERMES_TOKEN.exists())
-            self.assertFalse(broker.PROJECTOR_TOKEN.exists())
-            self.assertFalse(broker.HERMES_HOSTS.exists())
-
-    def test_partial_mint_retains_a_root_cleanup_handle_when_revocation_fails(self):
+    def test_post_mint_failure_revokes_the_token_and_leaves_no_artifact(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker.os, "chown"):
-            first = ("ghs_first_installation_token", "2026-07-15T10:00:00Z", {"contents": "write"})
-            with patch.object(broker, "mint", side_effect=[first, broker.CredentialError("second mint failed")]), \
-                    patch.object(broker, "revoke_value", side_effect=broker.CredentialError("revoke failed")):
-                with self.assertRaisesRegex(broker.CredentialError, "second mint failed"):
-                    broker.refresh({})
-            self.assertEqual(broker.HERMES_TOKEN.read_text(), first[0] + "\n")
-            self.assertFalse(broker.PROJECTOR_TOKEN.exists())
+            minted = ("ghs_first_installation_token", "2026-07-15T10:00:00Z", {"contents": "write"})
+            with patch.object(broker, "mint", return_value=minted), \
+                    patch.object(broker, "record_mint", side_effect=OSError("receipt failed")), \
+                    patch.object(broker, "revoke_value") as revoke:
+                with self.assertRaisesRegex(OSError, "receipt failed"):
+                    broker.refresh_role({}, "hermes")
+            revoke.assert_called_once_with(minted[0])
+            self.assertFalse(broker.HERMES_TOKEN.exists())
+            self.assertFalse(broker.HERMES_HOSTS.exists())
 
-    def test_refresh_revokes_and_removes_any_prior_runtime_credentials_first(self):
-        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
-            broker.RUNTIME.mkdir(parents=True)
-            broker.HERMES_TOKEN.write_text("ghs_old_write_token\n")
-            broker.PROJECTOR_TOKEN.write_text("ghs_old_read_token\n")
-            broker.PROJECTOR_ROTATED.write_text("rotated\n")
-            with patch.object(broker, "revoke_value") as revoke, patch.object(broker, "refresh") as refresh:
-                broker.command_refresh({"appId": 1})
-            self.assertEqual({call.args[0] for call in revoke.call_args_list}, {"ghs_old_write_token", "ghs_old_read_token"})
-            self.assertFalse(broker.PROJECTOR_ROTATED.exists())
-            refresh.assert_called_once_with({"appId": 1})
+    def test_post_mint_failure_retains_a_root_cleanup_handle_for_any_revocation_error(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            minted = ("ghs_first_installation_token", "2026-07-15T10:00:00Z", {"contents": "write"})
+            with patch.object(broker, "mint", return_value=minted), \
+                    patch.object(broker, "record_mint", side_effect=OSError("receipt failed")), \
+                    patch.object(broker, "revoke_value", side_effect=OSError("network failed")):
+                with self.assertRaisesRegex(OSError, "network failed"):
+                    broker.refresh_role({}, "hermes")
+            self.assertEqual(broker.HERMES_TOKEN.read_text(), minted[0] + "\n")
+            self.assertTrue(broker.HERMES_HOSTS.exists())
 
-    def test_successful_refresh_projects_separate_tokens_and_non_secret_receipt(self):
+    def test_independent_refresh_commands_own_only_their_service_token(self):
+        with patch.object(broker, "refresh_role") as refresh_role:
+            broker.command_refresh_hermes({"appId": 1})
+            broker.command_refresh_projector({"appId": 1})
+        self.assertEqual(
+            [call.args for call in refresh_role.call_args_list],
+            [({"appId": 1}, "hermes"), ({"appId": 1}, "projector")],
+        )
+
+    def test_successful_independent_refreshes_merge_a_non_secret_receipt(self):
         config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
         write = ("ghs_write_installation_token", "2026-07-15T10:00:00Z", {"contents": "write"})
         read = ("ghs_read_installation_token", "2026-07-15T10:00:00Z", {"contents": "read"})
-        writes: list[tuple[Path, str, int, int, int]] = []
-
-        def record(path, value, mode, uid=0, gid=0):
-            writes.append((path, value, mode, uid, gid))
-
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker, "mint", side_effect=[write, read]), \
-                patch.object(broker, "atomic_write", side_effect=record):
-            broker.refresh(config)
+                patch.object(broker.os, "chown"):
+            broker.refresh_role(config, "hermes")
+            broker.refresh_role(config, "projector")
+            receipt = broker.RECEIPT.read_text()
 
-        self.assertEqual(writes[0][1], write[0] + "\n")
-        self.assertEqual(writes[1][1], read[0] + "\n")
-        self.assertEqual(writes[2][2:], (0o400, 10000, 10000))
-        receipt = writes[3][1]
-        self.assertNotIn(write[0], receipt)
-        self.assertNotIn(read[0], receipt)
-        self.assertIn("tokenFingerprint", receipt)
-        self.assertIn('"revokedAt": null', receipt)
+            self.assertEqual(broker.HERMES_TOKEN.read_text(), write[0] + "\n")
+            self.assertEqual(broker.PROJECTOR_TOKEN.read_text(), read[0] + "\n")
+            self.assertNotIn(write[0], receipt)
+            self.assertNotIn(read[0], receipt)
+            self.assertIn('"hermes"', receipt)
+            self.assertIn('"projector"', receipt)
+            self.assertIn('"revokedAt": null', receipt)
 
     def test_projector_token_is_revoked_even_when_secret_rotation_fails(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
@@ -106,6 +103,63 @@ class BrokerLifecycleTests(unittest.TestCase):
             path.chmod(0o644)
             with self.assertRaisesRegex(broker.CredentialError, "root-owned mode"):
                 broker.read_root_secret(path, "Paperclip board token")
+
+    def test_projector_rotation_derives_the_exact_secret_from_plugin_config(self):
+        company_id = "22222222-2222-4222-8222-222222222222"
+        secret_id = "77777777-7777-4777-8777-777777777777"
+
+        def paperclip(method, path, _token, body=None):
+            if method == "GET" and path.endswith("/config"):
+                return {"configJson": {"companyId": company_id, "githubTokenSecretRef": secret_id}}
+            if method == "GET" and path == f"/companies/{company_id}/secrets":
+                return [{"id": secret_id, "companyId": company_id, "scope": "company", "status": "active"}]
+            if method == "POST" and path == f"/secrets/{secret_id}/rotate":
+                self.assertEqual(body, {"value": "ghs_new_value"})
+                return {"id": secret_id}
+            raise AssertionError((method, path))
+
+        with patch.object(broker, "read_root_secret", return_value="pcp_board_" + "a" * 48), \
+                patch.object(broker, "paperclip_request", side_effect=paperclip) as request:
+            broker.rotate_projector({"boardTokenPath": "/root/board"}, "ghs_new_value")
+        self.assertEqual(request.call_count, 3)
+
+    def test_projector_rotation_refuses_a_secret_outside_the_configured_company(self):
+        company_id = "22222222-2222-4222-8222-222222222222"
+        secret_id = "77777777-7777-4777-8777-777777777777"
+        responses = [
+            {"configJson": {"companyId": company_id, "githubTokenSecretRef": secret_id}},
+            [],
+        ]
+        with patch.object(broker, "read_root_secret", return_value="pcp_board_" + "a" * 48), \
+                patch.object(broker, "paperclip_request", side_effect=responses) as request:
+            with self.assertRaisesRegex(broker.CredentialError, "absent from its configured company"):
+                broker.rotate_projector({"boardTokenPath": "/root/board"}, "ghs_new_value")
+        self.assertEqual(request.call_count, 2)
+
+    def test_mint_validation_cleanup_surfaces_a_token_for_durable_retention(self):
+        token = "ghs_" + "a" * 36
+        expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        response = {
+            "token": token,
+            "expires_at": expires_at,
+            "permissions": {**broker.WRITE_PERMISSIONS, "metadata": "read"},
+        }
+        with patch.object(broker, "app_jwt", return_value="jwt"), \
+                patch.object(broker, "request_json", return_value=response), \
+                patch.object(broker, "verify_repository", side_effect=broker.CredentialError("boundary drift")), \
+                patch.object(broker, "revoke_value", side_effect=OSError("network failed")):
+            with self.assertRaises(broker.CredentialRetentionError) as raised:
+                broker.mint({"installationId": 1, "repositoryId": 2}, broker.WRITE_PERMISSIONS)
+        self.assertEqual(raised.exception.token, token)
+
+    def test_refresh_persists_a_cleanup_handle_returned_by_failed_mint_validation(self):
+        token = "ghs_" + "a" * 36
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            with patch.object(broker, "mint", side_effect=broker.CredentialRetentionError(token)):
+                with self.assertRaises(broker.CredentialRetentionError):
+                    broker.refresh_role({}, "projector")
+            self.assertEqual(broker.PROJECTOR_TOKEN.read_text(), token + "\n")
 
     def test_revocation_receipt_is_bound_to_the_exact_token_fingerprint(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):

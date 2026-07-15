@@ -18,12 +18,21 @@ const mockLifecycle = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 
+const mockSecretService = vi.hoisted(() => ({
+  listBindingCompanyIdsForTarget: vi.fn(),
+  syncSecretRefsForTarget: vi.fn(),
+}));
+
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
 
 vi.mock("../services/plugin-lifecycle.js", () => ({
   pluginLifecycleManager: () => mockLifecycle,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -131,12 +140,25 @@ function readyPlugin() {
     pluginKey: "paperclip.example",
     version: "1.0.0",
     status: "ready",
+    manifestJson: {
+      instanceConfigSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["companyId", "apiKeyRef"],
+        properties: {
+          companyId: { type: "string", format: "uuid" },
+          apiKeyRef: { type: "string", format: "secret-ref" },
+        },
+      },
+    },
   });
 }
 
 describe.sequential("plugin install and upgrade authz", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+    mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
   });
 
   it("lists bundled monorepo plugin packages", async () => {
@@ -308,27 +330,54 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+  it("atomically persists company-scoped plugin secret bindings for instance admins", async () => {
     readyPlugin();
+    const tx = {};
+    const db = { transaction: vi.fn(async (callback: (value: unknown) => Promise<unknown>) => callback(tx)) };
+    const saved = { pluginId, configJson: { companyId: companyA, apiKeyRef: "77777777-7777-4777-8777-777777777777" } };
+    mockRegistry.upsertConfig.mockResolvedValue(saved);
 
-    const { app } = await createApp({
-      type: "board",
-      userId: "admin-1",
-      source: "session",
-      isInstanceAdmin: true,
-      companyIds: [companyA],
-    });
+    const { app } = await createApp(
+      boardActor({ isInstanceAdmin: true }),
+      {},
+      { db },
+    );
 
     const res = await request(app)
       .post(`/api/plugins/${pluginId}/config`)
       .send({
         configJson: {
+          companyId: companyA,
           apiKeyRef: "77777777-7777-4777-8777-777777777777",
         },
       });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(res.status).toBe(200);
+    expect(db.transaction).toHaveBeenCalledOnce();
+    expect(mockSecretService.syncSecretRefsForTarget).toHaveBeenCalledWith(
+      companyA,
+      { targetType: "plugin", targetId: pluginId },
+      [{ secretId: "77777777-7777-4777-8777-777777777777", configPath: "apiKeyRef" }],
+      { replaceAll: true, db: tx },
+    );
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, { configJson: saved.configJson });
+  }, 20_000);
+
+  it("rejects plugin secret refs without an accessible UUID company scope", async () => {
+    readyPlugin();
+    const db = { transaction: vi.fn() };
+    const { app } = await createApp(
+      boardActor({ isInstanceAdmin: true, companyIds: [companyB] }),
+      {},
+      { db },
+    );
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({ configJson: { companyId: companyA, apiKeyRef: "77777777-7777-4777-8777-777777777777" } });
+
+    expect(res.status).toBe(403);
+    expect(db.transaction).not.toHaveBeenCalled();
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 

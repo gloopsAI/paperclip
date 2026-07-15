@@ -4,6 +4,5 @@
   "repositoryId": 1297008772,
   "repository": "gloopsAI/gloops-paperclip-plugin",
   "privateKeyPath": "/etc/paperclip-gloops/github-app/private-key.pem",
-  "projectorSecretIdPath": "/etc/paperclip-gloops/projector-github-secret-id",
   "boardTokenPath": "/etc/paperclip-gloops/operator-board-token"
 }

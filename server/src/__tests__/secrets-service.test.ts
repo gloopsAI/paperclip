@@ -188,6 +188,42 @@ describeEmbeddedPostgres("secretService", () => {
     });
   });
 
+  it("resolves a plugin secret only through its exact company and config-path binding", async () => {
+    const companyId = await seedCompany();
+    const foreignCompanyId = await seedCompany("Foreign");
+    const pluginId = randomUUID();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `plugin-token-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-plugin-token",
+    });
+
+    await svc.syncSecretRefsForTarget(
+      companyId,
+      { targetType: "plugin", targetId: pluginId },
+      [{ secretId: secret.id, configPath: "githubTokenSecretRef" }],
+      { replaceAll: true },
+    );
+
+    const context = {
+      consumerType: "plugin" as const,
+      consumerId: pluginId,
+      configPath: "githubTokenSecretRef",
+      actorType: "plugin" as const,
+      actorId: pluginId,
+      pluginId,
+    };
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest", context))
+      .resolves.toBe("runtime-plugin-token");
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest", {
+      ...context,
+      configPath: "otherSecretRef",
+    })).rejects.toThrow(/not bound/i);
+    await expect(svc.resolveSecretValue(foreignCompanyId, secret.id, "latest", context))
+      .rejects.toThrow(/same company/i);
+  });
+
   it("reports reference counts and resolves binding target labels", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

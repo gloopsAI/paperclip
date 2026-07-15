@@ -396,8 +396,7 @@ for (const required of [
   "--pids-limit 512",
   "gateway run --replace",
   "ExecStartPost=/usr/local/lib/paperclip-gloops/restore-hermes-workspace-observer.sh",
-  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh",
-  "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector",
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-hermes",
   "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes",
   "TimeoutStopSec=90",
 ]) {
@@ -508,7 +507,6 @@ if (JSON.stringify(githubAppConfig) !== JSON.stringify({
   repositoryId: 1297008772,
   repository: "gloopsAI/gloops-paperclip-plugin",
   privateKeyPath: "/etc/paperclip-gloops/github-app/private-key.pem",
-  projectorSecretIdPath: "/etc/paperclip-gloops/projector-github-secret-id",
   boardTokenPath: "/etc/paperclip-gloops/operator-board-token",
 })) {
   fail("GitHub App broker configuration is not exact");
@@ -523,12 +521,15 @@ for (const required of [
   'installation.get("total_count") != 1',
   'detail.get("private") is not True',
   'revoke_value(token)',
-  'retained.add(token_path)',
+  'except CredentialRetentionError as error:',
+  'except Exception:',
   'record_revocation(token_path, token)',
   '"revokedAt": None',
   'def read_root_secret(path: Path, label: str)',
   'mode not in {0o400, 0o600}',
-  'canonical_secret_id = str(UUID(secret_id))',
+  'def resolve_bound_projector_secret(config: dict[str, object], board_token: str)',
+  '"/plugins/gloops.trusted-execution-projector/config"',
+  'f"/companies/{company_id}/secrets"',
   'PROJECTOR_ROTATED.unlink(missing_ok=True)',
   'print(f"github-app-credentials: {error}", file=sys.stderr)',
 ]) {
@@ -542,6 +543,7 @@ for (const forbidden of ["zach-hermes", "xai", "grok", "GITHUB_TOKEN", "GH_TOKEN
   }
 }
 for (const required of [
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-projector",
   "ExecStartPost=/usr/local/lib/paperclip-gloops/github-app-credentials.py rotate-projector",
   "ExecStop=/usr/local/lib/paperclip-gloops/github-app-credentials.py clear-projector",
   "ExecStopPost=-/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector",
@@ -549,6 +551,9 @@ for (const required of [
   if (!service.includes(required)) {
     fail(`Paperclip service is missing projector credential lifecycle step ${required}`);
   }
+}
+if (hermesExecutionService.includes("revoke-projector")) {
+  fail("Hermes service must not own the independently restarted projector credential");
 }
 for (const required of [
   "GitHub App credential receipt records both successful revocations",

@@ -1,8 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mockRegistry = vi.hoisted(() => ({
+  getById: vi.fn(),
+  getConfig: vi.fn(),
+}));
+const mockSecrets = vi.hoisted(() => ({ resolveSecretValue: vi.fn() }));
+
+vi.mock("../services/plugin-registry.js", () => ({
+  pluginRegistryService: () => mockRegistry,
+}));
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecrets,
+}));
+
 import {
   createPluginSecretsHandler,
   extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 
 describe("extractSecretRefPathsFromConfig", () => {
@@ -108,25 +121,95 @@ describe("extractSecretRefPathsFromConfig", () => {
 });
 
 describe("createPluginSecretsHandler", () => {
-  it("fails closed for plugin secret resolution until company scoping lands", async () => {
-    const handler = createPluginSecretsHandler({
-      db: {} as never,
-      pluginId: "11111111-1111-4111-8111-111111111111",
-    });
+  const pluginId = "11111111-1111-4111-8111-111111111111";
+  const companyId = "22222222-2222-4222-8222-222222222222";
+  const secretRef = "77777777-7777-4777-8777-777777777777";
+  const schema = {
+    type: "object",
+    properties: {
+      companyId: { type: "string", format: "uuid" },
+      apiKey: { type: "string", format: "secret-ref" },
+    },
+  };
 
-    await expect(
-      handler.resolve({ secretRef: "77777777-7777-4777-8777-777777777777" }),
-    ).rejects.toThrow(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, manifestJson: { instanceConfigSchema: schema } });
+    mockRegistry.getConfig.mockResolvedValue({ pluginId, configJson: { companyId, apiKey: secretRef } });
+    mockSecrets.resolveSecretValue.mockResolvedValue("resolved-value");
   });
 
-  it("still rejects malformed secret refs before the feature-disable guard", async () => {
+  it("resolves only the exact company-scoped plugin config binding", async () => {
     const handler = createPluginSecretsHandler({
       db: {} as never,
-      pluginId: "11111111-1111-4111-8111-111111111111",
+      pluginId,
+    });
+
+    await expect(handler.resolve({ secretRef })).resolves.toBe("resolved-value");
+    expect(mockSecrets.resolveSecretValue).toHaveBeenCalledWith(
+      companyId,
+      secretRef,
+      "latest",
+      {
+        consumerType: "plugin",
+        consumerId: pluginId,
+        configPath: "apiKey",
+        actorType: "plugin",
+        actorId: pluginId,
+        pluginId,
+      },
+    );
+  });
+
+  it("fails closed when the persisted company scope is not a UUID", async () => {
+    mockRegistry.getConfig.mockResolvedValue({
+      pluginId,
+      configJson: { companyId: "company", apiKey: secretRef },
+    });
+    const handler = createPluginSecretsHandler({ db: {} as never, pluginId });
+
+    await expect(handler.resolve({ secretRef })).rejects.toMatchObject({
+      name: "InvalidPluginCompanyScopeError",
+    });
+    expect(mockSecrets.resolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a ref is absent or ambiguously bound in plugin config", async () => {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      manifestJson: {
+        instanceConfigSchema: {
+          type: "object",
+          properties: {
+            companyId: { type: "string", format: "uuid" },
+            primary: { type: "string", format: "secret-ref" },
+            secondary: { type: "string", format: "secret-ref" },
+          },
+        },
+      },
+    });
+    mockRegistry.getConfig.mockResolvedValue({
+      pluginId,
+      configJson: { companyId, primary: secretRef, secondary: secretRef },
+    });
+    const handler = createPluginSecretsHandler({ db: {} as never, pluginId });
+
+    await expect(handler.resolve({ secretRef })).rejects.toMatchObject({
+      name: "SecretReferenceNotBoundError",
+    });
+    expect(mockSecrets.resolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed secret refs before config or secret access", async () => {
+    const handler = createPluginSecretsHandler({
+      db: {} as never,
+      pluginId,
     });
 
     await expect(
       handler.resolve({ secretRef: "not-a-uuid" }),
     ).rejects.toThrow(/invalid secret reference/i);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockSecrets.resolveSecretValue).not.toHaveBeenCalled();
   });
 });

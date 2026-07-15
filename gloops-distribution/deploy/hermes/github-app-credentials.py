@@ -31,6 +31,7 @@ HERMES_TOKEN = RUNTIME / "hermes-github-token"
 PROJECTOR_TOKEN = RUNTIME / "projector-github-token"
 PROJECTOR_ROTATED = RUNTIME / "projector-token-rotated"
 HERMES_HOSTS = Path("/opt/paperclip/hermes-execution-profile/gh/hosts.yml")
+RECEIPT = RUNTIME / "credential-receipt.json"
 API_BASE = "https://api.github.com"
 
 WRITE_PERMISSIONS = {
@@ -53,6 +54,14 @@ class CredentialError(RuntimeError):
     pass
 
 
+class CredentialRetentionError(CredentialError):
+    """A minted token could not be validated or revoked; caller must retain it."""
+
+    def __init__(self, token: str):
+        super().__init__("GitHub installation token cleanup failed; a root cleanup handle is required")
+        self.token = token
+
+
 def load_config() -> dict[str, object]:
     raw = json.loads(CONFIG.read_text())
     required = {
@@ -61,7 +70,6 @@ def load_config() -> dict[str, object]:
         "repositoryId",
         "repository",
         "privateKeyPath",
-        "projectorSecretIdPath",
         "boardTokenPath",
     }
     if set(raw) != required:
@@ -142,18 +150,25 @@ def mint(config: dict[str, object], permissions: dict[str, str]) -> tuple[str, s
     actual_permissions = response.get("permissions")
     if not isinstance(token, str) or not token.startswith("ghs_") or any(char.isspace() for char in token):
         raise CredentialError("GitHub installation token is malformed")
-    if not isinstance(expires_at, str) or not isinstance(actual_permissions, dict):
-        raise CredentialError("GitHub token metadata is incomplete")
-    expected = {**permissions, "metadata": "read"}
-    normalized = {str(key): str(value) for key, value in actual_permissions.items()}
-    if normalized != expected:
-        raise CredentialError("GitHub installation token permissions exceed or miss the requested scope")
-    expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-    seconds = (expiry - datetime.now(timezone.utc)).total_seconds()
-    if seconds < 2700 or seconds > 3900:
-        raise CredentialError("GitHub installation token expiry is outside the one-hour envelope")
-    verify_repository(config, token)
-    return token, expires_at, normalized
+    try:
+        if not isinstance(expires_at, str) or not isinstance(actual_permissions, dict):
+            raise CredentialError("GitHub token metadata is incomplete")
+        expected = {**permissions, "metadata": "read"}
+        normalized = {str(key): str(value) for key, value in actual_permissions.items()}
+        if normalized != expected:
+            raise CredentialError("GitHub installation token permissions exceed or miss the requested scope")
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        seconds = (expiry - datetime.now(timezone.utc)).total_seconds()
+        if seconds < 2700 or seconds > 3900:
+            raise CredentialError("GitHub installation token expiry is outside the one-hour envelope")
+        verify_repository(config, token)
+        return token, expires_at, normalized
+    except Exception:
+        try:
+            revoke_value(token)
+        except Exception as cleanup_error:
+            raise CredentialRetentionError(token) from cleanup_error
+        raise
 
 
 def verify_repository(config: dict[str, object], token: str) -> None:
@@ -198,67 +213,97 @@ def read_root_secret(path: Path, label: str) -> str:
     return value
 
 
-def refresh(config: dict[str, object]) -> None:
-    minted: list[tuple[str, Path]] = []
+def receipt_base(config: dict[str, object]) -> dict[str, object]:
+    return {
+        "schemaVersion": "gloops.github-app-credential-receipt.v1",
+        "appId": config["appId"],
+        "installationId": config["installationId"],
+        "repositoryId": config["repositoryId"],
+        "repository": config["repository"],
+    }
+
+
+def record_mint(
+    config: dict[str, object],
+    role: str,
+    token: str,
+    expires_at: str,
+    permissions: dict[str, str],
+) -> None:
+    expected = receipt_base(config)
+    receipt = expected.copy()
+    if RECEIPT.exists():
+        existing = json.loads(RECEIPT.read_text())
+        if not isinstance(existing, dict) or any(existing.get(key) != value for key, value in expected.items()):
+            raise CredentialError("GitHub credential receipt boundary has drifted")
+        receipt = existing
+    receipt[role] = {
+        "expiresAt": expires_at,
+        "permissions": permissions,
+        "revokedAt": None,
+        "tokenFingerprint": hashlib.sha256(token.encode()).hexdigest(),
+    }
+    atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+
+
+def refresh_role(config: dict[str, object], role: str) -> None:
+    if role not in {"hermes", "projector"}:
+        raise CredentialError("unknown GitHub token role")
+    token_path = HERMES_TOKEN if role == "hermes" else PROJECTOR_TOKEN
+    permissions = WRITE_PERMISSIONS if role == "hermes" else READ_PERMISSIONS
+    revoke(token_path)
+    if role == "hermes":
+        HERMES_HOSTS.unlink(missing_ok=True)
+    else:
+        PROJECTOR_ROTATED.unlink(missing_ok=True)
+
+    token: str | None = None
     try:
-        write_token, write_expiry, write_permissions = mint(config, WRITE_PERMISSIONS)
-        minted.append((write_token, HERMES_TOKEN))
-        read_token, read_expiry, read_permissions = mint(config, READ_PERMISSIONS)
-        minted.append((read_token, PROJECTOR_TOKEN))
         RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(RUNTIME, 0o700)
-        atomic_write(HERMES_TOKEN, write_token + "\n", 0o600)
-        atomic_write(PROJECTOR_TOKEN, read_token + "\n", 0o600)
-        atomic_write(
-            HERMES_HOSTS,
-            "github.com:\n  git_protocol: https\n  user: x-access-token\n  oauth_token: " + write_token + "\n",
-            0o400,
-            10000,
-            10000,
-        )
-        receipt = {
-            "schemaVersion": "gloops.github-app-credential-receipt.v1",
-            "appId": config["appId"],
-            "installationId": config["installationId"],
-            "repositoryId": config["repositoryId"],
-            "repository": config["repository"],
-        "hermes": {
-            "expiresAt": write_expiry,
-            "permissions": write_permissions,
-            "revokedAt": None,
-            "tokenFingerprint": hashlib.sha256(write_token.encode()).hexdigest(),
-        },
-        "projector": {
-            "expiresAt": read_expiry,
-            "permissions": read_permissions,
-            "revokedAt": None,
-            "tokenFingerprint": hashlib.sha256(read_token.encode()).hexdigest(),
-        },
-        }
-        atomic_write(RUNTIME / "credential-receipt.json", json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+        token, expires_at, actual_permissions = mint(config, permissions)
+        # Persist the cleanup handle immediately. Any later exception either
+        # revokes it successfully or leaves this root-only handle for retry.
+        atomic_write(token_path, token + "\n", 0o600)
+        if role == "hermes":
+            atomic_write(
+                HERMES_HOSTS,
+                "github.com:\n  git_protocol: https\n  user: x-access-token\n  oauth_token: " + token + "\n",
+                0o400,
+                10000,
+                10000,
+            )
+        record_mint(config, role, token, expires_at, actual_permissions)
+    except CredentialRetentionError as error:
+        atomic_write(token_path, error.token + "\n", 0o600)
+        raise
     except Exception:
-        retained: set[Path] = set()
-        for token, token_path in reversed(minted):
+        if token is not None:
             try:
                 revoke_value(token)
-            except CredentialError:
-                atomic_write(token_path, token + "\n", 0o600)
-                retained.add(token_path)
-        for path in (HERMES_TOKEN, PROJECTOR_TOKEN):
-            if path not in retained:
-                path.unlink(missing_ok=True)
-        for path in (HERMES_HOSTS, RUNTIME / "credential-receipt.json"):
-            path.unlink(missing_ok=True)
+            except Exception:
+                # token_path was written before any projection or receipt work
+                # and remains the durable root-only cleanup handle.
+                raise
+            token_path.unlink(missing_ok=True)
+        if role == "hermes":
+            HERMES_HOSTS.unlink(missing_ok=True)
+        else:
+            PROJECTOR_ROTATED.unlink(missing_ok=True)
         raise
 
 
-def paperclip_request(path: str, board_token: str, body: object) -> object:
-    data = json.dumps(body, separators=(",", ":")).encode()
+def paperclip_request(method: str, path: str, board_token: str, body: object | None = None) -> object:
+    data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
     request = Request(
         f"http://127.0.0.1:3100/api{path}",
         data=data,
-        method="POST",
-        headers={"Authorization": f"Bearer {board_token}", "Content-Type": "application/json"},
+        method=method,
+        headers={
+            "Authorization": f"Bearer {board_token}",
+            "Accept": "application/json",
+            **({"Content-Type": "application/json"} if data is not None else {}),
+        },
     )
     try:
         with urlopen(request, timeout=15) as response:
@@ -267,16 +312,53 @@ def paperclip_request(path: str, board_token: str, body: object) -> object:
         raise CredentialError("Paperclip projector-token rotation failed") from error
 
 
-def rotate_projector(config: dict[str, object], value: str) -> None:
-    board_token = read_root_secret(Path(str(config["boardTokenPath"])), "Paperclip board token")
-    secret_id = read_root_secret(Path(str(config["projectorSecretIdPath"])), "projector secret id")
+def resolve_bound_projector_secret(config: dict[str, object], board_token: str) -> str:
+    plugin_config = paperclip_request(
+        "GET",
+        "/plugins/gloops.trusted-execution-projector/config",
+        board_token,
+    )
+    config_json = plugin_config.get("configJson") if isinstance(plugin_config, dict) else None
+    if not isinstance(config_json, dict):
+        raise CredentialError("trusted projector configuration is unavailable")
+    company_id = config_json.get("companyId")
+    secret_id = config_json.get("githubTokenSecretRef")
+    if not isinstance(company_id, str) or not isinstance(secret_id, str):
+        raise CredentialError("trusted projector secret binding is incomplete")
     try:
+        canonical_company_id = str(UUID(company_id))
         canonical_secret_id = str(UUID(secret_id))
     except ValueError as error:
-        raise CredentialError("projector secret id is malformed") from error
-    if not board_token.startswith("pcp_board_") or len(board_token) != 58 or canonical_secret_id != secret_id:
-        raise CredentialError("Paperclip operator credential or projector secret id is malformed")
-    response = paperclip_request(f"/secrets/{secret_id}/rotate", board_token, {"value": value})
+        raise CredentialError("trusted projector secret binding is malformed") from error
+    if canonical_company_id != company_id or canonical_secret_id != secret_id:
+        raise CredentialError("trusted projector secret binding is not canonical")
+
+    secret_inventory = paperclip_request(
+        "GET",
+        f"/companies/{company_id}/secrets",
+        board_token,
+    )
+    if not isinstance(secret_inventory, list):
+        raise CredentialError("Paperclip company secret inventory is malformed")
+    matches = [entry for entry in secret_inventory if isinstance(entry, dict) and entry.get("id") == secret_id]
+    if len(matches) != 1:
+        raise CredentialError("trusted projector secret is absent from its configured company")
+    secret = matches[0]
+    if (
+        secret.get("companyId") != company_id
+        or secret.get("status") != "active"
+        or secret.get("scope", "company") != "company"
+    ):
+        raise CredentialError("trusted projector secret is not an active company secret")
+    return secret_id
+
+
+def rotate_projector(config: dict[str, object], value: str) -> None:
+    board_token = read_root_secret(Path(str(config["boardTokenPath"])), "Paperclip board token")
+    if not board_token.startswith("pcp_board_") or len(board_token) != 58:
+        raise CredentialError("Paperclip operator credential is malformed")
+    secret_id = resolve_bound_projector_secret(config, board_token)
+    response = paperclip_request("POST", f"/secrets/{secret_id}/rotate", board_token, {"value": value})
     if not isinstance(response, dict) or response.get("id") != secret_id:
         raise CredentialError("Paperclip projector-token rotation returned the wrong secret")
 
@@ -287,19 +369,18 @@ def revoke_value(token: str) -> None:
 
 
 def record_revocation(token_path: Path, token: str) -> None:
-    receipt_path = RUNTIME / "credential-receipt.json"
-    if not receipt_path.exists():
+    if not RECEIPT.exists():
         return
     role = "hermes" if token_path == HERMES_TOKEN else "projector" if token_path == PROJECTOR_TOKEN else None
     if role is None:
         raise CredentialError("unknown GitHub token role")
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(RECEIPT.read_text())
     entry = receipt.get(role) if isinstance(receipt, dict) else None
     fingerprint = hashlib.sha256(token.encode()).hexdigest()
     if not isinstance(entry, dict) or entry.get("tokenFingerprint") != fingerprint:
         raise CredentialError("GitHub token does not match its credential receipt")
     entry["revokedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    atomic_write(receipt_path, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
+    atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
 
 
 def revoke(token_path: Path) -> None:
@@ -313,19 +394,12 @@ def revoke(token_path: Path) -> None:
         token_path.unlink(missing_ok=True)
 
 
-def command_refresh(config: dict[str, object]) -> None:
-    revoke_errors: list[CredentialError] = []
-    for token_path in (PROJECTOR_TOKEN, HERMES_TOKEN):
-        try:
-            revoke(token_path)
-        except CredentialError as error:
-            revoke_errors.append(error)
-    PROJECTOR_ROTATED.unlink(missing_ok=True)
-    HERMES_HOSTS.unlink(missing_ok=True)
-    (RUNTIME / "credential-receipt.json").unlink(missing_ok=True)
-    if revoke_errors:
-        raise CredentialError("one or more prior GitHub App tokens could not be revoked")
-    refresh(config)
+def command_refresh_projector(config: dict[str, object]) -> None:
+    refresh_role(config, "projector")
+
+
+def command_refresh_hermes(config: dict[str, object]) -> None:
+    refresh_role(config, "hermes")
 
 
 def command_rotate_projector(config: dict[str, object]) -> None:
@@ -368,16 +442,18 @@ def main() -> int:
     if os.geteuid() != 0:
         raise CredentialError("run as root")
     if len(sys.argv) != 2 or sys.argv[1] not in {
-        "refresh",
+        "refresh-projector",
+        "refresh-hermes",
         "rotate-projector",
         "clear-projector",
         "revoke-projector",
         "revoke-hermes",
     }:
-        raise CredentialError("usage: github-app-credentials.py refresh|rotate-projector|clear-projector|revoke-projector|revoke-hermes")
+        raise CredentialError("usage: github-app-credentials.py refresh-projector|refresh-hermes|rotate-projector|clear-projector|revoke-projector|revoke-hermes")
     config = load_config()
     commands = {
-        "refresh": command_refresh,
+        "refresh-projector": command_refresh_projector,
+        "refresh-hermes": command_refresh_hermes,
         "rotate-projector": command_rotate_projector,
         "clear-projector": command_clear_projector,
         "revoke-projector": command_revoke_projector,
