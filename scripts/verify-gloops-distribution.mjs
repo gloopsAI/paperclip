@@ -36,6 +36,10 @@ const verifyDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-dark.sh",
   import.meta.url,
 );
+const rehearseZeroWorkPath = new URL(
+  "../gloops-distribution/deploy/hermes/rehearse-zero-work.sh",
+  import.meta.url,
+);
 const rollbackPath = new URL(
   "../gloops-distribution/deploy/hermes/rollback.sh",
   import.meta.url,
@@ -77,6 +81,7 @@ const installDark = readFileSync(installDarkPath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
+const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
 const rollback = readFileSync(rollbackPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
@@ -203,6 +208,56 @@ if (!service.includes("--network paperclip-execution")) {
 }
 if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh")) {
   fail("Paperclip systemd readiness must wait for container health");
+}
+for (const required of [
+  "HEARTBEAT_SCHEDULER_ENABLED=false",
+  "PAPERCLIP_MTE_ENABLED=false",
+  "issue_recovery_actions",
+  "agent_wakeup_requests",
+  "timeout --signal=TERM --kill-after=5s 180s docker exec",
+  "IN ACCESS EXCLUSIVE MODE",
+  "evidence_pid=$!",
+  "kill -0 \"${evidence_pid}\"",
+  "verify-dark.sh",
+]) {
+  if (!rehearseZeroWork.includes(required)) {
+    fail(`zero-work rehearsal is missing ${required}`);
+  }
+}
+const cleanupMatch = rehearseZeroWork.match(/cleanup\(\) \{([\s\S]*?)\n\}/);
+for (const required of [
+  'kill "${evidence_pid}"',
+  'systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"',
+  'rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
+  'systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
+  '"${LIB_DIR}/verify-dark.sh"',
+]) {
+  if (!cleanupMatch?.[1].includes(required)) {
+    fail(`zero-work cleanup is missing ${required}`);
+  }
+}
+const trapIndex = rehearseZeroWork.indexOf("trap cleanup EXIT");
+const unmaskIndex = rehearseZeroWork.indexOf('systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"');
+const lockIndex = rehearseZeroWork.indexOf("IN ACCESS EXCLUSIVE MODE");
+const holderIndex = rehearseZeroWork.indexOf("evidence_pid=$!");
+const stopIndex = rehearseZeroWork.indexOf(
+  'systemctl stop "${HERMES_UNIT}" "${PAPERCLIP_UNIT}"',
+  holderIndex,
+);
+const inspectIndex = rehearseZeroWork.indexOf('node - "${evidence_output}"');
+if (
+  trapIndex < 0 ||
+  unmaskIndex < 0 ||
+  lockIndex < 0 ||
+  holderIndex < 0 ||
+  stopIndex < 0 ||
+  inspectIndex < 0 ||
+  !(trapIndex < unmaskIndex && lockIndex < holderIndex && holderIndex < stopIndex && stopIndex < inspectIndex)
+) {
+  fail("zero-work rehearsal must arm cleanup before activation and stop services under evidence locks before inspection");
+}
+if (!installDark.includes('rehearse-zero-work.sh')) {
+  fail("dark installer must install the zero-work rehearsal harness");
 }
 for (const required of [
   "did not become healthy within",
