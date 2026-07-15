@@ -61,7 +61,7 @@ else
   fail 'credential pool is missing, malformed, or over-broad'
 fi
 
-if docker run --rm --network none --read-only -i \
+if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
   'hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78' \
@@ -183,14 +183,21 @@ else
   fail 'GitHub App configuration or private-key protection is invalid'
 fi
 if [[ -f "${HERMES_TOKEN}" && -f "${PROFILE_DIR}/gh/hosts.yml" ]]; then
-  if GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api installation/repositories --jq \
-    'select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == "gloopsAI/gloops-paperclip-plugin")' >/dev/null \
-    && GH_CONFIG_DIR="${PROFILE_DIR}/gh" gh api repos/gloopsAI/gloops-paperclip-plugin --jq \
-      'select(.private == true and .id == 1297008772)' >/dev/null \
-    && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' "${CREDENTIAL_RECEIPT}" >/dev/null; then
-    pass 'short-lived GitHub App credential has one-repository private write scope'
+  if jq -e '
+    .schemaVersion == "gloops.github-app-credential-receipt.v1" and
+    .appId == 4307157 and
+    .installationId == 146796843 and
+    .repositoryId == 1297008772 and
+    .repository == "gloopsAI/gloops-paperclip-plugin" and
+    .hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"} and
+    (.hermes.tokenFingerprint | test("^[0-9a-f]{64}$")) and
+    (.hermes.mintedAt | type == "string") and
+    (.hermes.expiresAt | type == "string") and
+    .hermes.revokedAt == null
+  ' "${CREDENTIAL_RECEIPT}" >/dev/null; then
+    pass 'short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope'
   else
-    fail 'short-lived GitHub App credential is invalid or over/under-scoped'
+    fail 'short-lived GitHub App credential receipt is invalid or over/under-scoped'
   fi
 elif [[ "${MODE}" == '--source' && ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh/hosts.yml" ]]; then
   pass 'dark source profile retains no GitHub installation token'
@@ -276,9 +283,9 @@ token = hosts['github.com']['oauth_token']
 raise SystemExit(0 if hashlib.sha256(token.encode()).hexdigest() == sys.argv[1] else 1)
 PY
     then
-      pass 'live GitHub App token projection matches the host-verified exact credential'
+      pass 'live GitHub App token projection matches the broker-verified exact credential receipt'
     else
-      fail 'live GitHub App token projection does not match its host-verified receipt'
+      fail 'live GitHub App token projection does not match its broker-verified receipt'
     fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'

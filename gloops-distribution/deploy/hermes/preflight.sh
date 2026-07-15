@@ -84,12 +84,6 @@ systemctl is-active --quiet paperclip-hermes-execution.service || {
   echo "the Hermes execution-only sidecar must be active before Paperclip" >&2
   exit 1
 }
-docker exec --user 10000:10000 --env HOME=/opt/data paperclip-hermes-execution \
-  sh -lc 'gh api installation/repositories --jq "select(.total_count == 1 and .repositories[0].id == 1297008772 and .repositories[0].full_name == \"gloopsAI/gloops-paperclip-plugin\")" >/dev/null && gh api repos/gloopsAI/gloops-paperclip-plugin --jq "select(.private == true and .id == 1297008772)" >/dev/null' \
-  && jq -e '.hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"}' /run/paperclip-gloops/credential-receipt.json >/dev/null || {
-  echo "the live Hermes GitHub App token lacks bounded write access to the private pilot repository" >&2
-  exit 1
-}
 
 [[ -d "${STATE_DIR}" ]] || {
   echo "Paperclip state directory is missing" >&2

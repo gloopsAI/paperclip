@@ -575,8 +575,8 @@ if (prepareHermesExecution.includes("github-app-credentials.py\" refresh")) {
 }
 for (const required of [
   "credential pool is limited to Ollama Cloud with no fallback credential",
-  "short-lived GitHub App credential has one-repository private write scope",
-  "live GitHub App token projection matches the host-verified exact credential",
+  "short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope",
+  "live GitHub App token projection matches the broker-verified exact credential receipt",
   "docker exec -i --user 10000:10000",
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
@@ -586,6 +586,14 @@ for (const required of [
 ]) {
   if (!verifyHermesExecution.includes(required)) {
     fail(`Hermes execution verification is missing ${required}`);
+  }
+}
+if (/\bgh api\b/.test(verifyHermesExecution) || /\bgh api\b/.test(preflight)) {
+  fail("closed-interval verification must not make external GitHub API requests");
+}
+for (const line of verifyHermesExecution.split("\n").filter((value) => value.includes("docker run"))) {
+  if (!line.includes("--pull never")) {
+    fail("Hermes verification must not contact a registry for an absent image");
   }
 }
 if (JSON.stringify(githubAppConfig) !== JSON.stringify({
