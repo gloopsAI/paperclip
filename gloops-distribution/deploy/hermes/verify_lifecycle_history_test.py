@@ -205,6 +205,24 @@ class LifecycleHistoryTests(unittest.TestCase):
             with self.assertRaisesRegex(verify.HistoryError, "before its observed expiry envelope"):
                 verify.verify_bundle(credential_path, stop_path, expiry_path, current_path)
 
+    def test_token_free_clearance_rejects_undeclared_secret_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path, stop_path, expiry_path, current_path = self.paths(Path(directory))
+            clearance = {
+                "schemaVersion": "gloops.github-app-uncertainty-clearance.v1",
+                "attemptId": "88888888-8888-4888-8888-888888888888",
+                "role": "hermes",
+                "startedAt": "2026-07-15T00:00:00Z",
+                "observedAt": "2026-07-15T01:00:00Z",
+                "safeAfter": "2026-07-15T02:05:00Z",
+                "clearedAt": "2026-07-15T02:05:01Z",
+                "disposition": "token-free-uncertainty-cleared",
+                "token": "ghs_should_never_persist",
+            }
+            self.write(expiry_path, chain([clearance]))
+            with self.assertRaisesRegex(verify.HistoryError, "fields are malformed"):
+                verify.verify_bundle(credential_path, stop_path, expiry_path, current_path)
+
 
 if __name__ == "__main__":
     unittest.main()

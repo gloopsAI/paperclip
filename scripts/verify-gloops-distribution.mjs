@@ -744,6 +744,7 @@ for (const required of [
   'gloops.github-app-uncertainty-clearance.v1',
   'credential expiry binding has no exact expiry receipt',
   'token-free uncertainty cleared before its observed expiry envelope',
+  'token-free clearance fields are malformed',
   "PASS lifecycle histories are",
 ]) {
   if (!verifyLifecycleHistory.includes(required)) {

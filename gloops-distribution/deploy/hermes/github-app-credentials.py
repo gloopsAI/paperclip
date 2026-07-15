@@ -440,6 +440,20 @@ def validate_expiry_history(records: list[dict[str, object]]) -> None:
             raise CredentialError("GitHub credential expiry history sequence or hash chain is malformed")
         if record.get("receiptDigest") != history_digest(record):
             raise CredentialError("GitHub credential expiry history digest is malformed")
+        if record.get("schemaVersion") == "gloops.github-app-expiry-receipt.v1":
+            expected_keys = {
+                "schemaVersion", "attemptId", "role", "safeAfter", "disposedAt",
+                "tokenFingerprint", "disposition", "sequence", "previousReceiptDigest", "receiptDigest",
+            }
+        elif record.get("schemaVersion") == "gloops.github-app-uncertainty-clearance.v1":
+            expected_keys = {
+                "schemaVersion", "attemptId", "role", "startedAt", "observedAt", "safeAfter",
+                "clearedAt", "disposition", "sequence", "previousReceiptDigest", "receiptDigest",
+            }
+        else:
+            raise CredentialError("GitHub credential expiry history schema is malformed")
+        if set(record) != expected_keys:
+            raise CredentialError("GitHub credential expiry history fields are malformed")
         attempt = record.get("attemptId")
         if not isinstance(attempt, str) or attempt in attempts:
             raise CredentialError("GitHub credential expiry attempt identity is malformed")
@@ -468,11 +482,15 @@ def append_expiry_history_record(
             if existing.get("attemptId") == attempt_id:
                 if not isinstance(existing.get(idempotent_timestamp), str):
                     raise CredentialError("GitHub credential expiry record has no terminal timestamp")
-                for key, value in record.items():
-                    if key == idempotent_timestamp:
-                        continue
-                    if existing.get(key) != value:
-                        raise CredentialError("GitHub credential expiry record changed after archival")
+                expected = {
+                    **record,
+                    idempotent_timestamp: existing[idempotent_timestamp],
+                    "sequence": existing["sequence"],
+                    "previousReceiptDigest": existing["previousReceiptDigest"],
+                }
+                expected["receiptDigest"] = history_digest(expected)
+                if expected != existing:
+                    raise CredentialError("GitHub credential expiry record changed after archival")
                 return existing
         archived = {
             **record,

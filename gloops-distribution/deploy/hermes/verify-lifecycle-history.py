@@ -100,6 +100,12 @@ def verify_expirations(records: list[dict[str, object]]) -> None:
         if record.get("role") not in {"hermes", "projector"}:
             raise HistoryError("expiry role is malformed")
         if record.get("schemaVersion") == "gloops.github-app-expiry-receipt.v1":
+            expected_keys = {
+                "schemaVersion", "attemptId", "role", "safeAfter", "disposedAt",
+                "tokenFingerprint", "disposition", "sequence", "previousReceiptDigest", "receiptDigest",
+            }
+            if set(record) != expected_keys:
+                raise HistoryError("expiry fields are malformed")
             if record.get("disposition") != "expired-by-envelope":
                 raise HistoryError("expiry disposition is malformed")
             fingerprint = record.get("tokenFingerprint")
@@ -113,6 +119,12 @@ def verify_expirations(records: list[dict[str, object]]) -> None:
             if safe_after.tzinfo is None or disposed_at.tzinfo is None or disposed_at < safe_after:
                 raise HistoryError("credential handle was disposed before its expiry envelope")
         elif record.get("schemaVersion") == "gloops.github-app-uncertainty-clearance.v1":
+            expected_keys = {
+                "schemaVersion", "attemptId", "role", "startedAt", "observedAt", "safeAfter",
+                "clearedAt", "disposition", "sequence", "previousReceiptDigest", "receiptDigest",
+            }
+            if set(record) != expected_keys:
+                raise HistoryError("token-free clearance fields are malformed")
             if record.get("disposition") != "token-free-uncertainty-cleared" or "tokenFingerprint" in record:
                 raise HistoryError("token-free clearance disposition is malformed")
             try:

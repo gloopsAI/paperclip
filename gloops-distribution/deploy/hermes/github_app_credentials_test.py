@@ -134,6 +134,30 @@ class BrokerLifecycleTests(unittest.TestCase):
                 datetime.now(timezone.utc) + timedelta(seconds=3800),
             )
 
+    def test_token_free_clearance_identity_rejects_undeclared_persisted_fields(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            intent = {
+                "attemptId": "77777777-7777-4777-8777-777777777777",
+                "startedAt": "2026-07-15T00:00:00Z",
+                "observedAt": "2026-07-15T01:00:00Z",
+                "safeAfter": "2026-07-15T02:05:00Z",
+            }
+            record = broker.append_uncertainty_clearance(
+                "projector",
+                intent,
+                datetime.fromisoformat("2026-07-15T02:05:01+00:00"),
+            )
+            mutated = {**record, "unexpected": "ghs_must_not_persist"}
+            mutated["receiptDigest"] = broker.history_digest(mutated)
+            broker.EXPIRY_HISTORY.write_text(broker.json.dumps(mutated) + "\n")
+            with self.assertRaisesRegex(broker.CredentialError, "fields are malformed"):
+                broker.append_uncertainty_clearance(
+                    "projector",
+                    intent,
+                    datetime.fromisoformat("2026-07-15T02:06:00+00:00"),
+                )
+
     def test_expired_token_handle_is_disposed_offline_with_chained_evidence(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker.os, "chown"):
