@@ -28,6 +28,10 @@ const preflightPath = new URL(
   "../gloops-distribution/deploy/hermes/preflight.sh",
   import.meta.url,
 );
+const waitPaperclipControlPlanePath = new URL(
+  "../gloops-distribution/deploy/hermes/wait-paperclip-control-plane.sh",
+  import.meta.url,
+);
 const verifyDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-dark.sh",
   import.meta.url,
@@ -71,6 +75,7 @@ const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
+const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
 const rollback = readFileSync(rollbackPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
@@ -196,6 +201,18 @@ if (!service.includes("--user 995:985")) {
 if (!service.includes("--network paperclip-execution")) {
   fail("Paperclip and Hermes must share the named execution network");
 }
+if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh")) {
+  fail("Paperclip systemd readiness must wait for container health");
+}
+for (const required of [
+  "did not become healthy within",
+  "http://127.0.0.1:3100/api/health",
+  "curl --fail --silent --show-error --max-time 5",
+]) {
+  if (!waitPaperclipControlPlane.includes(required)) {
+    fail(`Paperclip control-plane readiness barrier is missing ${required}`);
+  }
+}
 
 const hermesExecutionImage =
   "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78";
@@ -294,6 +311,7 @@ for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
   "restore-hermes-workspace-observer.sh",
+  "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
