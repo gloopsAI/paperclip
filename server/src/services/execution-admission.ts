@@ -228,7 +228,7 @@ export function evaluateExecutionAdmission(
   const remainingOutputTokens = Math.max(0, policy.maxOutputTokensPerTask - observed.outputTokens);
   const reason = observed.runCount >= policy.maxRunsPerTask
     ? "run_limit_exhausted"
-    : observed.retryCount >= policy.maxRetriesPerTask
+    : observed.runCount > 0 && observed.retryCount >= policy.maxRetriesPerTask
       ? "retry_limit_exhausted"
       : observed.inputTokens >= policy.maxInputTokensPerTask
         ? "input_token_limit_exhausted"
