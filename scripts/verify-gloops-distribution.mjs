@@ -25,6 +25,10 @@ const installDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/install-dark.sh",
   import.meta.url,
 );
+const provisionTirithPath = new URL(
+  "../gloops-distribution/deploy/hermes/provision-tirith.sh",
+  import.meta.url,
+);
 const preflightPath = new URL(
   "../gloops-distribution/deploy/hermes/preflight.sh",
   import.meta.url,
@@ -111,6 +115,7 @@ const workflow = readFileSync(workflowPath, "utf8");
 const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
+const provisionTirith = readFileSync(provisionTirithPath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
@@ -404,6 +409,19 @@ if (!installDark.includes('rehearse-zero-work.sh')) {
   fail("dark installer must install the zero-work rehearsal harness");
 }
 for (const required of [
+  "VERSION='0.3.3'",
+  "ARCHIVE_SHA256='6cdbe35e8f9ccf42e70ad95b501c93cd218ac18201c3df958d54f6ba0d995ce2'",
+  "BINARY_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'",
+  'https://github.com/sheeki03/tirith/releases/download/v${VERSION}/${ARCHIVE}',
+  "curl --fail --location --proto '=https' --tlsv1.2",
+  'tar -xOf "${stage}/${ARCHIVE}" tirith',
+  'install -m 0555 -o root -g root',
+]) {
+  if (!provisionTirith.includes(required)) {
+    fail(`Tirith provisioner is missing ${required}`);
+  }
+}
+for (const required of [
   "did not become healthy within",
   "http://127.0.0.1:3100/api/health",
   "curl --fail --silent --show-error --max-time 5",
@@ -479,6 +497,20 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "preprovisioned-local-di
   fail("Hermes execution image acquisition must be explicit");
 }
 if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.commandSecurity) !==
+  JSON.stringify({
+    scanner: "tirith",
+    version: "0.3.3",
+    path: "/opt/data/bin/tirith",
+    sha256: "55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe",
+    mount: "read-only",
+    autoInstall: false,
+    failureMode: "closed",
+  })
+) {
+  fail("Hermes command scanner must be exact, immutable, offline, and fail-closed");
+}
+if (
   JSON.stringify(hermesExecutionPolicy.runtime?.backgroundExecution) !==
   JSON.stringify({
     cronProvider: "disabled",
@@ -498,9 +530,10 @@ if (
 }
 if (
   !/^cron:\n  provider: disabled$/m.test(hermesExecutionConfig) ||
-  !/^kanban:\n  dispatch_in_gateway: false$/m.test(hermesExecutionConfig)
+  !/^kanban:\n  dispatch_in_gateway: false$/m.test(hermesExecutionConfig) ||
+  !/^security:\n  redact_secrets: true\n  tirith_enabled: true\n  tirith_path: \/opt\/data\/bin\/tirith\n  tirith_fail_open: false$/m.test(hermesExecutionConfig)
 ) {
-  fail("Hermes cron and kanban background execution must be disabled");
+  fail("Hermes background execution and command-security policy must be exact");
 }
 for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
   if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
@@ -520,6 +553,7 @@ for (const required of [
   "src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly",
   "src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly",
   "src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly",
+  "src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly",
   "--health-cmd",
   "http://127.0.0.1:8642/v1/models",
   "--memory 2048m",
@@ -575,6 +609,7 @@ for (const error of validateHermesRuntimePrivileges(hermesExecutionService)) {
 for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
+  "provision-tirith.sh",
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
@@ -628,6 +663,7 @@ for (const required of [
   "paperclip-hermes-execution.service",
   "hermes-execution-profile",
   "hermes-execution-state",
+  "/usr/local/lib/paperclip-gloops/tools",
   "docker network rm paperclip-execution",
   "github-app-credentials.py revoke-projector",
   "github-app-credentials.py revoke-hermes",
@@ -665,6 +701,9 @@ for (const required of [
   "live authenticated API boundary is healthy",
   "live Hermes identity exclusively owns the ephemeral lifecycle root",
   "live persistent Hermes state mounts are exact and writable only by the fixed Hermes identity",
+  "pinned Tirith command scanner is immutable and verified before activation",
+  "live Tirith scanner is the exact read-only pre-provisioned binary",
+  "--arg destination '/opt/data/bin'",
   "docker inspect --format '{{json .Mounts}}'",
   'type == "array"',
   'and all(.[];',

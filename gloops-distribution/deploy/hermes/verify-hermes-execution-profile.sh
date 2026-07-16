@@ -17,6 +17,9 @@ readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
 readonly CREDENTIAL_RECEIPT='/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
+readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
+readonly TIRITH_VERSION='0.3.3'
+readonly TIRITH_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -73,7 +76,12 @@ assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
 assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
-assert d["security"]["redact_secrets"] is True and d["security"]["tirith_fail_open"] is False
+assert d["security"] == {
+    "redact_secrets": True,
+    "tirith_enabled": True,
+    "tirith_path": "/opt/data/bin/tirith",
+    "tirith_fail_open": False,
+}
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
 PY
 then
@@ -111,6 +119,15 @@ if jq -e '
   .runtime.imageAcquisition == "preprovisioned-local-digest" and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
+  .runtime.commandSecurity == {
+    "scanner": "tirith",
+    "version": "0.3.3",
+    "path": "/opt/data/bin/tirith",
+    "sha256": "55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe",
+    "mount": "read-only",
+    "autoInstall": false,
+    "failureMode": "closed"
+  } and
   .runtime.backgroundExecution == {
     "cronProvider": "disabled",
     "kanbanDispatcher": false,
@@ -148,6 +165,14 @@ for path in cache logs memories sessions; do
 done
 if [[ "${state_identity_failed}" -eq 0 ]]; then
   pass 'persistent Hermes state is writable only by the fixed Hermes identity'
+fi
+
+if [[ "$(stat -c '%a:%U:%G' "${TIRITH}" 2>/dev/null || true)" == '555:root:root' ]] \
+  && [[ "$(sha256sum "${TIRITH}" 2>/dev/null | cut -d' ' -f1)" == "${TIRITH_SHA256}" ]] \
+  && "${TIRITH}" --version | grep -Fq "${TIRITH_VERSION}"; then
+  pass 'pinned Tirith command scanner is immutable and verified before activation'
+else
+  fail 'pinned Tirith command scanner is absent, mutable, or inexact'
 fi
 
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
@@ -245,6 +270,8 @@ for required_credential_mount in \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
+grep -Fq -- '--mount type=bind,src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly' "${UNIT}" \
+  || fail 'unit is missing the read-only pinned Tirith mount'
 for path in cache logs memories sessions; do
   # The trailing space makes this an exact writable mount token and rejects
   # both destination suffix drift and an appended `,readonly` option.
@@ -327,6 +354,24 @@ PY
       pass 'live container mounts only the dedicated profile and state'
     else
       fail 'live mount metadata is invalid or includes the broad Hermes home'
+    fi
+    if jq -e \
+      --arg source '/usr/local/lib/paperclip-gloops/tools' \
+      --arg destination '/opt/data/bin' '
+        type == "array"
+        and ([.[] | select(.Destination == $destination)] | length) == 1
+        and any(.[];
+          .Type == "bind"
+          and .Source == $source
+          and .Destination == $destination
+          and .RW == false
+        )
+      ' "${live_mounts}" >/dev/null \
+      && docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/tirith --version \
+        | grep -Fq "${TIRITH_VERSION}"; then
+      pass 'live Tirith scanner is the exact read-only pre-provisioned binary'
+    else
+      fail 'live Tirith scanner is missing, writable, inexact, or unusable'
     fi
     live_state_mounts_valid=1
     for path in cache logs memories sessions; do

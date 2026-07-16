@@ -39,6 +39,15 @@
     "broadEnvironmentSourcedAtRuntime": false,
     "rootHomeEphemeral": true,
     "persistentPaths": ["cache", "logs", "memories", "sessions", "workspace"],
+    "commandSecurity": {
+      "scanner": "tirith",
+      "version": "0.3.3",
+      "path": "/opt/data/bin/tirith",
+      "sha256": "55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe",
+      "mount": "read-only",
+      "autoInstall": false,
+      "failureMode": "closed"
+    },
     "backgroundExecution": {
       "cronProvider": "disabled",
       "kanbanDispatcher": false,
