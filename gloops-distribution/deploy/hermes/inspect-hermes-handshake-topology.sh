@@ -12,11 +12,15 @@ docker info >/dev/null 2>&1 || {
   exit 1
 }
 
-mapfile -t network_ids < <(docker network ls --filter "name=^${NETWORK}$" --format '{{.ID}}')
-if ((${#network_ids[@]} == 0)); then
+network_list="$(docker network ls --filter "name=^${NETWORK}$" --format '{{.ID}}')" || {
+  echo 'Docker network inventory is unavailable' >&2
+  exit 1
+}
+if [[ -z "${network_list}" ]]; then
   echo 'absent'
   exit 0
 fi
+mapfile -t network_ids <<<"${network_list}"
 if ((${#network_ids[@]} != 1)); then
   echo 'handshake network identity is ambiguous' >&2
   exit 1

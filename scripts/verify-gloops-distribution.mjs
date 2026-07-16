@@ -849,6 +849,7 @@ for (const required of [
 for (const required of [
   "docker info",
   "Docker daemon/topology is unavailable",
+  "Docker network inventory is unavailable",
   "docker network ls",
   "docker network inspect",
   "echo 'attached'",
