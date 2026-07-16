@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +29,29 @@ def result(code: int = 0, stdout: str = "", stderr: str = ""):
 
 
 class StopHermesExecutionTests(unittest.TestCase):
+    def test_end_to_end_budget_fits_systemd_with_dark_and_receipt_reserves(self):
+        self.assertLess(stopper.HELPER_BUDGET_SECONDS, stopper.SYSTEMD_STOP_TIMEOUT_SECONDS)
+        self.assertEqual(
+            stopper.FORCED_DARK_RESERVE_SECONDS,
+            stopper.CONTAINER_STOP_TIMEOUT_SECONDS + stopper.RECEIPT_RESERVE_SECONDS,
+        )
+        self.assertEqual(
+            stopper.PLANNED_STOP_TIMEOUT_SECONDS + stopper.FORCED_DARK_RESERVE_SECONDS,
+            stopper.HELPER_BUDGET_SECONDS,
+        )
+        self.assertGreaterEqual(stopper.PLANNED_STOP_TIMEOUT_SECONDS, 45)
+        self.assertGreaterEqual(
+            stopper.SYSTEMD_STOP_TIMEOUT_SECONDS - stopper.HELPER_BUDGET_SECONDS,
+            20,
+        )
+
+    def test_each_subprocess_timeout_is_clipped_to_the_absolute_deadline(self):
+        with patch.object(stopper.time, "monotonic", return_value=98.5):
+            self.assertEqual(stopper.timeout_before(100, 5), 1.5)
+        with patch.object(stopper.time, "monotonic", return_value=100):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                stopper.timeout_before(100, 5)
+
     def test_state_probe_uses_the_immutable_runtime_schema(self):
         self.assertIn("'gateway_state':r.get('gateway_state')", stopper.STATE_COMMAND)
 
@@ -55,7 +80,7 @@ class StopHermesExecutionTests(unittest.TestCase):
         with patch.object(stopper, "read_gateway_record", side_effect=[before, after]), \
                 patch.object(stopper, "container_exists", return_value=True), \
                 patch.object(stopper, "run", return_value=result()):
-            accepted, detail = stopper.planned_stop()
+            accepted, detail = stopper.planned_stop(float("inf"))
         self.assertTrue(accepted)
         self.assertEqual(detail, "")
 
@@ -63,7 +88,7 @@ class StopHermesExecutionTests(unittest.TestCase):
         stale = {"gateway_state": "stopped", "pid": 42, "updated_at": "2026-07-15T00:00:00Z", "alive": False}
         with patch.object(stopper, "read_gateway_record", return_value=stale), \
                 patch.object(stopper, "run") as command:
-            accepted, detail = stopper.planned_stop()
+            accepted, detail = stopper.planned_stop(float("inf"))
         self.assertFalse(accepted)
         self.assertIn("not observably running", detail)
         command.assert_not_called()
@@ -73,7 +98,7 @@ class StopHermesExecutionTests(unittest.TestCase):
         with patch.object(stopper, "read_gateway_record", return_value=before), \
                 patch.object(stopper, "run", return_value=result()), \
                 patch.object(stopper, "container_exists", return_value=False):
-            accepted, detail = stopper.planned_stop()
+            accepted, detail = stopper.planned_stop(float("inf"))
         self.assertFalse(accepted)
         self.assertIn("before gateway_state=stopped", detail)
 
@@ -113,6 +138,26 @@ class StopHermesExecutionTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(records), 2)
         stopper.validate_history(records)
+
+    def test_receipt_lock_contention_fails_within_its_deadline(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(stopper, "HISTORY", Path(directory) / "history.jsonl"), \
+                patch.object(stopper, "HISTORY_LOCK", Path(directory) / "history.lock"), \
+                patch.object(stopper.os, "chown"):
+            stopper.HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
+            holder = os.open(stopper.HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            started = time.monotonic()
+            try:
+                with self.assertRaises(stopper.ReceiptDeadlineExceeded):
+                    stopper.append_receipt(
+                        {"schemaVersion": "gloops.hermes-stop-receipt.v1", "attemptId": "contended"},
+                        started + 0.05,
+                    )
+            finally:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+                os.close(holder)
+        self.assertLess(time.monotonic() - started, 0.5)
 
     def test_main_forces_dark_but_fails_when_application_stop_fails(self):
         with tempfile.TemporaryDirectory() as directory, \

@@ -274,6 +274,19 @@ if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperc
 if (!service.includes("TimeoutStopSec=100")) {
   fail("Paperclip stop budget must cover secret clearing, token revocation, and graceful container shutdown");
 }
+const refreshProjectorIndex = service.indexOf(
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-projector",
+);
+const paperclipPreflightIndex = service.indexOf(
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh",
+);
+if (
+  refreshProjectorIndex < 0 ||
+  paperclipPreflightIndex < 0 ||
+  refreshProjectorIndex > paperclipPreflightIndex
+) {
+  fail("Paperclip must mint the projector role before live preflight so failed activation can archive a complete credential lifecycle");
+}
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
   "PAPERCLIP_MTE_ENABLED=false",
@@ -483,10 +496,27 @@ for (const required of [
   "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-hermes",
   "ExecStop=/usr/local/lib/paperclip-gloops/stop-hermes-execution.py",
   "ExecStopPost=/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes",
-  "TimeoutStopSec=90",
+  "TimeoutStopSec=120",
 ]) {
   if (!hermesExecutionService.includes(required)) {
     fail(`Hermes execution service is missing ${required}`);
+  }
+}
+for (const required of [
+  "SYSTEMD_STOP_TIMEOUT_SECONDS = 120",
+  "HELPER_BUDGET_SECONDS = 100",
+  "CONTAINER_STOP_TIMEOUT_SECONDS = 20",
+  "RECEIPT_RESERVE_SECONDS = 12",
+  "FORCED_DARK_RESERVE_SECONDS = CONTAINER_STOP_TIMEOUT_SECONDS + RECEIPT_RESERVE_SECONDS",
+  "PLANNED_STOP_TIMEOUT_SECONDS = HELPER_BUDGET_SECONDS - FORCED_DARK_RESERVE_SECONDS",
+  "timeout=timeout_before(deadline, 30)",
+  "timeout=timeout_before(deadline, CONTAINER_STOP_TIMEOUT_SECONDS)",
+  "acquire_history_lock(lock_fd, deadline)",
+  "signal.setitimer(signal.ITIMER_REAL, remaining)",
+  "append_receipt(receipt, helper_deadline)",
+]) {
+  if (!stopHermesExecution.includes(required)) {
+    fail(`Hermes planned-stop helper is missing bounded deadline invariant ${required}`);
   }
 }
 for (const forbidden of ["/opt/paperclip/hermes-home", "--publish", "XAI_API_KEY", "GROK_API_KEY", "SLACK_"]) {
@@ -684,7 +714,7 @@ for (const required of [
   'hermes-stop-history.jsonl',
   'receipt["plannedStopAccepted"] = graceful',
   'receipt["containerStopped"] = stopped',
-  "fsync_directory(HISTORY.parent)",
+  "atomic_write(HISTORY, payload)",
 ]) {
   if (!stopHermesExecution.includes(required)) {
     fail(`Hermes stop helper is missing ${required}`);

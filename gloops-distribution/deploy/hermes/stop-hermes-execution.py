@@ -13,9 +13,11 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -27,6 +29,12 @@ HERMES = "/opt/hermes/.venv/bin/hermes"
 CREDENTIAL_RECEIPT = Path("/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
+SYSTEMD_STOP_TIMEOUT_SECONDS = 120
+HELPER_BUDGET_SECONDS = 100
+CONTAINER_STOP_TIMEOUT_SECONDS = 20
+RECEIPT_RESERVE_SECONDS = 12
+FORCED_DARK_RESERVE_SECONDS = CONTAINER_STOP_TIMEOUT_SECONDS + RECEIPT_RESERVE_SECONDS
+PLANNED_STOP_TIMEOUT_SECONDS = HELPER_BUDGET_SECONDS - FORCED_DARK_RESERVE_SECONDS
 STATE_COMMAND = (
     "import json,os,pathlib; "
     "p=pathlib.Path(os.environ.get('HERMES_HOME','/opt/data'))/'gateway_state.json'; "
@@ -42,6 +50,10 @@ class StopError(RuntimeError):
     pass
 
 
+class ReceiptDeadlineExceeded(StopError):
+    pass
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -50,8 +62,16 @@ def run(args: list[str], timeout: float = 15) -> subprocess.CompletedProcess[str
     return subprocess.run(args, text=True, capture_output=True, timeout=timeout)
 
 
-def container_exists() -> bool:
-    return run([DOCKER, "inspect", CONTAINER], timeout=5).returncode == 0
+def timeout_before(deadline: float, maximum: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("stop-hermes-execution deadline", 0)
+    return min(maximum, remaining)
+
+
+def container_exists(deadline: float | None = None) -> bool:
+    timeout = 5 if deadline is None else timeout_before(deadline, 5)
+    return run([DOCKER, "inspect", CONTAINER], timeout=timeout).returncode == 0
 
 
 def read_lifecycle_id() -> str | None:
@@ -112,16 +132,44 @@ def validate_history(records: list[dict[str, object]]) -> None:
         prior = str(record["receiptDigest"])
 
 
-def append_receipt(receipt: dict[str, object]) -> None:
+def acquire_history_lock(lock_fd: int, deadline: float) -> None:
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReceiptDeadlineExceeded("Hermes stop receipt lock deadline exceeded")
+            time.sleep(min(0.05, remaining))
+
+
+def append_receipt(receipt: dict[str, object], deadline: float | None = None) -> None:
     attempt_id = receipt.get("attemptId")
     if not isinstance(attempt_id, str) or not attempt_id:
         raise StopError("Hermes stop receipt has no attempt identity")
+    if deadline is None:
+        deadline = time.monotonic() + RECEIPT_RESERVE_SECONDS
     HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    alarm_armed = False
+    previous_handler = None
     try:
         os.chmod(HISTORY_LOCK, 0o600)
         os.chown(HISTORY_LOCK, 0, 0)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        acquire_history_lock(lock_fd, deadline)
+        if threading.current_thread() is threading.main_thread() and hasattr(signal, "SIGALRM"):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReceiptDeadlineExceeded("Hermes stop receipt persistence deadline exceeded")
+
+            def receipt_alarm(_signum, _frame):
+                raise ReceiptDeadlineExceeded("Hermes stop receipt persistence deadline exceeded")
+
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, receipt_alarm)
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            alarm_armed = True
         records = [json.loads(line) for line in HISTORY.read_text().splitlines()] if HISTORY.exists() else []
         if not all(isinstance(record, dict) for record in records):
             raise StopError("Hermes stop history is malformed")
@@ -134,29 +182,24 @@ def append_receipt(receipt: dict[str, object]) -> None:
             "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
         }
         record["receiptDigest"] = record_digest(record)
-        history_parent_created = not HISTORY.parent.exists()
-        HISTORY.parent.mkdir(parents=True, exist_ok=True)
-        if history_parent_created:
-            fsync_directory(HISTORY.parent.parent)
-        history_created = not HISTORY.exists()
-        history_fd = os.open(HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        try:
-            os.chmod(HISTORY, 0o600)
-            os.chown(HISTORY, 0, 0)
-            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
-            if os.write(history_fd, payload) != len(payload):
-                raise StopError("Hermes stop history append was incomplete")
-            os.fsync(history_fd)
-        finally:
-            os.close(history_fd)
-        if history_created:
-            fsync_directory(HISTORY.parent)
+        payload = "".join(json.dumps(value, sort_keys=True) + "\n" for value in [*records, record])
+        atomic_write(HISTORY, payload)
+        persisted = [json.loads(line) for line in HISTORY.read_text().splitlines()]
+        validate_history(persisted)
+        if persisted[-1].get("attemptId") != attempt_id:
+            raise StopError("Hermes stop receipt was not durably projected")
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if alarm_armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
         os.close(lock_fd)
 
 
-def read_gateway_record() -> dict[str, object] | None:
+def read_gateway_record(deadline: float) -> dict[str, object] | None:
     state = run(
         [
             DOCKER,
@@ -168,7 +211,7 @@ def read_gateway_record() -> dict[str, object] | None:
             "-c",
             STATE_COMMAND,
         ],
-        timeout=5,
+        timeout=timeout_before(deadline, 5),
     )
     if state.returncode != 0:
         return None
@@ -176,8 +219,8 @@ def read_gateway_record() -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def planned_stop() -> tuple[bool, str]:
-    before = read_gateway_record()
+def planned_stop(deadline: float) -> tuple[bool, str]:
+    before = read_gateway_record(deadline)
     if (
         not isinstance(before, dict)
         or before.get("gateway_state") != "running"
@@ -201,16 +244,15 @@ def planned_stop() -> tuple[bool, str]:
             "gateway",
             "stop",
         ],
-        timeout=30,
+        timeout=timeout_before(deadline, 30),
     )
     if command.returncode != 0:
         return False, (command.stderr or command.stdout).strip()[-500:]
 
-    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if not container_exists():
+        if not container_exists(deadline):
             return False, "container exited before gateway_state=stopped was observed"
-        state = read_gateway_record()
+        state = read_gateway_record(deadline)
         if (
             isinstance(state, dict)
             and state.get("gateway_state") == "stopped"
@@ -220,15 +262,21 @@ def planned_stop() -> tuple[bool, str]:
             and state["updated_at"] > before["updated_at"]
         ):
             return True, ""
-        time.sleep(0.25)
-    return False, "gateway_state did not become stopped within 30 seconds"
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+    return False, (
+        "gateway_state did not become stopped within "
+        f"{PLANNED_STOP_TIMEOUT_SECONDS} seconds"
+    )
 
 
-def stop_container() -> tuple[bool, str]:
-    if not container_exists():
+def stop_container(deadline: float) -> tuple[bool, str]:
+    if not container_exists(deadline):
         return True, ""
-    stopped = run([DOCKER, "stop", "--time", "10", CONTAINER], timeout=20)
-    if stopped.returncode == 0 or not container_exists():
+    stopped = run(
+        [DOCKER, "stop", "--time", "10", CONTAINER],
+        timeout=timeout_before(deadline, CONTAINER_STOP_TIMEOUT_SECONDS),
+    )
+    if stopped.returncode == 0 or not container_exists(deadline):
         return True, ""
     return False, (stopped.stderr or stopped.stdout).strip()[-500:]
 
@@ -237,6 +285,8 @@ def main() -> int:
     if os.geteuid() != 0:
         raise StopError("run as root")
 
+    helper_deadline = time.monotonic() + HELPER_BUDGET_SECONDS
+    planned_stop_deadline = helper_deadline - FORCED_DARK_RESERVE_SECONDS
     receipt: dict[str, object] = {
         "schemaVersion": "gloops.hermes-stop-receipt.v1",
         "attemptId": str(uuid4()),
@@ -252,7 +302,7 @@ def main() -> int:
     errors: list[str] = []
     if receipt["containerPresent"]:
         try:
-            graceful, detail = planned_stop()
+            graceful, detail = planned_stop(planned_stop_deadline)
             receipt["plannedStopAccepted"] = graceful
             receipt["gatewayState"] = "stopped" if graceful else None
             if not graceful:
@@ -261,7 +311,8 @@ def main() -> int:
             errors.append(f"planned stop failed: {error}")
 
     try:
-        stopped, detail = stop_container()
+        stop_deadline = helper_deadline - RECEIPT_RESERVE_SECONDS
+        stopped, detail = stop_container(stop_deadline)
         receipt["containerStopped"] = stopped
         if not stopped:
             errors.append(detail or "container stop failed")
@@ -274,7 +325,7 @@ def main() -> int:
         receipt["status"] = "not-present"
     receipt["error"] = "; ".join(errors) or None
     receipt["completedAt"] = now()
-    append_receipt(receipt)
+    append_receipt(receipt, helper_deadline)
 
     if receipt["status"] not in {"succeeded", "not-present"}:
         print(f"stop-hermes-execution: {receipt['error']}", file=sys.stderr)

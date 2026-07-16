@@ -316,7 +316,9 @@ PY
     if docker exec --user 10000:10000 --env HOME=/opt/data --env HERMES_HOME=/opt/data \
       "${CONTAINER}" /opt/hermes/.venv/bin/python -c \
       'from cron.scheduler_provider import resolve_cron_scheduler; raise SystemExit(0 if resolve_cron_scheduler().name == "disabled" else 1)' \
-      && docker logs "${CONTAINER}" 2>&1 | grep -Fq 'kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false'; then
+      && docker exec --user 10000:10000 "${CONTAINER}" \
+        /opt/hermes/.venv/bin/python -c \
+        'import pathlib,yaml; d=yaml.safe_load(pathlib.Path("/opt/data/config.yaml").read_text()); raise SystemExit(0 if d.get("kanban") == {"dispatch_in_gateway": False} else 1)'; then
       pass 'live cron and kanban background execution are disabled'
     else
       fail 'live cron or kanban background execution remains enabled'
