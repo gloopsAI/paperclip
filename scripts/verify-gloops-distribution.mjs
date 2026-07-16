@@ -650,7 +650,7 @@ if (
   hermesHandshakePolicy.runtime?.githubCredentials !== false ||
   hermesHandshakePolicy.runtime?.sessionKeyStrategy !== "none" ||
   JSON.stringify(hermesHandshakePolicy.runtime?.providerInvocationBudget) !==
-    JSON.stringify({ maxTurns: 1, maxToolCalls: 0, maxWallMs: 900000 })
+    JSON.stringify({ maxTurns: 1, maxApiAttempts: 1, maxSdkRetries: 0, maxToolCalls: 0, maxWallMs: 900000 })
 ) {
   fail("Hermes provider-handshake policy must be one-turn, zero-tool, sessionless, and repository-free");
 }

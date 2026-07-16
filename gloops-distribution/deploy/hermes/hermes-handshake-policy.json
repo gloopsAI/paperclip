@@ -24,6 +24,8 @@
     "sessionKeyStrategy": "none",
     "providerInvocationBudget": {
       "maxTurns": 1,
+      "maxApiAttempts": 1,
+      "maxSdkRetries": 0,
       "maxToolCalls": 0,
       "maxWallMs": 900000
     }

@@ -66,7 +66,7 @@ assert config == {
     "mcp_servers": {},
     "cron": {"provider": "disabled"},
     "kanban": {"dispatch_in_gateway": False},
-    "agent": {"max_turns": 1, "verify_on_stop": False},
+    "agent": {"max_turns": 1, "api_max_retries": 1, "verify_on_stop": False},
     "security": {"redact_secrets": True},
     "_config_version": 35,
 }
@@ -92,7 +92,7 @@ if jq -e '
   .runtime.repositoryMounts == [] and
   .runtime.githubCredentials == false and
   .runtime.sessionKeyStrategy == "none" and
-  .runtime.providerInvocationBudget == {"maxTurns": 1, "maxToolCalls": 0, "maxWallMs": 900000}
+  .runtime.providerInvocationBudget == {"maxTurns": 1, "maxApiAttempts": 1, "maxSdkRetries": 0, "maxToolCalls": 0, "maxWallMs": 900000}
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal provider-handshake policy is exact'
 else
