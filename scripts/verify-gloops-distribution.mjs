@@ -115,6 +115,11 @@ const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
 const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
+const rehearseZeroWorkExecutable = rehearseZeroWork
+  .split("\n")
+  .map((line) => line.trim())
+  .filter((line) => line.length > 0 && !line.startsWith("#"))
+  .join("\n");
 const rollback = readFileSync(rollbackPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
@@ -308,7 +313,7 @@ for (const required of [
   "systemctl daemon-reload",
   "verify-dark.sh",
 ]) {
-  if (!rehearseZeroWork.includes(required)) {
+  if (!rehearseZeroWorkExecutable.includes(required)) {
     fail(`zero-work rehearsal is missing ${required}`);
   }
 }
@@ -327,33 +332,50 @@ for (const required of [
     fail(`zero-work cleanup is missing ${required}`);
   }
 }
-const trapIndex = rehearseZeroWork.indexOf("trap cleanup EXIT");
-const egressDenyIndex = rehearseZeroWork.indexOf("iptables -I DOCKER-USER 1");
-const unmaskIndex = rehearseZeroWork.indexOf('systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"');
-const daemonReloadIndex = rehearseZeroWork.indexOf("systemctl daemon-reload", unmaskIndex);
-const hermesMarkerIndex = rehearseZeroWork.indexOf(
+const trapIndex = rehearseZeroWorkExecutable.indexOf("trap cleanup EXIT");
+const egressDenyIndex = rehearseZeroWorkExecutable.indexOf("iptables -I DOCKER-USER 1");
+const unmaskIndex = rehearseZeroWorkExecutable.indexOf(
+  'systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
+);
+const daemonReloadIndex = rehearseZeroWorkExecutable.indexOf("systemctl daemon-reload", unmaskIndex);
+const hermesMarkerIndex = rehearseZeroWorkExecutable.indexOf(
   'install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
 );
-const lockIndex = rehearseZeroWork.indexOf("IN ACCESS EXCLUSIVE MODE");
-const clearProjectorIndex = rehearseZeroWork.indexOf(
+const hermesStartActivationIndex = rehearseZeroWorkExecutable.indexOf(
+  'systemctl start "${HERMES_UNIT}"',
+  hermesMarkerIndex,
+);
+const paperclipMarkerIndex = rehearseZeroWorkExecutable.indexOf(
+  'install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"',
+  hermesStartActivationIndex,
+);
+const paperclipStartActivationIndex = rehearseZeroWorkExecutable.indexOf(
+  'systemctl start "${PAPERCLIP_UNIT}"',
+  paperclipMarkerIndex,
+);
+const lockIndex = rehearseZeroWorkExecutable.indexOf("IN ACCESS EXCLUSIVE MODE");
+const clearProjectorIndex = rehearseZeroWorkExecutable.indexOf(
   '"${LIB_DIR}/github-app-credentials.py" clear-projector',
 );
-const holderIndex = rehearseZeroWork.indexOf("evidence_pid=$!");
-const stopIndex = rehearseZeroWork.indexOf(
+const holderIndex = rehearseZeroWorkExecutable.indexOf("evidence_pid=$!");
+const stopIndex = rehearseZeroWorkExecutable.indexOf(
   'systemctl stop "${PAPERCLIP_UNIT}"',
   holderIndex,
 );
-const hermesStopIndex = rehearseZeroWork.indexOf(
+const hermesStopIndex = rehearseZeroWorkExecutable.indexOf(
   'systemctl stop "${HERMES_UNIT}"',
   stopIndex + 1,
 );
-const inspectIndex = rehearseZeroWork.indexOf('node - "${evidence_output}"');
+const inspectIndex = rehearseZeroWorkExecutable.indexOf('node - "${evidence_output}"');
 if (
   trapIndex < 0 ||
   egressDenyIndex < 0 ||
   unmaskIndex < 0 ||
   daemonReloadIndex < 0 ||
   hermesMarkerIndex < 0 ||
+  hermesStartActivationIndex < 0 ||
+  paperclipMarkerIndex < 0 ||
+  paperclipStartActivationIndex < 0 ||
   clearProjectorIndex < 0 ||
   lockIndex < 0 ||
   holderIndex < 0 ||
@@ -365,7 +387,10 @@ if (
     egressDenyIndex < unmaskIndex &&
     unmaskIndex < daemonReloadIndex &&
     daemonReloadIndex < hermesMarkerIndex &&
-    unmaskIndex < clearProjectorIndex &&
+    hermesMarkerIndex < hermesStartActivationIndex &&
+    hermesStartActivationIndex < paperclipMarkerIndex &&
+    paperclipMarkerIndex < paperclipStartActivationIndex &&
+    paperclipStartActivationIndex < clearProjectorIndex &&
     clearProjectorIndex < lockIndex &&
     lockIndex < holderIndex &&
     holderIndex < stopIndex &&
@@ -373,7 +398,7 @@ if (
     hermesStopIndex < inspectIndex
   )
 ) {
-  fail("zero-work rehearsal must clear the projector before locking, then stop services under evidence locks before inspection");
+  fail("zero-work rehearsal activation, evidence-lock, and shutdown command order is invalid");
 }
 if (!installDark.includes('rehearse-zero-work.sh')) {
   fail("dark installer must install the zero-work rehearsal harness");
