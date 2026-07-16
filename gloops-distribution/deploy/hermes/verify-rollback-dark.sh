@@ -8,6 +8,17 @@ for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshak
     failed=1
   fi
 done
+paperclip_enablement="$(systemctl is-enabled paperclip.service 2>/dev/null || true)"
+if [[ "${paperclip_enablement}" != 'disabled' && "${paperclip_enablement}" != 'masked' ]]; then
+  echo "FAIL rollback left paperclip.service boot-eligible: ${paperclip_enablement:-unknown}" >&2
+  failed=1
+fi
+for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
+  if [[ "$(systemctl is-enabled "${unit}" 2>/dev/null || true)" != 'masked' ]]; then
+    echo "FAIL rollback left governed unit unmasked: ${unit}" >&2
+    failed=1
+  fi
+done
 for marker in \
   /etc/paperclip-gloops/ACTIVATION_APPROVED \
   /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED \

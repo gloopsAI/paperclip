@@ -1136,6 +1136,8 @@ for (const required of [
 }
 for (const required of [
   "paperclip-hermes-handshake-egress.service",
+  "paperclip.service boot-eligible",
+  "rollback left governed unit unmasked",
   "HANDSHAKE_EGRESS_ACTIVE",
   "paperclip-execution paperclip-handshake",
   "PCLIP-HS-IN",
