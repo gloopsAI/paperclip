@@ -9,12 +9,18 @@
   "forbiddenProviders": ["anthropic", "openai-codex", "openrouter", "xai", "xai-oauth", "grok"],
   "forbiddenCapabilities": ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"],
   "network": {
-    "name": "paperclip-execution",
+    "name": "paperclip-handshake",
+    "internal": true,
+    "ipv6": false,
+    "containerDns": "disabled",
     "apiAlias": "hermes-execution",
     "apiPort": 8642,
     "apiAuthentication": "bearer-key-required",
     "publishedPorts": [],
-    "internetEgress": "ollama-credential-capability-only"
+    "internetEgress": "single-connect-exact-authority-and-tls-sni-proxy",
+    "proxyAuthority": "ollama.com:443",
+    "proxyTlsSni": "ollama.com",
+    "proxyTunnelBudget": 1
   },
   "runtime": {
     "image": "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac",

@@ -129,6 +129,22 @@ const removeHermesHandshakeEgressPath = new URL(
   "../gloops-distribution/deploy/hermes/remove-hermes-handshake-egress.sh",
   import.meta.url,
 );
+const hermesHandshakeEgressProxyPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-handshake-egress-proxy.py",
+  import.meta.url,
+);
+const hermesHandshakeEgressServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-hermes-handshake-egress.service",
+  import.meta.url,
+);
+const verifyHermesHandshakeEgressBoundaryPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-handshake-egress-boundary.sh",
+  import.meta.url,
+);
+const hermesHandshakeEgressProxyTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes_handshake_egress_proxy_test.py",
+  import.meta.url,
+);
 const hermesHandshakeGuardPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-handshake-guard/sitecustomize.py",
   import.meta.url,
@@ -206,6 +222,17 @@ const prepareHermesHandshake = readFileSync(prepareHermesHandshakePath, "utf8");
 const verifyHermesHandshake = readFileSync(verifyHermesHandshakePath, "utf8");
 const installHermesHandshakeEgress = readFileSync(installHermesHandshakeEgressPath, "utf8");
 const removeHermesHandshakeEgress = readFileSync(removeHermesHandshakeEgressPath, "utf8");
+const hermesHandshakeEgressProxy = readFileSync(hermesHandshakeEgressProxyPath, "utf8");
+const hermesHandshakeEgressService = readFileSync(hermesHandshakeEgressServicePath, "utf8");
+const verifyHermesHandshakeEgressBoundary = readFileSync(verifyHermesHandshakeEgressBoundaryPath, "utf8");
+try {
+  execFileSync("python3", [hermesHandshakeEgressProxyTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Hermes handshake egress proxy tests failed: ${error instanceof Error ? error.message : error}`);
+}
 const hermesHandshakeGuard = readFileSync(hermesHandshakeGuardPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
@@ -395,6 +422,17 @@ for (const required of [
 ]) {
   if (!rehearseZeroWorkExecutable.includes(required)) {
     fail(`zero-work rehearsal is missing ${required}`);
+  }
+}
+for (const required of [
+  'socket.getaddrinfo("github.com", 443)',
+  '("1.1.1.1", 443, "direct Internet")',
+  '("172.30.241.1", 22, "non-proxy host access")',
+  'CONNECT github.com:443 HTTP/1.1',
+  'response.startswith(b"HTTP/1.1 403")',
+]) {
+  if (!verifyHermesHandshakeEgressBoundary.includes(required)) {
+    fail(`Hermes handshake executable negative egress proof is missing ${required}`);
   }
 }
 for (const [surface, content, required] of [
@@ -660,6 +698,20 @@ if (
   JSON.stringify(hermesHandshakePolicy.allowedProviders) !== JSON.stringify(["ollama-cloud"]) ||
   JSON.stringify(hermesHandshakePolicy.allowedCredentialFiles) !==
     JSON.stringify(["/opt/handshake-profile/auth.json", "/opt/data/auth.json"]) ||
+  JSON.stringify(hermesHandshakePolicy.network) !== JSON.stringify({
+    name: "paperclip-handshake",
+    internal: true,
+    ipv6: false,
+    containerDns: "disabled",
+    apiAlias: "hermes-execution",
+    apiPort: 8642,
+    apiAuthentication: "bearer-key-required",
+    publishedPorts: [],
+    internetEgress: "single-connect-exact-authority-and-tls-sni-proxy",
+    proxyAuthority: "ollama.com:443",
+    proxyTlsSni: "ollama.com",
+    proxyTunnelBudget: 1,
+  }) ||
   JSON.stringify(hermesHandshakePolicy.runtime?.persistentPaths) !== "[]" ||
   JSON.stringify(hermesHandshakePolicy.runtime?.repositoryMounts) !== "[]" ||
   hermesHandshakePolicy.runtime?.githubCredentials !== false ||
@@ -682,7 +734,10 @@ for (const required of [
 }
 for (const required of [
   `Environment=HERMES_HANDSHAKE_IMAGE=${hermesExecutionImage}`,
-  "--network paperclip-execution",
+  "--network paperclip-handshake",
+  "--ip 172.30.241.3",
+  "--dns 127.0.0.1",
+  "HTTPS_PROXY=http://172.30.241.1:18080",
   "--network-alias hermes-execution",
   "--read-only",
   "--tmpfs /opt/data:rw,noexec,nosuid,nodev,size=128m,uid=10000,gid=10000,mode=0700",
@@ -707,8 +762,7 @@ for (const required of [
   "Conflicts=paperclip-hermes-execution.service",
   "ExecStartPre=/usr/bin/test ! -e /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED",
   "ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
-  "ExecStartPre=/usr/local/lib/paperclip-gloops/install-hermes-handshake-egress.sh",
-  "ExecStopPost=/usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh",
+  "BindsTo=paperclip-hermes-handshake-egress.service",
   "ExecStopPost=-/usr/bin/rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED",
   "RuntimeMaxSec=900",
   "verify-hermes-handshake-profile.sh --live",
@@ -718,43 +772,75 @@ for (const required of [
   }
 }
 for (const required of [
-  "readonly CHAIN='PCLIP-HSHAKE-EGRESS'",
-  "docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}'",
-  "docker network inspect -f '{{.EnableIPv6}}'",
-  "getent ahostsv4 ollama.com",
-  "not address.is_global",
-  "address in network",
-  "iptables -N \"${CHAIN}\"",
-  "iptables -A \"${CHAIN}\" -d \"${subnet}\"",
-  "--dport 443",
-  "--comment \"${ALLOW_COMMENT}\" -j RETURN",
-  "--comment \"${DENY_COMMENT}\"",
+  "readonly NETWORK='paperclip-handshake'",
+  "readonly SUBNET='172.30.241.0/29'",
+  "readonly HERMES_IP='172.30.241.3'",
+  "--internal --attachable",
+  "--opt com.docker.network.bridge.name=pc-hshake0",
+  "iptables -N \"${INPUT_CHAIN}\"",
+  "iptables -I INPUT 1 -s \"${SUBNET}\"",
+  "iptables -N \"${FORWARD_CHAIN}\"",
+  "iptables -I DOCKER-USER 1 -s \"${SUBNET}\"",
+  "paperclip-handshake-host-deny",
+  "paperclip-handshake-forward-deny",
+  "paperclip-handshake-established",
   "-j REJECT --reject-with icmp-port-unreachable",
-  "iptables -I DOCKER-USER 1 -s \"${subnet}\"",
-  "schema=gloops.hermes-handshake-egress.v1",
+  "schema=gloops.hermes-handshake-egress.v2",
   "HANDSHAKE_EGRESS_ACTIVE",
 ]) {
   if (!installHermesHandshakeEgress.includes(required)) {
     fail(`Hermes handshake egress installer is missing ${required}`);
   }
 }
-for (const forbidden of ["ACCEPT", "api.x.ai", "grok", "xai"] ) {
+for (const forbidden of ["getent", "ollama.com", "api.x.ai", "grok", "xai"] ) {
   if (installHermesHandshakeEgress.includes(forbidden)) {
     fail(`Hermes handshake egress installer contains forbidden surface ${forbidden}`);
   }
 }
 for (const required of [
-  "iptables -S DOCKER-USER",
-  "refusing to discard active handshake egress state while Docker firewall cleanup is unavailable",
-  'args[-2:] == ["-j", chain]',
+  "iptables -nL INPUT",
+  "iptables -nL DOCKER-USER",
+  'args[-2:] == ["-j", target]',
   "shlex.split(rule)",
   "subprocess.run([\"iptables\", \"-D\"",
-  "iptables -F \"${CHAIN}\"",
-  "iptables -X \"${CHAIN}\"",
+  "iptables -F \"${chain}\"",
+  "iptables -X \"${chain}\"",
+  "refusing to weaken the handshake boundary while a container remains attached",
+  "docker network rm \"${NETWORK}\"",
   "rm -f \"${STATE_FILE}\"",
 ]) {
   if (!removeHermesHandshakeEgress.includes(required)) {
     fail(`Hermes handshake egress cleanup is missing ${required}`);
+  }
+}
+for (const required of [
+  'TARGET = "ollama.com"',
+  'line != f"CONNECT {TARGET}:{TARGET_PORT} HTTP/1.1"',
+  'if sni != TARGET:',
+  "address.is_global",
+  "socket.AF_INET",
+  "one-tunnel budget is exhausted",
+  "client source is not the fixed Hermes address",
+  "first tunneled payload is not a TLS handshake",
+]) {
+  if (!hermesHandshakeEgressProxy.includes(required)) {
+    fail(`Hermes handshake SNI proxy is missing ${required}`);
+  }
+}
+for (const required of [
+  "Before=paperclip-hermes-handshake.service",
+  "StopWhenUnneeded=yes",
+  "install-hermes-handshake-egress.sh",
+  "hermes-handshake-egress-proxy.py --listen 172.30.241.1 --port 18080 --allowed-client 172.30.241.3",
+  "remove-hermes-handshake-egress.sh",
+  "DynamicUser=yes",
+  "NoNewPrivileges=yes",
+  "ProtectSystem=strict",
+  "CapabilityBoundingSet=",
+  "RuntimeMaxSec=900",
+]) {
+  if (!hermesHandshakeEgressService.includes(required)) {
+    fail(`Hermes handshake egress service is missing ${required}`);
   }
 }
 for (const required of [
@@ -901,6 +987,10 @@ for (const required of [
   "ExecStartPre=/usr/bin/test -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
   "ExecStartPre=/usr/bin/systemctl is-active --quiet paperclip-hermes-handshake.service",
   "ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/ACTIVATION_APPROVED /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE",
+  "--network paperclip-handshake",
+  "--ip 172.30.241.4",
+  "--add-host hermes-execution:172.30.241.3",
+  "--dns 127.0.0.1",
   "PAPERCLIP_HANDSHAKE_ACTIVE /etc/paperclip-gloops/ACTIVATION_APPROVED",
   "RuntimeMaxSec=900",
 ]) {
@@ -927,6 +1017,7 @@ for (const required of [
   "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
   "paperclip-hermes-handshake.service",
+  "paperclip-hermes-handshake-egress.service",
   "paperclip-gloops-handshake.service",
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
@@ -936,6 +1027,8 @@ for (const required of [
   "verify-hermes-handshake-profile.sh",
   "install-hermes-handshake-egress.sh",
   "remove-hermes-handshake-egress.sh",
+  "hermes-handshake-egress-proxy.py",
+  "verify-hermes-handshake-egress-boundary.sh",
   "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
@@ -947,7 +1040,7 @@ for (const required of [
   "github-app-credentials.py\" revoke-projector",
   "hermes-cron-disabled",
   "github-app.json",
-  "systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service",
+  "systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service",
   "load-hermes-execution-image.sh",
   "refusing installation while a Paperclip or Hermes container exists",
 ]) {
@@ -1004,6 +1097,7 @@ for (const required of [
   "HERMES_HANDSHAKE_APPROVED",
   "paperclip-hermes-execution.service",
   "paperclip-hermes-handshake.service",
+  "paperclip-hermes-handshake-egress.service",
   "paperclip-gloops-handshake.service",
   "hermes-execution-profile",
   "hermes-handshake-profile",
