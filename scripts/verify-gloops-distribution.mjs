@@ -595,8 +595,12 @@ for (const required of [
 }
 for (const required of [
   "did not become healthy within",
-  "http://127.0.0.1:3100/api/health",
-  "curl --fail --silent --show-error --max-time 5",
+  "http://${EXPECTED_IP}:3100/api/health",
+  "docker network inspect --format '{{.Internal}}'",
+  'index .NetworkSettings.Networks "paperclip-handshake"',
+  "network_internal=${network_internal:-missing}",
+  "container_ip=${container_ip:-missing}",
+  "curl --fail --silent --show-error --max-time 5 --header 'Host: 127.0.0.1'",
 ]) {
   if (!waitPaperclipControlPlane.includes(required)) {
     fail(`Paperclip control-plane readiness barrier is missing ${required}`);
@@ -1093,6 +1097,7 @@ for (const forbidden of [
   "github-app-credentials.py",
   "/opt/data/workspace",
   "Restart=on-failure",
+  "--publish",
 ]) {
   if (handshakeService.includes(forbidden)) {
     fail(`Paperclip handshake service contains forbidden authority ${forbidden}`);
