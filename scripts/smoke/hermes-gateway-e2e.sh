@@ -842,13 +842,14 @@ join_hermes_agent() {
 
 install_claimed_key_in_container() {
   log "placing newly claimed Paperclip key in container workspace"
-  local key_file="${HERMES_SMOKE_STATE_DIR}/workspace/paperclip-claimed-api-key.json"
-  jq -nc --arg token "$AGENT_API_KEY" '{token:$token,apiKey:$token}' > "$key_file"
-  # The host-created bind-mounted file must be readable by the non-root hermes
-  # user inside the container. The state dir is still per-run and deleted on
-  # success unless HERMES_SMOKE_KEEP=1.
-  chmod 600 "$key_file"
-  docker exec "$HERMES_CONTAINER_NAME" sh -lc 'test -f /home/hermes/workspace/paperclip-claimed-api-key.json && test ! -e "$HERMES_HOME/host-sentinel.txt"'
+  jq -nc --arg token "$AGENT_API_KEY" '{token:$token,apiKey:$token}' \
+    | docker exec --interactive --user 10001:10001 "$HERMES_CONTAINER_NAME" \
+      sh -lc 'umask 077; cat > /home/hermes/workspace/paperclip-claimed-api-key.json'
+  docker exec --user 10001:10001 "$HERMES_CONTAINER_NAME" sh -lc '
+    test -r /home/hermes/workspace/paperclip-claimed-api-key.json
+    test "$(stat -c %a /home/hermes/workspace/paperclip-claimed-api-key.json)" = 600
+    test ! -e "$HERMES_HOME/host-sentinel.txt"
+  '
 }
 
 patch_agent_instructions_with_claimed_key() {

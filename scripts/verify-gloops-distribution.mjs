@@ -457,6 +457,32 @@ if (hermesReferenceCertification) {
   } else {
     for (const result of hermesReferenceCertification.results) verifyHermesReferenceReceipt(result);
   }
+  const ownershipProof = hermesReferenceCertification.claimedKeyOwnershipCorrection;
+  if (
+    ownershipProof?.status !== "passed" ||
+    typeof ownershipProof?.rawReceipt !== "string" ||
+    !ownershipProof.rawReceipt.startsWith("gloops-distribution/security/evidence/")
+  ) {
+    fail("Hermes claimed-key ownership correction must have committed passing evidence");
+  } else {
+    const ownershipReceiptPath = new URL(`../${ownershipProof.rawReceipt}`, import.meta.url);
+    let ownershipReceipt;
+    try {
+      ownershipReceipt = JSON.parse(readFileSync(ownershipReceiptPath, "utf8"));
+    } catch (error) {
+      fail(`Hermes claimed-key ownership correction cannot be read: ${error instanceof Error ? error.message : error}`);
+    }
+    if (
+      sha256File(ownershipReceiptPath) !== ownershipProof.rawReceiptSha256 ||
+      ownershipReceipt?.status !== "passed" ||
+      ownershipReceipt?.totalRuns !== 1 ||
+      ownershipReceipt?.passedRuns !== 1 ||
+      ownershipReceipt?.runs?.[0]?.e2ePassed !== true ||
+      ownershipReceipt?.runs?.[0]?.cleanup?.claimedKeyAbsent !== true
+    ) {
+      fail("Hermes claimed-key ownership correction receipt must reproduce its passing cleanup claim");
+    }
+  }
 }
 
 let hermesStartupEgressRootCause;

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "gloops.hermes-reference-matrix.v1",
+  "label": "fork-ownership-corrected-v2",
+  "status": "passed",
+  "startedAt": "2026-07-16T21:35:32Z",
+  "completedAt": "2026-07-16T21:35:44Z",
+  "boundary": {
+    "paperclipUrl": "http://127.0.0.1:3189",
+    "paperclipForHermes": "http://host.docker.internal:3189",
+    "mockProbeUrl": "http://127.0.0.1:8787/health",
+    "mockBaseUrl": "http://host.docker.internal:8787/v1",
+    "disposableCompanyPerRun": true,
+    "localTrustedRequired": true,
+    "productionPortRejected": true,
+    "realProviderCredentialsRejected": true,
+    "onboardingPacingSeconds": 0
+  },
+  "totalRuns": 1,
+  "passedRuns": 1,
+  "runs": [
+    {
+      "label": "fork-ownership-corrected-v2-01",
+      "result": "passed",
+      "companyId": "3a95fa21-7d4d-4406-81b5-21996d943cab",
+      "durationSeconds": 12,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    }
+  ]
+}
+

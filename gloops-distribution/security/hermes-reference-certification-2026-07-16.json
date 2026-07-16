@@ -10,7 +10,7 @@
     "hermesVersion": "0.17.0",
     "matrixScriptSha256": "55fd8ba9dbaa9d782841ab43fe9750cbb61e0c01e1101bd9fd280963c086afb2",
     "referenceMockSha256": "5e52dd1c7393ebe82779df7d8e982836dd26e96152f981b311424cfc37199dc8",
-    "e2eScriptSha256": "e82d057460ed2bf10248a7da4e444344d7562dcca0289391f18b459fde70aa0a",
+    "e2eScriptSha256": "81a625e1c9c0cb30a220a6675fc3262ab21be6fe0cdd61a68e5572f9629397be",
     "gatewayEntrypointSha256": "8906dc6eb1306a6ff910ded6c0013e23110fc896a02d5c80c7cee92b24f69dfe"
   },
   "controls": {
@@ -54,9 +54,16 @@
       "maximumDurationSeconds": 11,
       "averageDurationSeconds": 10.2,
       "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-upstream-master-strict.json",
-      "rawReceiptSha256": "b6515eb5c13babb33ff80fa89ded15c56559bedb3da8cd34067be1679ecdf34d"
+      "rawReceiptSha256": "b09e855e4e123f856854ea32883db946f272e90e92ab487d4b19e885e8a43ba5"
     }
   ],
+  "claimedKeyOwnershipCorrection": {
+    "completedAt": "2026-07-16T21:35:44Z",
+    "method": "The claimed key was written and read by the running Hermes container as UID:GID 10001:10001 with mode 0600; no host ownership assumption remained.",
+    "status": "passed",
+    "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-claimed-key-ownership-correction.json",
+    "rawReceiptSha256": "d856eace8bcbbd150fdb60f58f87001d9e04a993d9d09eb41f0900740dabda47"
+  },
   "nonProductFailure": {
     "observed": true,
     "classification": "harness pacing",
