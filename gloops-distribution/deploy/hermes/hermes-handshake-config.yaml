@@ -1,0 +1,18 @@
+model:
+  provider: ollama-cloud
+  default: kimi-k2.7-code
+platform_toolsets:
+  api_server: []
+known_plugin_toolsets:
+  api_server: [spotify]
+mcp_servers: {}
+cron:
+  provider: disabled
+kanban:
+  dispatch_in_gateway: false
+agent:
+  max_turns: 1
+  verify_on_stop: false
+security:
+  redact_secrets: true
+_config_version: 35

@@ -21,6 +21,10 @@ const servicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-gloops.service",
   import.meta.url,
 );
+const handshakeServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service",
+  import.meta.url,
+);
 const installDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/install-dark.sh",
   import.meta.url,
@@ -97,6 +101,26 @@ const verifyHermesExecutionPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-execution-profile.sh",
   import.meta.url,
 );
+const hermesHandshakeConfigPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-handshake-config.yaml",
+  import.meta.url,
+);
+const hermesHandshakePolicyPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-handshake-policy.json",
+  import.meta.url,
+);
+const hermesHandshakeServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-hermes-handshake.service",
+  import.meta.url,
+);
+const prepareHermesHandshakePath = new URL(
+  "../gloops-distribution/deploy/hermes/prepare-hermes-handshake-profile.sh",
+  import.meta.url,
+);
+const verifyHermesHandshakePath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-handshake-profile.sh",
+  import.meta.url,
+);
 const restoreHermesWorkspaceObserverPath = new URL(
   "../gloops-distribution/deploy/hermes/restore-hermes-workspace-observer.sh",
   import.meta.url,
@@ -138,6 +162,7 @@ const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
 const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
+const handshakeService = readFileSync(handshakeServicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
 const provisionTirith = readFileSync(provisionTirithPath, "utf8");
 const hermesExecutionDockerfile = readFileSync(hermesExecutionDockerfilePath, "utf8");
@@ -162,6 +187,11 @@ const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8"
 const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
+const hermesHandshakeConfig = readFileSync(hermesHandshakeConfigPath, "utf8");
+const hermesHandshakePolicy = JSON.parse(readFileSync(hermesHandshakePolicyPath, "utf8"));
+const hermesHandshakeService = readFileSync(hermesHandshakeServicePath, "utf8");
+const prepareHermesHandshake = readFileSync(prepareHermesHandshakePath, "utf8");
+const verifyHermesHandshake = readFileSync(verifyHermesHandshakePath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
 const stopHermesExecution = readFileSync(stopHermesExecutionPath, "utf8");
@@ -610,6 +640,95 @@ for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "age
     fail(`Hermes execution configuration must not include ${forbidden}`);
   }
 }
+if (
+  hermesHandshakePolicy.schemaVersion !== "gloops.hermes-provider-handshake.v1" ||
+  JSON.stringify(hermesHandshakePolicy.allowedProviders) !== JSON.stringify(["ollama-cloud"]) ||
+  JSON.stringify(hermesHandshakePolicy.allowedCredentialFiles) !==
+    JSON.stringify(["/opt/handshake-profile/auth.json", "/opt/data/auth.json"]) ||
+  JSON.stringify(hermesHandshakePolicy.runtime?.persistentPaths) !== "[]" ||
+  JSON.stringify(hermesHandshakePolicy.runtime?.repositoryMounts) !== "[]" ||
+  hermesHandshakePolicy.runtime?.githubCredentials !== false ||
+  hermesHandshakePolicy.runtime?.sessionKeyStrategy !== "none" ||
+  JSON.stringify(hermesHandshakePolicy.runtime?.providerInvocationBudget) !==
+    JSON.stringify({ maxTurns: 1, maxToolCalls: 0, maxWallMs: 900000 })
+) {
+  fail("Hermes provider-handshake policy must be one-turn, zero-tool, sessionless, and repository-free");
+}
+for (const required of [
+  "platform_toolsets:\n  api_server: []",
+  "mcp_servers: {}",
+  "max_turns: 1",
+  "dispatch_in_gateway: false",
+]) {
+  if (!hermesHandshakeConfig.includes(required)) {
+    fail(`Hermes provider-handshake configuration is missing ${required}`);
+  }
+}
+for (const required of [
+  `Environment=HERMES_HANDSHAKE_IMAGE=${hermesExecutionImage}`,
+  "--network paperclip-execution",
+  "--network-alias hermes-execution",
+  "--read-only",
+  "--tmpfs /opt/data:rw,noexec,nosuid,nodev,size=128m,uid=10000,gid=10000,mode=0700",
+  "--memory 1024m",
+  "--memory-swap 1024m",
+  "--cpus 1.0",
+  "--pids-limit 256",
+  "src=/opt/paperclip/hermes-handshake-profile/config.yaml,dst=/opt/handshake-profile/config.yaml,readonly",
+  "src=/opt/paperclip/hermes-handshake-profile/auth.json,dst=/opt/handshake-profile/auth.json,readonly",
+  "--entrypoint /bin/sh",
+  "cp /opt/handshake-profile/config.yaml /opt/data/config.yaml",
+  "chmod 0400 /opt/data/config.yaml",
+  "chown 10000:10000 /opt/data/config.yaml",
+  "cp /opt/handshake-profile/auth.json /opt/data/auth.json",
+  "chmod 0600 /opt/data/auth.json",
+  "chown 10000:10000 /opt/data/auth.json",
+  "Conflicts=paperclip-hermes-execution.service",
+  "ExecStartPre=/usr/bin/test ! -e /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED",
+  "ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
+  "ExecStopPost=-/usr/bin/rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED",
+  "RuntimeMaxSec=900",
+  "verify-hermes-handshake-profile.sh --live",
+]) {
+  if (!hermesHandshakeService.includes(required)) {
+    fail(`Hermes provider-handshake service is missing ${required}`);
+  }
+}
+for (const forbidden of [
+  "github-app-credentials.py",
+  "/opt/data/.config/gh",
+  "/opt/data/workspace",
+  "/opt/data/sessions",
+  "HERMES_KANBAN_TASK",
+  "--publish",
+]) {
+  if (hermesHandshakeService.includes(forbidden)) {
+    fail(`Hermes provider-handshake service contains forbidden authority ${forbidden}`);
+  }
+}
+for (const required of [
+  "_get_platform_tools(config, \"api_server\")",
+  "assert toolsets == []",
+  "assert tools == []",
+  "repository/session/GitHub mounts",
+  "all(.RW == false)",
+  "admission is mutually exclusive",
+  "^paperclip-gloops(-handshake)?$",
+  "every Paperclip control plane must be inactive before the handshake sidecar starts",
+]) {
+  if (!verifyHermesHandshake.includes(required)) {
+    fail(`Hermes provider-handshake verifier is missing ${required}`);
+  }
+}
+for (const required of [
+  '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
+  'install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-handshake-config.yaml"',
+  'rm -f "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"',
+]) {
+  if (!prepareHermesHandshake.includes(required)) {
+    fail(`Hermes provider-handshake profile preparation is missing ${required}`);
+  }
+}
 for (const required of [
   `Environment=HERMES_EXECUTION_IMAGE=${hermesExecutionImage}`,
   "--network paperclip-execution",
@@ -677,6 +796,45 @@ for (const error of validateHermesRuntimePrivileges(hermesExecutionService)) {
   fail(error);
 }
 for (const required of [
+  "Conflicts=paperclip-hermes-handshake.service",
+  "ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
+]) {
+  if (!hermesExecutionService.includes(required)) {
+    fail(`general Hermes execution service is missing handshake exclusion ${required}`);
+  }
+}
+for (const required of [
+  "Conflicts=paperclip-gloops-handshake.service",
+  "ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
+]) {
+  if (!service.includes(required)) {
+    fail(`general Paperclip service is missing handshake exclusion ${required}`);
+  }
+}
+for (const required of [
+  "Requires=docker.service paperclip-hermes-handshake.service",
+  "Conflicts=paperclip-gloops.service",
+  "Environment=PAPERCLIP_CONTAINER=paperclip-gloops-handshake",
+  "ExecStartPre=/usr/bin/test -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
+  "ExecStartPre=/usr/bin/systemctl is-active --quiet paperclip-hermes-handshake.service",
+  "ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/ACTIVATION_APPROVED /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE",
+  "PAPERCLIP_HANDSHAKE_ACTIVE /etc/paperclip-gloops/ACTIVATION_APPROVED",
+  "RuntimeMaxSec=900",
+]) {
+  if (!handshakeService.includes(required)) {
+    fail(`Paperclip handshake service is missing ${required}`);
+  }
+}
+for (const forbidden of [
+  "github-app-credentials.py",
+  "/opt/data/workspace",
+  "Restart=on-failure",
+]) {
+  if (handshakeService.includes(forbidden)) {
+    fail(`Paperclip handshake service contains forbidden authority ${forbidden}`);
+  }
+}
+for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
   "verify-hermes-command-security-image.sh",
@@ -685,8 +843,14 @@ for (const required of [
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
+  "paperclip-hermes-handshake.service",
+  "paperclip-gloops-handshake.service",
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
+  "hermes-handshake-config.yaml",
+  "hermes-handshake-policy.json",
+  "prepare-hermes-handshake-profile.sh",
+  "verify-hermes-handshake-profile.sh",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
   "github-app-credentials.py",
@@ -697,12 +861,16 @@ for (const required of [
   "github-app-credentials.py\" revoke-projector",
   "hermes-cron-disabled",
   "github-app.json",
-  "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
+  "systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service",
   "load-hermes-execution-image.sh",
+  "refusing installation while a Paperclip or Hermes container exists",
 ]) {
   if (!installDark.includes(required)) {
     fail(`dark installer does not govern ${required}`);
   }
+}
+if (!backupDark.includes("refusing cold backup while a Paperclip or Hermes container exists")) {
+  fail("cold backup must reject orphan Paperclip or Hermes containers");
 }
 for (const required of [
   "did not become healthy within",
@@ -719,6 +887,18 @@ for (const required of [
 if (!preflight.includes("verify-hermes-execution-profile.sh --live")) {
   fail("Paperclip activation preflight must require a live verified Hermes execution profile");
 }
+for (const required of [
+  "HERMES_HANDSHAKE_ACTIVE",
+  "PAPERCLIP_HANDSHAKE_ACTIVE",
+  "execution and handshake activation markers are mutually exclusive",
+  "verify-hermes-handshake-profile.sh --live",
+  "the general Hermes execution sidecar must be inactive during a handshake",
+  "the Hermes handshake sidecar must be inactive during general execution",
+]) {
+  if (!preflight.includes(required)) {
+    fail(`Paperclip preflight is missing handshake-profile selection invariant ${required}`);
+  }
+}
 if (!preflight.includes("Host-level Hermes profiles are outside this pilot") ||
     /hermes_route_config=/.test(preflight)) {
   fail("Paperclip preflight must not bind the isolated pilot to unrelated host-level model routing");
@@ -730,10 +910,17 @@ if (!preflight.includes("FORBIDDEN_PROVIDER_ENDPOINT_PATTERN=") ||
 if (!verifyDark.includes("verify-hermes-execution-profile.sh --source")) {
   fail("dark verification must validate the installed Hermes execution profile");
 }
+if (!verifyDark.includes("verify-hermes-handshake-profile.sh --source")) {
+  fail("dark verification must validate the installed Hermes provider-handshake profile");
+}
 for (const required of [
   "HERMES_EXECUTION_APPROVED",
+  "HERMES_HANDSHAKE_APPROVED",
   "paperclip-hermes-execution.service",
+  "paperclip-hermes-handshake.service",
+  "paperclip-gloops-handshake.service",
   "hermes-execution-profile",
+  "hermes-handshake-profile",
   "hermes-execution-state",
   "hermes-execution-*.tar.zst",
   "/usr/local/lib/paperclip-gloops/tools",
@@ -741,6 +928,7 @@ for (const required of [
   "github-app-credentials.py revoke-projector",
   "github-app-credentials.py revoke-hermes",
   "/run/paperclip-gloops",
+  "refusing rollback while a Paperclip or Hermes container exists",
 ]) {
   if (!rollback.includes(required)) {
     fail(`rollback does not remove ${required}`);

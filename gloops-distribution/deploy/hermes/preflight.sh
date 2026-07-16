@@ -3,13 +3,16 @@ set -euo pipefail
 
 readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:4ad5881969635daec4194f7bb78df22a1768df4f74f574cc935647d24750a23d'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
+readonly EXECUTION_MARKER='/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED'
+readonly HANDSHAKE_ACTIVE='/run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE'
+readonly PAPERCLIP_HANDSHAKE_ACTIVE='/run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
 readonly MTE_PLUGIN_DIR='/home/paperclip/mte-shadow-package'
 readonly MAX_STATE_BYTES=$((10 * 1024 * 1024 * 1024))
 readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
 
-[[ -f "${ACTIVATION_MARKER}" ]] || {
+[[ -f "${ACTIVATION_MARKER}" || -f "${PAPERCLIP_HANDSHAKE_ACTIVE}" ]] || {
   echo "operator activation marker is absent" >&2
   exit 1
 }
@@ -79,11 +82,44 @@ fi
   exit 1
 }
 
-/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --live
-systemctl is-active --quiet paperclip-hermes-execution.service || {
-  echo "the Hermes execution-only sidecar must be active before Paperclip" >&2
-  exit 1
-}
+if [[ -f "${HANDSHAKE_ACTIVE}" ]]; then
+  [[ ! -e "${EXECUTION_MARKER}" ]] || {
+    echo "execution and handshake activation markers are mutually exclusive" >&2
+    exit 1
+  }
+  systemctl is-active --quiet paperclip-hermes-handshake.service || {
+    echo "the zero-tool Hermes handshake sidecar must be active before Paperclip" >&2
+    exit 1
+  }
+  ! systemctl is-active --quiet paperclip-hermes-execution.service || {
+    echo "the general Hermes execution sidecar must be inactive during a handshake" >&2
+    exit 1
+  }
+  for forbidden_credential in \
+    /var/lib/paperclip-gloops/credential-runtime/hermes-github-token \
+    /var/lib/paperclip-gloops/credential-runtime/projector-github-token \
+    /opt/paperclip/hermes-execution-profile/gh/hosts.yml; do
+    [[ ! -e "${forbidden_credential}" ]] || {
+      echo "GitHub credential is forbidden during provider handshake: ${forbidden_credential}" >&2
+      exit 1
+    }
+  done
+  /usr/local/lib/paperclip-gloops/verify-hermes-handshake-profile.sh --live
+else
+  [[ -f "${EXECUTION_MARKER}" ]] || {
+    echo "the Hermes execution activation marker is absent" >&2
+    exit 1
+  }
+  ! systemctl is-active --quiet paperclip-hermes-handshake.service || {
+    echo "the Hermes handshake sidecar must be inactive during general execution" >&2
+    exit 1
+  }
+  /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --live
+  systemctl is-active --quiet paperclip-hermes-execution.service || {
+    echo "the Hermes execution-only sidecar must be active before Paperclip" >&2
+    exit 1
+  }
+fi
 
 [[ -d "${STATE_DIR}" ]] || {
   echo "Paperclip state directory is missing" >&2
@@ -106,7 +142,7 @@ free_bytes="$(df -PB1 "${STATE_DIR}" | awk 'NR == 2 {print $4}')"
 }
 
 /usr/bin/docker image inspect "${EXPECTED_IMAGE}" >/dev/null
-if /usr/bin/docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-gloops'; then
+if /usr/bin/docker ps -a --format '{{.Names}}' | grep -Eq '^paperclip-gloops(-handshake)?$'; then
   echo "a Paperclip container already exists; refusing concurrent execution" >&2
   exit 1
 fi

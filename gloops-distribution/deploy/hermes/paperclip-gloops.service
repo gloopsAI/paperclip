@@ -4,6 +4,7 @@ Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-di
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
+Conflicts=paperclip-gloops-handshake.service
 ConditionPathExists=/etc/paperclip-gloops/ACTIVATION_APPROVED
 OnFailure=paperclip-gloops-alert@%n.service
 StartLimitIntervalSec=900
@@ -13,6 +14,7 @@ StartLimitBurst=3
 Type=simple
 EnvironmentFile=/etc/paperclip-gloops/runtime.env
 Environment=PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:4ad5881969635daec4194f7bb78df22a1768df4f74f574cc935647d24750a23d
+ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-projector
 ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh
 ExecStartPre=-/usr/bin/docker rm -f paperclip-gloops

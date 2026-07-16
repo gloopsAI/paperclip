@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly CONTAINER='paperclip-gloops'
+readonly CONTAINER="${PAPERCLIP_CONTAINER:-paperclip-gloops}"
 readonly MAX_HEALTH_POLLS='105'
 readonly HEALTH_URL='http://127.0.0.1:3100/api/health'
 

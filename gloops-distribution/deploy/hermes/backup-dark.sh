@@ -12,12 +12,17 @@ readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution
   exit 1
 }
 
-for unit in paperclip.service paperclip-gloops.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing cold backup while ${unit} is active" >&2
     exit 1
   fi
 done
+if docker ps -a --format '{{.Names}}' \
+  | grep -Eq '^paperclip-(gloops|gloops-handshake|hermes-execution|hermes-handshake)$'; then
+  echo "refusing cold backup while a Paperclip or Hermes container exists" >&2
+  exit 1
+fi
 
 [[ -d "${STATE_DIR}" ]] || {
   echo "Paperclip state directory is missing: ${STATE_DIR}" >&2
