@@ -177,14 +177,14 @@ if [[ "${MODE}" == '--live' ]]; then
   if [[ "$(stat -c '%a:%U:%G' "${EGRESS_STATE}" 2>/dev/null || true)" != '600:root:root' ]]; then
     fail 'live handshake egress state is absent or not root-protected'
   else
-    if [[ "$(cat "${EGRESS_STATE}")" != $'schema=gloops.hermes-handshake-egress.v2\nnetwork=paperclip-handshake\nsubnet=172.30.241.0/29\ngateway=172.30.241.1\nhermes_ip=172.30.241.3\nproxy_port=18080\ninput_chain=PCLIP-HS-IN\nforward_chain=PCLIP-HS-FWD' ]]; then
+    if [[ "$(cat "${EGRESS_STATE}")" != $'schema=gloops.hermes-handshake-egress.v2\nnetwork=paperclip-handshake\nsubnet=172.30.241.0/29\ngateway=172.30.241.1\nhermes_ip=172.30.241.3\npaperclip_ip=172.30.241.4\nproxy_port=18080\ninput_chain=PCLIP-HS-IN\nforward_chain=PCLIP-HS-FWD' ]]; then
       fail 'live handshake egress state is malformed'
     elif ! iptables -C INPUT -s 172.30.241.0/29 -m comment --comment paperclip-handshake-input -j "${INPUT_CHAIN}" \
       || ! iptables -C "${INPUT_CHAIN}" -s 172.30.241.3 -d 172.30.241.1 -p tcp --dport 18080 -m comment --comment paperclip-handshake-proxy -j ACCEPT \
       || ! iptables -C "${INPUT_CHAIN}" -m comment --comment paperclip-handshake-host-deny -j REJECT --reject-with icmp-port-unreachable \
       || ! iptables -C DOCKER-USER -s 172.30.241.0/29 -m comment --comment paperclip-handshake-forward -j "${FORWARD_CHAIN}" \
       || ! iptables -C "${FORWARD_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment paperclip-handshake-established -j RETURN \
-      || ! iptables -C "${FORWARD_CHAIN}" -d 172.30.241.0/29 -m comment --comment paperclip-handshake-internal -j ACCEPT \
+      || ! iptables -C "${FORWARD_CHAIN}" -s 172.30.241.4 -d 172.30.241.3 -p tcp --dport 8642 -m comment --comment paperclip-handshake-api -j ACCEPT \
       || ! iptables -C "${FORWARD_CHAIN}" -m comment --comment paperclip-handshake-forward-deny -j REJECT --reject-with icmp-port-unreachable; then
       fail 'live handshake egress firewall boundary is incomplete'
     elif [[ "$(iptables -S INPUT | grep -Fc -- "-j ${INPUT_CHAIN}")" -ne 1 ]] \

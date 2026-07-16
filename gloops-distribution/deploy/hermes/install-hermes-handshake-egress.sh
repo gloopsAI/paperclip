@@ -5,6 +5,7 @@ readonly NETWORK='paperclip-handshake'
 readonly SUBNET='172.30.241.0/29'
 readonly GATEWAY='172.30.241.1'
 readonly HERMES_IP='172.30.241.3'
+readonly PAPERCLIP_IP='172.30.241.4'
 readonly PROXY_PORT='18080'
 readonly INPUT_CHAIN='PCLIP-HS-IN'
 readonly FORWARD_CHAIN='PCLIP-HS-FWD'
@@ -62,7 +63,8 @@ iptables -I INPUT 1 -s "${SUBNET}" -m comment --comment paperclip-handshake-inpu
 iptables -N "${FORWARD_CHAIN}"
 iptables -A "${FORWARD_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED \
   -m comment --comment paperclip-handshake-established -j RETURN
-iptables -A "${FORWARD_CHAIN}" -d "${SUBNET}" -m comment --comment paperclip-handshake-internal -j ACCEPT
+iptables -A "${FORWARD_CHAIN}" -s "${PAPERCLIP_IP}" -d "${HERMES_IP}" -p tcp --dport 8642 \
+  -m comment --comment paperclip-handshake-api -j ACCEPT
 iptables -A "${FORWARD_CHAIN}" -m comment --comment paperclip-handshake-forward-deny \
   -j REJECT --reject-with icmp-port-unreachable
 iptables -I DOCKER-USER 1 -s "${SUBNET}" -m comment --comment paperclip-handshake-forward -j "${FORWARD_CHAIN}"
@@ -71,8 +73,8 @@ install -d -m 0700 -o root -g root "${STATE_DIR}"
 state_tmp="$(mktemp "${STATE_DIR}/.handshake-egress.XXXXXX")"
 {
   printf 'schema=gloops.hermes-handshake-egress.v2\n'
-  printf 'network=%s\nsubnet=%s\ngateway=%s\nhermes_ip=%s\nproxy_port=%s\n' \
-    "${NETWORK}" "${SUBNET}" "${GATEWAY}" "${HERMES_IP}" "${PROXY_PORT}"
+  printf 'network=%s\nsubnet=%s\ngateway=%s\nhermes_ip=%s\npaperclip_ip=%s\nproxy_port=%s\n' \
+    "${NETWORK}" "${SUBNET}" "${GATEWAY}" "${HERMES_IP}" "${PAPERCLIP_IP}" "${PROXY_PORT}"
   printf 'input_chain=%s\nforward_chain=%s\n' "${INPUT_CHAIN}" "${FORWARD_CHAIN}"
 } >"${state_tmp}"
 chmod 0600 "${state_tmp}"

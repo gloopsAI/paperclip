@@ -77,6 +77,10 @@ const backupDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/backup-dark.sh",
   import.meta.url,
 );
+const verifyRollbackDarkPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-rollback-dark.sh",
+  import.meta.url,
+);
 const hermesExecutionConfigPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-execution-config.yaml",
   import.meta.url,
@@ -209,6 +213,7 @@ const rehearseZeroWorkExecutable = rehearseZeroWork
   .join("\n");
 const rollback = readFileSync(rollbackPath, "utf8");
 const backupDark = readFileSync(backupDarkPath, "utf8");
+const verifyRollbackDark = readFileSync(verifyRollbackDarkPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
 const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
@@ -786,6 +791,7 @@ for (const required of [
   "paperclip-handshake-host-deny",
   "paperclip-handshake-forward-deny",
   "paperclip-handshake-established",
+  "paperclip-handshake-api",
   "-j REJECT --reject-with icmp-port-unreachable",
   "schema=gloops.hermes-handshake-egress.v2",
   "HANDSHAKE_EGRESS_ACTIVE",
@@ -1033,6 +1039,7 @@ for (const required of [
   "hermes-handshake-egress-proxy.py",
   "hermes-handshake-resolv.conf",
   "verify-hermes-handshake-egress-boundary.sh",
+  "verify-rollback-dark.sh",
   "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
@@ -1054,6 +1061,13 @@ for (const required of [
 }
 if (!backupDark.includes("refusing cold backup while a Paperclip or Hermes container exists")) {
   fail("cold backup must reject orphan Paperclip or Hermes containers");
+}
+if (!backupDark.includes("paperclip-hermes-handshake-egress.service")) {
+  fail("cold backup must reject an active handshake egress service");
+}
+if (!prepareHermesExecution.includes("paperclip-hermes-handshake-egress.service") ||
+    !prepareHermesHandshake.includes("paperclip-hermes-handshake-egress.service")) {
+  fail("both Hermes profile preparations must reject an active handshake egress service");
 }
 for (const required of [
   "did not become healthy within",
@@ -1114,9 +1128,23 @@ for (const required of [
   "/run/paperclip-gloops",
   "remove-hermes-handshake-egress.sh",
   "refusing rollback while a Paperclip or Hermes container exists",
+  "verify-rollback-dark.sh",
 ]) {
   if (!rollback.includes(required)) {
     fail(`rollback does not remove ${required}`);
+  }
+}
+for (const required of [
+  "paperclip-hermes-handshake-egress.service",
+  "HANDSHAKE_EGRESS_ACTIVE",
+  "paperclip-execution paperclip-handshake",
+  "PCLIP-HS-IN",
+  "PCLIP-HS-FWD",
+  "3100|8642|18080",
+  "PASS rollback terminal state is inactive",
+]) {
+  if (!verifyRollbackDark.includes(required)) {
+    fail(`rollback terminal dark verifier is missing ${required}`);
   }
 }
 for (const required of [

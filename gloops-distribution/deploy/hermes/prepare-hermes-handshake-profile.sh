@@ -9,7 +9,7 @@ readonly RUNTIME_ENV="${CONFIG_DIR}/hermes-execution.env"
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
-for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
+for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing handshake profile preparation while ${unit} is active" >&2
     exit 1

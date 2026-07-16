@@ -12,7 +12,7 @@ readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution
   exit 1
 }
 
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing cold backup while ${unit} is active" >&2
     exit 1

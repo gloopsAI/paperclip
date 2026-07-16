@@ -48,6 +48,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/configure-tailnet-https.sh" "${LI
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-dark.sh" "${LIB_DIR}/verify-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-zero-work.sh" "${LIB_DIR}/rehearse-zero-work.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rollback.sh" "${LIB_DIR}/rollback.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-rollback-dark.sh" "${LIB_DIR}/verify-rollback-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.sh" "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-handshake-profile.sh" "${LIB_DIR}/prepare-hermes-handshake-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
