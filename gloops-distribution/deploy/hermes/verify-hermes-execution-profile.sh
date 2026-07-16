@@ -139,6 +139,17 @@ else
   fail 'persistent Hermes sessions are absent or could auto-resume on startup'
 fi
 
+state_identity_failed=0
+for path in cache logs memories sessions; do
+  if [[ "$(stat -c '%a:%u:%g' "${STATE_DIR}/${path}" 2>/dev/null || true)" != '700:10000:10000' ]]; then
+    fail "persistent Hermes state has unsafe ownership or mode: ${STATE_DIR}/${path}"
+    state_identity_failed=1
+  fi
+done
+if [[ "${state_identity_failed}" -eq 0 ]]; then
+  pass 'persistent Hermes state is writable only by the fixed Hermes identity'
+fi
+
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
   [[ ! -e "${forbidden}" ]] || fail "forbidden environment file exists: ${forbidden}"
 done

@@ -635,6 +635,7 @@ for (const required of [
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
   'base_url == "https://ollama.com/v1"',
   'chmod 0500 "${PROFILE_DIR}/gh"',
+  'install -d -m 0700 -o "${HERMES_UID}" -g "${HERMES_GID}" "${STATE_DIR}/${path}"',
 ]) {
   if (!prepareHermesExecution.includes(required)) {
     fail(`Hermes profile preparation is missing ${required}`);
@@ -645,6 +646,7 @@ if (prepareHermesExecution.includes("github-app-credentials.py\" refresh")) {
 }
 for (const required of [
   "credential pool is limited to Ollama Cloud with no fallback credential",
+  "persistent Hermes state is writable only by the fixed Hermes identity",
   "short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope",
   "live GitHub App token projection matches the broker-verified exact credential receipt",
   "docker exec -i --user 10000:10000",
