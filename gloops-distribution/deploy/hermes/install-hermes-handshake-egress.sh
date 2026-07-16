@@ -6,12 +6,15 @@ readonly SUBNET='172.30.241.0/29'
 readonly GATEWAY='172.30.241.1'
 readonly HERMES_IP='172.30.241.3'
 readonly PAPERCLIP_IP='172.30.241.4'
+readonly PAPERCLIP_PORT='3100'
 readonly PROXY_PORT='18080'
 readonly INPUT_CHAIN='PCLIP-HS-IN'
 readonly FORWARD_CHAIN='PCLIP-HS-FWD'
 readonly STATE_DIR='/run/paperclip-gloops'
 readonly STATE_FILE="${STATE_DIR}/HANDSHAKE_EGRESS_ACTIVE"
-readonly CLEANUP='/usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly CLEANUP="${SCRIPT_DIR}/remove-hermes-handshake-egress.sh"
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
 for command in docker iptables jq python3; do
@@ -56,6 +59,12 @@ fi
 iptables -N "${INPUT_CHAIN}"
 iptables -A "${INPUT_CHAIN}" -s "${HERMES_IP}" -d "${GATEWAY}" -p tcp --dport "${PROXY_PORT}" \
   -m comment --comment paperclip-handshake-proxy -j ACCEPT
+# The host initiates the operator-only control-plane health request. Admit only
+# the established response from the fixed Paperclip address and source port;
+# unsolicited traffic from Paperclip still falls through to the terminal reject.
+iptables -A "${INPUT_CHAIN}" -s "${PAPERCLIP_IP}" -d "${GATEWAY}" -p tcp --sport "${PAPERCLIP_PORT}" \
+  -m conntrack --ctstate ESTABLISHED,RELATED \
+  -m comment --comment paperclip-handshake-control-plane-response -j ACCEPT
 iptables -A "${INPUT_CHAIN}" -m comment --comment paperclip-handshake-host-deny \
   -j REJECT --reject-with icmp-port-unreachable
 iptables -I INPUT 1 -s "${SUBNET}" -m comment --comment paperclip-handshake-input -j "${INPUT_CHAIN}"

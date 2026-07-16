@@ -59,6 +59,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/inspect-hermes-handshake-topology
 install -m 0555 -o root -g root "${SCRIPT_DIR}/hermes-handshake-egress-proxy.py" "${LIB_DIR}/hermes-handshake-egress-proxy.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-egress-boundary.sh" "${LIB_DIR}/verify-hermes-handshake-egress-boundary.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-hermes-handshake-egress-failure.sh" "${LIB_DIR}/rehearse-hermes-handshake-egress-failure.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-handshake-control-plane-firewall.sh" "${LIB_DIR}/rehearse-handshake-control-plane-firewall.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${LIB_DIR}/verify-hermes-command-security-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/load-hermes-execution-image.sh" "${LIB_DIR}/load-hermes-execution-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/provision-tirith.sh"

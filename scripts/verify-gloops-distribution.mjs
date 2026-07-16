@@ -149,6 +149,10 @@ const rehearseHermesHandshakeEgressFailurePath = new URL(
   "../gloops-distribution/deploy/hermes/rehearse-hermes-handshake-egress-failure.sh",
   import.meta.url,
 );
+const rehearseHandshakeControlPlaneFirewallPath = new URL(
+  "../gloops-distribution/deploy/hermes/rehearse-handshake-control-plane-firewall.sh",
+  import.meta.url,
+);
 const hermesHandshakeEgressProxyPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-handshake-egress-proxy.py",
   import.meta.url,
@@ -253,6 +257,7 @@ const installHermesHandshakeEgress = readFileSync(installHermesHandshakeEgressPa
 const removeHermesHandshakeEgress = readFileSync(removeHermesHandshakeEgressPath, "utf8");
 const inspectHermesHandshakeTopology = readFileSync(inspectHermesHandshakeTopologyPath, "utf8");
 const rehearseHermesHandshakeEgressFailure = readFileSync(rehearseHermesHandshakeEgressFailurePath, "utf8");
+const rehearseHandshakeControlPlaneFirewall = readFileSync(rehearseHandshakeControlPlaneFirewallPath, "utf8");
 const hermesHandshakeEgressProxy = readFileSync(hermesHandshakeEgressProxyPath, "utf8");
 const hermesHandshakeEgressService = readFileSync(hermesHandshakeEgressServicePath, "utf8");
 const verifyHermesHandshakeEgressBoundary = readFileSync(verifyHermesHandshakeEgressBoundaryPath, "utf8");
@@ -830,6 +835,9 @@ for (const required of [
   "iptables -I INPUT 1 -s \"${SUBNET}\"",
   "iptables -N \"${FORWARD_CHAIN}\"",
   "iptables -I DOCKER-USER 1 -s \"${SUBNET}\"",
+  "paperclip-handshake-control-plane-response",
+  "--sport \"${PAPERCLIP_PORT}\"",
+  "--ctstate ESTABLISHED,RELATED",
   "paperclip-handshake-host-deny",
   "paperclip-handshake-forward-deny",
   "paperclip-handshake-established",
@@ -845,6 +853,32 @@ for (const required of [
 for (const forbidden of ["getent", "ollama.com", "api.x.ai", "grok", "xai"] ) {
   if (installHermesHandshakeEgress.includes(forbidden)) {
     fail(`Hermes handshake egress installer contains forbidden surface ${forbidden}`);
+  }
+}
+for (const required of [
+  "rehearse-handshake-control-plane-firewall.sh",
+  "sudo gloops-distribution/deploy/hermes/rehearse-handshake-control-plane-firewall.sh",
+]) {
+  if (!workflow.includes(required)) {
+    fail(`distribution workflow is missing live firewall proof ${required}`);
+  }
+}
+for (const required of [
+  "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
+  "--network paperclip-handshake --ip 172.30.241.4",
+  "--header 'Host: 127.0.0.1'",
+  "iptables -D PCLIP-HS-IN",
+  "iptables -I PCLIP-HS-IN 2",
+  "paperclip-handshake-control-plane-response",
+  "wait-paperclip-control-plane.sh",
+]) {
+  if (!rehearseHandshakeControlPlaneFirewall.includes(required)) {
+    fail(`handshake control-plane firewall rehearsal is missing ${required}`);
+  }
+}
+for (const forbidden of ["OLLAMA", "api.x.ai", "grok", "xai", "--publish"]) {
+  if (rehearseHandshakeControlPlaneFirewall.includes(forbidden)) {
+    fail(`handshake control-plane firewall rehearsal contains forbidden surface ${forbidden}`);
   }
 }
 for (const required of [
@@ -1129,6 +1163,7 @@ for (const required of [
   "hermes-handshake-resolv.conf",
   "verify-hermes-handshake-egress-boundary.sh",
   "rehearse-hermes-handshake-egress-failure.sh",
+  "rehearse-handshake-control-plane-firewall.sh",
   "verify-rollback-dark.sh",
   "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",

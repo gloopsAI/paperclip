@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { isDatabaseConnectionUnavailableError } from "../app.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  isDatabaseConnectionUnavailableError,
+  startAutonomousAppServices,
+} from "../app.js";
 
 describe("feedback export flush error classification", () => {
   it("recognizes wrapped database connection-refused errors", () => {
@@ -20,5 +23,37 @@ describe("feedback export flush error classification", () => {
     expect(isDatabaseConnectionUnavailableError(
       new Error("feedback upload payload mentioned ECONNREFUSED in user content"),
     )).toBe(false);
+  });
+});
+
+describe("operator-only app startup boundary", () => {
+  function createStarts() {
+    return {
+      startJobCoordinator: vi.fn(),
+      startJobScheduler: vi.fn(),
+      startFeedbackExport: vi.fn(),
+      initializeToolDispatcher: vi.fn(),
+      startPluginRuntime: vi.fn(),
+    };
+  }
+
+  it("suppresses every autonomous coordinator, timer, dispatcher, loader, and worker path", () => {
+    const starts = createStarts();
+
+    expect(startAutonomousAppServices({ operatorOnlyMode: true, ...starts })).toBe(false);
+
+    for (const start of Object.values(starts)) {
+      expect(start).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps normal startup behavior default-on", () => {
+    const starts = createStarts();
+
+    expect(startAutonomousAppServices(starts)).toBe(true);
+
+    for (const start of Object.values(starts)) {
+      expect(start).toHaveBeenCalledOnce();
+    }
   });
 });
