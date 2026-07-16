@@ -81,6 +81,10 @@ const verifyRollbackDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-rollback-dark.sh",
   import.meta.url,
 );
+const rollbackDarkQueryFailureTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh",
+  import.meta.url,
+);
 const hermesExecutionConfigPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-execution-config.yaml",
   import.meta.url,
@@ -226,6 +230,14 @@ const rehearseZeroWorkExecutable = rehearseZeroWork
 const rollback = readFileSync(rollbackPath, "utf8");
 const backupDark = readFileSync(backupDarkPath, "utf8");
 const verifyRollbackDark = readFileSync(verifyRollbackDarkPath, "utf8");
+try {
+  execFileSync("bash", [rollbackDarkQueryFailureTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Rollback terminal query-failure tests failed: ${error instanceof Error ? error.message : error}`);
+}
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
 const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
@@ -1194,6 +1206,10 @@ for (const required of [
   "paperclip-hermes-handshake-egress.service",
   "cannot inspect Docker topology",
   "cannot inspect firewall topology",
+  "cannot inspect Docker containers",
+  "cannot inspect Docker networks",
+  "cannot capture firewall topology",
+  "cannot inspect listeners",
   "paperclip.service boot-eligible",
   "rollback left governed unit unmasked",
   "HANDSHAKE_EGRESS_ACTIVE",

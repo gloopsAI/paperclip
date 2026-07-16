@@ -17,8 +17,11 @@ if ! iptables -nL INPUT >/dev/null 2>&1 || ! iptables -nL DOCKER-USER >/dev/null
   failed=1
 fi
 for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
-  if systemctl is-active --quiet "${unit}" || systemctl is-failed --quiet "${unit}"; then
-    echo "FAIL rollback left active or failed unit: ${unit}" >&2
+  if ! active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null)"; then
+    echo "FAIL rollback verifier cannot inspect unit state: ${unit}" >&2
+    failed=1
+  elif [[ "${active_state}" != 'inactive' ]]; then
+    echo "FAIL rollback left non-inactive unit: ${unit} (${active_state})" >&2
     failed=1
   fi
 done
@@ -42,24 +45,41 @@ for marker in \
   /run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE; do
   [[ ! -e "${marker}" ]] || { echo "FAIL rollback marker remains: ${marker}" >&2; failed=1; }
 done
-if docker ps -a --format '{{.Names}}' | grep -Eq '^paperclip-(gloops|gloops-handshake|hermes-execution|hermes-handshake)$'; then
+if ! docker_containers="$(docker ps -a --format '{{.Names}}')"; then
+  echo 'FAIL rollback verifier cannot inspect Docker containers' >&2
+  failed=1
+  docker_containers=''
+fi
+if grep -Eq '^paperclip-(gloops|gloops-handshake|hermes-execution|hermes-handshake)$' <<<"${docker_containers}"; then
   echo 'FAIL rollback left a Paperclip or Hermes container' >&2
   failed=1
 fi
+if ! docker_networks="$(docker network ls --format '{{.Name}}')"; then
+  echo 'FAIL rollback verifier cannot inspect Docker networks' >&2
+  failed=1
+  docker_networks=''
+fi
 for network in paperclip-execution paperclip-handshake; do
-  if docker network inspect "${network}" >/dev/null 2>&1; then
+  if grep -Fxq "${network}" <<<"${docker_networks}"; then
     echo "FAIL rollback left governed network: ${network}" >&2
     failed=1
   fi
 done
-if iptables -nL PCLIP-HS-IN >/dev/null 2>&1 \
-  || iptables -nL PCLIP-HS-FWD >/dev/null 2>&1 \
-  || iptables -S INPUT 2>/dev/null | grep -Fq -- '-j PCLIP-HS-IN' \
-  || iptables -S DOCKER-USER 2>/dev/null | grep -Fq -- '-j PCLIP-HS-FWD'; then
+if ! firewall_rules="$(iptables -S)"; then
+  echo 'FAIL rollback verifier cannot capture firewall topology' >&2
+  failed=1
+  firewall_rules=''
+fi
+if grep -Eq '^-N PCLIP-HS-IN$|^-N PCLIP-HS-FWD$|^-A INPUT.* -j PCLIP-HS-IN( |$)|^-A DOCKER-USER.* -j PCLIP-HS-FWD( |$)' <<<"${firewall_rules}"; then
   echo 'FAIL rollback left handshake firewall topology' >&2
   failed=1
 fi
-if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)(3100|8642|18080)$'; then
+if ! listeners="$(ss -lntH)"; then
+  echo 'FAIL rollback verifier cannot inspect listeners' >&2
+  failed=1
+  listeners=''
+fi
+if awk '{print $4}' <<<"${listeners}" | grep -Eq '(^|:)(3100|8642|18080)$'; then
   echo 'FAIL rollback left a governed listener' >&2
   failed=1
 fi
