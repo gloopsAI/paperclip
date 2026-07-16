@@ -38,7 +38,6 @@ function referenceEnv(overrides = {}) {
     PAPERCLIP_API_URL_FOR_HERMES: "http://host.docker.internal:3189",
     PAPERCLIP_AUTH_HEADER: "Bearer test-only",
     PAPERCLIP_SOURCE_COMMIT: "0123456789abcdef0123456789abcdef01234567",
-    PAPERCLIP_SOURCE_TREE_CLEAN: "true",
     REFERENCE_DISPOSABLE_ACK: "delete-disposable-companies",
     REFERENCE_MOCK_PROBE_URL: "http://127.0.0.1:8787/health",
     HERMES_REFERENCE_MOCK_BASE_URL: "http://host.docker.internal:8787/v1",
@@ -106,16 +105,49 @@ test("reference matrix accepts only a tied disposable local boundary", () => {
   assertSuccess(result, "reference boundary validation");
 });
 
-test("reference matrix rejects dirty or ambiguous runtime provenance", () => {
-  for (const overrides of [
-    { PAPERCLIP_SOURCE_COMMIT: "short" },
-    { PAPERCLIP_SOURCE_TREE_CLEAN: "false" },
+test("reference matrix rejects an ambiguous runtime commit", () => {
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv({ PAPERCLIP_SOURCE_COMMIT: "short" }),
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /PAPERCLIP_SOURCE_COMMIT/u);
+});
+
+test("reference matrix accepts only runtime-observed clean source provenance", () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const valid = JSON.stringify({
+    serverInfo: {
+      git: {
+        available: true,
+        fullSha: commit,
+        localChanges: {
+          available: true,
+          hasLocalChanges: false,
+          stagedFileCount: 0,
+          unstagedFileCount: 0,
+          untrackedFileCount: 0,
+        },
+      },
+    },
+  });
+  const accepted = runBashFunctions(
+    referenceMatrixScript,
+    ["fail", "validate_runtime_source_health"],
+    `PAPERCLIP_SOURCE_COMMIT=${commit}\nvalidate_runtime_source_health '${valid}'\n[[ "$observed_source_commit" == "$PAPERCLIP_SOURCE_COMMIT" ]]\n[[ "$observed_source_tree_clean" == true ]]`,
+  );
+  assertSuccess(accepted, "runtime provenance health acceptance");
+
+  for (const payload of [
+    valid.replace(commit, "89abcdef0123456789abcdef0123456789abcdef"),
+    valid.replace('"hasLocalChanges":false', '"hasLocalChanges":true').replace('"unstagedFileCount":0', '"unstagedFileCount":1'),
   ]) {
-    const result = run("bash", [referenceMatrixScript, "--validate-config"], {
-      env: referenceEnv(overrides),
-    });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /PAPERCLIP_SOURCE_(?:COMMIT|TREE_CLEAN)/u);
+    const rejected = runBashFunctions(
+      referenceMatrixScript,
+      ["fail", "validate_runtime_source_health"],
+      `PAPERCLIP_SOURCE_COMMIT=${commit}\nvalidate_runtime_source_health '${payload}'`,
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /runtime provenance/u);
   }
 });
 

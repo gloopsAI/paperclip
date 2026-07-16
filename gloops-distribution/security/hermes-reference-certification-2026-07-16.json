@@ -1,14 +1,14 @@
 {
   "$schema": "https://gloops.ai/schemas/hermes-reference-certification.v1.json",
   "schemaVersion": 1,
-  "completedAt": "2026-07-16T22:29:02Z",
+  "completedAt": "2026-07-16T22:44:34Z",
   "scope": "Disposable deterministic certification of the built-in Paperclip hermes_gateway adapter; no production provider traffic or production task execution.",
   "inputs": {
     "upstreamPaperclipCommit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
     "gloopsPaperclipCommit": "a4a4c4d3f25f2afb8274729342ce66448f063b9f",
     "hermesGatewayImage": "paperclip-hermes-gateway-smoke@sha256:2d90f263e09fe0c4a1c9c6a2dd5b2f8dffd9a818d535a713732785ac0cf25620",
     "hermesVersion": "0.17.0",
-    "matrixScriptSha256": "c9fe93f73fafd17565cd979fa4287b08647f03ced76a4d5ab8e30c0a60f503c6",
+    "matrixScriptSha256": "b2291716780351598d1140f59ed5c72d6fd2264c3c0cff66977bcb8a218e2424",
     "referenceMockSha256": "5e52dd1c7393ebe82779df7d8e982836dd26e96152f981b311424cfc37199dc8",
     "e2eScriptSha256": "221b42a782de8a50130b99fac0ba95a2e8b69daafe4fa20df5688bcbcfd8c49a",
     "gatewayEntrypointSha256": "8906dc6eb1306a6ff910ded6c0013e23110fc896a02d5c80c7cee92b24f69dfe"
@@ -34,31 +34,31 @@
       "label": "fork-stable-strict",
       "sourceCommit": "a4a4c4d3f25f2afb8274729342ce66448f063b9f",
       "sourceTreeClean": true,
-      "startedAt": "2026-07-16T22:22:50Z",
-      "completedAt": "2026-07-16T22:29:02Z",
-      "status": "passed",
-      "totalRuns": 20,
-      "passedRuns": 20,
-      "minimumDurationSeconds": 8,
-      "maximumDurationSeconds": 9,
-      "averageDurationSeconds": 8.15,
-      "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-fork-stable-strict.json",
-      "rawReceiptSha256": "913a39018426d405e6b865107d24c7695610298c59ca7859e9db5f351a91f1cf"
-    },
-    {
-      "label": "upstream-master-strict",
-      "sourceCommit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
-      "sourceTreeClean": true,
-      "startedAt": "2026-07-16T22:19:21Z",
-      "completedAt": "2026-07-16T22:25:32Z",
+      "startedAt": "2026-07-16T22:38:24Z",
+      "completedAt": "2026-07-16T22:44:34Z",
       "status": "passed",
       "totalRuns": 20,
       "passedRuns": 20,
       "minimumDurationSeconds": 7,
       "maximumDurationSeconds": 9,
-      "averageDurationSeconds": 8.05,
+      "averageDurationSeconds": 8,
+      "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-fork-stable-strict.json",
+      "rawReceiptSha256": "2a5270759f8808a216fd1ce5e4ccdb9c23e066b2eb52e3e9fc399921fb66114f"
+    },
+    {
+      "label": "upstream-master-strict",
+      "sourceCommit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
+      "sourceTreeClean": true,
+      "startedAt": "2026-07-16T22:38:11Z",
+      "completedAt": "2026-07-16T22:44:20Z",
+      "status": "passed",
+      "totalRuns": 20,
+      "passedRuns": 20,
+      "minimumDurationSeconds": 7,
+      "maximumDurationSeconds": 9,
+      "averageDurationSeconds": 7.95,
       "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-upstream-master-strict.json",
-      "rawReceiptSha256": "10c15f79a7729c0ea082a93a7f4d0967a91b15fbf76e562a58a406cfa1427e3a"
+      "rawReceiptSha256": "e4f229854873a971f324bd016486424267a124e6b210ce89fce40481d072c027"
     }
   ],
   "nonProductFailure": {

@@ -407,6 +407,7 @@ function verifyHermesReferenceReceipt(summaryResult) {
   if (
     !/^[0-9a-f]{40}$/u.test(raw.runtimeSource?.commit ?? "") ||
     raw.runtimeSource?.treeClean !== true ||
+    raw.runtimeSource?.observedFrom !== "/api/health serverInfo.git" ||
     summaryResult.sourceCommit !== raw.runtimeSource.commit ||
     summaryResult.sourceTreeClean !== true
   ) {

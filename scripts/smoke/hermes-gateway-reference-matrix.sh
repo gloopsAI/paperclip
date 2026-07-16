@@ -25,7 +25,6 @@ Required:
   PAPERCLIP_API_URL_FOR_HERMES=http://host.docker.internal:3189
   PAPERCLIP_AUTH_HEADER='Bearer <board-token>'
   PAPERCLIP_SOURCE_COMMIT=<40-hex-clean-runtime-commit>
-  PAPERCLIP_SOURCE_TREE_CLEAN=true
   REFERENCE_DISPOSABLE_ACK=delete-disposable-companies
 
 Common controls:
@@ -61,7 +60,6 @@ done
 : "${PAPERCLIP_API_URL_FOR_HERMES:?PAPERCLIP_API_URL_FOR_HERMES is required}"
 : "${PAPERCLIP_AUTH_HEADER:?PAPERCLIP_AUTH_HEADER is required}"
 : "${PAPERCLIP_SOURCE_COMMIT:?PAPERCLIP_SOURCE_COMMIT is required}"
-: "${PAPERCLIP_SOURCE_TREE_CLEAN:?PAPERCLIP_SOURCE_TREE_CLEAN is required}"
 : "${REFERENCE_DISPOSABLE_ACK:?REFERENCE_DISPOSABLE_ACK is required}"
 
 REFERENCE_RUNS="${REFERENCE_RUNS:-20}"
@@ -97,8 +95,6 @@ validate_reference_boundary() {
     || fail "REFERENCE_DISPOSABLE_ACK must equal ${DISPOSABLE_ACK}"
   [[ "$PAPERCLIP_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
     || fail "PAPERCLIP_SOURCE_COMMIT must be an exact lowercase 40-hex commit"
-  [[ "$PAPERCLIP_SOURCE_TREE_CLEAN" == "true" ]] \
-    || fail "PAPERCLIP_SOURCE_TREE_CLEAN must equal true; dirty runtime sources cannot be certified"
   [[ -z "${COMPANY_ID:-}" && -z "${PAPERCLIP_COMPANY_ID:-}" ]] \
     || fail "COMPANY_ID/PAPERCLIP_COMPANY_ID must be unset; the matrix creates and deletes a fresh company per run"
 
@@ -128,6 +124,23 @@ validate_reference_boundary() {
   done
 }
 
+validate_runtime_source_health() {
+  local payload="$1"
+  if ! jq -e --arg expected "$PAPERCLIP_SOURCE_COMMIT" '
+    .serverInfo.git.available == true and
+    .serverInfo.git.fullSha == $expected and
+    .serverInfo.git.localChanges.available == true and
+    .serverInfo.git.localChanges.hasLocalChanges == false and
+    .serverInfo.git.localChanges.stagedFileCount == 0 and
+    .serverInfo.git.localChanges.unstagedFileCount == 0 and
+    .serverInfo.git.localChanges.untrackedFileCount == 0
+  ' >/dev/null <<<"$payload"; then
+    fail "Paperclip health runtime provenance must match PAPERCLIP_SOURCE_COMMIT and report an exact clean tree"
+  fi
+  observed_source_commit="$(jq -r '.serverInfo.git.fullSha' <<<"$payload")"
+  observed_source_tree_clean=true
+}
+
 [[ "$REFERENCE_RUNS" =~ ^[1-9][0-9]*$ ]] || fail "REFERENCE_RUNS must be a positive integer"
 [[ "$REFERENCE_DELAY_SECONDS" =~ ^[0-9]+$ ]] || fail "REFERENCE_DELAY_SECONDS must be a non-negative integer"
 validate_reference_boundary
@@ -141,6 +154,7 @@ health_payload="$(curl -fsS -H "Authorization: ${PAPERCLIP_AUTH_HEADER}" "${PAPE
   || fail "Paperclip is not healthy at ${PAPERCLIP_API_URL}"
 [[ "$(jq -r '.deploymentMode // empty' <<<"$health_payload")" == "local_trusted" ]] \
   || fail "Paperclip reference instance must report deploymentMode=local_trusted"
+validate_runtime_source_health "$health_payload"
 curl -fsS "$REFERENCE_MOCK_PROBE_URL" >/dev/null \
   || fail "reference mock is not healthy at ${REFERENCE_MOCK_PROBE_URL}"
 
@@ -236,12 +250,12 @@ write_receipt() {
     --arg status "$status" \
     --arg paperclipUrl "$PAPERCLIP_API_URL" \
     --arg paperclipForHermes "$PAPERCLIP_API_URL_FOR_HERMES" \
-    --arg sourceCommit "$PAPERCLIP_SOURCE_COMMIT" \
-    --arg sourceTreeClean "$PAPERCLIP_SOURCE_TREE_CLEAN" \
+    --arg sourceCommit "$observed_source_commit" \
+    --argjson sourceTreeClean "$observed_source_tree_clean" \
     --arg mockProbeUrl "$REFERENCE_MOCK_PROBE_URL" \
     --arg mockBaseUrl "$HERMES_REFERENCE_MOCK_BASE_URL" \
     --argjson onboardingPacingSeconds "$REFERENCE_DELAY_SECONDS" \
-    '{schemaVersion:"gloops.hermes-reference-matrix.v1",label:$label,status:$status,startedAt:$startedAt,completedAt:$completedAt,runtimeSource:{commit:$sourceCommit,treeClean:($sourceTreeClean == "true")},boundary:{paperclipUrl:$paperclipUrl,paperclipForHermes:$paperclipForHermes,mockProbeUrl:$mockProbeUrl,mockBaseUrl:$mockBaseUrl,disposableCompanyPerRun:true,localTrustedRequired:true,productionPortRejected:true,realProviderCredentialsRejected:true,onboardingPacingSeconds:$onboardingPacingSeconds},totalRuns:length,passedRuns:(map(select(.result == "passed"))|length),runs:.}' \
+    '{schemaVersion:"gloops.hermes-reference-matrix.v1",label:$label,status:$status,startedAt:$startedAt,completedAt:$completedAt,runtimeSource:{commit:$sourceCommit,treeClean:$sourceTreeClean,observedFrom:"/api/health serverInfo.git"},boundary:{paperclipUrl:$paperclipUrl,paperclipForHermes:$paperclipForHermes,mockProbeUrl:$mockProbeUrl,mockBaseUrl:$mockBaseUrl,disposableCompanyPerRun:true,localTrustedRequired:true,productionPortRejected:true,realProviderCredentialsRejected:true,onboardingPacingSeconds:$onboardingPacingSeconds},totalRuns:length,passedRuns:(map(select(.result == "passed"))|length),runs:.}' \
     "$results_file" > "$REFERENCE_RECEIPT"
 }
 
