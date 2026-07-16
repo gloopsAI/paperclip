@@ -8,6 +8,7 @@ import test from "node:test";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const joinScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-join.sh");
 const e2eScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-e2e.sh");
+const referenceMatrixScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-reference-matrix.sh");
 const entrypointScript = path.join(repoRoot, "docker", "hermes-gateway-smoke", "entrypoint.sh");
 
 function run(command, args, options = {}) {
@@ -48,8 +49,18 @@ function runBashFunctions(scriptPath, functionNames, body) {
 }
 
 test("Hermes gateway smoke shell scripts pass bash syntax validation", () => {
-  const result = run("bash", ["-n", joinScript, e2eScript, entrypointScript]);
+  const result = run("bash", ["-n", joinScript, e2eScript, referenceMatrixScript, entrypointScript]);
   assertSuccess(result, "bash -n");
+});
+
+test("reference matrix help exposes bounded-run and receipt controls", () => {
+  const result = run("bash", [referenceMatrixScript, "--help"]);
+  assertSuccess(result, "hermes-gateway-reference-matrix.sh --help");
+  assert.match(result.stdout, /REFERENCE_RUNS=20/u);
+  assert.match(result.stdout, /REFERENCE_DELAY_SECONDS=11/u);
+  assert.match(result.stdout, /REFERENCE_RECEIPT/u);
+  assert.match(result.stdout, /strict Paperclip\/Hermes Docker E2E/u);
+  assert.match(result.stdout, /never starts the Paperclip server/u);
 });
 
 test("Hermes gateway smoke help documents operator safety flags", () => {

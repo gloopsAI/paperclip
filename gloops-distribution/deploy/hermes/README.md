@@ -32,6 +32,23 @@ The image's `node` passwd entry and the service's explicit runtime identity are
 both `995:985`, matching the host `paperclip` owner; keep all three in lockstep
 so native PostgreSQL user discovery and persisted-state permissions remain valid.
 
+## Disposable adapter reference certification
+
+`pnpm smoke:hermes-gateway-reference` runs the built-in `hermes_gateway`
+adapter through fresh Hermes containers and fresh Paperclip agent/issue
+lifecycles against an operator-started disposable Paperclip instance and the
+local OpenAI-compatible reference mock. The matrix defaults to 20 strict cold
+starts and an 11-second onboarding interval so the harness respects Paperclip's
+invite abuse control. It writes a non-secret JSON receipt and stops on the first
+failed lifecycle. It never starts Paperclip, enables worktree execution, or
+activates a production service; those remain explicit operator gates.
+
+The 2026-07-16 upstream/fork matrix evidence is recorded in
+`gloops-distribution/security/hermes-reference-certification-2026-07-16.json`.
+That receipt certifies only the disposable adapter path. It deliberately does
+not claim that the hardened distribution, a real provider handshake, or an SDLC
+pilot has passed.
+
 ## Install dark
 
 `build-hermes-execution-image.sh` is a release-authoring helper, not an install

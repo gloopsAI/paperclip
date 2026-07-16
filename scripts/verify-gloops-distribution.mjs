@@ -600,12 +600,20 @@ for (const required of [
 }
 for (const required of [
   "did not become healthy within",
-  "http://${EXPECTED_IP}:3100/api/health",
+  "\"${CONTAINER}\" == 'paperclip-gloops-handshake'",
+  "http://${HANDSHAKE_EXPECTED_IP}:3100/api/health",
   "docker network inspect --format '{{.Internal}}'",
   'index .NetworkSettings.Networks "paperclip-handshake"',
   "network_internal=${network_internal:-missing}",
   "container_ip=${container_ip:-missing}",
   "curl --fail --silent --show-error --max-time 5 --header 'Host: 127.0.0.1'",
+  "\"${CONTAINER}\" == 'paperclip-gloops'",
+  'index .NetworkSettings.Networks "paperclip-execution"',
+  'index .NetworkSettings.Ports "3100/tcp"',
+  "host_ip=${host_ip:-missing}",
+  "host_port=${host_port:-missing}",
+  "'http://127.0.0.1:3100/api/health'",
+  "unsupported Paperclip control-plane container",
 ]) {
   if (!waitPaperclipControlPlane.includes(required)) {
     fail(`Paperclip control-plane readiness barrier is missing ${required}`);

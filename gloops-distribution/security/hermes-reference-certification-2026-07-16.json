@@ -1,0 +1,61 @@
+{
+  "$schema": "https://gloops.ai/schemas/hermes-reference-certification.v1.json",
+  "schemaVersion": 1,
+  "completedAt": "2026-07-16T20:06:45Z",
+  "scope": "Disposable deterministic certification of the built-in Paperclip hermes_gateway adapter; no production provider traffic or production task execution.",
+  "inputs": {
+    "upstreamPaperclipCommit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
+    "gloopsPaperclipCommit": "0ec0377ef7ba65de2db6085590d9ca4da8228c3c",
+    "hermesGatewayImage": "paperclip-hermes-gateway-smoke@sha256:2d90f263e09fe0c4a1c9c6a2dd5b2f8dffd9a818d535a713732785ac0cf25620",
+    "hermesVersion": "0.17.0",
+    "matrixScriptSha256": "3f0d540e8260cf8dcf16763f453d4600501fa96e5578632af960e3704fdde500",
+    "referenceMockSha256": "5e52dd1c7393ebe82779df7d8e982836dd26e96152f981b311424cfc37199dc8",
+    "e2eScriptSha256": "ba4ca636e8a52ab687d70e7791217d717813561c536cee47de68379f653b6d21",
+    "gatewayEntrypointSha256": "8906dc6eb1306a6ff910ded6c0013e23110fc896a02d5c80c7cee92b24f69dfe"
+  },
+  "controls": {
+    "freshHermesContainerPerRun": true,
+    "freshPaperclipAgentAndIssuePerRun": true,
+    "strictCases": true,
+    "provider": "custom",
+    "model": "reference-mock",
+    "referenceMockNetwork": "operator-controlled disposable host only",
+    "productionControlPlaneActivated": false,
+    "productionProviderTraffic": false,
+    "grokOrXaiApiTraffic": false,
+    "onboardingPacingSeconds": 11
+  },
+  "results": [
+    {
+      "label": "gloops-fork-stable",
+      "startedAt": "2026-07-16T19:53:57Z",
+      "completedAt": "2026-07-16T19:56:40Z",
+      "status": "passed",
+      "totalRuns": 20,
+      "passedRuns": 20,
+      "minimumDurationSeconds": 7,
+      "maximumDurationSeconds": 12,
+      "averageDurationSeconds": 8.15,
+      "rawReceiptSha256": "d96333ff784c854a819b1725737525fce6d84c73eeb709905656a998d846f998"
+    },
+    {
+      "label": "upstream-master",
+      "startedAt": "2026-07-16T20:00:24Z",
+      "completedAt": "2026-07-16T20:06:45Z",
+      "status": "passed",
+      "totalRuns": 20,
+      "passedRuns": 20,
+      "minimumDurationSeconds": 7,
+      "maximumDurationSeconds": 22,
+      "averageDurationSeconds": 8.6,
+      "rawReceiptSha256": "5494439a9b00f04952931a4447a0867c62d59d07970da66746211f7b60d76122"
+    }
+  ],
+  "nonProductFailure": {
+    "observed": true,
+    "classification": "harness pacing",
+    "detail": "An initial unpaced upstream attempt passed six cold starts and then received the disposable Paperclip invite abuse-control 429 on run seven. No adapter, Hermes, model, task, or cleanup assertion failed. The governed matrix now defaults to an 11-second onboarding interval and the complete paced upstream matrix passed 20 of 20.",
+    "failedAttemptReceiptSha256": "43c2a778d7efc265ed1a9d6b41dea4046d1f614b8e118b2130a74517810a30ca"
+  },
+  "claim": "The built-in hermes_gateway adapter path is reproducibly functional in disposable upstream and GLoops-fork environments. This receipt does not claim that the hardened production distribution, real Ollama provider handshake, or GLoops SDLC pilot has passed."
+}
