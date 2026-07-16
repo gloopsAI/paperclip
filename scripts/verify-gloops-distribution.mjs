@@ -404,6 +404,14 @@ function verifyHermesReferenceReceipt(summaryResult) {
     fail(`${label}: raw receipt must record a passed 20-of-20 matrix`);
     return;
   }
+  if (
+    !/^[0-9a-f]{40}$/u.test(raw.runtimeSource?.commit ?? "") ||
+    raw.runtimeSource?.treeClean !== true ||
+    summaryResult.sourceCommit !== raw.runtimeSource.commit ||
+    summaryResult.sourceTreeClean !== true
+  ) {
+    fail(`${label}: runtime source must be an exact clean commit reproduced by the summary`);
+  }
   const boundary = raw.boundary ?? {};
   if (
     boundary.disposableCompanyPerRun !== true ||
@@ -418,9 +426,13 @@ function verifyHermesReferenceReceipt(summaryResult) {
   const durations = [];
   for (const run of raw.runs) {
     const cleanup = run?.cleanup ?? {};
+    const claimedKeyProof = run?.claimedKeyProof ?? {};
     if (
       run?.result !== "passed" ||
       run?.e2ePassed !== true ||
+      claimedKeyProof.readableByUid10001 !== true ||
+      claimedKeyProof.mode !== "600" ||
+      claimedKeyProof.owner !== "10001:10001" ||
       cleanup.companyAbsent !== true ||
       cleanup.containerAbsent !== true ||
       cleanup.stateAbsent !== true ||
@@ -470,6 +482,15 @@ if (hermesReferenceCertification) {
     for (const result of hermesReferenceCertification.results) verifyHermesReferenceReceipt(result);
   }
   const certificationInputs = hermesReferenceCertification.inputs ?? {};
+  const resultSources = Object.fromEntries(
+    hermesReferenceCertification.results.map((result) => [result.label, result.sourceCommit]),
+  );
+  if (
+    resultSources["fork-stable-strict"] !== certificationInputs.gloopsPaperclipCommit ||
+    resultSources["upstream-master-strict"] !== certificationInputs.upstreamPaperclipCommit
+  ) {
+    fail("Hermes reference result runtime commits must match the declared fork and upstream inputs");
+  }
   for (const [label, path, expected] of [
     ["reference matrix", hermesReferenceMatrixPath, certificationInputs.matrixScriptSha256],
     ["reference mock", hermesReferenceMockPath, certificationInputs.referenceMockSha256],
@@ -477,35 +498,6 @@ if (hermesReferenceCertification) {
   ]) {
     if (sha256File(path) !== expected) {
       fail(`${label}: certification input digest does not match the current source`);
-    }
-  }
-  const ownershipProof = hermesReferenceCertification.claimedKeyOwnershipCorrection;
-  if (
-    ownershipProof?.status !== "passed" ||
-    typeof ownershipProof?.rawReceipt !== "string" ||
-    !ownershipProof.rawReceipt.startsWith("gloops-distribution/security/evidence/")
-  ) {
-    fail("Hermes claimed-key ownership correction must have committed passing evidence");
-  } else {
-    const ownershipReceiptPath = new URL(`../${ownershipProof.rawReceipt}`, import.meta.url);
-    let ownershipReceipt;
-    try {
-      ownershipReceipt = JSON.parse(readFileSync(ownershipReceiptPath, "utf8"));
-    } catch (error) {
-      fail(`Hermes claimed-key ownership correction cannot be read: ${error instanceof Error ? error.message : error}`);
-    }
-    if (
-      sha256File(ownershipReceiptPath) !== ownershipProof.rawReceiptSha256 ||
-      ownershipReceipt?.status !== "passed" ||
-      ownershipReceipt?.totalRuns !== 1 ||
-      ownershipReceipt?.passedRuns !== 1 ||
-      ownershipReceipt?.runs?.[0]?.e2ePassed !== true ||
-      ownershipReceipt?.runs?.[0]?.claimedKeyProof?.readableByUid10001 !== true ||
-      ownershipReceipt?.runs?.[0]?.claimedKeyProof?.mode !== "600" ||
-      ownershipReceipt?.runs?.[0]?.claimedKeyProof?.owner !== "10001:10001" ||
-      ownershipReceipt?.runs?.[0]?.cleanup?.claimedKeyAbsent !== true
-    ) {
-      fail("Hermes claimed-key ownership correction receipt must reproduce its passing cleanup claim");
     }
   }
 }

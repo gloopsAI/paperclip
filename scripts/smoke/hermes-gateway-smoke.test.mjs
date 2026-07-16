@@ -37,6 +37,8 @@ function referenceEnv(overrides = {}) {
     PAPERCLIP_API_URL: "http://127.0.0.1:3189",
     PAPERCLIP_API_URL_FOR_HERMES: "http://host.docker.internal:3189",
     PAPERCLIP_AUTH_HEADER: "Bearer test-only",
+    PAPERCLIP_SOURCE_COMMIT: "0123456789abcdef0123456789abcdef01234567",
+    PAPERCLIP_SOURCE_TREE_CLEAN: "true",
     REFERENCE_DISPOSABLE_ACK: "delete-disposable-companies",
     REFERENCE_MOCK_PROBE_URL: "http://127.0.0.1:8787/health",
     HERMES_REFERENCE_MOCK_BASE_URL: "http://host.docker.internal:8787/v1",
@@ -102,6 +104,19 @@ test("reference matrix accepts only a tied disposable local boundary", () => {
     env: referenceEnv(),
   });
   assertSuccess(result, "reference boundary validation");
+});
+
+test("reference matrix rejects dirty or ambiguous runtime provenance", () => {
+  for (const overrides of [
+    { PAPERCLIP_SOURCE_COMMIT: "short" },
+    { PAPERCLIP_SOURCE_TREE_CLEAN: "false" },
+  ]) {
+    const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+      env: referenceEnv(overrides),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /PAPERCLIP_SOURCE_(?:COMMIT|TREE_CLEAN)/u);
+  }
 });
 
 test("reference matrix rejects a remote or production Paperclip destination", () => {

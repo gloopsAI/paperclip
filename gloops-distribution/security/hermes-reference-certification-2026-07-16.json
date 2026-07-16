@@ -1,14 +1,14 @@
 {
   "$schema": "https://gloops.ai/schemas/hermes-reference-certification.v1.json",
   "schemaVersion": 1,
-  "completedAt": "2026-07-16T22:04:28Z",
+  "completedAt": "2026-07-16T22:29:02Z",
   "scope": "Disposable deterministic certification of the built-in Paperclip hermes_gateway adapter; no production provider traffic or production task execution.",
   "inputs": {
     "upstreamPaperclipCommit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
-    "gloopsPaperclipCommit": "0ec0377ef7ba65de2db6085590d9ca4da8228c3c",
+    "gloopsPaperclipCommit": "a4a4c4d3f25f2afb8274729342ce66448f063b9f",
     "hermesGatewayImage": "paperclip-hermes-gateway-smoke@sha256:2d90f263e09fe0c4a1c9c6a2dd5b2f8dffd9a818d535a713732785ac0cf25620",
     "hermesVersion": "0.17.0",
-    "matrixScriptSha256": "742f59869734f37b6cf7e530a487bbf1f407e0f62d1b07cb72ba52e934410868",
+    "matrixScriptSha256": "c9fe93f73fafd17565cd979fa4287b08647f03ced76a4d5ab8e30c0a60f503c6",
     "referenceMockSha256": "5e52dd1c7393ebe82779df7d8e982836dd26e96152f981b311424cfc37199dc8",
     "e2eScriptSha256": "221b42a782de8a50130b99fac0ba95a2e8b69daafe4fa20df5688bcbcfd8c49a",
     "gatewayEntrypointSha256": "8906dc6eb1306a6ff910ded6c0013e23110fc896a02d5c80c7cee92b24f69dfe"
@@ -32,42 +32,39 @@
   "results": [
     {
       "label": "fork-stable-strict",
-      "startedAt": "2026-07-16T21:58:18Z",
-      "completedAt": "2026-07-16T22:04:28Z",
+      "sourceCommit": "a4a4c4d3f25f2afb8274729342ce66448f063b9f",
+      "sourceTreeClean": true,
+      "startedAt": "2026-07-16T22:22:50Z",
+      "completedAt": "2026-07-16T22:29:02Z",
       "status": "passed",
       "totalRuns": 20,
       "passedRuns": 20,
       "minimumDurationSeconds": 8,
       "maximumDurationSeconds": 9,
-      "averageDurationSeconds": 8.05,
+      "averageDurationSeconds": 8.15,
       "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-fork-stable-strict.json",
-      "rawReceiptSha256": "da3c206730785b366306bff4ad0fe061d1e007257298d1cebf6eeee89bad4fd2"
+      "rawReceiptSha256": "913a39018426d405e6b865107d24c7695610298c59ca7859e9db5f351a91f1cf"
     },
     {
       "label": "upstream-master-strict",
-      "startedAt": "2026-07-16T21:51:55Z",
-      "completedAt": "2026-07-16T21:58:07Z",
+      "sourceCommit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
+      "sourceTreeClean": true,
+      "startedAt": "2026-07-16T22:19:21Z",
+      "completedAt": "2026-07-16T22:25:32Z",
       "status": "passed",
       "totalRuns": 20,
       "passedRuns": 20,
       "minimumDurationSeconds": 7,
       "maximumDurationSeconds": 9,
-      "averageDurationSeconds": 8.15,
+      "averageDurationSeconds": 8.05,
       "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-upstream-master-strict.json",
-      "rawReceiptSha256": "7c0847c1dd32ee380cd6d8418b7fa16f3ee392cf27d844a287cffb34bf93c12b"
+      "rawReceiptSha256": "10c15f79a7729c0ea082a93a7f4d0967a91b15fbf76e562a58a406cfa1427e3a"
     }
   ],
-  "claimedKeyOwnershipCorrection": {
-    "completedAt": "2026-07-16T21:42:02Z",
-    "method": "The claimed key was written and read by the running Hermes container as UID:GID 10001:10001 with mode 0600; no host ownership assumption remained.",
-    "status": "passed",
-    "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-claimed-key-ownership-correction.json",
-    "rawReceiptSha256": "6ad5df63a8cbedb10d28f5104714f8e92a5ac199f434878414f1cf1dbf350988"
-  },
   "nonProductFailure": {
     "observed": true,
     "classification": "harness pacing and local port isolation",
-    "detail": "An initial unpaced upstream attempt passed six cold starts and then received the disposable Paperclip invite abuse-control 429 on run seven. A later attempt to rerun the upstream and fork matrices concurrently caused the fork harness to fail closed on run 17 when both disposable Hermes containers briefly contended for local port 8642. No adapter, Hermes, model, task, or cleanup assertion failed in either non-product attempt. The governed matrix defaults to an 11-second onboarding interval, and both complete recorded matrices were then run without concurrent local-port contention and passed 20 of 20.",
+    "detail": "An initial unpaced upstream attempt passed six cold starts and then received the disposable Paperclip invite abuse-control 429 on run seven. A later attempt to rerun the upstream and fork matrices concurrently caused the fork harness to fail closed on run 17 when both disposable Hermes containers briefly contended for local port 8642. The first clean-detached fork provenance run then failed closed before adapter work because the fresh local-trusted runtime had not explicitly allowed the Docker host.docker.internal Host header. No adapter, Hermes, model, task, or cleanup assertion failed in these non-product attempts. The recorded matrices use an 11-second onboarding interval, distinct gateway ports, explicit local-only hostname configuration, and exact clean runtime commits; both passed 20 of 20.",
     "failedAttemptReceiptAvailable": false
   },
   "claim": "The built-in hermes_gateway adapter path is reproducibly functional in disposable upstream and GLoops-fork environments. This receipt does not claim that the hardened production distribution, real Ollama provider handshake, or GLoops SDLC pilot has passed."

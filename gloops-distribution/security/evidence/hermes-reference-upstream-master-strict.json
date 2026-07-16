@@ -2,8 +2,12 @@
   "schemaVersion": "gloops.hermes-reference-matrix.v1",
   "label": "upstream-master-strict",
   "status": "passed",
-  "startedAt": "2026-07-16T21:51:55Z",
-  "completedAt": "2026-07-16T21:58:07Z",
+  "startedAt": "2026-07-16T22:19:21Z",
+  "completedAt": "2026-07-16T22:25:32Z",
+  "runtimeSource": {
+    "commit": "1d2b6af5ac4a2cee5d3167a0df22b03610da1bfa",
+    "treeClean": true
+  },
   "boundary": {
     "paperclipUrl": "http://127.0.0.1:3190",
     "paperclipForHermes": "http://host.docker.internal:3190",
@@ -21,8 +25,8 @@
     {
       "label": "upstream-master-strict-01",
       "result": "passed",
-      "companyId": "9ef2157f-dfca-482d-b4da-12a6c0bb63d1",
-      "durationSeconds": 9,
+      "companyId": "e18170c0-b2d8-46e9-a2df-b147d60d7827",
+      "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -39,7 +43,7 @@
     {
       "label": "upstream-master-strict-02",
       "result": "passed",
-      "companyId": "d2dadabe-b771-4fb1-834c-c01fa15855ce",
+      "companyId": "631b0384-7293-4fc4-9bdd-e65c57f7d8b5",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -57,7 +61,7 @@
     {
       "label": "upstream-master-strict-03",
       "result": "passed",
-      "companyId": "7fc914f5-4aa8-48d4-8d9e-8e8b616d25d0",
+      "companyId": "c9efa109-643e-4f4e-b11c-20484d2f5db6",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -75,7 +79,7 @@
     {
       "label": "upstream-master-strict-04",
       "result": "passed",
-      "companyId": "82460a69-4c38-47b2-a147-e3537c11712d",
+      "companyId": "ca468aed-ab03-4edc-b868-84a4d5302d0e",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -93,8 +97,8 @@
     {
       "label": "upstream-master-strict-05",
       "result": "passed",
-      "companyId": "1d6f2cd7-a731-4e52-8ba9-b25035f6d1c7",
-      "durationSeconds": 9,
+      "companyId": "8bebb4a3-c1c7-4a5c-a1d7-0c66594ac94a",
+      "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -111,7 +115,7 @@
     {
       "label": "upstream-master-strict-06",
       "result": "passed",
-      "companyId": "72e84aa4-3981-4fc8-9e71-353b0fbaf4a8",
+      "companyId": "5d7afc81-8372-48bc-a0a4-8f12e9e05b70",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -129,8 +133,8 @@
     {
       "label": "upstream-master-strict-07",
       "result": "passed",
-      "companyId": "a48d129b-f9ce-41e6-ae1d-af23e9dbd0c4",
-      "durationSeconds": 7,
+      "companyId": "faafcda1-8fc1-4027-9651-378a153747e1",
+      "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -147,7 +151,7 @@
     {
       "label": "upstream-master-strict-08",
       "result": "passed",
-      "companyId": "f80b54de-b7fb-41a7-a85e-4fad597d5427",
+      "companyId": "a7fa7ea7-e43a-4ec7-b99f-17a4f5410b78",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -165,8 +169,8 @@
     {
       "label": "upstream-master-strict-09",
       "result": "passed",
-      "companyId": "ad5fb3ca-febe-4ad1-94f7-3ef248a9d56b",
-      "durationSeconds": 9,
+      "companyId": "0504df5b-8f71-4927-889c-5bac6920264f",
+      "durationSeconds": 7,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -183,8 +187,8 @@
     {
       "label": "upstream-master-strict-10",
       "result": "passed",
-      "companyId": "43d2cc15-0278-4024-aa03-984f9e9b97d8",
-      "durationSeconds": 8,
+      "companyId": "3e54be1d-5f41-421d-8898-c9f6d45738d4",
+      "durationSeconds": 9,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -201,8 +205,8 @@
     {
       "label": "upstream-master-strict-11",
       "result": "passed",
-      "companyId": "ebc436e9-5d69-442b-be9b-20c4937b4fdc",
-      "durationSeconds": 7,
+      "companyId": "8653bdec-075a-4a65-8993-9b0babd5982e",
+      "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -219,7 +223,7 @@
     {
       "label": "upstream-master-strict-12",
       "result": "passed",
-      "companyId": "58b53921-38f6-4d1d-b0c9-1573bb944044",
+      "companyId": "a88c207e-9347-4339-94bd-a2c00ae7f225",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -237,7 +241,7 @@
     {
       "label": "upstream-master-strict-13",
       "result": "passed",
-      "companyId": "a2b3a161-2540-46bd-801e-ad4a757d377f",
+      "companyId": "02b955b7-6580-4c15-bcca-11a8fc961538",
       "durationSeconds": 9,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -255,8 +259,8 @@
     {
       "label": "upstream-master-strict-14",
       "result": "passed",
-      "companyId": "bec9051a-3aff-4ece-ba2f-f507a8b46a11",
-      "durationSeconds": 8,
+      "companyId": "cd0660ec-bf2d-4e9d-a9da-ccd47736c7eb",
+      "durationSeconds": 7,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -273,7 +277,7 @@
     {
       "label": "upstream-master-strict-15",
       "result": "passed",
-      "companyId": "1259c093-d782-492a-b1b0-2e805f0fc821",
+      "companyId": "6456749b-6361-4cca-a013-c2a84b067ae3",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -291,7 +295,7 @@
     {
       "label": "upstream-master-strict-16",
       "result": "passed",
-      "companyId": "af74e717-1600-4cdd-a3b6-29ec1ffd992a",
+      "companyId": "49d2dcc0-8be9-4d07-b121-9860c5189b53",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -309,8 +313,8 @@
     {
       "label": "upstream-master-strict-17",
       "result": "passed",
-      "companyId": "d2f52f0d-dd3d-40f0-8cff-a01c6e655f14",
-      "durationSeconds": 9,
+      "companyId": "11c5d2ed-9769-47d8-83b2-b040a28b827a",
+      "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -327,8 +331,8 @@
     {
       "label": "upstream-master-strict-18",
       "result": "passed",
-      "companyId": "8fd61a76-648f-41a3-94b1-953b96954e02",
-      "durationSeconds": 8,
+      "companyId": "777011a2-30d1-4766-8713-cb0753eb9cb0",
+      "durationSeconds": 9,
       "e2ePassed": true,
       "claimedKeyProof": {
         "readableByUid10001": true,
@@ -345,7 +349,7 @@
     {
       "label": "upstream-master-strict-19",
       "result": "passed",
-      "companyId": "76511b22-62c8-4b1b-b2cc-0dba3c7cace4",
+      "companyId": "e91fe969-eddc-4652-871c-c9e3d2e15fc3",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {
@@ -363,7 +367,7 @@
     {
       "label": "upstream-master-strict-20",
       "result": "passed",
-      "companyId": "88030707-527c-4dcf-a3ae-a3b892089101",
+      "companyId": "a7db5601-2f7b-42ff-92b1-b5aab9620030",
       "durationSeconds": 8,
       "e2ePassed": true,
       "claimedKeyProof": {

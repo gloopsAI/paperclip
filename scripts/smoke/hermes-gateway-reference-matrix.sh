@@ -24,6 +24,8 @@ Required:
   PAPERCLIP_API_URL=http://127.0.0.1:3189
   PAPERCLIP_API_URL_FOR_HERMES=http://host.docker.internal:3189
   PAPERCLIP_AUTH_HEADER='Bearer <board-token>'
+  PAPERCLIP_SOURCE_COMMIT=<40-hex-clean-runtime-commit>
+  PAPERCLIP_SOURCE_TREE_CLEAN=true
   REFERENCE_DISPOSABLE_ACK=delete-disposable-companies
 
 Common controls:
@@ -58,6 +60,8 @@ done
 : "${PAPERCLIP_API_URL:?PAPERCLIP_API_URL is required}"
 : "${PAPERCLIP_API_URL_FOR_HERMES:?PAPERCLIP_API_URL_FOR_HERMES is required}"
 : "${PAPERCLIP_AUTH_HEADER:?PAPERCLIP_AUTH_HEADER is required}"
+: "${PAPERCLIP_SOURCE_COMMIT:?PAPERCLIP_SOURCE_COMMIT is required}"
+: "${PAPERCLIP_SOURCE_TREE_CLEAN:?PAPERCLIP_SOURCE_TREE_CLEAN is required}"
 : "${REFERENCE_DISPOSABLE_ACK:?REFERENCE_DISPOSABLE_ACK is required}"
 
 REFERENCE_RUNS="${REFERENCE_RUNS:-20}"
@@ -91,6 +95,10 @@ readonly DISALLOWED_PROVIDER_VARS=(
 validate_reference_boundary() {
   [[ "$REFERENCE_DISPOSABLE_ACK" == "$DISPOSABLE_ACK" ]] \
     || fail "REFERENCE_DISPOSABLE_ACK must equal ${DISPOSABLE_ACK}"
+  [[ "$PAPERCLIP_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+    || fail "PAPERCLIP_SOURCE_COMMIT must be an exact lowercase 40-hex commit"
+  [[ "$PAPERCLIP_SOURCE_TREE_CLEAN" == "true" ]] \
+    || fail "PAPERCLIP_SOURCE_TREE_CLEAN must equal true; dirty runtime sources cannot be certified"
   [[ -z "${COMPANY_ID:-}" && -z "${PAPERCLIP_COMPANY_ID:-}" ]] \
     || fail "COMPANY_ID/PAPERCLIP_COMPANY_ID must be unset; the matrix creates and deletes a fresh company per run"
 
@@ -228,10 +236,12 @@ write_receipt() {
     --arg status "$status" \
     --arg paperclipUrl "$PAPERCLIP_API_URL" \
     --arg paperclipForHermes "$PAPERCLIP_API_URL_FOR_HERMES" \
+    --arg sourceCommit "$PAPERCLIP_SOURCE_COMMIT" \
+    --arg sourceTreeClean "$PAPERCLIP_SOURCE_TREE_CLEAN" \
     --arg mockProbeUrl "$REFERENCE_MOCK_PROBE_URL" \
     --arg mockBaseUrl "$HERMES_REFERENCE_MOCK_BASE_URL" \
     --argjson onboardingPacingSeconds "$REFERENCE_DELAY_SECONDS" \
-    '{schemaVersion:"gloops.hermes-reference-matrix.v1",label:$label,status:$status,startedAt:$startedAt,completedAt:$completedAt,boundary:{paperclipUrl:$paperclipUrl,paperclipForHermes:$paperclipForHermes,mockProbeUrl:$mockProbeUrl,mockBaseUrl:$mockBaseUrl,disposableCompanyPerRun:true,localTrustedRequired:true,productionPortRejected:true,realProviderCredentialsRejected:true,onboardingPacingSeconds:$onboardingPacingSeconds},totalRuns:length,passedRuns:(map(select(.result == "passed"))|length),runs:.}' \
+    '{schemaVersion:"gloops.hermes-reference-matrix.v1",label:$label,status:$status,startedAt:$startedAt,completedAt:$completedAt,runtimeSource:{commit:$sourceCommit,treeClean:($sourceTreeClean == "true")},boundary:{paperclipUrl:$paperclipUrl,paperclipForHermes:$paperclipForHermes,mockProbeUrl:$mockProbeUrl,mockBaseUrl:$mockBaseUrl,disposableCompanyPerRun:true,localTrustedRequired:true,productionPortRejected:true,realProviderCredentialsRejected:true,onboardingPacingSeconds:$onboardingPacingSeconds},totalRuns:length,passedRuns:(map(select(.result == "passed"))|length),runs:.}' \
     "$results_file" > "$REFERENCE_RECEIPT"
 }
 
