@@ -60,6 +60,7 @@ if docker run --rm --pull never --network none --read-only -i \
 import sys, yaml
 from hermes_cli.tools_config import _get_platform_tools
 from agent import agent_runtime_helpers
+from openai._base_client import AsyncAPIClient, SyncAPIClient
 import model_tools
 
 config = yaml.safe_load(open(sys.argv[1]))
@@ -81,9 +82,20 @@ assert tools == [], tools
 guard = agent_runtime_helpers.try_recover_primary_transport
 assert getattr(guard, "_paperclip_handshake_guard", False)
 assert guard(None, ConnectionError("synthetic transport failure"), retry_count=1, max_retries=1) is False
+assert getattr(SyncAPIClient.request, "_paperclip_handshake_guard", False)
+assert getattr(AsyncAPIClient.request, "_paperclip_handshake_guard", False)
+claim = SyncAPIClient.request._paperclip_claim_provider_attempt
+assert claim is AsyncAPIClient.request._paperclip_claim_provider_attempt
+claim()
+try:
+    claim()
+except RuntimeError as error:
+    assert str(error) == "paperclip handshake permits one total provider attempt"
+else:
+    raise AssertionError("a second provider transport attempt was admitted")
 PY
 then
-  pass 'exact image resolves zero tools and denies post-ceiling primary transport recovery'
+  pass 'exact image resolves zero tools and rejects every second provider transport attempt'
 else
   fail 'handshake configuration or total-attempt guard is not enforced by the exact image'
 fi

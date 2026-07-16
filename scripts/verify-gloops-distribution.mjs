@@ -703,6 +703,13 @@ for (const required of [
   }
 }
 for (const required of [
+  "class ProviderAttemptBudgetExhausted(RuntimeError):",
+  "if _provider_attempts >= 1:",
+  "paperclip handshake permits one total provider attempt",
+  "def _guarded_sync_request(",
+  "async def _guarded_async_request(",
+  "SyncAPIClient.request = _guarded_sync_request",
+  "AsyncAPIClient.request = _guarded_async_request",
   "def _deny_primary_transport_recovery(",
   "del agent, api_error, retry_count, max_retries",
   "_paperclip_handshake_guard = True",
