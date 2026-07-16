@@ -6,6 +6,7 @@ readonly PROFILE_DIR='/opt/paperclip/hermes-handshake-profile'
 readonly RUNTIME_ENV='/etc/paperclip-gloops/hermes-execution.env'
 readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake.service'
 readonly EGRESS_UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service'
+readonly TOPOLOGY_INSPECTOR='/usr/local/lib/paperclip-gloops/inspect-hermes-handshake-topology.sh'
 readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
 readonly CONTAINER='paperclip-hermes-handshake'
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
@@ -162,13 +163,18 @@ for required in \
 done
 for required in \
   'install-hermes-handshake-egress.sh' 'remove-hermes-handshake-egress.sh' \
-  'inspect-hermes-handshake-topology.sh' 'hermes-handshake-egress-proxy.py' \
+  'hermes-handshake-egress-proxy.py' \
   '--listen 172.30.241.1 --port 18080' '--max-connections 4' \
   'DynamicUser=yes' 'NoNewPrivileges=yes' 'StopWhenUnneeded=yes' \
   'TasksMax=8' 'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
   'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${EGRESS_UNIT}" || fail "handshake egress unit is missing: ${required}"
 done
+if [[ -x "${TOPOLOGY_INSPECTOR}" ]]; then
+  pass 'handshake topology inspector is installed separately and executable'
+else
+  fail 'handshake topology inspector is absent or not executable'
+fi
 for forbidden in \
   'github-app-credentials.py' '/opt/data/.config/gh' '/opt/data/workspace' \
   '/opt/data/sessions' 'HERMES_KANBAN_TASK' '--publish' '-p '; do

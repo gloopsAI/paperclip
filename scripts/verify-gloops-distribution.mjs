@@ -958,6 +958,9 @@ for (const required of [
   "admission is mutually exclusive",
   "^paperclip-gloops(-handshake)?$",
   "every Paperclip control plane must be inactive before the handshake sidecar starts",
+  "readonly TOPOLOGY_INSPECTOR='/usr/local/lib/paperclip-gloops/inspect-hermes-handshake-topology.sh'",
+  '[[ -x "${TOPOLOGY_INSPECTOR}" ]]',
+  "handshake topology inspector is installed separately and executable",
 ]) {
   if (!verifyHermesHandshake.includes(required)) {
     fail(`Hermes provider-handshake verifier is missing ${required}`);
