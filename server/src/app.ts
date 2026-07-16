@@ -174,7 +174,7 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
-    maintenanceMode?: boolean;
+    operatorOnlyMode?: boolean;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
@@ -474,7 +474,7 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  if (!opts.maintenanceMode) {
+  if (!opts.operatorOnlyMode) {
     jobCoordinator.start();
     scheduler.start();
   }
@@ -501,16 +501,16 @@ export async function createApp(
     }
   };
 
-  feedbackExportTimer = !opts.maintenanceMode && opts.feedbackExportService
+  feedbackExportTimer = !opts.operatorOnlyMode && opts.feedbackExportService
     ? setInterval(() => {
       void flushPendingFeedbackExports();
     }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
-  if (!opts.maintenanceMode && opts.feedbackExportService) {
+  if (!opts.operatorOnlyMode && opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
-  if (!opts.maintenanceMode) {
+  if (!opts.operatorOnlyMode) {
     void toolDispatcher.initialize().catch((err) => {
       logger.error({ err }, "Failed to initialize plugin tool dispatcher");
     });
@@ -577,7 +577,7 @@ export async function createApp(
       );
     }
   };
-  if (!opts.maintenanceMode) {
+  if (!opts.operatorOnlyMode) {
     void ensureBundledKubernetesPlugin()
       .then(() => loader.loadAll())
       .then((result) => {
