@@ -8,6 +8,7 @@ readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake.service'
 readonly EGRESS_UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service'
 readonly TOPOLOGY_INSPECTOR='/usr/local/lib/paperclip-gloops/inspect-hermes-handshake-topology.sh'
 readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
+readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly CONTAINER='paperclip-hermes-handshake'
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
 readonly EGRESS_STATE='/run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE'
@@ -56,13 +57,22 @@ else
   fail 'handshake credential pool is missing, malformed, or over-broad'
 fi
 
+if [[ "$(stat -c '%a:%u:%g' "${CRON_PROVIDER}" 2>/dev/null || true)" == '400:10000:10000' ]] \
+  && grep -Fq 'class DisabledCronScheduler(CronScheduler):' "${CRON_PROVIDER}" \
+  && grep -Fq 'stop_event.wait()' "${CRON_PROVIDER}"; then
+  pass 'handshake cron provider is an exact inert shutdown-only implementation'
+else
+  fail 'handshake cron provider is absent, mutable, or not inert'
+fi
+
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --env PYTHONPATH=/opt/paperclip-handshake-guard \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
+  --mount "type=bind,src=${PROFILE_DIR}/cron-disabled,dst=/opt/data/plugins/disabled,readonly" \
   --mount "type=bind,src=${GUARD},dst=/opt/paperclip-handshake-guard/sitecustomize.py,readonly" \
   "${IMAGE}" - /config.yaml <<'PY'
-import sys, unittest, yaml
+import importlib.util, sys, threading, unittest, yaml
 import httpx
 from hermes_cli.tools_config import _get_platform_tools
 from agent import agent_runtime_helpers
@@ -99,6 +109,14 @@ assert getattr(guard, "_paperclip_handshake_guard", False)
 assert guard(None, ConnectionError("synthetic transport failure"), retry_count=1, max_retries=1) is False
 assert getattr(httpx.Client._send_single_request, "_paperclip_handshake_guard", False)
 assert getattr(httpx.AsyncClient._send_single_request, "_paperclip_handshake_guard", False)
+spec = importlib.util.spec_from_file_location("disabled", "/opt/data/plugins/disabled/__init__.py")
+disabled = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(disabled)
+scheduler = disabled.DisabledCronScheduler()
+assert scheduler.name == "disabled"
+stop_event = threading.Event()
+stop_event.set()
+scheduler.start(stop_event)
 guard_request = httpx.Client._send_single_request._paperclip_guard_provider_request
 assert guard_request is httpx.AsyncClient._send_single_request._paperclip_guard_provider_request
 guard_request(httpx.Request("GET", "http://127.0.0.1:8642/v1/models"))
@@ -153,6 +171,7 @@ for required in \
   '--network paperclip-handshake' '--ip 172.30.241.3' '--network-alias hermes-execution' \
   '--dns 127.0.0.1' 'HTTPS_PROXY=http://172.30.241.1:18080' \
   'src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly' \
+  'src=/opt/paperclip/hermes-handshake-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly' \
   'BindsTo=paperclip-hermes-handshake-egress.service' \
   '--memory 1024m' '--memory-swap 1024m' '--cpus 1.0' '--pids-limit 256' \
   'h.try_recover_primary_transport._paperclip_handshake_guard' \
@@ -234,6 +253,12 @@ if [[ "${MODE}" == '--live' ]]; then
   done
   [[ "${health}" == 'healthy' ]] || fail 'handshake container did not become healthy'
 
+  if docker logs "${CONTAINER}" 2>&1 | grep -Fq "using built-in ticker"; then
+    fail 'handshake runtime fell back to the built-in cron ticker'
+  else
+    pass 'handshake runtime did not start the built-in cron ticker'
+  fi
+
   inspect="$(mktemp)"
   trap 'rm -f "${inspect}"' EXIT
   docker inspect "${CONTAINER}" >"${inspect}"
@@ -243,7 +268,7 @@ if [[ "${MODE}" == '--live' ]]; then
     (.[0].Config.Env | index("PYTHONPATH=/opt/paperclip-handshake-guard")) != null and
     (.[0].Config.Env | index("HTTPS_PROXY=http://172.30.241.1:18080")) != null and
     .[0].HostConfig.Dns == ["127.0.0.1"] and
-    (.[0].Mounts | map(.Destination) | sort) == ["/etc/resolv.conf", "/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
+    (.[0].Mounts | map(.Destination) | sort) == ["/etc/resolv.conf", "/opt/data/plugins/disabled", "/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
     (.[0].Mounts | all(.RW == false)) and
     (.[0].Mounts | all(.Destination != "/opt/data/workspace" and .Destination != "/opt/data/sessions" and .Destination != "/opt/data/.config/gh")) and
     .[0].HostConfig.ReadonlyRootfs == true and

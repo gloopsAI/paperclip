@@ -767,6 +767,7 @@ for (const required of [
   "mcp_servers: {}",
   "max_turns: 1",
   "context_length: 262144",
+  "cron:\n  provider: disabled",
   "dispatch_in_gateway: false",
 ]) {
   if (!hermesHandshakeConfig.includes(required)) {
@@ -789,6 +790,7 @@ for (const required of [
   "--pids-limit 256",
   "src=/opt/paperclip/hermes-handshake-profile/config.yaml,dst=/opt/handshake-profile/config.yaml,readonly",
   "src=/opt/paperclip/hermes-handshake-profile/auth.json,dst=/opt/handshake-profile/auth.json,readonly",
+  "src=/opt/paperclip/hermes-handshake-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly",
   "--env PYTHONPATH=/opt/paperclip-handshake-guard",
   "src=/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py,dst=/opt/paperclip-handshake-guard/sitecustomize.py,readonly",
   "h.try_recover_primary_transport._paperclip_handshake_guard",
@@ -961,6 +963,9 @@ for (const required of [
   "readonly TOPOLOGY_INSPECTOR='/usr/local/lib/paperclip-gloops/inspect-hermes-handshake-topology.sh'",
   '[[ -x "${TOPOLOGY_INSPECTOR}" ]]',
   "handshake topology inspector is installed separately and executable",
+  "handshake cron provider is an exact inert shutdown-only implementation",
+  "handshake runtime did not start the built-in cron ticker",
+  '"/opt/data/plugins/disabled"',
 ]) {
   if (!verifyHermesHandshake.includes(required)) {
     fail(`Hermes provider-handshake verifier is missing ${required}`);
@@ -969,6 +974,7 @@ for (const required of [
 for (const required of [
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
   'install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-handshake-config.yaml"',
+  'install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-cron-disabled/__init__.py"',
   'rm -f "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"',
 ]) {
   if (!prepareHermesHandshake.includes(required)) {

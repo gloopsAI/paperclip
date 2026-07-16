@@ -42,6 +42,8 @@ jq '{
 install -m 0600 -o 10000 -g 10000 "${tmp_auth}" "${PROFILE_DIR}/auth.json"
 install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-handshake-config.yaml" "${PROFILE_DIR}/config.yaml"
 install -m 0600 -o root -g root "${LIB_DIR}/hermes-handshake-policy.json" "${PROFILE_DIR}/policy.json"
+install -d -m 0500 -o 10000 -g 10000 "${PROFILE_DIR}/cron-disabled"
+install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-cron-disabled/__init__.py" "${PROFILE_DIR}/cron-disabled/__init__.py"
 rm -f "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"
 
 "${LIB_DIR}/verify-hermes-handshake-profile.sh" --source
