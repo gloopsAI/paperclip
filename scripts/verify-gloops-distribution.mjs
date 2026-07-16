@@ -899,7 +899,6 @@ for (const required of [
   "NoNewPrivileges=yes",
   "ProtectSystem=strict",
   "CapabilityBoundingSet=",
-  "TasksMax=8",
   "MemoryMax=128M",
   "CPUQuota=50%",
   "LimitNOFILE=64",
@@ -908,6 +907,9 @@ for (const required of [
   if (!hermesHandshakeEgressService.includes(required)) {
     fail(`Hermes handshake egress service is missing ${required}`);
   }
+}
+if (hermesHandshakeEgressService.split("\n").filter((line) => line === "TasksMax=64").length !== 1) {
+  fail("Hermes handshake egress service must declare exactly one TasksMax=64 directive");
 }
 for (const required of [
   "kill -KILL \"${proxy_pid}\"",
@@ -963,6 +965,9 @@ for (const required of [
   "readonly TOPOLOGY_INSPECTOR='/usr/local/lib/paperclip-gloops/inspect-hermes-handshake-topology.sh'",
   '[[ -x "${TOPOLOGY_INSPECTOR}" ]]',
   "handshake topology inspector is installed separately and executable",
+  "grep -Fxc 'TasksMax=64'",
+  "systemctl show --property=TasksMax --value paperclip-hermes-handshake-egress.service",
+  "live handshake egress service effective task ceiling is exactly 64",
   "handshake cron provider is an exact inert shutdown-only implementation",
   'if ! docker logs "${CONTAINER}" >"${cron_logs}" 2>&1; then',
   "handshake runtime logs are unavailable for cron-provider verification",

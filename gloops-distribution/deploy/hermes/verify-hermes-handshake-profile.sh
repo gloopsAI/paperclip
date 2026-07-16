@@ -185,10 +185,15 @@ for required in \
   'hermes-handshake-egress-proxy.py' \
   '--listen 172.30.241.1 --port 18080' '--max-connections 4' \
   'DynamicUser=yes' 'NoNewPrivileges=yes' 'StopWhenUnneeded=yes' \
-  'TasksMax=8' 'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
+  'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
   'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${EGRESS_UNIT}" || fail "handshake egress unit is missing: ${required}"
 done
+if [[ "$(grep -Fxc 'TasksMax=64' "${EGRESS_UNIT}" || true)" -eq 1 ]]; then
+  pass 'handshake egress unit declares exactly one 64-task ceiling'
+else
+  fail 'handshake egress unit task ceiling is missing, duplicated, or not exactly 64'
+fi
 if [[ -x "${TOPOLOGY_INSPECTOR}" ]]; then
   pass 'handshake topology inspector is installed separately and executable'
 else
@@ -230,6 +235,11 @@ if [[ "${MODE}" == '--live' ]]; then
   fi
   systemctl is-active --quiet paperclip-hermes-handshake-egress.service \
     || fail 'handshake egress proxy service is not active'
+  if [[ "$(systemctl show --property=TasksMax --value paperclip-hermes-handshake-egress.service 2>/dev/null || true)" == '64' ]]; then
+    pass 'live handshake egress service effective task ceiling is exactly 64'
+  else
+    fail 'live handshake egress service effective task ceiling is not exactly 64'
+  fi
   ss -lntH sport = :18080 | grep -Fq '172.30.241.1:18080' \
     || fail 'handshake egress proxy is not listening only on the isolated bridge gateway'
   if docker network inspect paperclip-handshake | jq -e '
