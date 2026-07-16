@@ -13,12 +13,16 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+import httpx
 from agent import agent_runtime_helpers
-from openai._base_client import AsyncAPIClient, SyncAPIClient
 
 
 class ProviderAttemptBudgetExhausted(RuntimeError):
     """Raised locally before a second provider transport can begin."""
+
+
+class ForbiddenProviderTransport(RuntimeError):
+    """Raised locally before any non-Ollama remote HTTP request can begin."""
 
 
 _attempt_lock = threading.Lock()
@@ -36,18 +40,32 @@ def _claim_provider_attempt() -> None:
         _provider_attempts += 1
 
 
-_original_sync_request = SyncAPIClient.request
-_original_async_request = AsyncAPIClient.request
+_original_sync_send = httpx.Client._send_single_request
+_original_async_send = httpx.AsyncClient._send_single_request
 
 
-def _guarded_sync_request(self: Any, *args: Any, **kwargs: Any) -> Any:
+def _guard_provider_request(request: httpx.Request) -> None:
+    if request.url.scheme not in {"http", "https"}:
+        return
+
+    host = (request.url.host or "").lower().rstrip(".")
+    if host in {"127.0.0.1", "::1", "localhost"}:
+        return
+    if request.url.scheme != "https" or host != "ollama.com":
+        raise ForbiddenProviderTransport(
+            f"paperclip handshake forbids remote provider transport to {request.url}",
+        )
     _claim_provider_attempt()
-    return _original_sync_request(self, *args, **kwargs)
 
 
-async def _guarded_async_request(self: Any, *args: Any, **kwargs: Any) -> Any:
-    _claim_provider_attempt()
-    return await _original_async_request(self, *args, **kwargs)
+def _guarded_sync_send(self: Any, request: httpx.Request) -> httpx.Response:
+    _guard_provider_request(request)
+    return _original_sync_send(self, request)
+
+
+async def _guarded_async_send(self: Any, request: httpx.Request) -> httpx.Response:
+    _guard_provider_request(request)
+    return await _original_async_send(self, request)
 
 
 def _deny_primary_transport_recovery(
@@ -66,9 +84,9 @@ def _deny_primary_transport_recovery(
 _deny_primary_transport_recovery._paperclip_handshake_guard = True  # type: ignore[attr-defined]
 agent_runtime_helpers.try_recover_primary_transport = _deny_primary_transport_recovery
 
-for _guarded_request in (_guarded_sync_request, _guarded_async_request):
-    _guarded_request._paperclip_handshake_guard = True  # type: ignore[attr-defined]
-    _guarded_request._paperclip_claim_provider_attempt = _claim_provider_attempt  # type: ignore[attr-defined]
+for _guarded_send in (_guarded_sync_send, _guarded_async_send):
+    _guarded_send._paperclip_handshake_guard = True  # type: ignore[attr-defined]
+    _guarded_send._paperclip_guard_provider_request = _guard_provider_request  # type: ignore[attr-defined]
 
-SyncAPIClient.request = _guarded_sync_request
-AsyncAPIClient.request = _guarded_async_request
+httpx.Client._send_single_request = _guarded_sync_send
+httpx.AsyncClient._send_single_request = _guarded_async_send

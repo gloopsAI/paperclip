@@ -1,6 +1,7 @@
 model:
   provider: ollama-cloud
   default: kimi-k2.7-code
+  context_length: 262144
 platform_toolsets:
   api_server: []
 known_plugin_toolsets:

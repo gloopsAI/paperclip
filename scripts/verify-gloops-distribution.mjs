@@ -663,6 +663,7 @@ for (const required of [
   "platform_toolsets:\n  api_server: []",
   "mcp_servers: {}",
   "max_turns: 1",
+  "context_length: 262144",
   "dispatch_in_gateway: false",
 ]) {
   if (!hermesHandshakeConfig.includes(required)) {
@@ -704,12 +705,15 @@ for (const required of [
 }
 for (const required of [
   "class ProviderAttemptBudgetExhausted(RuntimeError):",
+  "class ForbiddenProviderTransport(RuntimeError):",
   "if _provider_attempts >= 1:",
   "paperclip handshake permits one total provider attempt",
-  "def _guarded_sync_request(",
-  "async def _guarded_async_request(",
-  "SyncAPIClient.request = _guarded_sync_request",
-  "AsyncAPIClient.request = _guarded_async_request",
+  "def _guard_provider_request(",
+  "if request.url.scheme != \"https\" or host != \"ollama.com\":",
+  "def _guarded_sync_send(",
+  "async def _guarded_async_send(",
+  "httpx.Client._send_single_request = _guarded_sync_send",
+  "httpx.AsyncClient._send_single_request = _guarded_async_send",
   "def _deny_primary_transport_recovery(",
   "del agent, api_error, retry_count, max_retries",
   "_paperclip_handshake_guard = True",

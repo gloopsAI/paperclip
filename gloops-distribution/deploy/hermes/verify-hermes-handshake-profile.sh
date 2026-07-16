@@ -57,15 +57,16 @@ if docker run --rm --pull never --network none --read-only -i \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
   --mount "type=bind,src=${GUARD},dst=/opt/paperclip-handshake-guard/sitecustomize.py,readonly" \
   "${IMAGE}" - /config.yaml <<'PY'
-import sys, yaml
+import sys, unittest, yaml
+import httpx
 from hermes_cli.tools_config import _get_platform_tools
 from agent import agent_runtime_helpers
-from openai._base_client import AsyncAPIClient, SyncAPIClient
+from agent.context_compressor import ContextCompressor
 import model_tools
 
 config = yaml.safe_load(open(sys.argv[1]))
 assert config == {
-    "model": {"provider": "ollama-cloud", "default": "kimi-k2.7-code"},
+    "model": {"provider": "ollama-cloud", "default": "kimi-k2.7-code", "context_length": 262144},
     "platform_toolsets": {"api_server": []},
     "known_plugin_toolsets": {"api_server": ["spotify"]},
     "mcp_servers": {},
@@ -79,23 +80,39 @@ toolsets = sorted(_get_platform_tools(config, "api_server"))
 tools = model_tools.get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
 assert toolsets == [], toolsets
 assert tools == [], tools
+compressor = ContextCompressor(
+    model=config["model"]["default"],
+    base_url="https://ollama.com/v1",
+    api_key="",
+    config_context_length=config["model"]["context_length"],
+    provider=config["model"]["provider"],
+    quiet_mode=True,
+)
+assert compressor.context_length == 262144
 guard = agent_runtime_helpers.try_recover_primary_transport
 assert getattr(guard, "_paperclip_handshake_guard", False)
 assert guard(None, ConnectionError("synthetic transport failure"), retry_count=1, max_retries=1) is False
-assert getattr(SyncAPIClient.request, "_paperclip_handshake_guard", False)
-assert getattr(AsyncAPIClient.request, "_paperclip_handshake_guard", False)
-claim = SyncAPIClient.request._paperclip_claim_provider_attempt
-assert claim is AsyncAPIClient.request._paperclip_claim_provider_attempt
-claim()
-try:
-    claim()
-except RuntimeError as error:
-    assert str(error) == "paperclip handshake permits one total provider attempt"
-else:
-    raise AssertionError("a second provider transport attempt was admitted")
+assert getattr(httpx.Client._send_single_request, "_paperclip_handshake_guard", False)
+assert getattr(httpx.AsyncClient._send_single_request, "_paperclip_handshake_guard", False)
+guard_request = httpx.Client._send_single_request._paperclip_guard_provider_request
+assert guard_request is httpx.AsyncClient._send_single_request._paperclip_guard_provider_request
+guard_request(httpx.Request("GET", "http://127.0.0.1:8642/v1/models"))
+unittest.TestCase().assertRaisesRegex(
+    RuntimeError,
+    "forbids remote provider transport",
+    guard_request,
+    httpx.Request("POST", "https://api.x.ai/v1/chat/completions"),
+)
+guard_request(httpx.Request("POST", "https://ollama.com/v1/chat/completions"))
+unittest.TestCase().assertRaisesRegex(
+    RuntimeError,
+    "one total provider attempt",
+    guard_request,
+    httpx.Request("POST", "https://ollama.com/api/show"),
+)
 PY
 then
-  pass 'exact image resolves zero tools and rejects every second provider transport attempt'
+  pass 'exact image resolves zero tools, rejects non-Ollama remote HTTP, and rejects every second provider transport attempt'
 else
   fail 'handshake configuration or total-attempt guard is not enforced by the exact image'
 fi
