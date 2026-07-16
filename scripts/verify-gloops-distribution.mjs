@@ -45,6 +45,10 @@ const verifyHermesCommandSecurityImagePath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-command-security-image.sh",
   import.meta.url,
 );
+const loadHermesExecutionImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/load-hermes-execution-image.sh",
+  import.meta.url,
+);
 const preflightPath = new URL(
   "../gloops-distribution/deploy/hermes/preflight.sh",
   import.meta.url,
@@ -63,6 +67,10 @@ const rehearseZeroWorkPath = new URL(
 );
 const rollbackPath = new URL(
   "../gloops-distribution/deploy/hermes/rollback.sh",
+  import.meta.url,
+);
+const backupDarkPath = new URL(
+  "../gloops-distribution/deploy/hermes/backup-dark.sh",
   import.meta.url,
 );
 const hermesExecutionConfigPath = new URL(
@@ -136,6 +144,7 @@ const hermesExecutionDockerfile = readFileSync(hermesExecutionDockerfilePath, "u
 const patchHermesCommandSecurity = readFileSync(patchHermesCommandSecurityPath, "utf8");
 const buildHermesExecutionImage = readFileSync(buildHermesExecutionImagePath, "utf8");
 const verifyHermesCommandSecurityImage = readFileSync(verifyHermesCommandSecurityImagePath, "utf8");
+const loadHermesExecutionImage = readFileSync(loadHermesExecutionImagePath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
@@ -146,6 +155,7 @@ const rehearseZeroWorkExecutable = rehearseZeroWork
   .filter((line) => line.length > 0 && !line.startsWith("#"))
   .join("\n");
 const rollback = readFileSync(rollbackPath, "utf8");
+const backupDark = readFileSync(backupDarkPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
 const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
@@ -352,6 +362,11 @@ for (const [surface, content, required] of [
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._circuit_open is True"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "tirith disabled (circuit breaker, fail-closed)"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._install_thread is None"],
+  ["Hermes image loader", loadHermesExecutionImage, "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"],
+  ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
+  ["Hermes image loader", loadHermesExecutionImage, "docker load"],
+  ["cold rollback backup", backupDark, "hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst"],
+  ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
 ]) {
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);
@@ -467,7 +482,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d";
+  "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -528,8 +543,17 @@ if (
 if (hermesExecutionPolicy.runtime?.image !== hermesExecutionImage) {
   fail("Hermes execution image must be immutable and exact");
 }
-if (hermesExecutionPolicy.runtime?.imageAcquisition !== "preprovisioned-local-digest") {
+if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addressed-archive") {
   fail("Hermes execution image acquisition must be explicit");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
+  JSON.stringify({
+    path: "/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst",
+    sha256: "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d",
+  })
+) {
+  fail("Hermes execution image archive must be content-addressed and exact");
 }
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.commandSecurity) !==
@@ -656,6 +680,7 @@ for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
   "verify-hermes-command-security-image.sh",
+  "load-hermes-execution-image.sh",
   "provision-tirith.sh",
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
@@ -673,7 +698,7 @@ for (const required of [
   "hermes-cron-disabled",
   "github-app.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
-  "pre-provisioned immutable Hermes execution image is missing",
+  "load-hermes-execution-image.sh",
 ]) {
   if (!installDark.includes(required)) {
     fail(`dark installer does not govern ${required}`);
@@ -710,6 +735,7 @@ for (const required of [
   "paperclip-hermes-execution.service",
   "hermes-execution-profile",
   "hermes-execution-state",
+  "hermes-execution-*.tar.zst",
   "/usr/local/lib/paperclip-gloops/tools",
   "docker network rm paperclip-execution",
   "github-app-credentials.py revoke-projector",

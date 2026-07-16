@@ -33,8 +33,12 @@
     "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
   },
   "runtime": {
-    "image": "hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d",
-    "imageAcquisition": "preprovisioned-local-digest",
+    "image": "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac",
+    "imageAcquisition": "root-only-content-addressed-archive",
+    "imageArchive": {
+      "path": "/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst",
+      "sha256": "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"
+    },
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
     "rootHomeEphemeral": true,

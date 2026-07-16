@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Apply the one GLoops-owned Hermes command-security correction."""
 
+import os
 from pathlib import Path
 
 
@@ -23,3 +24,5 @@ source = TARGET.read_text()
 if source.count(OLD) != 1:
     raise SystemExit("refusing to patch unexpected Hermes command-security source")
 TARGET.write_text(source.replace(OLD, NEW))
+epoch = int(os.environ["SOURCE_DATE_EPOCH"])
+os.utime(TARGET, (epoch, epoch))
