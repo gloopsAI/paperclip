@@ -139,6 +139,9 @@ for required in \
   '--read-only' '--cap-drop ALL' '--security-opt no-new-privileges:true' \
   '--network paperclip-execution' '--network-alias hermes-execution' \
   '--memory 1024m' '--memory-swap 1024m' '--cpus 1.0' '--pids-limit 256' \
+  'h.try_recover_primary_transport._paperclip_handshake_guard' \
+  'httpx.Client._send_single_request._paperclip_handshake_guard' \
+  'httpx.AsyncClient._send_single_request._paperclip_handshake_guard' \
   'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${UNIT}" || fail "handshake unit is missing: ${required}"
 done
