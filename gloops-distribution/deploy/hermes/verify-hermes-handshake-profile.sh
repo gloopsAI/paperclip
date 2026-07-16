@@ -131,7 +131,8 @@ if jq -e '
     "name":"paperclip-handshake", "internal":true, "ipv6":false, "containerDns":"loopback-static-resolv-conf",
     "apiAlias":"hermes-execution", "apiPort":8642, "apiAuthentication":"bearer-key-required",
     "publishedPorts":[], "internetEgress":"single-connect-exact-authority-and-tls-sni-proxy",
-    "proxyAuthority":"ollama.com:443", "proxyTlsSni":"ollama.com", "proxyTunnelBudget":1
+    "proxyAuthority":"ollama.com:443", "proxyTlsSni":"ollama.com", "proxyTunnelBudget":1,
+    "proxyMaxConnections":4
   } and
   .network.publishedPorts == [] and
   .runtime.image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
@@ -161,8 +162,11 @@ for required in \
 done
 for required in \
   'install-hermes-handshake-egress.sh' 'remove-hermes-handshake-egress.sh' \
-  'hermes-handshake-egress-proxy.py' '--listen 172.30.241.1 --port 18080' \
-  'DynamicUser=yes' 'NoNewPrivileges=yes' 'StopWhenUnneeded=yes' 'RuntimeMaxSec=900'; do
+  'inspect-hermes-handshake-topology.sh' 'hermes-handshake-egress-proxy.py' \
+  '--listen 172.30.241.1 --port 18080' '--max-connections 4' \
+  'DynamicUser=yes' 'NoNewPrivileges=yes' 'StopWhenUnneeded=yes' \
+  'TasksMax=8' 'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
+  'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${EGRESS_UNIT}" || fail "handshake egress unit is missing: ${required}"
 done
 for forbidden in \

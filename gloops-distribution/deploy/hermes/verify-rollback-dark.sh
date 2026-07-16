@@ -2,6 +2,20 @@
 set -euo pipefail
 
 failed=0
+for command in docker iptables ss systemctl; do
+  if ! command -v "${command}" >/dev/null; then
+    echo "FAIL rollback verifier dependency is unavailable: ${command}" >&2
+    failed=1
+  fi
+done
+if ! docker info >/dev/null 2>&1; then
+  echo 'FAIL rollback verifier cannot inspect Docker topology' >&2
+  failed=1
+fi
+if ! iptables -nL INPUT >/dev/null 2>&1 || ! iptables -nL DOCKER-USER >/dev/null 2>&1; then
+  echo 'FAIL rollback verifier cannot inspect firewall topology' >&2
+  failed=1
+fi
 for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   if systemctl is-active --quiet "${unit}" || systemctl is-failed --quiet "${unit}"; then
     echo "FAIL rollback left active or failed unit: ${unit}" >&2

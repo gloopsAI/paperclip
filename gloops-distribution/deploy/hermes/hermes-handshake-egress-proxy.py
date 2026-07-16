@@ -130,11 +130,44 @@ class ProxyServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = False
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], allowed_client: str):
+    def __init__(self, address: tuple[str, int], allowed_client: str, max_connections: int = 4):
         super().__init__(address, ProxyHandler)
         self.allowed_client = allowed_client
         self.claimed = False
         self.claim_lock = threading.Lock()
+        self.connection_slots = threading.BoundedSemaphore(max_connections)
+        self.active_connections = 0
+        self.active_lock = threading.Lock()
+
+    def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        if not self.connection_slots.acquire(blocking=False):
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
+            finally:
+                self.shutdown_request(request)
+            print(json.dumps({
+                "client": client_address[0],
+                "result": "saturated",
+            }, sort_keys=True), flush=True)
+            return
+        with self.active_lock:
+            self.active_connections += 1
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            with self.active_lock:
+                self.active_connections -= 1
+            self.connection_slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.active_lock:
+                self.active_connections -= 1
+            self.connection_slots.release()
 
 
 class ProxyHandler(socketserver.BaseRequestHandler):
@@ -178,8 +211,9 @@ def main() -> None:
     parser.add_argument("--listen", required=True)
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--allowed-client", required=True)
+    parser.add_argument("--max-connections", required=True, type=int, choices=range(1, 9))
     args = parser.parse_args()
-    with ProxyServer((args.listen, args.port), args.allowed_client) as server:
+    with ProxyServer((args.listen, args.port), args.allowed_client, args.max_connections) as server:
         server.serve_forever(poll_interval=0.2)
 
 

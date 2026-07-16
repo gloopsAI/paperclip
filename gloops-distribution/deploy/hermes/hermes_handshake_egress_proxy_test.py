@@ -3,6 +3,7 @@ import importlib.util
 import socket
 import ssl
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -65,6 +66,33 @@ class ProxyTests(unittest.TestCase):
         finally:
             left.close()
             right.close()
+
+    def test_bounds_preclaim_concurrency_and_recovers_capacity(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.server = proxy.ProxyServer(("127.0.0.1", 0), "127.0.0.1", max_connections=1)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+        blocker = self.connect()
+        deadline = time.monotonic() + 2
+        while self.server.active_connections != 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.server.active_connections, 1)
+
+        with self.connect() as saturated:
+            self.assertTrue(saturated.recv(1024).startswith(b"HTTP/1.1 503"))
+
+        blocker.close()
+        deadline = time.monotonic() + 2
+        while self.server.active_connections != 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.server.active_connections, 0)
+
+        with self.connect() as recovered:
+            recovered.sendall(b"CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n")
+            self.assertTrue(recovered.recv(1024).startswith(b"HTTP/1.1 403"))
 
 
 if __name__ == "__main__":

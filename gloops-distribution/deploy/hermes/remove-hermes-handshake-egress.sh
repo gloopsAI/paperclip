@@ -5,6 +5,9 @@ readonly NETWORK='paperclip-handshake'
 readonly INPUT_CHAIN='PCLIP-HS-IN'
 readonly FORWARD_CHAIN='PCLIP-HS-FWD'
 readonly STATE_FILE='/run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+readonly TOPOLOGY_INSPECTOR="${SCRIPT_DIR}/inspect-hermes-handshake-topology.sh"
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
 for command in docker iptables python3; do
@@ -13,14 +16,20 @@ for command in docker iptables python3; do
     exit 1
   }
 done
+[[ -x "${TOPOLOGY_INSPECTOR}" ]] || {
+  echo 'refusing incomplete handshake cleanup; topology inspector is unavailable' >&2
+  exit 1
+}
+topology="$(${TOPOLOGY_INSPECTOR})" || {
+  echo 'refusing incomplete handshake cleanup; Docker topology was not proven' >&2
+  exit 1
+}
+[[ "${topology}" != 'attached' ]] || {
+  echo 'refusing to weaken the handshake boundary while a container remains attached' >&2
+  exit 1
+}
 iptables -nL INPUT >/dev/null || { echo 'host INPUT firewall is unavailable' >&2; exit 1; }
 iptables -nL DOCKER-USER >/dev/null || { echo 'Docker forwarding firewall is unavailable' >&2; exit 1; }
-if docker network inspect "${NETWORK}" >/dev/null 2>&1; then
-  [[ "$(docker network inspect -f '{{len .Containers}}' "${NETWORK}")" == '0' ]] || {
-    echo 'refusing to weaken the handshake boundary while a container remains attached' >&2
-    exit 1
-  }
-fi
 
 remove_jumps() {
   local parent="$1" target="$2"
@@ -42,7 +51,7 @@ for chain in "${INPUT_CHAIN}" "${FORWARD_CHAIN}"; do
   fi
 done
 
-if docker network inspect "${NETWORK}" >/dev/null 2>&1; then
+if [[ "${topology}" == 'empty' ]]; then
   docker network rm "${NETWORK}" >/dev/null
 fi
 rm -f "${STATE_FILE}"

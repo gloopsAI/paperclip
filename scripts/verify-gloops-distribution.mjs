@@ -133,6 +133,18 @@ const removeHermesHandshakeEgressPath = new URL(
   "../gloops-distribution/deploy/hermes/remove-hermes-handshake-egress.sh",
   import.meta.url,
 );
+const inspectHermesHandshakeTopologyPath = new URL(
+  "../gloops-distribution/deploy/hermes/inspect-hermes-handshake-topology.sh",
+  import.meta.url,
+);
+const hermesHandshakeCleanupPreflightTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes_handshake_cleanup_preflight_test.sh",
+  import.meta.url,
+);
+const rehearseHermesHandshakeEgressFailurePath = new URL(
+  "../gloops-distribution/deploy/hermes/rehearse-hermes-handshake-egress-failure.sh",
+  import.meta.url,
+);
 const hermesHandshakeEgressProxyPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-handshake-egress-proxy.py",
   import.meta.url,
@@ -227,6 +239,8 @@ const prepareHermesHandshake = readFileSync(prepareHermesHandshakePath, "utf8");
 const verifyHermesHandshake = readFileSync(verifyHermesHandshakePath, "utf8");
 const installHermesHandshakeEgress = readFileSync(installHermesHandshakeEgressPath, "utf8");
 const removeHermesHandshakeEgress = readFileSync(removeHermesHandshakeEgressPath, "utf8");
+const inspectHermesHandshakeTopology = readFileSync(inspectHermesHandshakeTopologyPath, "utf8");
+const rehearseHermesHandshakeEgressFailure = readFileSync(rehearseHermesHandshakeEgressFailurePath, "utf8");
 const hermesHandshakeEgressProxy = readFileSync(hermesHandshakeEgressProxyPath, "utf8");
 const hermesHandshakeEgressService = readFileSync(hermesHandshakeEgressServicePath, "utf8");
 const verifyHermesHandshakeEgressBoundary = readFileSync(verifyHermesHandshakeEgressBoundaryPath, "utf8");
@@ -237,6 +251,14 @@ try {
   });
 } catch (error) {
   fail(`Hermes handshake egress proxy tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("bash", [hermesHandshakeCleanupPreflightTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Hermes handshake cleanup preflight tests failed: ${error instanceof Error ? error.message : error}`);
 }
 const hermesHandshakeGuard = readFileSync(hermesHandshakeGuardPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
@@ -717,6 +739,7 @@ if (
     proxyAuthority: "ollama.com:443",
     proxyTlsSni: "ollama.com",
     proxyTunnelBudget: 1,
+    proxyMaxConnections: 4,
   }) ||
   JSON.stringify(hermesHandshakePolicy.runtime?.persistentPaths) !== "[]" ||
   JSON.stringify(hermesHandshakePolicy.runtime?.repositoryMounts) !== "[]" ||
@@ -771,6 +794,7 @@ for (const required of [
   "ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
   "BindsTo=paperclip-hermes-handshake-egress.service",
   "ExecStopPost=-/usr/bin/rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED",
+  "ExecStopPost=+/usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh",
   "RuntimeMaxSec=900",
   "verify-hermes-handshake-profile.sh --live",
 ]) {
@@ -806,6 +830,7 @@ for (const forbidden of ["getent", "ollama.com", "api.x.ai", "grok", "xai"] ) {
   }
 }
 for (const required of [
+  "inspect-hermes-handshake-topology.sh",
   "iptables -nL INPUT",
   "iptables -nL DOCKER-USER",
   'args[-2:] == ["-j", target]',
@@ -822,6 +847,17 @@ for (const required of [
   }
 }
 for (const required of [
+  "docker info",
+  "Docker daemon/topology is unavailable",
+  "docker network ls",
+  "docker network inspect",
+  "echo 'attached'",
+]) {
+  if (!inspectHermesHandshakeTopology.includes(required)) {
+    fail(`Hermes handshake topology inspection is missing ${required}`);
+  }
+}
+for (const required of [
   'TARGET = "ollama.com"',
   'line != f"CONNECT {TARGET}:{TARGET_PORT} HTTP/1.1"',
   'if sni != TARGET:',
@@ -830,6 +866,9 @@ for (const required of [
   "one-tunnel budget is exhausted",
   "client source is not the fixed Hermes address",
   "first tunneled payload is not a TLS handshake",
+  "BoundedSemaphore(max_connections)",
+  "if not self.connection_slots.acquire(blocking=False):",
+  "503 Service Unavailable",
 ]) {
   if (!hermesHandshakeEgressProxy.includes(required)) {
     fail(`Hermes handshake SNI proxy is missing ${required}`);
@@ -839,16 +878,30 @@ for (const required of [
   "Before=paperclip-hermes-handshake.service",
   "StopWhenUnneeded=yes",
   "install-hermes-handshake-egress.sh",
-  "hermes-handshake-egress-proxy.py --listen 172.30.241.1 --port 18080 --allowed-client 172.30.241.3",
+  "hermes-handshake-egress-proxy.py --listen 172.30.241.1 --port 18080 --allowed-client 172.30.241.3 --max-connections 4",
   "remove-hermes-handshake-egress.sh",
   "DynamicUser=yes",
   "NoNewPrivileges=yes",
   "ProtectSystem=strict",
   "CapabilityBoundingSet=",
+  "TasksMax=8",
+  "MemoryMax=128M",
+  "CPUQuota=50%",
+  "LimitNOFILE=64",
   "RuntimeMaxSec=900",
 ]) {
   if (!hermesHandshakeEgressService.includes(required)) {
     fail(`Hermes handshake egress service is missing ${required}`);
+  }
+}
+for (const required of [
+  "kill -KILL \"${proxy_pid}\"",
+  "unexpected proxy exit stopped Hermes",
+  "remove-hermes-handshake-egress.sh",
+  "verify-dark.sh",
+]) {
+  if (!rehearseHermesHandshakeEgressFailure.includes(required)) {
+    fail(`Hermes handshake failure rehearsal is missing ${required}`);
   }
 }
 for (const required of [
@@ -1036,9 +1089,11 @@ for (const required of [
   "verify-hermes-handshake-profile.sh",
   "install-hermes-handshake-egress.sh",
   "remove-hermes-handshake-egress.sh",
+  "inspect-hermes-handshake-topology.sh",
   "hermes-handshake-egress-proxy.py",
   "hermes-handshake-resolv.conf",
   "verify-hermes-handshake-egress-boundary.sh",
+  "rehearse-hermes-handshake-egress-failure.sh",
   "verify-rollback-dark.sh",
   "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",
@@ -1136,6 +1191,8 @@ for (const required of [
 }
 for (const required of [
   "paperclip-hermes-handshake-egress.service",
+  "cannot inspect Docker topology",
+  "cannot inspect firewall topology",
   "paperclip.service boot-eligible",
   "rollback left governed unit unmasked",
   "HANDSHAKE_EGRESS_ACTIVE",

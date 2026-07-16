@@ -24,6 +24,7 @@ ExecStartPost=/usr/local/lib/paperclip-gloops/verify-hermes-handshake-profile.sh
 ExecStop=-/usr/bin/docker stop --time 30 paperclip-hermes-handshake
 ExecStopPost=-/usr/bin/docker rm -f paperclip-hermes-handshake
 ExecStopPost=-/usr/bin/rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED
+ExecStopPost=+/usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh
 Restart=no
 RuntimeMaxSec=900
 TimeoutStartSec=90

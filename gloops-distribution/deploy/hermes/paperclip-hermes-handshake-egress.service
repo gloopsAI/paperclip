@@ -12,7 +12,7 @@ StopWhenUnneeded=yes
 [Service]
 Type=simple
 ExecStartPre=+/usr/local/lib/paperclip-gloops/install-hermes-handshake-egress.sh
-ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/hermes-handshake-egress-proxy.py --listen 172.30.241.1 --port 18080 --allowed-client 172.30.241.3
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/hermes-handshake-egress-proxy.py --listen 172.30.241.1 --port 18080 --allowed-client 172.30.241.3 --max-connections 4
 ExecStartPost=/usr/bin/sh -ec 'for i in $(seq 1 50); do /usr/bin/ss -lntH sport = :18080 | /usr/bin/grep -Fq 172.30.241.1:18080 && exit 0; sleep 0.1; done; exit 1'
 ExecStopPost=+/usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh
 DynamicUser=yes
@@ -31,6 +31,10 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+TasksMax=8
+MemoryMax=128M
+CPUQuota=50%
+LimitNOFILE=64
 Restart=no
 RuntimeMaxSec=900
 TimeoutStartSec=30

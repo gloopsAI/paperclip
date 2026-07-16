@@ -20,7 +20,8 @@
     "internetEgress": "single-connect-exact-authority-and-tls-sni-proxy",
     "proxyAuthority": "ollama.com:443",
     "proxyTlsSni": "ollama.com",
-    "proxyTunnelBudget": 1
+    "proxyTunnelBudget": 1,
+    "proxyMaxConnections": 4
   },
   "runtime": {
     "image": "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac",
