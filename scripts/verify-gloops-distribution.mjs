@@ -899,7 +899,7 @@ for (const required of [
   "NoNewPrivileges=yes",
   "ProtectSystem=strict",
   "CapabilityBoundingSet=",
-  "TasksMax=8",
+  "TasksMax=64",
   "MemoryMax=128M",
   "CPUQuota=50%",
   "LimitNOFILE=64",

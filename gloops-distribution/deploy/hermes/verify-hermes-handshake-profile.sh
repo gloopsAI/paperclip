@@ -185,7 +185,7 @@ for required in \
   'hermes-handshake-egress-proxy.py' \
   '--listen 172.30.241.1 --port 18080' '--max-connections 4' \
   'DynamicUser=yes' 'NoNewPrivileges=yes' 'StopWhenUnneeded=yes' \
-  'TasksMax=8' 'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
+  'TasksMax=64' 'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
   'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${EGRESS_UNIT}" || fail "handshake egress unit is missing: ${required}"
 done
