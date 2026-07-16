@@ -696,13 +696,14 @@ for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "age
 if (
   hermesHandshakePolicy.schemaVersion !== "gloops.hermes-provider-handshake.v1" ||
   JSON.stringify(hermesHandshakePolicy.allowedProviders) !== JSON.stringify(["ollama-cloud"]) ||
+  JSON.stringify(hermesHandshakePolicy.allowedRuntimeEnvironment) !== JSON.stringify(["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"]) ||
   JSON.stringify(hermesHandshakePolicy.allowedCredentialFiles) !==
     JSON.stringify(["/opt/handshake-profile/auth.json", "/opt/data/auth.json"]) ||
   JSON.stringify(hermesHandshakePolicy.network) !== JSON.stringify({
     name: "paperclip-handshake",
     internal: true,
     ipv6: false,
-    containerDns: "disabled",
+    containerDns: "loopback-static-resolv-conf",
     apiAlias: "hermes-execution",
     apiPort: 8642,
     apiAuthentication: "bearer-key-required",
@@ -737,6 +738,7 @@ for (const required of [
   "--network paperclip-handshake",
   "--ip 172.30.241.3",
   "--dns 127.0.0.1",
+  "src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly",
   "HTTPS_PROXY=http://172.30.241.1:18080",
   "--network-alias hermes-execution",
   "--read-only",
@@ -991,6 +993,7 @@ for (const required of [
   "--ip 172.30.241.4",
   "--add-host hermes-execution:172.30.241.3",
   "--dns 127.0.0.1",
+  "src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly",
   "PAPERCLIP_HANDSHAKE_ACTIVE /etc/paperclip-gloops/ACTIVATION_APPROVED",
   "RuntimeMaxSec=900",
 ]) {
@@ -1028,6 +1031,7 @@ for (const required of [
   "install-hermes-handshake-egress.sh",
   "remove-hermes-handshake-egress.sh",
   "hermes-handshake-egress-proxy.py",
+  "hermes-handshake-resolv.conf",
   "verify-hermes-handshake-egress-boundary.sh",
   "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",

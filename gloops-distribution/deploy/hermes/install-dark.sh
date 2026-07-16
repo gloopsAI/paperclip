@@ -74,6 +74,7 @@ install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-config.yaml" "${
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${LIB_DIR}/hermes-execution-policy.json"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-config.yaml" "${LIB_DIR}/hermes-handshake-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-policy.json" "${LIB_DIR}/hermes-handshake-policy.json"
+install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-handshake-resolv.conf" "${LIB_DIR}/hermes-handshake-resolv.conf"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gitconfig"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gh-config.yml" "${LIB_DIR}/hermes-execution-gh-config.yml"
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service

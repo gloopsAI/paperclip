@@ -124,10 +124,11 @@ fi
 if jq -e '
   .schemaVersion == "gloops.hermes-provider-handshake.v1" and
   .allowedProviders == ["ollama-cloud"] and
+  .allowedRuntimeEnvironment == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"] and
   .allowedCredentialFiles == ["/opt/handshake-profile/auth.json", "/opt/data/auth.json"] and
   .forbiddenCapabilities == ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"] and
   .network == {
-    "name":"paperclip-handshake", "internal":true, "ipv6":false, "containerDns":"disabled",
+    "name":"paperclip-handshake", "internal":true, "ipv6":false, "containerDns":"loopback-static-resolv-conf",
     "apiAlias":"hermes-execution", "apiPort":8642, "apiAuthentication":"bearer-key-required",
     "publishedPorts":[], "internetEgress":"single-connect-exact-authority-and-tls-sni-proxy",
     "proxyAuthority":"ollama.com:443", "proxyTlsSni":"ollama.com", "proxyTunnelBudget":1
@@ -149,6 +150,7 @@ for required in \
   '--read-only' '--cap-drop ALL' '--security-opt no-new-privileges:true' \
   '--network paperclip-handshake' '--ip 172.30.241.3' '--network-alias hermes-execution' \
   '--dns 127.0.0.1' 'HTTPS_PROXY=http://172.30.241.1:18080' \
+  'src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly' \
   'BindsTo=paperclip-hermes-handshake-egress.service' \
   '--memory 1024m' '--memory-swap 1024m' '--cpus 1.0' '--pids-limit 256' \
   'h.try_recover_primary_transport._paperclip_handshake_guard' \
@@ -231,7 +233,7 @@ if [[ "${MODE}" == '--live' ]]; then
     (.[0].Config.Env | index("PYTHONPATH=/opt/paperclip-handshake-guard")) != null and
     (.[0].Config.Env | index("HTTPS_PROXY=http://172.30.241.1:18080")) != null and
     .[0].HostConfig.Dns == ["127.0.0.1"] and
-    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
+    (.[0].Mounts | map(.Destination) | sort) == ["/etc/resolv.conf", "/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
     (.[0].Mounts | all(.RW == false)) and
     (.[0].Mounts | all(.Destination != "/opt/data/workspace" and .Destination != "/opt/data/sessions" and .Destination != "/opt/data/.config/gh")) and
     .[0].HostConfig.ReadonlyRootfs == true and
