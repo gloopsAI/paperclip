@@ -121,6 +121,10 @@ const verifyHermesHandshakePath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-handshake-profile.sh",
   import.meta.url,
 );
+const hermesHandshakeGuardPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-handshake-guard/sitecustomize.py",
+  import.meta.url,
+);
 const restoreHermesWorkspaceObserverPath = new URL(
   "../gloops-distribution/deploy/hermes/restore-hermes-workspace-observer.sh",
   import.meta.url,
@@ -192,6 +196,7 @@ const hermesHandshakePolicy = JSON.parse(readFileSync(hermesHandshakePolicyPath,
 const hermesHandshakeService = readFileSync(hermesHandshakeServicePath, "utf8");
 const prepareHermesHandshake = readFileSync(prepareHermesHandshakePath, "utf8");
 const verifyHermesHandshake = readFileSync(verifyHermesHandshakePath, "utf8");
+const hermesHandshakeGuard = readFileSync(hermesHandshakeGuardPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
 const stopHermesExecution = readFileSync(stopHermesExecutionPath, "utf8");
@@ -650,7 +655,7 @@ if (
   hermesHandshakePolicy.runtime?.githubCredentials !== false ||
   hermesHandshakePolicy.runtime?.sessionKeyStrategy !== "none" ||
   JSON.stringify(hermesHandshakePolicy.runtime?.providerInvocationBudget) !==
-    JSON.stringify({ maxTurns: 1, maxToolCalls: 0, maxWallMs: 900000 })
+    JSON.stringify({ maxTurns: 1, maxProviderAttempts: 1, maxApplicationAttempts: 1, maxPrimaryRecoveryAttempts: 0, maxSdkRetries: 0, maxToolCalls: 0, maxWallMs: 900000 })
 ) {
   fail("Hermes provider-handshake policy must be one-turn, zero-tool, sessionless, and repository-free");
 }
@@ -658,6 +663,7 @@ for (const required of [
   "platform_toolsets:\n  api_server: []",
   "mcp_servers: {}",
   "max_turns: 1",
+  "context_length: 262144",
   "dispatch_in_gateway: false",
 ]) {
   if (!hermesHandshakeConfig.includes(required)) {
@@ -676,6 +682,9 @@ for (const required of [
   "--pids-limit 256",
   "src=/opt/paperclip/hermes-handshake-profile/config.yaml,dst=/opt/handshake-profile/config.yaml,readonly",
   "src=/opt/paperclip/hermes-handshake-profile/auth.json,dst=/opt/handshake-profile/auth.json,readonly",
+  "--env PYTHONPATH=/opt/paperclip-handshake-guard",
+  "src=/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py,dst=/opt/paperclip-handshake-guard/sitecustomize.py,readonly",
+  "_paperclip_handshake_guard",
   "--entrypoint /bin/sh",
   "cp /opt/handshake-profile/config.yaml /opt/data/config.yaml",
   "chmod 0400 /opt/data/config.yaml",
@@ -692,6 +701,26 @@ for (const required of [
 ]) {
   if (!hermesHandshakeService.includes(required)) {
     fail(`Hermes provider-handshake service is missing ${required}`);
+  }
+}
+for (const required of [
+  "class ProviderAttemptBudgetExhausted(RuntimeError):",
+  "class ForbiddenProviderTransport(RuntimeError):",
+  "if _provider_attempts >= 1:",
+  "paperclip handshake permits one total provider attempt",
+  "def _guard_provider_request(",
+  "if request.url.scheme != \"https\" or host != \"ollama.com\":",
+  "def _guarded_sync_send(",
+  "async def _guarded_async_send(",
+  "httpx.Client._send_single_request = _guarded_sync_send",
+  "httpx.AsyncClient._send_single_request = _guarded_async_send",
+  "def _deny_primary_transport_recovery(",
+  "del agent, api_error, retry_count, max_retries",
+  "_paperclip_handshake_guard = True",
+  "agent_runtime_helpers.try_recover_primary_transport = _deny_primary_transport_recovery",
+]) {
+  if (!hermesHandshakeGuard.includes(required)) {
+    fail(`Hermes provider-handshake recovery guard is missing ${required}`);
   }
 }
 for (const forbidden of [
@@ -851,6 +880,7 @@ for (const required of [
   "hermes-handshake-policy.json",
   "prepare-hermes-handshake-profile.sh",
   "verify-hermes-handshake-profile.sh",
+  "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
   "github-app-credentials.py",

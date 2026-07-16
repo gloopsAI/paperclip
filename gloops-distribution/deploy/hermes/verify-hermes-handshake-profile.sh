@@ -5,6 +5,7 @@ readonly MODE="${1:---source}"
 readonly PROFILE_DIR='/opt/paperclip/hermes-handshake-profile'
 readonly RUNTIME_ENV='/etc/paperclip-gloops/hermes-execution.env'
 readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake.service'
+readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
 readonly CONTAINER='paperclip-hermes-handshake'
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
 failed=0
@@ -52,21 +53,26 @@ fi
 
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
+  --env PYTHONPATH=/opt/paperclip-handshake-guard \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
+  --mount "type=bind,src=${GUARD},dst=/opt/paperclip-handshake-guard/sitecustomize.py,readonly" \
   "${IMAGE}" - /config.yaml <<'PY'
-import sys, yaml
+import sys, unittest, yaml
+import httpx
 from hermes_cli.tools_config import _get_platform_tools
+from agent import agent_runtime_helpers
+from agent.context_compressor import ContextCompressor
 import model_tools
 
 config = yaml.safe_load(open(sys.argv[1]))
 assert config == {
-    "model": {"provider": "ollama-cloud", "default": "kimi-k2.7-code"},
+    "model": {"provider": "ollama-cloud", "default": "kimi-k2.7-code", "context_length": 262144},
     "platform_toolsets": {"api_server": []},
     "known_plugin_toolsets": {"api_server": ["spotify"]},
     "mcp_servers": {},
     "cron": {"provider": "disabled"},
     "kanban": {"dispatch_in_gateway": False},
-    "agent": {"max_turns": 1, "verify_on_stop": False},
+    "agent": {"max_turns": 1, "api_max_retries": 1, "verify_on_stop": False},
     "security": {"redact_secrets": True},
     "_config_version": 35,
 }
@@ -74,11 +80,41 @@ toolsets = sorted(_get_platform_tools(config, "api_server"))
 tools = model_tools.get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
 assert toolsets == [], toolsets
 assert tools == [], tools
+compressor = ContextCompressor(
+    model=config["model"]["default"],
+    base_url="https://ollama.com/v1",
+    api_key="",
+    config_context_length=config["model"]["context_length"],
+    provider=config["model"]["provider"],
+    quiet_mode=True,
+)
+assert compressor.context_length == 262144
+guard = agent_runtime_helpers.try_recover_primary_transport
+assert getattr(guard, "_paperclip_handshake_guard", False)
+assert guard(None, ConnectionError("synthetic transport failure"), retry_count=1, max_retries=1) is False
+assert getattr(httpx.Client._send_single_request, "_paperclip_handshake_guard", False)
+assert getattr(httpx.AsyncClient._send_single_request, "_paperclip_handshake_guard", False)
+guard_request = httpx.Client._send_single_request._paperclip_guard_provider_request
+assert guard_request is httpx.AsyncClient._send_single_request._paperclip_guard_provider_request
+guard_request(httpx.Request("GET", "http://127.0.0.1:8642/v1/models"))
+unittest.TestCase().assertRaisesRegex(
+    RuntimeError,
+    "forbids remote provider transport",
+    guard_request,
+    httpx.Request("POST", "https://api.x.ai/v1/chat/completions"),
+)
+guard_request(httpx.Request("POST", "https://ollama.com/v1/chat/completions"))
+unittest.TestCase().assertRaisesRegex(
+    RuntimeError,
+    "one total provider attempt",
+    guard_request,
+    httpx.Request("POST", "https://ollama.com/api/show"),
+)
 PY
 then
-  pass 'exact image resolves the handshake API surface to zero tools'
+  pass 'exact image resolves zero tools, rejects non-Ollama remote HTTP, and rejects every second provider transport attempt'
 else
-  fail 'handshake configuration does not resolve deterministically to zero tools'
+  fail 'handshake configuration or total-attempt guard is not enforced by the exact image'
 fi
 
 if jq -e '
@@ -92,7 +128,7 @@ if jq -e '
   .runtime.repositoryMounts == [] and
   .runtime.githubCredentials == false and
   .runtime.sessionKeyStrategy == "none" and
-  .runtime.providerInvocationBudget == {"maxTurns": 1, "maxToolCalls": 0, "maxWallMs": 900000}
+  .runtime.providerInvocationBudget == {"maxTurns": 1, "maxProviderAttempts": 1, "maxApplicationAttempts": 1, "maxPrimaryRecoveryAttempts": 0, "maxSdkRetries": 0, "maxToolCalls": 0, "maxWallMs": 900000}
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal provider-handshake policy is exact'
 else
@@ -130,7 +166,8 @@ if [[ "${MODE}" == '--live' ]]; then
   if jq -e '
     .[0].Config.Image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
     (.[0].HostConfig.PortBindings == {} or .[0].HostConfig.PortBindings == null) and
-    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml"] and
+    (.[0].Config.Env | index("PYTHONPATH=/opt/paperclip-handshake-guard")) != null and
+    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
     (.[0].Mounts | all(.RW == false)) and
     (.[0].Mounts | all(.Destination != "/opt/data/workspace" and .Destination != "/opt/data/sessions" and .Destination != "/opt/data/.config/gh")) and
     .[0].HostConfig.ReadonlyRootfs == true and
