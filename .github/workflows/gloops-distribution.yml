@@ -36,6 +36,9 @@ jobs:
       - name: Verify owned distribution manifest
         run: node scripts/verify-gloops-distribution.mjs
 
+      - name: Rehearse internal control-plane firewall readiness
+        run: sudo gloops-distribution/deploy/hermes/rehearse-handshake-control-plane-firewall.sh
+
   container:
     needs:
       - paperclip-ci

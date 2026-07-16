@@ -147,6 +147,24 @@ export function resolveHostVersion(explicitHostVersion?: string): string {
   return explicitHostVersion ?? serverVersion;
 }
 
+export function startAutonomousAppServices(opts: {
+  operatorOnlyMode?: boolean;
+  startJobCoordinator(): void;
+  startJobScheduler(): void;
+  startFeedbackExport(): void;
+  initializeToolDispatcher(): void;
+  startPluginRuntime(): void;
+}): boolean {
+  if (opts.operatorOnlyMode) return false;
+
+  opts.startJobCoordinator();
+  opts.startJobScheduler();
+  opts.startFeedbackExport();
+  opts.initializeToolDispatcher();
+  opts.startPluginRuntime();
+  return true;
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -474,10 +492,6 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  if (!opts.operatorOnlyMode) {
-    jobCoordinator.start();
-    scheduler.start();
-  }
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -501,20 +515,6 @@ export async function createApp(
     }
   };
 
-  feedbackExportTimer = !opts.operatorOnlyMode && opts.feedbackExportService
-    ? setInterval(() => {
-      void flushPendingFeedbackExports();
-    }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
-    : null;
-  feedbackExportTimer?.unref?.();
-  if (!opts.operatorOnlyMode && opts.feedbackExportService) {
-    void flushPendingFeedbackExports();
-  }
-  if (!opts.operatorOnlyMode) {
-    void toolDispatcher.initialize().catch((err) => {
-      logger.error({ err }, "Failed to initialize plugin tool dispatcher");
-    });
-  }
   const devWatcher = createPluginDevWatcher(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
@@ -577,20 +577,38 @@ export async function createApp(
       );
     }
   };
-  if (!opts.operatorOnlyMode) {
-    void ensureBundledKubernetesPlugin()
-      .then(() => loader.loadAll())
-      .then((result) => {
-        if (!result) return;
-        for (const loaded of result.results) {
-          if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-            devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
-          }
-        }
-      }).catch((err) => {
-        logger.error({ err }, "Failed to load ready plugins on startup");
+  startAutonomousAppServices({
+    operatorOnlyMode: opts.operatorOnlyMode,
+    startJobCoordinator: () => jobCoordinator.start(),
+    startJobScheduler: () => scheduler.start(),
+    startFeedbackExport: () => {
+      if (!opts.feedbackExportService) return;
+      feedbackExportTimer = setInterval(() => {
+        void flushPendingFeedbackExports();
+      }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS);
+      feedbackExportTimer.unref?.();
+      void flushPendingFeedbackExports();
+    },
+    initializeToolDispatcher: () => {
+      void toolDispatcher.initialize().catch((err) => {
+        logger.error({ err }, "Failed to initialize plugin tool dispatcher");
       });
-  }
+    },
+    startPluginRuntime: () => {
+      void ensureBundledKubernetesPlugin()
+        .then(() => loader.loadAll())
+        .then((result) => {
+          if (!result) return;
+          for (const loaded of result.results) {
+            if (devWatcher && loaded.success && loaded.plugin.packagePath) {
+              devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+            }
+          }
+        }).catch((err) => {
+          logger.error({ err }, "Failed to load ready plugins on startup");
+        });
+    },
+  });
   let appServicesShutdown = false;
   const shutdownAppServices = () => {
     if (appServicesShutdown) return;

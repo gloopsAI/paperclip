@@ -215,6 +215,7 @@ if [[ "${MODE}" == '--live' ]]; then
       fail 'live handshake egress state is malformed'
     elif ! iptables -C INPUT -s 172.30.241.0/29 -m comment --comment paperclip-handshake-input -j "${INPUT_CHAIN}" \
       || ! iptables -C "${INPUT_CHAIN}" -s 172.30.241.3 -d 172.30.241.1 -p tcp --dport 18080 -m comment --comment paperclip-handshake-proxy -j ACCEPT \
+      || ! iptables -C "${INPUT_CHAIN}" -s 172.30.241.4 -d 172.30.241.1 -p tcp --sport 3100 -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment paperclip-handshake-control-plane-response -j ACCEPT \
       || ! iptables -C "${INPUT_CHAIN}" -m comment --comment paperclip-handshake-host-deny -j REJECT --reject-with icmp-port-unreachable \
       || ! iptables -C DOCKER-USER -s 172.30.241.0/29 -m comment --comment paperclip-handshake-forward -j "${FORWARD_CHAIN}" \
       || ! iptables -C "${FORWARD_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment paperclip-handshake-established -j RETURN \
@@ -223,14 +224,14 @@ if [[ "${MODE}" == '--live' ]]; then
       fail 'live handshake egress firewall boundary is incomplete'
     elif [[ "$(iptables -S INPUT | grep -Fc -- "-j ${INPUT_CHAIN}")" -ne 1 ]] \
       || [[ "$(iptables -S DOCKER-USER | grep -Fc -- "-j ${FORWARD_CHAIN}")" -ne 1 ]] \
-      || [[ "$(iptables -S "${INPUT_CHAIN}" | grep -c '^-A ')" -ne 2 ]] \
+      || [[ "$(iptables -S "${INPUT_CHAIN}" | grep -c '^-A ')" -ne 3 ]] \
       || [[ "$(iptables -S "${FORWARD_CHAIN}" | grep -c '^-A ')" -ne 3 ]]; then
       fail 'live handshake egress firewall contains unexpected rules'
     elif [[ "$(iptables -S INPUT | grep '^-A ' | head -n 1)" != *"-j ${INPUT_CHAIN}" ]] \
       || [[ "$(iptables -S DOCKER-USER | grep '^-A ' | head -n 1)" != *"-j ${FORWARD_CHAIN}" ]]; then
       fail 'live handshake egress firewall is not first in both host and Docker forwarding policy'
     else
-      pass 'live container forwarding is internal-only and host access is limited to the fixed Hermes source and proxy port'
+      pass 'live container forwarding is internal-only; host access admits only the fixed Hermes proxy request and established Paperclip health responses'
     fi
   fi
   systemctl is-active --quiet paperclip-hermes-handshake-egress.service \
