@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "gloops.hermes-provider-handshake.v1",
+  "profile": "paperclip-provider-handshake",
+  "purpose": "one-turn provider transport proof without tools or repository authority",
+  "allowedProviders": ["ollama-cloud"],
+  "allowedRuntimeEnvironment": ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"],
+  "allowedCredentialEnvironment": ["API_SERVER_KEY", "OLLAMA_API_KEY"],
+  "allowedCredentialFiles": ["/opt/data/auth.json"],
+  "forbiddenProviders": ["anthropic", "openai-codex", "openrouter", "xai", "xai-oauth", "grok"],
+  "forbiddenCapabilities": ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"],
+  "network": {
+    "name": "paperclip-execution",
+    "apiAlias": "hermes-execution",
+    "apiPort": 8642,
+    "apiAuthentication": "bearer-key-required",
+    "publishedPorts": [],
+    "internetEgress": "ollama-credential-capability-only"
+  },
+  "runtime": {
+    "image": "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac",
+    "persistentPaths": [],
+    "repositoryMounts": [],
+    "githubCredentials": false,
+    "sessionKeyStrategy": "none",
+    "providerInvocationBudget": {
+      "maxTurns": 1,
+      "maxToolCalls": 0,
+      "maxWallMs": 900000
+    }
+  }
+}

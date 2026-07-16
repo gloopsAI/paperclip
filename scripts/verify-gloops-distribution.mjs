@@ -97,6 +97,26 @@ const verifyHermesExecutionPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-execution-profile.sh",
   import.meta.url,
 );
+const hermesHandshakeConfigPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-handshake-config.yaml",
+  import.meta.url,
+);
+const hermesHandshakePolicyPath = new URL(
+  "../gloops-distribution/deploy/hermes/hermes-handshake-policy.json",
+  import.meta.url,
+);
+const hermesHandshakeServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-hermes-handshake.service",
+  import.meta.url,
+);
+const prepareHermesHandshakePath = new URL(
+  "../gloops-distribution/deploy/hermes/prepare-hermes-handshake-profile.sh",
+  import.meta.url,
+);
+const verifyHermesHandshakePath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-handshake-profile.sh",
+  import.meta.url,
+);
 const restoreHermesWorkspaceObserverPath = new URL(
   "../gloops-distribution/deploy/hermes/restore-hermes-workspace-observer.sh",
   import.meta.url,
@@ -162,6 +182,11 @@ const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8"
 const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
+const hermesHandshakeConfig = readFileSync(hermesHandshakeConfigPath, "utf8");
+const hermesHandshakePolicy = JSON.parse(readFileSync(hermesHandshakePolicyPath, "utf8"));
+const hermesHandshakeService = readFileSync(hermesHandshakeServicePath, "utf8");
+const prepareHermesHandshake = readFileSync(prepareHermesHandshakePath, "utf8");
+const verifyHermesHandshake = readFileSync(verifyHermesHandshakePath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
 const stopHermesExecution = readFileSync(stopHermesExecutionPath, "utf8");
@@ -610,6 +635,77 @@ for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "age
     fail(`Hermes execution configuration must not include ${forbidden}`);
   }
 }
+if (
+  hermesHandshakePolicy.schemaVersion !== "gloops.hermes-provider-handshake.v1" ||
+  JSON.stringify(hermesHandshakePolicy.allowedProviders) !== JSON.stringify(["ollama-cloud"]) ||
+  JSON.stringify(hermesHandshakePolicy.allowedCredentialFiles) !== JSON.stringify(["/opt/data/auth.json"]) ||
+  JSON.stringify(hermesHandshakePolicy.runtime?.persistentPaths) !== "[]" ||
+  JSON.stringify(hermesHandshakePolicy.runtime?.repositoryMounts) !== "[]" ||
+  hermesHandshakePolicy.runtime?.githubCredentials !== false ||
+  hermesHandshakePolicy.runtime?.sessionKeyStrategy !== "none" ||
+  JSON.stringify(hermesHandshakePolicy.runtime?.providerInvocationBudget) !==
+    JSON.stringify({ maxTurns: 1, maxToolCalls: 0, maxWallMs: 900000 })
+) {
+  fail("Hermes provider-handshake policy must be one-turn, zero-tool, sessionless, and repository-free");
+}
+for (const required of [
+  "platform_toolsets:\n  api_server: []",
+  "mcp_servers: {}",
+  "max_turns: 1",
+  "dispatch_in_gateway: false",
+]) {
+  if (!hermesHandshakeConfig.includes(required)) {
+    fail(`Hermes provider-handshake configuration is missing ${required}`);
+  }
+}
+for (const required of [
+  `Environment=HERMES_HANDSHAKE_IMAGE=${hermesExecutionImage}`,
+  "--network paperclip-execution",
+  "--network-alias hermes-execution",
+  "--read-only",
+  "--tmpfs /opt/data:rw,noexec,nosuid,nodev,size=128m,uid=10000,gid=10000,mode=0700",
+  "--memory 1024m",
+  "--memory-swap 1024m",
+  "--cpus 1.0",
+  "--pids-limit 256",
+  "RuntimeMaxSec=900",
+  "verify-hermes-handshake-profile.sh --live",
+]) {
+  if (!hermesHandshakeService.includes(required)) {
+    fail(`Hermes provider-handshake service is missing ${required}`);
+  }
+}
+for (const forbidden of [
+  "github-app-credentials.py",
+  "/opt/data/.config/gh",
+  "/opt/data/workspace",
+  "/opt/data/sessions",
+  "HERMES_KANBAN_TASK",
+  "--publish",
+]) {
+  if (hermesHandshakeService.includes(forbidden)) {
+    fail(`Hermes provider-handshake service contains forbidden authority ${forbidden}`);
+  }
+}
+for (const required of [
+  "_get_platform_tools(config, \"api_server\")",
+  "assert toolsets == []",
+  "assert tools == []",
+  "repository/session/GitHub mounts",
+]) {
+  if (!verifyHermesHandshake.includes(required)) {
+    fail(`Hermes provider-handshake verifier is missing ${required}`);
+  }
+}
+for (const required of [
+  '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
+  'install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-handshake-config.yaml"',
+  'rm -f "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"',
+]) {
+  if (!prepareHermesHandshake.includes(required)) {
+    fail(`Hermes provider-handshake profile preparation is missing ${required}`);
+  }
+}
 for (const required of [
   `Environment=HERMES_EXECUTION_IMAGE=${hermesExecutionImage}`,
   "--network paperclip-execution",
@@ -685,8 +781,13 @@ for (const required of [
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
+  "paperclip-hermes-handshake.service",
   "hermes-execution-config.yaml",
   "hermes-execution-policy.json",
+  "hermes-handshake-config.yaml",
+  "hermes-handshake-policy.json",
+  "prepare-hermes-handshake-profile.sh",
+  "verify-hermes-handshake-profile.sh",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
   "github-app-credentials.py",
@@ -730,10 +831,16 @@ if (!preflight.includes("FORBIDDEN_PROVIDER_ENDPOINT_PATTERN=") ||
 if (!verifyDark.includes("verify-hermes-execution-profile.sh --source")) {
   fail("dark verification must validate the installed Hermes execution profile");
 }
+if (!verifyDark.includes("verify-hermes-handshake-profile.sh --source")) {
+  fail("dark verification must validate the installed Hermes provider-handshake profile");
+}
 for (const required of [
   "HERMES_EXECUTION_APPROVED",
+  "HERMES_HANDSHAKE_APPROVED",
   "paperclip-hermes-execution.service",
+  "paperclip-hermes-handshake.service",
   "hermes-execution-profile",
+  "hermes-handshake-profile",
   "hermes-execution-state",
   "hermes-execution-*.tar.zst",
   "/usr/local/lib/paperclip-gloops/tools",

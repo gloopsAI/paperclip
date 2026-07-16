@@ -1,0 +1,26 @@
+[Unit]
+Description=Paperclip Hermes one-turn zero-tool provider handshake (operator-activated only)
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED
+StartLimitIntervalSec=900
+StartLimitBurst=1
+
+[Service]
+Type=simple
+Environment=HERMES_HANDSHAKE_IMAGE=sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac
+ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-handshake-profile.sh --source
+ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-handshake
+ExecStart=/usr/bin/docker run --rm --name paperclip-hermes-handshake --pull never --read-only --tmpfs /run:rw,exec,nosuid,nodev,size=32m --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m --tmpfs /opt/data:rw,noexec,nosuid,nodev,size=128m,uid=10000,gid=10000,mode=0700 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID --cap-add KILL --security-opt no-new-privileges:true --network paperclip-execution --network-alias hermes-execution --env-file /etc/paperclip-gloops/hermes-execution.env --env HOME=/opt/data --env HERMES_HOME=/opt/data --env HERMES_WRITE_SAFE_ROOT=/opt/data --env HERMES_DISABLE_LAZY_INSTALLS=1 --mount type=bind,src=/opt/paperclip/hermes-handshake-profile/config.yaml,dst=/opt/data/config.yaml,readonly --mount type=bind,src=/opt/paperclip/hermes-handshake-profile/auth.json,dst=/opt/data/auth.json --memory 1024m --memory-swap 1024m --cpus 1.0 --pids-limit 256 --log-driver json-file --log-opt max-size=5m --log-opt max-file=2 --health-cmd "python -c \"import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8642/v1/models',headers={'Authorization':'Bearer '+os.environ['API_SERVER_KEY']}); raise SystemExit(0 if urllib.request.urlopen(r,timeout=3).status == 200 else 1)\"" --health-interval 5s --health-timeout 3s --health-retries 12 --health-start-period 20s ${HERMES_HANDSHAKE_IMAGE} gateway run --replace
+ExecStartPost=/usr/local/lib/paperclip-gloops/verify-hermes-handshake-profile.sh --live
+ExecStop=-/usr/bin/docker stop --time 30 paperclip-hermes-handshake
+ExecStopPost=-/usr/bin/docker rm -f paperclip-hermes-handshake
+Restart=no
+RuntimeMaxSec=900
+TimeoutStartSec=90
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

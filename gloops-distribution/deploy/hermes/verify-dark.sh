@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-hermes-execution.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
   check_inactive "${unit}"
 done
 
@@ -35,6 +35,13 @@ else
   failed=1
 fi
 
+if [[ "$(systemctl is-enabled paperclip-hermes-handshake.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-hermes-handshake.service is masked"
+else
+  echo "FAIL paperclip-hermes-handshake.service is not masked" >&2
+  failed=1
+fi
+
 if [[ ! -e /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED ]]; then
   echo "PASS Hermes execution activation marker is absent"
 else
@@ -46,6 +53,13 @@ if [[ ! -e /etc/paperclip-gloops/ACTIVATION_APPROVED ]]; then
   echo "PASS activation marker is absent"
 else
   echo "FAIL activation marker exists" >&2
+  failed=1
+fi
+
+if [[ ! -e /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED ]]; then
+  echo "PASS Hermes handshake activation marker is absent"
+else
+  echo "FAIL Hermes handshake activation marker exists" >&2
   failed=1
 fi
 
@@ -159,6 +173,13 @@ if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-execution'; 
   failed=1
 else
   echo "PASS no paperclip-hermes-execution container exists"
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-handshake'; then
+  echo "FAIL paperclip-hermes-handshake container exists" >&2
+  failed=1
+else
+  echo "PASS no paperclip-hermes-handshake container exists"
 fi
 
 if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)(3100|8642)$'; then
@@ -309,6 +330,13 @@ if /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source; 
   echo "PASS Hermes execution-only profile is installed"
 else
   echo "FAIL Hermes execution-only profile is invalid" >&2
+  failed=1
+fi
+
+if /usr/local/lib/paperclip-gloops/verify-hermes-handshake-profile.sh --source; then
+  echo "PASS Hermes provider-handshake profile is installed"
+else
+  echo "FAIL Hermes provider-handshake profile is invalid" >&2
   failed=1
 fi
 
