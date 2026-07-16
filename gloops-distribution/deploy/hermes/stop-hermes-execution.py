@@ -25,7 +25,6 @@ from uuid import uuid4
 
 CONTAINER = "paperclip-hermes-execution"
 DOCKER = "/usr/bin/docker"
-HERMES = "/opt/hermes/.venv/bin/hermes"
 CREDENTIAL_RECEIPT = Path("/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
@@ -44,6 +43,30 @@ STATE_COMMAND = (
     "print(json.dumps({'gateway_state':r.get('gateway_state'),"
     "'pid':pid,'updated_at':r.get('updated_at'),'alive':alive},sort_keys=True))"
 )
+S6_PLANNED_STOP_COMMAND = """
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+from gateway.status import write_planned_stop_marker
+from hermes_cli.service_manager import _write_gateway_desired_state
+
+expected_pid = int(sys.argv[1])
+state_path = Path("/opt/data/gateway_state.json")
+state = json.loads(state_path.read_text())
+if state.get("gateway_state") != "running" or state.get("pid") != expected_pid:
+    raise RuntimeError("gateway runtime identity changed before planned stop")
+if not write_planned_stop_marker(expected_pid):
+    raise RuntimeError("could not persist the PID-bound planned-stop marker")
+subprocess.run(
+    ["/command/s6-svc", "-d", "/run/service/gateway-default"],
+    check=True,
+    timeout=5,
+)
+_write_gateway_desired_state("gateway-default", "stopped")
+print(json.dumps({"dispatched": True, "targetPid": expected_pid}, sort_keys=True))
+"""
 
 
 class StopError(RuntimeError):
@@ -240,14 +263,21 @@ def planned_stop(deadline: float) -> tuple[bool, str]:
             "--env",
             "HERMES_HOME=/opt/data",
             CONTAINER,
-            HERMES,
-            "gateway",
-            "stop",
+            "/opt/hermes/.venv/bin/python",
+            "-c",
+            S6_PLANNED_STOP_COMMAND,
+            str(before["pid"]),
         ],
-        timeout=timeout_before(deadline, 30),
+        timeout=timeout_before(deadline, 15),
     )
     if command.returncode != 0:
         return False, (command.stderr or command.stdout).strip()[-500:]
+    try:
+        dispatch = json.loads(command.stdout)
+    except json.JSONDecodeError:
+        return False, "planned-stop dispatch returned a malformed receipt"
+    if dispatch != {"dispatched": True, "targetPid": before["pid"]}:
+        return False, "planned-stop dispatch did not bind to the observed gateway PID"
 
     while time.monotonic() < deadline:
         if not container_exists(deadline):

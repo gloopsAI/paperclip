@@ -55,6 +55,11 @@ class StopHermesExecutionTests(unittest.TestCase):
     def test_state_probe_uses_the_immutable_runtime_schema(self):
         self.assertIn("'gateway_state':r.get('gateway_state')", stopper.STATE_COMMAND)
 
+    def test_planned_stop_dispatch_is_pid_bound_to_the_fixed_s6_slot(self):
+        self.assertIn("write_planned_stop_marker(expected_pid)", stopper.S6_PLANNED_STOP_COMMAND)
+        self.assertIn('["/command/s6-svc", "-d", "/run/service/gateway-default"]', stopper.S6_PLANNED_STOP_COMMAND)
+        self.assertIn('_write_gateway_desired_state("gateway-default", "stopped")', stopper.S6_PLANNED_STOP_COMMAND)
+
     def test_state_probe_parses_real_runtime_record_shape(self):
         with tempfile.TemporaryDirectory() as directory:
             record = {
@@ -79,10 +84,20 @@ class StopHermesExecutionTests(unittest.TestCase):
         after = {"gateway_state": "stopped", "pid": 42, "updated_at": "2026-07-15T00:00:01Z", "alive": False}
         with patch.object(stopper, "read_gateway_record", side_effect=[before, after]), \
                 patch.object(stopper, "container_exists", return_value=True), \
-                patch.object(stopper, "run", return_value=result()):
+                patch.object(stopper, "run", return_value=result(stdout='{"dispatched": true, "targetPid": 42}\n')):
             accepted, detail = stopper.planned_stop(float("inf"))
         self.assertTrue(accepted)
         self.assertEqual(detail, "")
+
+    def test_planned_stop_rejects_a_dispatch_for_another_pid(self):
+        before = {"gateway_state": "running", "pid": 42, "updated_at": "2026-07-15T00:00:00Z", "alive": True}
+        with patch.object(stopper, "read_gateway_record", return_value=before), \
+                patch.object(stopper, "run", return_value=result(stdout='{"dispatched": true, "targetPid": 41}\n')), \
+                patch.object(stopper, "container_exists") as container:
+            accepted, detail = stopper.planned_stop(float("inf"))
+        self.assertFalse(accepted)
+        self.assertIn("did not bind", detail)
+        container.assert_not_called()
 
     def test_stale_stopped_state_cannot_masquerade_as_a_transition(self):
         stale = {"gateway_state": "stopped", "pid": 42, "updated_at": "2026-07-15T00:00:00Z", "alive": False}
@@ -96,7 +111,7 @@ class StopHermesExecutionTests(unittest.TestCase):
     def test_container_disappearance_before_state_is_not_graceful(self):
         before = {"gateway_state": "running", "pid": 42, "updated_at": "2026-07-15T00:00:00Z", "alive": True}
         with patch.object(stopper, "read_gateway_record", return_value=before), \
-                patch.object(stopper, "run", return_value=result()), \
+                patch.object(stopper, "run", return_value=result(stdout='{"dispatched": true, "targetPid": 42}\n')), \
                 patch.object(stopper, "container_exists", return_value=False):
             accepted, detail = stopper.planned_stop(float("inf"))
         self.assertFalse(accepted)

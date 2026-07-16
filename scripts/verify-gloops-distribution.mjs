@@ -550,11 +550,15 @@ for (const required of [
   "RECEIPT_RESERVE_SECONDS = 12",
   "FORCED_DARK_RESERVE_SECONDS = CONTAINER_STOP_TIMEOUT_SECONDS + RECEIPT_RESERVE_SECONDS",
   "PLANNED_STOP_TIMEOUT_SECONDS = HELPER_BUDGET_SECONDS - FORCED_DARK_RESERVE_SECONDS",
-  "timeout=timeout_before(deadline, 30)",
+  "timeout=timeout_before(deadline, 15)",
   "timeout=timeout_before(deadline, CONTAINER_STOP_TIMEOUT_SECONDS)",
   "acquire_history_lock(lock_fd, deadline)",
   "signal.setitimer(signal.ITIMER_REAL, remaining)",
   "append_receipt(receipt, helper_deadline)",
+  "write_planned_stop_marker(expected_pid)",
+  '["/command/s6-svc", "-d", "/run/service/gateway-default"]',
+  '_write_gateway_desired_state("gateway-default", "stopped")',
+  'dispatch != {"dispatched": True, "targetPid": before["pid"]}',
 ]) {
   if (!stopHermesExecution.includes(required)) {
     fail(`Hermes planned-stop helper is missing bounded deadline invariant ${required}`);
@@ -754,8 +758,8 @@ if (
   fail("GitHub App mint lifecycle must retain its intent through durable handle and receipt persistence");
 }
 for (const required of [
-  '"gateway",',
-  '"stop",',
+  'S6_PLANNED_STOP_COMMAND',
+  '"targetPid": expected_pid',
   'gateway_state.json',
   "'gateway_state':r.get('gateway_state')",
   'receipt["gatewayState"] = "stopped" if graceful else None',
