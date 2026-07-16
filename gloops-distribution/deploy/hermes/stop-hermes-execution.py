@@ -27,6 +27,7 @@ HERMES = "/opt/hermes/.venv/bin/hermes"
 CREDENTIAL_RECEIPT = Path("/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
+PLANNED_STOP_TIMEOUT_SECONDS = 60
 STATE_COMMAND = (
     "import json,os,pathlib; "
     "p=pathlib.Path(os.environ.get('HERMES_HOME','/opt/data'))/'gateway_state.json'; "
@@ -206,7 +207,7 @@ def planned_stop() -> tuple[bool, str]:
     if command.returncode != 0:
         return False, (command.stderr or command.stdout).strip()[-500:]
 
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + PLANNED_STOP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if not container_exists():
             return False, "container exited before gateway_state=stopped was observed"
@@ -221,7 +222,10 @@ def planned_stop() -> tuple[bool, str]:
         ):
             return True, ""
         time.sleep(0.25)
-    return False, "gateway_state did not become stopped within 30 seconds"
+    return False, (
+        "gateway_state did not become stopped within "
+        f"{PLANNED_STOP_TIMEOUT_SECONDS} seconds"
+    )
 
 
 def stop_container() -> tuple[bool, str]:

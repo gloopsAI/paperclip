@@ -274,6 +274,19 @@ if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperc
 if (!service.includes("TimeoutStopSec=100")) {
   fail("Paperclip stop budget must cover secret clearing, token revocation, and graceful container shutdown");
 }
+const refreshProjectorIndex = service.indexOf(
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-projector",
+);
+const paperclipPreflightIndex = service.indexOf(
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh",
+);
+if (
+  refreshProjectorIndex < 0 ||
+  paperclipPreflightIndex < 0 ||
+  refreshProjectorIndex > paperclipPreflightIndex
+) {
+  fail("Paperclip must mint the projector role before live preflight so failed activation can archive a complete credential lifecycle");
+}
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
   "PAPERCLIP_MTE_ENABLED=false",
@@ -488,6 +501,9 @@ for (const required of [
   if (!hermesExecutionService.includes(required)) {
     fail(`Hermes execution service is missing ${required}`);
   }
+}
+if (!stopHermesExecution.includes("PLANNED_STOP_TIMEOUT_SECONDS = 60")) {
+  fail("Hermes planned-stop evidence window must cover the observed s6 teardown");
 }
 for (const forbidden of ["/opt/paperclip/hermes-home", "--publish", "XAI_API_KEY", "GROK_API_KEY", "SLACK_"]) {
   if (hermesExecutionService.includes(forbidden)) {

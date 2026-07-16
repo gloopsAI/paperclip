@@ -27,6 +27,9 @@ def result(code: int = 0, stdout: str = "", stderr: str = ""):
 
 
 class StopHermesExecutionTests(unittest.TestCase):
+    def test_planned_stop_budget_covers_observed_s6_teardown(self):
+        self.assertEqual(stopper.PLANNED_STOP_TIMEOUT_SECONDS, 60)
+
     def test_state_probe_uses_the_immutable_runtime_schema(self):
         self.assertIn("'gateway_state':r.get('gateway_state')", stopper.STATE_COMMAND)
 
