@@ -305,6 +305,7 @@ for (const required of [
   "kill -0 \"${evidence_pid}\"",
   '"${LIB_DIR}/github-app-credentials.py" clear-projector',
   '"${LIB_DIR}/verify-hermes-execution-profile.sh" --live',
+  "systemctl daemon-reload",
   "verify-dark.sh",
 ]) {
   if (!rehearseZeroWork.includes(required)) {
@@ -329,6 +330,10 @@ for (const required of [
 const trapIndex = rehearseZeroWork.indexOf("trap cleanup EXIT");
 const egressDenyIndex = rehearseZeroWork.indexOf("iptables -I DOCKER-USER 1");
 const unmaskIndex = rehearseZeroWork.indexOf('systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"');
+const daemonReloadIndex = rehearseZeroWork.indexOf("systemctl daemon-reload", unmaskIndex);
+const hermesMarkerIndex = rehearseZeroWork.indexOf(
+  'install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
+);
 const lockIndex = rehearseZeroWork.indexOf("IN ACCESS EXCLUSIVE MODE");
 const clearProjectorIndex = rehearseZeroWork.indexOf(
   '"${LIB_DIR}/github-app-credentials.py" clear-projector',
@@ -347,6 +352,8 @@ if (
   trapIndex < 0 ||
   egressDenyIndex < 0 ||
   unmaskIndex < 0 ||
+  daemonReloadIndex < 0 ||
+  hermesMarkerIndex < 0 ||
   clearProjectorIndex < 0 ||
   lockIndex < 0 ||
   holderIndex < 0 ||
@@ -356,6 +363,8 @@ if (
   !(
     trapIndex < egressDenyIndex &&
     egressDenyIndex < unmaskIndex &&
+    unmaskIndex < daemonReloadIndex &&
+    daemonReloadIndex < hermesMarkerIndex &&
     unmaskIndex < clearProjectorIndex &&
     clearProjectorIndex < lockIndex &&
     lockIndex < holderIndex &&
