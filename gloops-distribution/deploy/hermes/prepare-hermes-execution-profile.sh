@@ -10,6 +10,8 @@ readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly RUNTIME_ENV="${CONFIG_DIR}/hermes-execution.env"
 readonly IMAGE='hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78'
 readonly NETWORK='paperclip-execution'
+readonly HERMES_UID='10000'
+readonly HERMES_GID='10000'
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
 for unit in paperclip-gloops.service paperclip-hermes-execution.service; do
@@ -24,7 +26,10 @@ docker image inspect "${IMAGE}" >/dev/null
 
 install -d -m 0700 -o root -g root "${PROFILE_DIR}" "${STATE_DIR}" "${CONFIG_DIR}"
 for path in cache logs memories sessions; do
-  install -d -m 0700 -o root -g root "${STATE_DIR}/${path}"
+  # These directories are mounted inside the Hermes-owned /opt/data tmpfs.
+  # Prepare their host-side bind roots for the same fixed identity rather than
+  # depending on image startup hooks to repair ownership as a side effect.
+  install -d -m 0700 -o "${HERMES_UID}" -g "${HERMES_GID}" "${STATE_DIR}/${path}"
 done
 # Paperclip observes this tree read-only as uid:gid 995:985. Hermes owns the
 # writable side as uid 10000. The shared group can traverse the bind-mount root

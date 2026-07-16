@@ -537,6 +537,12 @@ for (const required of [
     fail(`Hermes execution service is missing ${required}`);
   }
 }
+for (const path of ["cache", "logs", "memories", "sessions"]) {
+  const mount = `--mount type=bind,src=/opt/paperclip/hermes-execution-state/${path},dst=/opt/data/${path}`;
+  if (!hermesExecutionService.includes(`${mount} `)) {
+    fail(`Hermes execution service is missing persistent state mount ${mount}`);
+  }
+}
 for (const required of [
   "SYSTEMD_STOP_TIMEOUT_SECONDS = 120",
   "HELPER_BUDGET_SECONDS = 100",
@@ -635,6 +641,7 @@ for (const required of [
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
   'base_url == "https://ollama.com/v1"',
   'chmod 0500 "${PROFILE_DIR}/gh"',
+  'install -d -m 0700 -o "${HERMES_UID}" -g "${HERMES_GID}" "${STATE_DIR}/${path}"',
 ]) {
   if (!prepareHermesExecution.includes(required)) {
     fail(`Hermes profile preparation is missing ${required}`);
@@ -645,6 +652,7 @@ if (prepareHermesExecution.includes("github-app-credentials.py\" refresh")) {
 }
 for (const required of [
   "credential pool is limited to Ollama Cloud with no fallback credential",
+  "persistent Hermes state is writable only by the fixed Hermes identity",
   "short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope",
   "live GitHub App token projection matches the broker-verified exact credential receipt",
   "docker exec -i --user 10000:10000",
@@ -652,6 +660,9 @@ for (const required of [
   "live container publishes no host ports",
   "live authenticated API boundary is healthy",
   "live Hermes identity exclusively owns the ephemeral lifecycle root",
+  "live persistent Hermes state mounts are exact and writable only by the fixed Hermes identity",
+  'expected_state_mount="${STATE_DIR}/${path} -> /opt/data/${path} (true)"',
+  'docker exec -i --user 10000:10000 "${CONTAINER}" /opt/hermes/.venv/bin/python - <<\'PY\'',
   "live API rejects unauthenticated execution-plane access",
   "live Paperclip observer can read the exact plugin pilot repository",
   "Grok is host-CLI-only with no API configuration",
