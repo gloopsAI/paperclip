@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ENV_NAMES = [
   "PAPERCLIP_MAINTENANCE_MODE",
+  "PAPERCLIP_OPERATOR_ONLY_MODE",
   "HOST",
   "PAPERCLIP_BIND",
   "PAPERCLIP_BIND_HOST",
@@ -12,6 +13,7 @@ const ENV_NAMES = [
   "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
   "PAPERCLIP_ALLOWED_HOSTNAMES",
   "PAPERCLIP_ENABLE_COMPANY_DELETION",
+  "PAPERCLIP_DEPLOYMENT_MODE",
 ] as const;
 const original = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]));
 
@@ -44,6 +46,7 @@ describe("maintenance config safety", () => {
 
     expect(config).toMatchObject({
       maintenanceMode: true,
+      operatorOnlyMode: true,
       host: "127.0.0.1",
       bind: "loopback",
       customBindHost: undefined,
@@ -51,6 +54,30 @@ describe("maintenance config safety", () => {
       authBaseUrlMode: "auto",
       authPublicBaseUrl: undefined,
       allowedHostnames: [],
+      heartbeatSchedulerEnabled: false,
+      databaseBackupEnabled: false,
+      companyDeletionEnabled: false,
+      telemetryEnabled: false,
+    });
+  });
+
+  it("preserves the configured network and embedded database while disabling autonomous facilities", async () => {
+    process.env.PAPERCLIP_OPERATOR_ONLY_MODE = "true";
+    process.env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
+    process.env.HOST = "0.0.0.0";
+    process.env.PAPERCLIP_BIND = "lan";
+    process.env.HEARTBEAT_SCHEDULER_ENABLED = "true";
+    process.env.PAPERCLIP_DB_BACKUP_ENABLED = "true";
+
+    const { loadConfig } = await import("../config.js");
+    const config = loadConfig();
+
+    expect(config).toMatchObject({
+      maintenanceMode: false,
+      operatorOnlyMode: true,
+      host: "0.0.0.0",
+      bind: "lan",
+      databaseMode: "embedded-postgres",
       heartbeatSchedulerEnabled: false,
       databaseBackupEnabled: false,
       companyDeletionEnabled: false,

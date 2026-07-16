@@ -1085,6 +1085,7 @@ for (const required of [
   "--ip 172.30.241.4",
   "--add-host hermes-execution:172.30.241.3",
   "--dns 127.0.0.1",
+  "--env PAPERCLIP_OPERATOR_ONLY_MODE=true",
   "src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly",
   "PAPERCLIP_HANDSHAKE_ACTIVE /etc/paperclip-gloops/ACTIVATION_APPROVED",
   "RuntimeMaxSec=900",

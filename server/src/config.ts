@@ -51,6 +51,7 @@ type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
   maintenanceMode: boolean;
+  operatorOnlyMode: boolean;
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
   bind: BindMode;
@@ -112,6 +113,8 @@ function detectTailnetBindHost(): string | undefined {
 export function loadConfig(): Config {
   const fileConfig = readConfigFile();
   const maintenanceMode = process.env.PAPERCLIP_MAINTENANCE_MODE === "true";
+  const operatorOnlyMode =
+    maintenanceMode || process.env.PAPERCLIP_OPERATOR_ONLY_MODE === "true";
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
@@ -251,12 +254,12 @@ export function loadConfig(): Config {
     ),
   );
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
-  const companyDeletionEnabled = maintenanceMode
+  const companyDeletionEnabled = operatorOnlyMode
     ? false
     : companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
-  const databaseBackupEnabled = maintenanceMode
+  const databaseBackupEnabled = operatorOnlyMode
     ? false
     : process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
@@ -300,6 +303,7 @@ export function loadConfig(): Config {
 
   return {
     maintenanceMode,
+    operatorOnlyMode,
     deploymentMode,
     deploymentExposure,
     bind: resolvedBind.bind,
@@ -343,11 +347,11 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: maintenanceMode
+    heartbeatSchedulerEnabled: operatorOnlyMode
       ? false
       : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
-    telemetryEnabled: maintenanceMode ? false : fileConfig?.telemetry?.enabled ?? true,
+    telemetryEnabled: operatorOnlyMode ? false : fileConfig?.telemetry?.enabled ?? true,
   };
 }
