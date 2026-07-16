@@ -50,7 +50,7 @@ trap 'rm -rf "${stage}"' EXIT
 tar --zstd -cf "${stage}/paperclip-state.tar.zst" -C /home/paperclip .paperclip
 tar --zstd -cf "${stage}/paperclip-db-physical.tar.zst" -C "${STATE_DIR}/instances/default" db
 install -m 0600 -o root -g root "${SERVICE_FILE}" "${stage}/paperclip.service.before"
-install -m 0600 -o root -g root "${HERMES_IMAGE_ARCHIVE}" "${stage}/$(basename "${HERMES_IMAGE_ARCHIVE}")"
+ln "${HERMES_IMAGE_ARCHIVE}" "${stage}/$(basename "${HERMES_IMAGE_ARCHIVE}")"
 (
   cd "${stage}"
   sha256sum hermes-execution-*.tar.zst paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before >SHA256SUMS
