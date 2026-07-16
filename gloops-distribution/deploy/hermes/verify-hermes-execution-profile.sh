@@ -290,7 +290,7 @@ if [[ "${MODE}" == '--live' ]]; then
     live_mounts="$(mktemp)"
     trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
-    docker inspect --format '{{range .Mounts}}{{println .Source " -> " .Destination " (" .RW ")"}}{{end}}' "${CONTAINER}" >"${live_mounts}"
+    docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
     hermes_fingerprint="$(jq -r '.hermes.tokenFingerprint // empty' "${CREDENTIAL_RECEIPT}")"
     if [[ "${hermes_fingerprint}" =~ ^[0-9a-f]{64}$ ]] \
       && docker exec -i --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
@@ -310,16 +310,41 @@ PY
     else
       pass 'live environment excludes channels and forbidden providers'
     fi
-    if grep -Fq '/opt/paperclip/hermes-home' "${live_mounts}"; then
-      fail 'live container mounts the broad Hermes home'
-    else
+    if jq -e --arg broad_home '/opt/paperclip/hermes-home' '
+      type == "array"
+      and all(.[];
+        type == "object"
+        and (.Type | type) == "string"
+        and (.Source | type) == "string"
+        and (.Destination | type) == "string"
+        and (.RW | type) == "boolean"
+      )
+      and all(.[];
+        .Source != $broad_home
+        and ((.Source | startswith($broad_home + "/")) | not)
+      )
+    ' "${live_mounts}" >/dev/null; then
       pass 'live container mounts only the dedicated profile and state'
+    else
+      fail 'live mount metadata is invalid or includes the broad Hermes home'
     fi
     live_state_mounts_valid=1
     for path in cache logs memories sessions; do
-      expected_state_mount="${STATE_DIR}/${path} -> /opt/data/${path} (true)"
-      if ! grep -Fxq -- "${expected_state_mount}" "${live_mounts}"; then
-        fail "live persistent Hermes state mount is missing or read-only: ${expected_state_mount}"
+      expected_state_source="${STATE_DIR}/${path}"
+      expected_state_destination="/opt/data/${path}"
+      if ! jq -e \
+        --arg source "${expected_state_source}" \
+        --arg destination "${expected_state_destination}" '
+          type == "array"
+          and ([.[] | select(.Destination == $destination)] | length) == 1
+          and any(.[];
+            .Type == "bind"
+            and .Source == $source
+            and .Destination == $destination
+            and .RW == true
+          )
+        ' "${live_mounts}" >/dev/null; then
+        fail "live persistent Hermes state mount is missing, duplicated, inexact, or read-only: ${expected_state_source} -> ${expected_state_destination}"
         live_state_mounts_valid=0
       fi
     done
