@@ -713,6 +713,8 @@ for (const required of [
   "repository/session/GitHub mounts",
   "all(.RW == false)",
   "admission is mutually exclusive",
+  "^paperclip-gloops(-handshake)?$",
+  "every Paperclip control plane must be inactive before the handshake sidecar starts",
 ]) {
   if (!verifyHermesHandshake.includes(required)) {
     fail(`Hermes provider-handshake verifier is missing ${required}`);

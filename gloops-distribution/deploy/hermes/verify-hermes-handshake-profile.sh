@@ -23,8 +23,9 @@ if systemctl is-active --quiet paperclip-hermes-execution.service \
 fi
 if [[ "${MODE}" == '--source' ]] \
   && { systemctl is-active --quiet paperclip-gloops.service \
-    || docker ps --format '{{.Names}}' | grep -Fxq 'paperclip-gloops'; }; then
-  fail 'Paperclip must be inactive before the handshake sidecar starts'
+    || docker ps --format '{{.Names}}' | grep -Eq '^paperclip-gloops(-handshake)?$'; }; then
+  echo 'FAIL every Paperclip control plane must be inactive before the handshake sidecar starts' >&2
+  exit 1
 fi
 
 mapfile -t env_keys < <(sed -nE 's/^([A-Z][A-Z0-9_]*)=.*/\1/p' "${RUNTIME_ENV}" 2>/dev/null | sort -u)
