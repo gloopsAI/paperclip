@@ -5,7 +5,7 @@
   "allowedProviders": ["ollama-cloud"],
   "allowedRuntimeEnvironment": ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"],
   "allowedCredentialEnvironment": ["API_SERVER_KEY", "OLLAMA_API_KEY"],
-  "allowedCredentialFiles": ["/opt/data/auth.json"],
+  "allowedCredentialFiles": ["/opt/handshake-profile/auth.json", "/opt/data/auth.json"],
   "forbiddenProviders": ["anthropic", "openai-codex", "openrouter", "xai", "xai-oauth", "grok"],
   "forbiddenCapabilities": ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"],
   "network": {

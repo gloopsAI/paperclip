@@ -17,6 +17,16 @@ fail() { echo "FAIL $1" >&2; failed=1; }
   exit 2
 }
 
+if systemctl is-active --quiet paperclip-hermes-execution.service \
+  || docker ps --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-execution'; then
+  fail 'general Hermes execution is active; handshake admission is mutually exclusive'
+fi
+if [[ "${MODE}" == '--source' ]] \
+  && { systemctl is-active --quiet paperclip-gloops.service \
+    || docker ps --format '{{.Names}}' | grep -Fxq 'paperclip-gloops'; }; then
+  fail 'Paperclip must be inactive before the handshake sidecar starts'
+fi
+
 mapfile -t env_keys < <(sed -nE 's/^([A-Z][A-Z0-9_]*)=.*/\1/p' "${RUNTIME_ENV}" 2>/dev/null | sort -u)
 if [[ "${env_keys[*]}" == 'API_SERVER_ENABLED API_SERVER_HOST API_SERVER_KEY API_SERVER_PORT OLLAMA_API_KEY' ]]; then
   pass 'handshake environment contains only the API boundary and Ollama credential'
@@ -73,7 +83,7 @@ fi
 if jq -e '
   .schemaVersion == "gloops.hermes-provider-handshake.v1" and
   .allowedProviders == ["ollama-cloud"] and
-  .allowedCredentialFiles == ["/opt/data/auth.json"] and
+  .allowedCredentialFiles == ["/opt/handshake-profile/auth.json", "/opt/data/auth.json"] and
   .forbiddenCapabilities == ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"] and
   .network.publishedPorts == [] and
   .runtime.image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
@@ -119,7 +129,8 @@ if [[ "${MODE}" == '--live' ]]; then
   if jq -e '
     .[0].Config.Image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
     (.[0].HostConfig.PortBindings == {} or .[0].HostConfig.PortBindings == null) and
-    (.[0].Mounts | map(.Destination) | sort) == ["/opt/data/auth.json", "/opt/data/config.yaml"] and
+    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml"] and
+    (.[0].Mounts | all(.RW == false)) and
     (.[0].Mounts | all(.Destination != "/opt/data/workspace" and .Destination != "/opt/data/sessions" and .Destination != "/opt/data/.config/gh")) and
     .[0].HostConfig.ReadonlyRootfs == true and
     .[0].HostConfig.Memory == 1073741824 and
@@ -127,7 +138,7 @@ if [[ "${MODE}" == '--live' ]]; then
     .[0].HostConfig.PidsLimit == 256 and
     (.[0].NetworkSettings.Networks["paperclip-execution"].Aliases | index("hermes-execution")) != null
   ' "${inspect}" >/dev/null; then
-    pass 'live handshake container has zero repository/session/GitHub mounts and no published port'
+    pass 'live handshake container has read-only source credentials, zero repository/session/GitHub mounts, and no published port'
   else
     fail 'live handshake container drifted from the zero-authority boundary'
   fi

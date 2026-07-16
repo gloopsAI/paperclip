@@ -32,6 +32,11 @@ fail() { echo "FAIL $1" >&2; failed=1; }
   exit 2
 }
 
+if systemctl is-active --quiet paperclip-hermes-handshake.service \
+  || docker ps --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-handshake'; then
+  fail 'Hermes handshake is active; general execution admission is mutually exclusive'
+fi
+
 if "${COMMAND_SECURITY_VERIFIER}" "${HERMES_IMAGE}"; then
   pass 'Hermes command scanner remains fail-closed after its circuit breaker opens'
 else

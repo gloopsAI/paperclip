@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
   check_inactive "${unit}"
 done
 
@@ -25,6 +25,13 @@ if [[ "$(systemctl is-enabled paperclip-gloops.service 2>/dev/null || true)" == 
   echo "PASS paperclip-gloops.service is masked"
 else
   echo "FAIL paperclip-gloops.service is not masked" >&2
+  failed=1
+fi
+
+if [[ "$(systemctl is-enabled paperclip-gloops-handshake.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-gloops-handshake.service is masked"
+else
+  echo "FAIL paperclip-gloops-handshake.service is not masked" >&2
   failed=1
 fi
 
@@ -62,6 +69,17 @@ else
   echo "FAIL Hermes handshake activation marker exists" >&2
   failed=1
 fi
+
+for active_marker in \
+  /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE \
+  /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE; do
+  if [[ -e "${active_marker}" ]]; then
+    echo "FAIL one-use handshake marker remains while dark: ${active_marker}" >&2
+    failed=1
+  else
+    echo "PASS one-use handshake marker is absent: ${active_marker}"
+  fi
+done
 
 for ephemeral_credential in \
   /var/lib/paperclip-gloops/credential-runtime/hermes-github-token \
@@ -166,6 +184,13 @@ if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-gloops'; then
   failed=1
 else
   echo "PASS no paperclip-gloops container exists"
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-gloops-handshake'; then
+  echo "FAIL paperclip-gloops-handshake container exists" >&2
+  failed=1
+else
+  echo "PASS no paperclip-gloops-handshake container exists"
 fi
 
 if docker ps -a --format '{{.Names}}' | grep -Fxq 'paperclip-hermes-execution'; then

@@ -34,12 +34,17 @@ if [[ "${mode}" == '--check' ]]; then
 fi
 [[ "${mode}" == '--restore' ]] || usage
 
-for unit in paperclip.service paperclip-gloops.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing rollback while ${unit} is active" >&2
     exit 1
   fi
 done
+if docker ps -a --format '{{.Names}}' \
+  | grep -Eq '^paperclip-(gloops|gloops-handshake|hermes-execution|hermes-handshake)$'; then
+  echo "refusing rollback while a Paperclip or Hermes container exists" >&2
+  exit 1
+fi
 if [[ -x /usr/local/lib/paperclip-gloops/github-app-credentials.py ]]; then
   /usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector
   /usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes
@@ -61,9 +66,11 @@ chown -R paperclip:paperclip /home/paperclip/.paperclip
 
 install -m 0644 -o root -g root "${backup_dir}/paperclip.service.before" /etc/systemd/system/paperclip.service
 rm -f /etc/paperclip-gloops/ACTIVATION_APPROVED /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED
+rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 systemctl daemon-reload
-systemctl disable --now paperclip.service paperclip-gloops.service paperclip-hermes-execution.service paperclip-hermes-handshake.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-hermes-execution.service paperclip-hermes-handshake.service 2>/dev/null || true
+systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service 2>/dev/null || true
+docker rm -f paperclip-gloops-handshake 2>/dev/null || true
 docker rm -f paperclip-hermes-execution 2>/dev/null || true
 docker rm -f paperclip-hermes-handshake 2>/dev/null || true
 rm -f /etc/paperclip-gloops/hermes-execution.env
