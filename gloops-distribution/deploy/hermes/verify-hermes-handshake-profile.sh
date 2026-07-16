@@ -5,6 +5,7 @@ readonly MODE="${1:---source}"
 readonly PROFILE_DIR='/opt/paperclip/hermes-handshake-profile'
 readonly RUNTIME_ENV='/etc/paperclip-gloops/hermes-execution.env'
 readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake.service'
+readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
 readonly CONTAINER='paperclip-hermes-handshake'
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
 failed=0
@@ -52,10 +53,13 @@ fi
 
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
+  --env PYTHONPATH=/opt/paperclip-handshake-guard \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
+  --mount "type=bind,src=${GUARD},dst=/opt/paperclip-handshake-guard/sitecustomize.py,readonly" \
   "${IMAGE}" - /config.yaml <<'PY'
 import sys, yaml
 from hermes_cli.tools_config import _get_platform_tools
+from agent import agent_runtime_helpers
 import model_tools
 
 config = yaml.safe_load(open(sys.argv[1]))
@@ -74,11 +78,14 @@ toolsets = sorted(_get_platform_tools(config, "api_server"))
 tools = model_tools.get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
 assert toolsets == [], toolsets
 assert tools == [], tools
+guard = agent_runtime_helpers.try_recover_primary_transport
+assert getattr(guard, "_paperclip_handshake_guard", False)
+assert guard(None, ConnectionError("synthetic transport failure"), retry_count=1, max_retries=1) is False
 PY
 then
-  pass 'exact image resolves the handshake API surface to zero tools'
+  pass 'exact image resolves zero tools and denies post-ceiling primary transport recovery'
 else
-  fail 'handshake configuration does not resolve deterministically to zero tools'
+  fail 'handshake configuration or total-attempt guard is not enforced by the exact image'
 fi
 
 if jq -e '
@@ -92,7 +99,7 @@ if jq -e '
   .runtime.repositoryMounts == [] and
   .runtime.githubCredentials == false and
   .runtime.sessionKeyStrategy == "none" and
-  .runtime.providerInvocationBudget == {"maxTurns": 1, "maxApiAttempts": 1, "maxSdkRetries": 0, "maxToolCalls": 0, "maxWallMs": 900000}
+  .runtime.providerInvocationBudget == {"maxTurns": 1, "maxProviderAttempts": 1, "maxApplicationAttempts": 1, "maxPrimaryRecoveryAttempts": 0, "maxSdkRetries": 0, "maxToolCalls": 0, "maxWallMs": 900000}
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal provider-handshake policy is exact'
 else
@@ -130,7 +137,8 @@ if [[ "${MODE}" == '--live' ]]; then
   if jq -e '
     .[0].Config.Image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
     (.[0].HostConfig.PortBindings == {} or .[0].HostConfig.PortBindings == null) and
-    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml"] and
+    (.[0].Config.Env | index("PYTHONPATH=/opt/paperclip-handshake-guard")) != null and
+    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
     (.[0].Mounts | all(.RW == false)) and
     (.[0].Mounts | all(.Destination != "/opt/data/workspace" and .Destination != "/opt/data/sessions" and .Destination != "/opt/data/.config/gh")) and
     .[0].HostConfig.ReadonlyRootfs == true and

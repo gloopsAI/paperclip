@@ -77,6 +77,6 @@ rm -f /etc/paperclip-gloops/hermes-execution.env
 rm -f /etc/paperclip-gloops/operator-board-token /etc/paperclip-gloops/projector-github-secret-id
 rm -rf /run/paperclip-gloops
 rm -rf /opt/paperclip/hermes-execution-profile /opt/paperclip/hermes-execution-state /opt/paperclip/hermes-handshake-profile
-rm -rf /usr/local/lib/paperclip-gloops/tools
+rm -rf /usr/local/lib/paperclip-gloops/tools /usr/local/lib/paperclip-gloops/hermes-handshake-guard
 docker network rm paperclip-execution >/dev/null 2>&1 || true
 echo "rollback restored the prior state and service definition; all Paperclip services remain dark"
