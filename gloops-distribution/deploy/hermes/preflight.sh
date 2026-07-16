@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:4ad5881969635daec4194f7bb78df22a1768df4f74f574cc935647d24750a23d'
+readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:877b53e68de2fb2ab8935cebc9e590f6e63db41406cc8a030b7e0dc0c494a664'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly EXECUTION_MARKER='/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED'
 readonly HANDSHAKE_ACTIVE='/run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE'
