@@ -5,9 +5,13 @@ readonly MODE="${1:---source}"
 readonly PROFILE_DIR='/opt/paperclip/hermes-handshake-profile'
 readonly RUNTIME_ENV='/etc/paperclip-gloops/hermes-execution.env'
 readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake.service'
+readonly EGRESS_UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service'
 readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
 readonly CONTAINER='paperclip-hermes-handshake'
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
+readonly EGRESS_STATE='/run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE'
+readonly INPUT_CHAIN='PCLIP-HS-IN'
+readonly FORWARD_CHAIN='PCLIP-HS-FWD'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -120,8 +124,16 @@ fi
 if jq -e '
   .schemaVersion == "gloops.hermes-provider-handshake.v1" and
   .allowedProviders == ["ollama-cloud"] and
+  .allowedRuntimeEnvironment == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"] and
   .allowedCredentialFiles == ["/opt/handshake-profile/auth.json", "/opt/data/auth.json"] and
   .forbiddenCapabilities == ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"] and
+  .network == {
+    "name":"paperclip-handshake", "internal":true, "ipv6":false, "containerDns":"loopback-static-resolv-conf",
+    "apiAlias":"hermes-execution", "apiPort":8642, "apiAuthentication":"bearer-key-required",
+    "publishedPorts":[], "internetEgress":"single-connect-exact-authority-and-tls-sni-proxy",
+    "proxyAuthority":"ollama.com:443", "proxyTlsSni":"ollama.com", "proxyTunnelBudget":1,
+    "proxyMaxConnections":4
+  } and
   .network.publishedPorts == [] and
   .runtime.image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
   .runtime.persistentPaths == [] and
@@ -137,13 +149,25 @@ fi
 
 for required in \
   '--read-only' '--cap-drop ALL' '--security-opt no-new-privileges:true' \
-  '--network paperclip-execution' '--network-alias hermes-execution' \
+  '--network paperclip-handshake' '--ip 172.30.241.3' '--network-alias hermes-execution' \
+  '--dns 127.0.0.1' 'HTTPS_PROXY=http://172.30.241.1:18080' \
+  'src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly' \
+  'BindsTo=paperclip-hermes-handshake-egress.service' \
   '--memory 1024m' '--memory-swap 1024m' '--cpus 1.0' '--pids-limit 256' \
   'h.try_recover_primary_transport._paperclip_handshake_guard' \
   'httpx.Client._send_single_request._paperclip_handshake_guard' \
   'httpx.AsyncClient._send_single_request._paperclip_handshake_guard' \
   'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${UNIT}" || fail "handshake unit is missing: ${required}"
+done
+for required in \
+  'install-hermes-handshake-egress.sh' 'remove-hermes-handshake-egress.sh' \
+  'inspect-hermes-handshake-topology.sh' 'hermes-handshake-egress-proxy.py' \
+  '--listen 172.30.241.1 --port 18080' '--max-connections 4' \
+  'DynamicUser=yes' 'NoNewPrivileges=yes' 'StopWhenUnneeded=yes' \
+  'TasksMax=8' 'MemoryMax=128M' 'CPUQuota=50%' 'LimitNOFILE=64' \
+  'RuntimeMaxSec=900'; do
+  grep -Fq -- "${required}" "${EGRESS_UNIT}" || fail "handshake egress unit is missing: ${required}"
 done
 for forbidden in \
   'github-app-credentials.py' '/opt/data/.config/gh' '/opt/data/workspace' \
@@ -154,6 +178,47 @@ for forbidden in \
 done
 
 if [[ "${MODE}" == '--live' ]]; then
+  if [[ "$(stat -c '%a:%U:%G' "${EGRESS_STATE}" 2>/dev/null || true)" != '600:root:root' ]]; then
+    fail 'live handshake egress state is absent or not root-protected'
+  else
+    if [[ "$(cat "${EGRESS_STATE}")" != $'schema=gloops.hermes-handshake-egress.v2\nnetwork=paperclip-handshake\nsubnet=172.30.241.0/29\ngateway=172.30.241.1\nhermes_ip=172.30.241.3\npaperclip_ip=172.30.241.4\nproxy_port=18080\ninput_chain=PCLIP-HS-IN\nforward_chain=PCLIP-HS-FWD' ]]; then
+      fail 'live handshake egress state is malformed'
+    elif ! iptables -C INPUT -s 172.30.241.0/29 -m comment --comment paperclip-handshake-input -j "${INPUT_CHAIN}" \
+      || ! iptables -C "${INPUT_CHAIN}" -s 172.30.241.3 -d 172.30.241.1 -p tcp --dport 18080 -m comment --comment paperclip-handshake-proxy -j ACCEPT \
+      || ! iptables -C "${INPUT_CHAIN}" -m comment --comment paperclip-handshake-host-deny -j REJECT --reject-with icmp-port-unreachable \
+      || ! iptables -C DOCKER-USER -s 172.30.241.0/29 -m comment --comment paperclip-handshake-forward -j "${FORWARD_CHAIN}" \
+      || ! iptables -C "${FORWARD_CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -m comment --comment paperclip-handshake-established -j RETURN \
+      || ! iptables -C "${FORWARD_CHAIN}" -s 172.30.241.4 -d 172.30.241.3 -p tcp --dport 8642 -m comment --comment paperclip-handshake-api -j ACCEPT \
+      || ! iptables -C "${FORWARD_CHAIN}" -m comment --comment paperclip-handshake-forward-deny -j REJECT --reject-with icmp-port-unreachable; then
+      fail 'live handshake egress firewall boundary is incomplete'
+    elif [[ "$(iptables -S INPUT | grep -Fc -- "-j ${INPUT_CHAIN}")" -ne 1 ]] \
+      || [[ "$(iptables -S DOCKER-USER | grep -Fc -- "-j ${FORWARD_CHAIN}")" -ne 1 ]] \
+      || [[ "$(iptables -S "${INPUT_CHAIN}" | grep -c '^-A ')" -ne 2 ]] \
+      || [[ "$(iptables -S "${FORWARD_CHAIN}" | grep -c '^-A ')" -ne 3 ]]; then
+      fail 'live handshake egress firewall contains unexpected rules'
+    elif [[ "$(iptables -S INPUT | grep '^-A ' | head -n 1)" != *"-j ${INPUT_CHAIN}" ]] \
+      || [[ "$(iptables -S DOCKER-USER | grep '^-A ' | head -n 1)" != *"-j ${FORWARD_CHAIN}" ]]; then
+      fail 'live handshake egress firewall is not first in both host and Docker forwarding policy'
+    else
+      pass 'live container forwarding is internal-only and host access is limited to the fixed Hermes source and proxy port'
+    fi
+  fi
+  systemctl is-active --quiet paperclip-hermes-handshake-egress.service \
+    || fail 'handshake egress proxy service is not active'
+  ss -lntH sport = :18080 | grep -Fq '172.30.241.1:18080' \
+    || fail 'handshake egress proxy is not listening only on the isolated bridge gateway'
+  if docker network inspect paperclip-handshake | jq -e '
+    .[0].Internal == true and .[0].EnableIPv6 == false and
+    .[0].IPAM.Config == [{"Subnet":"172.30.241.0/29","Gateway":"172.30.241.1"}] and
+    .[0].Options["com.docker.network.bridge.name"] == "pc-hshake0"
+  ' >/dev/null; then
+    pass 'live handshake network is isolated, IPv4-only, and exact'
+  else
+    fail 'live handshake network is not the exact internal network'
+  fi
+  /usr/local/lib/paperclip-gloops/verify-hermes-handshake-egress-boundary.sh \
+    || fail 'live executable negative egress proof failed'
+
   deadline=$((SECONDS + 60))
   health=''
   while ((SECONDS < deadline)); do
@@ -170,14 +235,17 @@ if [[ "${MODE}" == '--live' ]]; then
     .[0].Config.Image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
     (.[0].HostConfig.PortBindings == {} or .[0].HostConfig.PortBindings == null) and
     (.[0].Config.Env | index("PYTHONPATH=/opt/paperclip-handshake-guard")) != null and
-    (.[0].Mounts | map(.Destination) | sort) == ["/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
+    (.[0].Config.Env | index("HTTPS_PROXY=http://172.30.241.1:18080")) != null and
+    .[0].HostConfig.Dns == ["127.0.0.1"] and
+    (.[0].Mounts | map(.Destination) | sort) == ["/etc/resolv.conf", "/opt/handshake-profile/auth.json", "/opt/handshake-profile/config.yaml", "/opt/paperclip-handshake-guard/sitecustomize.py"] and
     (.[0].Mounts | all(.RW == false)) and
     (.[0].Mounts | all(.Destination != "/opt/data/workspace" and .Destination != "/opt/data/sessions" and .Destination != "/opt/data/.config/gh")) and
     .[0].HostConfig.ReadonlyRootfs == true and
     .[0].HostConfig.Memory == 1073741824 and
     .[0].HostConfig.MemorySwap == 1073741824 and
     .[0].HostConfig.PidsLimit == 256 and
-    (.[0].NetworkSettings.Networks["paperclip-execution"].Aliases | index("hermes-execution")) != null
+    .[0].NetworkSettings.Networks["paperclip-handshake"].IPAddress == "172.30.241.3" and
+    (.[0].NetworkSettings.Networks["paperclip-handshake"].Aliases | index("hermes-execution")) != null
   ' "${inspect}" >/dev/null; then
     pass 'live handshake container has read-only source credentials, zero repository/session/GitHub mounts, and no published port'
   else

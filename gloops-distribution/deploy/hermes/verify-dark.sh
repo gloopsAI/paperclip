@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   check_inactive "${unit}"
 done
 
@@ -46,6 +46,13 @@ if [[ "$(systemctl is-enabled paperclip-hermes-handshake.service 2>/dev/null || 
   echo "PASS paperclip-hermes-handshake.service is masked"
 else
   echo "FAIL paperclip-hermes-handshake.service is not masked" >&2
+  failed=1
+fi
+
+if [[ "$(systemctl is-enabled paperclip-hermes-handshake-egress.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-hermes-handshake-egress.service is masked"
+else
+  echo "FAIL paperclip-hermes-handshake-egress.service is not masked" >&2
   failed=1
 fi
 
@@ -171,6 +178,24 @@ elif grep -Fq 'gloops-zero-work-' <<<"${firewall_rules}"; then
 else
   echo "PASS no zero-work egress proof rule remains installed"
 fi
+if [[ -e /run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE ]]; then
+  echo "FAIL Hermes handshake egress state remains while dark" >&2
+  failed=1
+elif iptables -nL PCLIP-HS-IN >/dev/null 2>&1 \
+  || iptables -nL PCLIP-HS-FWD >/dev/null 2>&1 \
+  || grep -Fq -- '-j PCLIP-HS-FWD' <<<"${firewall_rules:-}" \
+  || iptables -S INPUT 2>/dev/null | grep -Fq -- '-j PCLIP-HS-IN'; then
+  echo "FAIL Hermes handshake egress firewall policy remains while dark" >&2
+  failed=1
+else
+  echo "PASS no Hermes handshake egress policy remains while dark"
+fi
+if docker network inspect paperclip-handshake >/dev/null 2>&1; then
+  echo "FAIL isolated handshake network remains while dark" >&2
+  failed=1
+else
+  echo "PASS isolated handshake network is absent while dark"
+fi
 
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
   echo "PASS exact image digest is installed"
@@ -207,7 +232,7 @@ else
   echo "PASS no paperclip-hermes-handshake container exists"
 fi
 
-if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)(3100|8642)$'; then
+if ss -lntH | awk '{print $4}' | grep -Eq '(^|:)(3100|8642|18080)$'; then
   echo "FAIL Paperclip or Hermes execution HTTP port is listening" >&2
   failed=1
 else

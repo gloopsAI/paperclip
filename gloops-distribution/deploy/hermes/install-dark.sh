@@ -14,7 +14,7 @@ readonly APP_KEY="${CONFIG_DIR}/github-app/private-key.pem"
   exit 1
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing installation while ${unit} is active" >&2
     exit 1
@@ -37,6 +37,7 @@ install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"
+"${SCRIPT_DIR}/remove-hermes-handshake-egress.sh"
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
@@ -47,10 +48,17 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/configure-tailnet-https.sh" "${LI
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-dark.sh" "${LIB_DIR}/verify-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-zero-work.sh" "${LIB_DIR}/rehearse-zero-work.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rollback.sh" "${LIB_DIR}/rollback.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-rollback-dark.sh" "${LIB_DIR}/verify-rollback-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.sh" "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-handshake-profile.sh" "${LIB_DIR}/prepare-hermes-handshake-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-profile.sh" "${LIB_DIR}/verify-hermes-handshake-profile.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/install-hermes-handshake-egress.sh" "${LIB_DIR}/install-hermes-handshake-egress.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/remove-hermes-handshake-egress.sh" "${LIB_DIR}/remove-hermes-handshake-egress.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/inspect-hermes-handshake-topology.sh" "${LIB_DIR}/inspect-hermes-handshake-topology.sh"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/hermes-handshake-egress-proxy.py" "${LIB_DIR}/hermes-handshake-egress-proxy.py"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-egress-boundary.sh" "${LIB_DIR}/verify-hermes-handshake-egress-boundary.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-hermes-handshake-egress-failure.sh" "${LIB_DIR}/rehearse-hermes-handshake-egress-failure.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${LIB_DIR}/verify-hermes-command-security-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/load-hermes-execution-image.sh" "${LIB_DIR}/load-hermes-execution-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/provision-tirith.sh"
@@ -69,12 +77,14 @@ install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-config.yaml" "${
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${LIB_DIR}/hermes-execution-policy.json"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-config.yaml" "${LIB_DIR}/hermes-handshake-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-policy.json" "${LIB_DIR}/hermes-handshake-policy.json"
+install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-handshake-resolv.conf" "${LIB_DIR}/hermes-handshake-resolv.conf"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gitconfig"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gh-config.yml" "${LIB_DIR}/hermes-execution-gh-config.yml"
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-handshake.service" /usr/local/lib/systemd/system/paperclip-gloops-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
 
 "${LIB_DIR}/provision-tirith.sh"
@@ -90,8 +100,9 @@ systemctl disable --now paperclip-gloops.service 2>/dev/null || true
 systemctl disable --now paperclip-gloops-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service
-systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service 2>/dev/null || true
+systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service
+systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.
