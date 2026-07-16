@@ -539,7 +539,7 @@ for (const required of [
 }
 for (const path of ["cache", "logs", "memories", "sessions"]) {
   const mount = `--mount type=bind,src=/opt/paperclip/hermes-execution-state/${path},dst=/opt/data/${path}`;
-  if (!hermesExecutionService.includes(mount)) {
+  if (!hermesExecutionService.includes(`${mount} `)) {
     fail(`Hermes execution service is missing persistent state mount ${mount}`);
   }
 }

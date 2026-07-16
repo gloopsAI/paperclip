@@ -246,7 +246,9 @@ for required_credential_mount in \
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
 for path in cache logs memories sessions; do
-  required_state_mount="--mount type=bind,src=${STATE_DIR}/${path},dst=/opt/data/${path}"
+  # The trailing space makes this an exact writable mount token and rejects
+  # both destination suffix drift and an appended `,readonly` option.
+  required_state_mount="--mount type=bind,src=${STATE_DIR}/${path},dst=/opt/data/${path} "
   grep -Fq -- "${required_state_mount}" "${UNIT}" || fail "unit is missing: ${required_state_mount}"
 done
 if grep -Fq -- '--health-cmd' "${UNIT}" \
