@@ -10,6 +10,39 @@ const joinScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-join.
 const e2eScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-e2e.sh");
 const referenceMatrixScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-reference-matrix.sh");
 const entrypointScript = path.join(repoRoot, "docker", "hermes-gateway-smoke", "entrypoint.sh");
+const providerVariables = [
+  "OPENROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "MISTRAL_API_KEY",
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_BASE",
+  "ANTHROPIC_BASE_URL",
+  "XAI_BASE_URL",
+  "GROK_BASE_URL",
+];
+
+function referenceEnv(overrides = {}) {
+  const env = { ...process.env };
+  for (const variable of providerVariables) delete env[variable];
+  delete env.COMPANY_ID;
+  delete env.PAPERCLIP_COMPANY_ID;
+  return {
+    ...env,
+    PAPERCLIP_API_URL: "http://127.0.0.1:3189",
+    PAPERCLIP_API_URL_FOR_HERMES: "http://host.docker.internal:3189",
+    PAPERCLIP_AUTH_HEADER: "Bearer test-only",
+    REFERENCE_DISPOSABLE_ACK: "delete-disposable-companies",
+    REFERENCE_MOCK_PROBE_URL: "http://127.0.0.1:8787/health",
+    HERMES_REFERENCE_MOCK_BASE_URL: "http://host.docker.internal:8787/v1",
+    ...overrides,
+  };
+}
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -59,8 +92,47 @@ test("reference matrix help exposes bounded-run and receipt controls", () => {
   assert.match(result.stdout, /REFERENCE_RUNS=20/u);
   assert.match(result.stdout, /REFERENCE_DELAY_SECONDS=11/u);
   assert.match(result.stdout, /REFERENCE_RECEIPT/u);
+  assert.match(result.stdout, /delete-disposable-companies/u);
   assert.match(result.stdout, /strict Paperclip\/Hermes Docker E2E/u);
-  assert.match(result.stdout, /never starts the Paperclip server/u);
+  assert.match(result.stdout, /never starts the\s+Paperclip server/u);
+});
+
+test("reference matrix accepts only a tied disposable local boundary", () => {
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv(),
+  });
+  assertSuccess(result, "reference boundary validation");
+});
+
+test("reference matrix rejects a remote or production Paperclip destination", () => {
+  for (const paperclipUrl of ["https://paperclip.example.com", "http://127.0.0.1:3100"]) {
+    const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+      env: referenceEnv({
+        PAPERCLIP_API_URL: paperclipUrl,
+        PAPERCLIP_API_URL_FOR_HERMES: "http://host.docker.internal:3100",
+      }),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /loopback|production port/u);
+  }
+});
+
+test("reference matrix rejects a model endpoint not tied to the local mock", () => {
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv({ HERMES_REFERENCE_MOCK_BASE_URL: "https://api.example.com/v1" }),
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /tie exactly to the local reference mock port/u);
+});
+
+test("reference matrix rejects real provider credentials without revealing them", () => {
+  const secret = "xai-real-secret-must-not-appear";
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv({ XAI_API_KEY: secret }),
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /XAI_API_KEY must be unset/u);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(secret, "u"));
 });
 
 test("Hermes gateway smoke help documents operator safety flags", () => {
@@ -75,6 +147,8 @@ test("Hermes gateway smoke help documents operator safety flags", () => {
 
   const e2eHelp = run("bash", [e2eScript, "--help"]).stdout;
   assert.match(e2eHelp, /HERMES_SMOKE_KEEP/);
+  assert.match(e2eHelp, /HERMES_SMOKE_STRICT_CLEANUP/);
+  assert.match(e2eHelp, /HERMES_SMOKE_DELETE_COMPANY/);
   assert.match(e2eHelp, /HERMES_SMOKE_NETWORK/);
   assert.match(e2eHelp, /HERMES_SMOKE_MODEL_DEFAULT/);
   assert.match(e2eHelp, /Docker/);

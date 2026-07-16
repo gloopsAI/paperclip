@@ -1,0 +1,282 @@
+{
+  "schemaVersion": "gloops.hermes-reference-matrix.v1",
+  "label": "fork-stable-strict",
+  "status": "passed",
+  "startedAt": "2026-07-16T20:47:07Z",
+  "completedAt": "2026-07-16T20:53:59Z",
+  "boundary": {
+    "paperclipUrl": "http://127.0.0.1:3189",
+    "paperclipForHermes": "http://host.docker.internal:3189",
+    "mockProbeUrl": "http://127.0.0.1:8787/health",
+    "mockBaseUrl": "http://host.docker.internal:8787/v1",
+    "disposableCompanyPerRun": true,
+    "localTrustedRequired": true,
+    "productionPortRejected": true,
+    "realProviderCredentialsRejected": true,
+    "onboardingPacingSeconds": 11
+  },
+  "totalRuns": 20,
+  "passedRuns": 20,
+  "runs": [
+    {
+      "label": "fork-stable-strict-01",
+      "result": "passed",
+      "companyId": "f48fa3eb-fe6c-4cb5-a697-d7e2371861dc",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-02",
+      "result": "passed",
+      "companyId": "1400420b-6305-4e90-a0e7-826f94673d5d",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-03",
+      "result": "passed",
+      "companyId": "c1d79c69-4bca-49df-975d-794364ebb340",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-04",
+      "result": "passed",
+      "companyId": "b0199662-361a-4fc1-9c77-c8c4747b7168",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-05",
+      "result": "passed",
+      "companyId": "d6fcc166-89ee-4b0f-8baa-729d5a55478b",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-06",
+      "result": "passed",
+      "companyId": "bc8dbfc9-7218-456f-89c0-03c470b6086a",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-07",
+      "result": "passed",
+      "companyId": "b490a152-35b4-45a7-b8e4-9cfdfecefadc",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-08",
+      "result": "passed",
+      "companyId": "2c279219-3a3b-4ef9-a182-c9eff67ccd14",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-09",
+      "result": "passed",
+      "companyId": "8be8fb6f-bb2b-49f2-bd15-00a99e3bdc5a",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-10",
+      "result": "passed",
+      "companyId": "91eec25f-171a-4a6b-b3d6-d64e0cab3d3c",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-11",
+      "result": "passed",
+      "companyId": "323bfc4b-3bf4-474c-aba1-d0309587ebdb",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-12",
+      "result": "passed",
+      "companyId": "acdfd480-e65d-402c-9b52-3dca40726145",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-13",
+      "result": "passed",
+      "companyId": "8e9892f4-c2e2-4d70-8889-1c78a3c30835",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-14",
+      "result": "passed",
+      "companyId": "55d0fd49-0123-490a-a4ab-0fdebf427a3c",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-15",
+      "result": "passed",
+      "companyId": "4922105f-d549-422e-87b2-6ac5f5844d95",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-16",
+      "result": "passed",
+      "companyId": "120fff8b-de9f-470a-ba28-b39e098f1384",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-17",
+      "result": "passed",
+      "companyId": "f083051e-38ee-4d59-a306-7fad872bf504",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-18",
+      "result": "passed",
+      "companyId": "fb44830b-4fe5-463e-9767-c390321e7c23",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-19",
+      "result": "passed",
+      "companyId": "bac62285-a94b-4294-960b-dc9deb81dd7f",
+      "durationSeconds": 13,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-20",
+      "result": "passed",
+      "companyId": "efdb7c23-82fb-4e10-b71a-7b9d6793f539",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    }
+  ]
+}

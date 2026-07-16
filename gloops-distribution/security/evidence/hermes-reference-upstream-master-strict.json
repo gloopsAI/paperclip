@@ -1,0 +1,283 @@
+{
+  "schemaVersion": "gloops.hermes-reference-matrix.v1",
+  "label": "upstream-master-strict",
+  "status": "passed",
+  "startedAt": "2026-07-16T20:54:52Z",
+  "completedAt": "2026-07-16T21:01:45Z",
+  "boundary": {
+    "paperclipUrl": "http://127.0.0.1:3190",
+    "paperclipForHermes": "http://host.docker.internal:3190",
+    "mockProbeUrl": "http://127.0.0.1:8787/health",
+    "mockBaseUrl": "http://host.docker.internal:8787/v1",
+    "disposableCompanyPerRun": true,
+    "localTrustedRequired": true,
+    "productionPortRejected": true,
+    "realProviderCredentialsRejected": true,
+    "onboardingPacingSeconds": 11
+  },
+  "totalRuns": 20,
+  "passedRuns": 20,
+  "runs": [
+    {
+      "label": "upstream-master-strict-01",
+      "result": "passed",
+      "companyId": "05e04ecf-ce70-4b53-8fe2-0dd373e19dc9",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-02",
+      "result": "passed",
+      "companyId": "daaf0974-7024-4688-8936-614420e9a3ed",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-03",
+      "result": "passed",
+      "companyId": "14191f9a-d6c0-423b-a181-30506b1ffd99",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-04",
+      "result": "passed",
+      "companyId": "7c6cd834-20f7-466d-8912-4806f361478c",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-05",
+      "result": "passed",
+      "companyId": "03774094-2f0e-44e0-96c3-c8735f9c306e",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-06",
+      "result": "passed",
+      "companyId": "deaa4ad4-efa9-4675-b52b-34ce51ca64a6",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-07",
+      "result": "passed",
+      "companyId": "9eaa70ef-91da-4eaa-be0e-28a741a0b010",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-08",
+      "result": "passed",
+      "companyId": "3570169c-41c1-4938-b654-346bd17e7a87",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-09",
+      "result": "passed",
+      "companyId": "6dfd442a-d68e-44ee-94dd-edd7790c2cb1",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-10",
+      "result": "passed",
+      "companyId": "c811d2e7-208c-48c7-8d02-1c3ffa8aa01e",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-11",
+      "result": "passed",
+      "companyId": "f33ba7d7-5a92-4704-ba9b-d5abf3866661",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-12",
+      "result": "passed",
+      "companyId": "619be999-b612-4849-a46c-4e22e3ed0d3c",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-13",
+      "result": "passed",
+      "companyId": "d25b767f-9b1a-4f5c-9301-13a7d93cdf2f",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-14",
+      "result": "passed",
+      "companyId": "cf53161e-000f-4614-907f-da8e8350f386",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-15",
+      "result": "passed",
+      "companyId": "fa157d44-7979-455f-bc5c-02b2e83bcd98",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-16",
+      "result": "passed",
+      "companyId": "d1ae3a24-7b08-4268-b529-30f147ace2d7",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-17",
+      "result": "passed",
+      "companyId": "4cf57d24-c973-4140-bf03-2a79d7cabc36",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-18",
+      "result": "passed",
+      "companyId": "40c15bba-2f21-436b-a4a2-f4f57c0a98a8",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-19",
+      "result": "passed",
+      "companyId": "56353aa8-344e-4487-88de-60bfd30fa0cc",
+      "durationSeconds": 11,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "upstream-master-strict-20",
+      "result": "passed",
+      "companyId": "204b7631-13c8-4745-abd5-b13373ccec04",
+      "durationSeconds": 10,
+      "e2ePassed": true,
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    }
+  ]
+}
+

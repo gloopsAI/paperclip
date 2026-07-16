@@ -7,11 +7,22 @@ readonly HANDSHAKE_NETWORK='paperclip-handshake'
 readonly HANDSHAKE_EXPECTED_IP='172.30.241.4'
 
 verify_handshake_topology() {
-  local network_internal container_ip
+  local network_internal expected_network_id networks_json ports_json network_names container_network_id container_ip published_binding_count
   network_internal="$(docker network inspect --format '{{.Internal}}' "${HANDSHAKE_NETWORK}" 2>/dev/null || true)"
-  container_ip="$(docker inspect --format '{{with index .NetworkSettings.Networks "paperclip-handshake"}}{{.IPAddress}}{{end}}' "${CONTAINER}" 2>/dev/null || true)"
-  [[ "${network_internal}" == 'true' && "${container_ip}" == "${HANDSHAKE_EXPECTED_IP}" ]] || {
-    echo "Paperclip handshake topology drifted (network_internal=${network_internal:-missing}, container_ip=${container_ip:-missing})" >&2
+  expected_network_id="$(docker network inspect --format '{{.Id}}' "${HANDSHAKE_NETWORK}" 2>/dev/null || true)"
+  networks_json="$(docker inspect --format '{{json .NetworkSettings.Networks}}' "${CONTAINER}" 2>/dev/null || true)"
+  ports_json="$(docker inspect --format '{{json .NetworkSettings.Ports}}' "${CONTAINER}" 2>/dev/null || true)"
+  network_names="$(jq -r 'keys | sort | join(",")' <<<"${networks_json:-null}" 2>/dev/null || true)"
+  container_network_id="$(jq -r '.["paperclip-handshake"].NetworkID // empty' <<<"${networks_json:-null}" 2>/dev/null || true)"
+  container_ip="$(jq -r '.["paperclip-handshake"].IPAddress // empty' <<<"${networks_json:-null}" 2>/dev/null || true)"
+  published_binding_count="$(jq -r '[to_entries[] | select(.value != null)] | length' <<<"${ports_json:-null}" 2>/dev/null || true)"
+  [[ "${network_internal}" == 'true' \
+    && -n "${expected_network_id}" \
+    && "${network_names}" == "${HANDSHAKE_NETWORK}" \
+    && "${container_network_id}" == "${expected_network_id}" \
+    && "${container_ip}" == "${HANDSHAKE_EXPECTED_IP}" \
+    && "${published_binding_count}" == '0' ]] || {
+    echo "Paperclip handshake topology drifted (network_internal=${network_internal:-missing}, networks=${network_names:-missing}, network_id_match=$([[ -n "${expected_network_id}" && "${container_network_id}" == "${expected_network_id}" ]] && echo true || echo false), container_ip=${container_ip:-missing}, published_bindings=${published_binding_count:-missing})" >&2
     return 1
   }
 
@@ -26,12 +37,20 @@ verify_handshake_topology() {
 }
 
 verify_execution_topology() {
-  local execution_network host_ip host_port
-  execution_network="$(docker inspect --format '{{with index .NetworkSettings.Networks "paperclip-execution"}}{{.NetworkID}}{{end}}' "${CONTAINER}" 2>/dev/null || true)"
-  host_ip="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3100/tcp") 0).HostIp}}' "${CONTAINER}" 2>/dev/null || true)"
-  host_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3100/tcp") 0).HostPort}}' "${CONTAINER}" 2>/dev/null || true)"
-  [[ -n "${execution_network}" && "${host_ip}" == '127.0.0.1' && "${host_port}" == '3100' ]] || {
-    echo "Paperclip execution topology drifted (network=${execution_network:-missing}, host_ip=${host_ip:-missing}, host_port=${host_port:-missing})" >&2
+  local expected_network_id networks_json ports_json network_names container_network_id port_keys exact_loopback_binding
+  expected_network_id="$(docker network inspect --format '{{.Id}}' 'paperclip-execution' 2>/dev/null || true)"
+  networks_json="$(docker inspect --format '{{json .NetworkSettings.Networks}}' "${CONTAINER}" 2>/dev/null || true)"
+  ports_json="$(docker inspect --format '{{json .NetworkSettings.Ports}}' "${CONTAINER}" 2>/dev/null || true)"
+  network_names="$(jq -r 'keys | sort | join(",")' <<<"${networks_json:-null}" 2>/dev/null || true)"
+  container_network_id="$(jq -r '.["paperclip-execution"].NetworkID // empty' <<<"${networks_json:-null}" 2>/dev/null || true)"
+  port_keys="$(jq -r 'keys | sort | join(",")' <<<"${ports_json:-null}" 2>/dev/null || true)"
+  exact_loopback_binding="$(jq -r '.["3100/tcp"] as $binding | ($binding | type == "array") and ($binding | length == 1) and ($binding[0].HostIp == "127.0.0.1") and ($binding[0].HostPort == "3100")' <<<"${ports_json:-null}" 2>/dev/null || true)"
+  [[ -n "${expected_network_id}" \
+    && "${network_names}" == 'paperclip-execution' \
+    && "${container_network_id}" == "${expected_network_id}" \
+    && "${port_keys}" == '3100/tcp' \
+    && "${exact_loopback_binding}" == 'true' ]] || {
+    echo "Paperclip execution topology drifted (networks=${network_names:-missing}, network_id_match=$([[ -n "${expected_network_id}" && "${container_network_id}" == "${expected_network_id}" ]] && echo true || echo false), port_keys=${port_keys:-missing}, exact_loopback_binding=${exact_loopback_binding:-missing})" >&2
     return 1
   }
   curl --fail --silent --show-error --max-time 5 \
@@ -42,6 +61,7 @@ verify_execution_topology() {
 }
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo 'jq is required for exact Paperclip topology verification' >&2; exit 1; }
 
 health='missing'
 for _ in $(seq 1 "${MAX_HEALTH_POLLS}"); do

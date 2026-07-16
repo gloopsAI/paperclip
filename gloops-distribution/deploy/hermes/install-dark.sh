@@ -43,6 +43,7 @@ install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runti
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/wait-paperclip-control-plane.sh" "${LIB_DIR}/wait-paperclip-control-plane.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-runtime-deadman.sh" "${LIB_DIR}/verify-runtime-deadman.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/failure-alert.mjs" "${LIB_DIR}/failure-alert.mjs"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/configure-tailnet-https.sh" "${LIB_DIR}/configure-tailnet-https.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-dark.sh" "${LIB_DIR}/verify-dark.sh"

@@ -28,3 +28,16 @@ assert verdict == {
 assert security._install_thread is None
 print("PASS Tirith circuit-open path remains fail-closed without auto-install")
 '
+
+docker run --rm --network none --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+  --entrypoint python \
+  "${IMAGE}" -c '
+from hermes_cli import banner
+
+called = []
+banner.check_for_updates = lambda: called.append("called")
+assert banner.prefetch_update_check() is None
+assert called == [], called
+print("PASS Hermes automatic startup update check is disabled")
+'

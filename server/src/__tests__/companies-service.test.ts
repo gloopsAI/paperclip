@@ -125,6 +125,19 @@ describeEmbeddedPostgres("companyService", () => {
     expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
   });
 
+  it("removes a freshly created company with its auto-provisioned routine", async () => {
+    const created = await companyService(db).create({
+      name: "Disposable Company",
+    });
+
+    await expect(companyService(db).remove(created.id)).resolves.toMatchObject({
+      id: created.id,
+    });
+    await expect(db.select().from(companies).where(eq(companies.id, created.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(agents).where(eq(agents.companyId, created.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(routines).where(eq(routines.companyId, created.id))).resolves.toHaveLength(0);
+  });
+
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {
     const companyId = randomUUID();
     const runningAgentId = randomUUID();

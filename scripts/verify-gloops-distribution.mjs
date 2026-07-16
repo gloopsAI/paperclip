@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { validateHermesRuntimePrivileges } from "./gloops-runtime-policy.mjs";
 
 const manifestPath = new URL(
@@ -41,6 +42,14 @@ const patchHermesCommandSecurityPath = new URL(
   "../gloops-distribution/deploy/hermes/patch-hermes-command-security.py",
   import.meta.url,
 );
+const patchHermesStartupUpdateCheckPath = new URL(
+  "../gloops-distribution/deploy/hermes/patch-hermes-startup-update-check.py",
+  import.meta.url,
+);
+const patchHermesStartupUpdateCheckTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/patch_hermes_startup_update_check_test.py",
+  import.meta.url,
+);
 const buildHermesExecutionImagePath = new URL(
   "../gloops-distribution/deploy/hermes/build-hermes-execution-image.sh",
   import.meta.url,
@@ -59,6 +68,10 @@ const preflightPath = new URL(
 );
 const waitPaperclipControlPlanePath = new URL(
   "../gloops-distribution/deploy/hermes/wait-paperclip-control-plane.sh",
+  import.meta.url,
+);
+const verifyRuntimeDeadmanPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-runtime-deadman.sh",
   import.meta.url,
 );
 const verifyDarkPath = new URL(
@@ -209,6 +222,14 @@ const hermesCronDisabledPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-cron-disabled/__init__.py",
   import.meta.url,
 );
+const hermesReferenceCertificationPath = new URL(
+  "../gloops-distribution/security/hermes-reference-certification-2026-07-16.json",
+  import.meta.url,
+);
+const hermesStartupEgressRootCausePath = new URL(
+  "../gloops-distribution/security/hermes-startup-egress-root-cause-2026-07-16.json",
+  import.meta.url,
+);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
@@ -219,11 +240,13 @@ const installDark = readFileSync(installDarkPath, "utf8");
 const provisionTirith = readFileSync(provisionTirithPath, "utf8");
 const hermesExecutionDockerfile = readFileSync(hermesExecutionDockerfilePath, "utf8");
 const patchHermesCommandSecurity = readFileSync(patchHermesCommandSecurityPath, "utf8");
+const patchHermesStartupUpdateCheck = readFileSync(patchHermesStartupUpdateCheckPath, "utf8");
 const buildHermesExecutionImage = readFileSync(buildHermesExecutionImagePath, "utf8");
 const verifyHermesCommandSecurityImage = readFileSync(verifyHermesCommandSecurityImagePath, "utf8");
 const loadHermesExecutionImage = readFileSync(loadHermesExecutionImagePath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
+const verifyRuntimeDeadman = readFileSync(verifyRuntimeDeadmanPath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
 const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
@@ -234,6 +257,14 @@ const rehearseZeroWorkExecutable = rehearseZeroWork
 const rollback = readFileSync(rollbackPath, "utf8");
 const backupDark = readFileSync(backupDarkPath, "utf8");
 const verifyRollbackDark = readFileSync(verifyRollbackDarkPath, "utf8");
+try {
+  execFileSync("python3", [patchHermesStartupUpdateCheckTestPath.pathname], {
+    stdio: "inherit",
+  });
+} catch {
+  fail("Hermes startup update-check patch tests failed");
+}
+
 try {
   execFileSync("bash", [rollbackDarkQueryFailureTestPath.pathname], {
     encoding: "utf8",
@@ -326,6 +357,123 @@ function git(...args) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+}
+
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function verifyHermesReferenceReceipt(summaryResult) {
+  const label = summaryResult?.label ?? "unknown";
+  const relativePath = summaryResult?.rawReceipt;
+  if (typeof relativePath !== "string" || !relativePath.startsWith("gloops-distribution/security/evidence/")) {
+    fail(`${label}: raw receipt must be a committed security evidence path`);
+    return;
+  }
+  const receiptPath = new URL(`../${relativePath}`, import.meta.url);
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(receiptPath, "utf8"));
+  } catch (error) {
+    fail(`${label}: raw receipt cannot be read: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+  if (sha256File(receiptPath) !== summaryResult.rawReceiptSha256) {
+    fail(`${label}: raw receipt digest does not match the certification summary`);
+  }
+  if (
+    raw.schemaVersion !== "gloops.hermes-reference-matrix.v1" ||
+    raw.status !== "passed" ||
+    raw.totalRuns !== 20 ||
+    raw.passedRuns !== 20 ||
+    !Array.isArray(raw.runs) ||
+    raw.runs.length !== 20
+  ) {
+    fail(`${label}: raw receipt must record a passed 20-of-20 matrix`);
+    return;
+  }
+  const boundary = raw.boundary ?? {};
+  if (
+    boundary.disposableCompanyPerRun !== true ||
+    boundary.localTrustedRequired !== true ||
+    boundary.productionPortRejected !== true ||
+    boundary.realProviderCredentialsRejected !== true
+  ) {
+    fail(`${label}: raw receipt is missing deterministic boundary attestations`);
+  }
+  const labels = new Set();
+  const companyIds = new Set();
+  const durations = [];
+  for (const run of raw.runs) {
+    const cleanup = run?.cleanup ?? {};
+    if (
+      run?.result !== "passed" ||
+      run?.e2ePassed !== true ||
+      cleanup.companyAbsent !== true ||
+      cleanup.containerAbsent !== true ||
+      cleanup.stateAbsent !== true ||
+      cleanup.claimedKeyAbsent !== true
+    ) {
+      fail(`${label}: every run must pass E2E and all four cleanup assertions`);
+    }
+    if (labels.has(run.label) || companyIds.has(run.companyId)) {
+      fail(`${label}: run labels and disposable company ids must be unique`);
+    }
+    labels.add(run.label);
+    companyIds.add(run.companyId);
+    if (!Number.isInteger(run.durationSeconds) || run.durationSeconds < 0) {
+      fail(`${label}: every run must record a non-negative integer duration`);
+    } else {
+      durations.push(run.durationSeconds);
+    }
+  }
+  if (durations.length !== 20) return;
+  const minimum = Math.min(...durations);
+  const maximum = Math.max(...durations);
+  const average = durations.reduce((sum, value) => sum + value, 0) / durations.length;
+  if (
+    summaryResult.minimumDurationSeconds !== minimum ||
+    summaryResult.maximumDurationSeconds !== maximum ||
+    summaryResult.averageDurationSeconds !== average ||
+    summaryResult.startedAt !== raw.startedAt ||
+    summaryResult.completedAt !== raw.completedAt
+  ) {
+    fail(`${label}: summary statistics do not reproduce from the committed raw receipt`);
+  }
+}
+
+let hermesReferenceCertification;
+try {
+  hermesReferenceCertification = JSON.parse(readFileSync(hermesReferenceCertificationPath, "utf8"));
+} catch (error) {
+  fail(`Hermes reference certification cannot be read: ${error instanceof Error ? error.message : error}`);
+}
+if (hermesReferenceCertification) {
+  if (hermesReferenceCertification.schemaVersion !== 1) {
+    fail("Hermes reference certification schema version must be 1");
+  }
+  if (!Array.isArray(hermesReferenceCertification.results) || hermesReferenceCertification.results.length !== 2) {
+    fail("Hermes reference certification must contain exactly upstream and fork results");
+  } else {
+    for (const result of hermesReferenceCertification.results) verifyHermesReferenceReceipt(result);
+  }
+}
+
+let hermesStartupEgressRootCause;
+try {
+  hermesStartupEgressRootCause = JSON.parse(readFileSync(hermesStartupEgressRootCausePath, "utf8"));
+} catch (error) {
+  fail(`Hermes startup egress root-cause receipt cannot be read: ${error instanceof Error ? error.message : error}`);
+}
+if (
+  hermesStartupEgressRootCause?.schemaVersion !== 1 ||
+  hermesStartupEgressRootCause?.status !== "verified" ||
+  hermesStartupEgressRootCause?.attribution?.initiatingSubsystem !==
+    "Hermes TUI gateway automatic startup update checker" ||
+  hermesStartupEgressRootCause?.remediation?.failClosed !== true ||
+  hermesStartupEgressRootCause?.remediation?.unknownOrAlreadyPatchedSourceRejected !== true
+) {
+  fail("Hermes startup egress root-cause attribution and remediation must be exact");
 }
 
 if (manifest.schemaVersion !== 1) fail("schemaVersion must be 1");
@@ -483,12 +631,19 @@ for (const [surface, content, required] of [
   ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78"],
   ["Hermes derivative patch", patchHermesCommandSecurity, 'if cfg["tirith_fail_open"]:'],
   ["Hermes derivative patch", patchHermesCommandSecurity, '"action": "block"'],
+  ["Hermes startup update patch", patchHermesStartupUpdateCheck, "def prefetch_update_check():"],
+  ["Hermes startup update patch", patchHermesStartupUpdateCheck, "return None"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "patch-hermes-startup-update-check.py"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._circuit_open is True"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "tirith disabled (circuit breaker, fail-closed)"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._install_thread is None"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "startup update check is disabled"],
+  ["runtime deadman verifier", verifyRuntimeDeadman, "--property Type=exec"],
+  ["runtime deadman verifier", verifyRuntimeDeadman, "--property RuntimeMaxSec=2"],
+  ["runtime deadman verifier", verifyRuntimeDeadman, "result}\" == 'timeout'"],
   ["Hermes image loader", loadHermesExecutionImage, "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"],
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
@@ -603,16 +758,23 @@ for (const required of [
   "\"${CONTAINER}\" == 'paperclip-gloops-handshake'",
   "http://${HANDSHAKE_EXPECTED_IP}:3100/api/health",
   "docker network inspect --format '{{.Internal}}'",
-  'index .NetworkSettings.Networks "paperclip-handshake"',
+  "docker network inspect --format '{{.Id}}'",
+  "docker inspect --format '{{json .NetworkSettings.Networks}}'",
+  "docker inspect --format '{{json .NetworkSettings.Ports}}'",
+  '.["paperclip-handshake"].NetworkID // empty',
+  '.["paperclip-handshake"].IPAddress // empty',
+  'keys | sort | join(",")',
   "network_internal=${network_internal:-missing}",
   "container_ip=${container_ip:-missing}",
+  "published_bindings=${published_binding_count:-missing}",
   "curl --fail --silent --show-error --max-time 5 --header 'Host: 127.0.0.1'",
   "\"${CONTAINER}\" == 'paperclip-gloops'",
-  'index .NetworkSettings.Networks "paperclip-execution"',
-  'index .NetworkSettings.Ports "3100/tcp"',
-  "host_ip=${host_ip:-missing}",
-  "host_port=${host_port:-missing}",
+  '.["paperclip-execution"].NetworkID // empty',
+  '.["3100/tcp"] as $binding',
+  "port_keys=${port_keys:-missing}",
+  "exact_loopback_binding=${exact_loopback_binding:-missing}",
   "'http://127.0.0.1:3100/api/health'",
+  "command -v jq",
   "unsupported Paperclip control-plane container",
 ]) {
   if (!waitPaperclipControlPlane.includes(required)) {
@@ -1151,6 +1313,7 @@ for (const required of [
   "verify-hermes-execution-profile.sh",
   "verify-hermes-command-security-image.sh",
   "load-hermes-execution-image.sh",
+  "verify-runtime-deadman.sh",
   "provision-tirith.sh",
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
