@@ -1,0 +1,6 @@
+FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78
+
+COPY patch-hermes-command-security.py /tmp/patch-hermes-command-security.py
+RUN python /tmp/patch-hermes-command-security.py \
+  && rm -f /tmp/patch-hermes-command-security.py \
+  && python -m py_compile /opt/hermes/tools/tirith_security.py

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:4ad5881969635daec4194f7bb78df22a1768df4f74f574cc935647d24750a23d'
-readonly HERMES_IMAGE='hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78'
+readonly HERMES_IMAGE='hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly APP_KEY="${CONFIG_DIR}/github-app/private-key.pem"
@@ -24,6 +24,7 @@ docker image inspect "${HERMES_IMAGE}" >/dev/null 2>&1 || {
   echo "the pre-provisioned immutable Hermes execution image is missing: ${HERMES_IMAGE}" >&2
   exit 1
 }
+"${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${HERMES_IMAGE}"
 [[ -f "${APP_KEY}" && "$(stat -c '%a:%U:%G' "${APP_KEY}")" =~ ^(400|600):root:root$ ]] || {
   echo "the repository-scoped GitHub App private key is missing or not root-protected: ${APP_KEY}" >&2
   exit 1
@@ -45,6 +46,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-zero-work.sh" "${LIB_DIR
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rollback.sh" "${LIB_DIR}/rollback.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.sh" "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${LIB_DIR}/verify-hermes-command-security-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/provision-tirith.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"

@@ -10,7 +10,7 @@ StartLimitBurst=2
 
 [Service]
 Type=simple
-Environment=HERMES_EXECUTION_IMAGE=hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78
+Environment=HERMES_EXECUTION_IMAGE=hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d
 ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-hermes
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source
 ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-execution

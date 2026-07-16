@@ -29,6 +29,22 @@ const provisionTirithPath = new URL(
   "../gloops-distribution/deploy/hermes/provision-tirith.sh",
   import.meta.url,
 );
+const hermesExecutionDockerfilePath = new URL(
+  "../gloops-distribution/deploy/hermes/Dockerfile.hermes-execution",
+  import.meta.url,
+);
+const patchHermesCommandSecurityPath = new URL(
+  "../gloops-distribution/deploy/hermes/patch-hermes-command-security.py",
+  import.meta.url,
+);
+const buildHermesExecutionImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/build-hermes-execution-image.sh",
+  import.meta.url,
+);
+const verifyHermesCommandSecurityImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-command-security-image.sh",
+  import.meta.url,
+);
 const preflightPath = new URL(
   "../gloops-distribution/deploy/hermes/preflight.sh",
   import.meta.url,
@@ -116,6 +132,10 @@ const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
 const provisionTirith = readFileSync(provisionTirithPath, "utf8");
+const hermesExecutionDockerfile = readFileSync(hermesExecutionDockerfilePath, "utf8");
+const patchHermesCommandSecurity = readFileSync(patchHermesCommandSecurityPath, "utf8");
+const buildHermesExecutionImage = readFileSync(buildHermesExecutionImagePath, "utf8");
+const verifyHermesCommandSecurityImage = readFileSync(verifyHermesCommandSecurityImagePath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
@@ -322,6 +342,21 @@ for (const required of [
     fail(`zero-work rehearsal is missing ${required}`);
   }
 }
+for (const [surface, content, required] of [
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78"],
+  ["Hermes derivative patch", patchHermesCommandSecurity, 'if cfg["tirith_fail_open"]:'],
+  ["Hermes derivative patch", patchHermesCommandSecurity, '"action": "block"'],
+  ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
+  ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._circuit_open is True"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "tirith disabled (circuit breaker, fail-closed)"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._install_thread is None"],
+]) {
+  if (!content.includes(required)) {
+    fail(`${surface} is missing ${required}`);
+  }
+}
 const cleanupMatch = rehearseZeroWork.match(/cleanup\(\) \{([\s\S]*?)\n\}/);
 for (const required of [
   'kill "${evidence_pid}"',
@@ -432,7 +467,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78";
+  "hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -509,6 +544,17 @@ if (
   })
 ) {
   fail("Hermes command scanner must be exact, immutable, offline, and fail-closed");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.imageCorrection) !==
+  JSON.stringify({
+    baseImage: "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
+    scope: "tirith-circuit-breaker-obeys-fail-closed",
+    buildNetwork: "none",
+    behavioralVerification: "three-scanner-failures-then-block",
+  })
+) {
+  fail("Hermes execution image correction must be narrow, offline, and behaviorally verified");
 }
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.backgroundExecution) !==
@@ -609,6 +655,7 @@ for (const error of validateHermesRuntimePrivileges(hermesExecutionService)) {
 for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
+  "verify-hermes-command-security-image.sh",
   "provision-tirith.sh",
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",

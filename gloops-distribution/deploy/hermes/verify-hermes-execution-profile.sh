@@ -20,6 +20,8 @@ readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
 readonly TIRITH_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'
+readonly HERMES_IMAGE='hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d'
+readonly COMMAND_SECURITY_VERIFIER='/usr/local/lib/paperclip-gloops/verify-hermes-command-security-image.sh'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -29,6 +31,12 @@ fail() { echo "FAIL $1" >&2; failed=1; }
   echo 'usage: verify-hermes-execution-profile.sh [--source|--live]' >&2
   exit 2
 }
+
+if "${COMMAND_SECURITY_VERIFIER}" "${HERMES_IMAGE}"; then
+  pass 'Hermes command scanner remains fail-closed after its circuit breaker opens'
+else
+  fail 'Hermes command scanner can fail open after its circuit breaker opens'
+fi
 
 [[ -f "${RUNTIME_ENV}" ]] || fail 'dedicated credential environment is missing'
 if [[ -f "${RUNTIME_ENV}" ]]; then
@@ -67,7 +75,7 @@ fi
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
-  'hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78' \
+  'hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d' \
   - /config.yaml <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -115,7 +123,7 @@ if jq -e '
   .network.apiPort == 8642 and
   .network.apiAuthentication == "bearer-key-required" and
   .network.publishedPorts == [] and
-  .runtime.image == "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78" and
+  .runtime.image == "hermes-agent-gloops@sha256:2c1525ddfbead27aefe89754bd24fde90ed58c8ee937393b660ba89695f7764d" and
   .runtime.imageAcquisition == "preprovisioned-local-digest" and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
@@ -127,6 +135,12 @@ if jq -e '
     "mount": "read-only",
     "autoInstall": false,
     "failureMode": "closed"
+  } and
+  .runtime.imageCorrection == {
+    "baseImage": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
+    "scope": "tirith-circuit-breaker-obeys-fail-closed",
+    "buildNetwork": "none",
+    "behavioralVerification": "three-scanner-failures-then-block"
   } and
   .runtime.backgroundExecution == {
     "cronProvider": "disabled",
