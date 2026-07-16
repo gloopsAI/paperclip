@@ -964,6 +964,8 @@ for (const required of [
   '[[ -x "${TOPOLOGY_INSPECTOR}" ]]',
   "handshake topology inspector is installed separately and executable",
   "handshake cron provider is an exact inert shutdown-only implementation",
+  'if ! docker logs "${CONTAINER}" >"${cron_logs}" 2>&1; then',
+  "handshake runtime logs are unavailable for cron-provider verification",
   "handshake runtime did not start the built-in cron ticker",
   '"/opt/data/plugins/disabled"',
 ]) {

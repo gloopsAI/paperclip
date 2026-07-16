@@ -253,11 +253,15 @@ if [[ "${MODE}" == '--live' ]]; then
   done
   [[ "${health}" == 'healthy' ]] || fail 'handshake container did not become healthy'
 
-  if docker logs "${CONTAINER}" 2>&1 | grep -Fq "using built-in ticker"; then
+  cron_logs="$(mktemp)"
+  if ! docker logs "${CONTAINER}" >"${cron_logs}" 2>&1; then
+    fail 'handshake runtime logs are unavailable for cron-provider verification'
+  elif grep -Fq "using built-in ticker" "${cron_logs}"; then
     fail 'handshake runtime fell back to the built-in cron ticker'
   else
     pass 'handshake runtime did not start the built-in cron ticker'
   fi
+  rm -f "${cron_logs}"
 
   inspect="$(mktemp)"
   trap 'rm -f "${inspect}"' EXIT
