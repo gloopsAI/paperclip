@@ -146,6 +146,7 @@ const {
 function buildTestConfig(overrides: Record<string, unknown> = {}) {
   return {
     maintenanceMode: false,
+    operatorOnlyMode: false,
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bind: "loopback",
@@ -316,7 +317,10 @@ describe("startServer feedback export wiring", () => {
   });
 
   it("keeps maintenance startup free of autonomous reconciliation", async () => {
-    loadConfigMock.mockReturnValue(buildTestConfig({ maintenanceMode: true }));
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      maintenanceMode: true,
+      operatorOnlyMode: true,
+    }));
 
     await startServer();
 
@@ -328,7 +332,23 @@ describe("startServer feedback export wiring", () => {
     expect(reconcilePersistedRuntimeServicesOnStartupMock).not.toHaveBeenCalled();
     expect(initializeBoardClaimChallengeMock).not.toHaveBeenCalled();
     expect(maybePersistWorktreeRuntimePortsMock).not.toHaveBeenCalled();
-    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({ maintenanceMode: true });
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({ operatorOnlyMode: true });
+  });
+
+  it("keeps operator-only startup free of autonomous reconciliation", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ operatorOnlyMode: true }));
+
+    await startServer();
+
+    expect(backfillPrincipalAccessCompatibilityMock).not.toHaveBeenCalled();
+    expect(bootstrapExecutionPolicyFromEnvMock).not.toHaveBeenCalled();
+    expect(reconcileCloudUpstreamRunsOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcileCodexLocalManagedHomesOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcilePersistedRuntimeServicesOnStartupMock).not.toHaveBeenCalled();
+    expect(initializeBoardClaimChallengeMock).not.toHaveBeenCalled();
+    expect(maybePersistWorktreeRuntimePortsMock).not.toHaveBeenCalled();
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({ operatorOnlyMode: true });
   });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {

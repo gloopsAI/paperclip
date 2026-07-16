@@ -540,10 +540,10 @@ export async function startServer(): Promise<StartedServer> {
   let resolveSessionFromHeaders:
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
-  if (!config.maintenanceMode && config.deploymentMode === "local_trusted") {
+  if (!config.operatorOnlyMode && config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
-  if (!config.maintenanceMode) {
+  if (!config.operatorOnlyMode) {
     const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
     if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
       logger.info(accessBackfill, "Backfilled principal access compatibility records");
@@ -579,7 +579,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
-    if (!config.maintenanceMode) {
+    if (!config.operatorOnlyMode) {
       await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     }
     authReady = true;
@@ -588,7 +588,7 @@ export async function startServer(): Promise<StartedServer> {
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
   }
-  if (!config.maintenanceMode) {
+  if (!config.operatorOnlyMode) {
     maybePersistWorktreeRuntimePorts({
       serverPort: listenPort,
       databasePort: resolvedEmbeddedPostgresPort,
@@ -706,7 +706,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
-    maintenanceMode: config.maintenanceMode,
+    operatorOnlyMode: config.operatorOnlyMode,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -751,7 +751,7 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
-  if (!config.maintenanceMode) {
+  if (!config.operatorOnlyMode) {
     void reconcilePersistedRuntimeServicesOnStartup(db as any)
       .then((result) => {
         if (result.reconciled > 0) {

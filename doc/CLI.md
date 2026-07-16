@@ -39,6 +39,15 @@ embedded database would make inspection startup mutating. Explicit API actions
 remain available to the authenticated operator; this flag suppresses automatic
 startup and background work rather than making the API read-only.
 
+For a deployment that must retain its configured bind and existing embedded
+PostgreSQL instance while accepting only explicit operator/API actions, set
+`PAPERCLIP_OPERATOR_ONLY_MODE=true`. This disables startup reconciliation,
+heartbeat and routine scheduling, plugin coordinators/workers, automatic
+backups, company deletion, and telemetry without applying maintenance mode's
+loopback/external-database restrictions. It is an activation boundary, not a
+read-only database mode: authenticated operator requests can still mutate
+state.
+
 ## Deployment Modes
 
 Mode taxonomy and design intent are documented in `doc/DEPLOYMENT-MODES.md`.
