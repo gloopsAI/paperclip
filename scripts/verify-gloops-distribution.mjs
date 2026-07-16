@@ -121,6 +121,14 @@ const verifyHermesHandshakePath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-handshake-profile.sh",
   import.meta.url,
 );
+const installHermesHandshakeEgressPath = new URL(
+  "../gloops-distribution/deploy/hermes/install-hermes-handshake-egress.sh",
+  import.meta.url,
+);
+const removeHermesHandshakeEgressPath = new URL(
+  "../gloops-distribution/deploy/hermes/remove-hermes-handshake-egress.sh",
+  import.meta.url,
+);
 const hermesHandshakeGuardPath = new URL(
   "../gloops-distribution/deploy/hermes/hermes-handshake-guard/sitecustomize.py",
   import.meta.url,
@@ -196,6 +204,8 @@ const hermesHandshakePolicy = JSON.parse(readFileSync(hermesHandshakePolicyPath,
 const hermesHandshakeService = readFileSync(hermesHandshakeServicePath, "utf8");
 const prepareHermesHandshake = readFileSync(prepareHermesHandshakePath, "utf8");
 const verifyHermesHandshake = readFileSync(verifyHermesHandshakePath, "utf8");
+const installHermesHandshakeEgress = readFileSync(installHermesHandshakeEgressPath, "utf8");
+const removeHermesHandshakeEgress = readFileSync(removeHermesHandshakeEgressPath, "utf8");
 const hermesHandshakeGuard = readFileSync(hermesHandshakeGuardPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
 const githubAppCredentials = readFileSync(githubAppCredentialsPath, "utf8");
@@ -697,12 +707,51 @@ for (const required of [
   "Conflicts=paperclip-hermes-execution.service",
   "ExecStartPre=/usr/bin/test ! -e /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED",
   "ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE",
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/install-hermes-handshake-egress.sh",
+  "ExecStopPost=/usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh",
   "ExecStopPost=-/usr/bin/rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED",
   "RuntimeMaxSec=900",
   "verify-hermes-handshake-profile.sh --live",
 ]) {
   if (!hermesHandshakeService.includes(required)) {
     fail(`Hermes provider-handshake service is missing ${required}`);
+  }
+}
+for (const required of [
+  "readonly CHAIN='PCLIP-HSHAKE-EGRESS'",
+  "docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}'",
+  "docker network inspect -f '{{.EnableIPv6}}'",
+  "getent ahostsv4 ollama.com",
+  "iptables -N \"${CHAIN}\"",
+  "iptables -A \"${CHAIN}\" -d \"${subnet}\"",
+  "--dport 443",
+  "--comment \"${ALLOW_COMMENT}\" -j RETURN",
+  "--comment \"${DENY_COMMENT}\"",
+  "-j REJECT --reject-with icmp-port-unreachable",
+  "iptables -I DOCKER-USER 1 -s \"${subnet}\"",
+  "schema=gloops.hermes-handshake-egress.v1",
+  "HANDSHAKE_EGRESS_ACTIVE",
+]) {
+  if (!installHermesHandshakeEgress.includes(required)) {
+    fail(`Hermes handshake egress installer is missing ${required}`);
+  }
+}
+for (const forbidden of ["ACCEPT", "api.x.ai", "grok", "xai"] ) {
+  if (installHermesHandshakeEgress.includes(forbidden)) {
+    fail(`Hermes handshake egress installer contains forbidden surface ${forbidden}`);
+  }
+}
+for (const required of [
+  "iptables -S DOCKER-USER",
+  'args[-2:] == ["-j", chain]',
+  "shlex.split(rule)",
+  "subprocess.run([\"iptables\", \"-D\"",
+  "iptables -F \"${CHAIN}\"",
+  "iptables -X \"${CHAIN}\"",
+  "rm -f \"${STATE_FILE}\"",
+]) {
+  if (!removeHermesHandshakeEgress.includes(required)) {
+    fail(`Hermes handshake egress cleanup is missing ${required}`);
   }
 }
 for (const required of [
@@ -882,6 +931,8 @@ for (const required of [
   "hermes-handshake-policy.json",
   "prepare-hermes-handshake-profile.sh",
   "verify-hermes-handshake-profile.sh",
+  "install-hermes-handshake-egress.sh",
+  "remove-hermes-handshake-egress.sh",
   "hermes-handshake-guard/sitecustomize.py",
   "hermes-execution-gitconfig",
   "hermes-execution-gh-config.yml",
@@ -960,6 +1011,7 @@ for (const required of [
   "github-app-credentials.py revoke-projector",
   "github-app-credentials.py revoke-hermes",
   "/run/paperclip-gloops",
+  "remove-hermes-handshake-egress.sh",
   "refusing rollback while a Paperclip or Hermes container exists",
 ]) {
   if (!rollback.includes(required)) {
@@ -1149,6 +1201,8 @@ for (const required of [
   "FAIL durable Hermes execution lifecycle evidence is invalid",
   "PASS durable credential cleanup state is root-only",
   "FAIL a zero-work egress proof rule remains installed while dark",
+  "FAIL Hermes handshake egress firewall policy remains while dark",
+  "PASS no Hermes handshake egress policy remains while dark",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);

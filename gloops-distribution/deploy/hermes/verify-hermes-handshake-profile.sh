@@ -8,6 +8,8 @@ readonly UNIT='/usr/local/lib/systemd/system/paperclip-hermes-handshake.service'
 readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
 readonly CONTAINER='paperclip-hermes-handshake'
 readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
+readonly EGRESS_STATE='/run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE'
+readonly EGRESS_CHAIN='PCLIP-HSHAKE-EGRESS'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -142,6 +144,8 @@ for required in \
   'h.try_recover_primary_transport._paperclip_handshake_guard' \
   'httpx.Client._send_single_request._paperclip_handshake_guard' \
   'httpx.AsyncClient._send_single_request._paperclip_handshake_guard' \
+  'install-hermes-handshake-egress.sh' \
+  'remove-hermes-handshake-egress.sh' \
   'RuntimeMaxSec=900'; do
   grep -Fq -- "${required}" "${UNIT}" || fail "handshake unit is missing: ${required}"
 done
@@ -154,6 +158,38 @@ for forbidden in \
 done
 
 if [[ "${MODE}" == '--live' ]]; then
+  if [[ "$(stat -c '%a:%U:%G' "${EGRESS_STATE}" 2>/dev/null || true)" != '600:root:root' ]]; then
+    fail 'live handshake egress state is absent or not root-protected'
+  else
+    subnet="$(sed -n 's/^subnet=//p' "${EGRESS_STATE}")"
+    ollama_csv="$(sed -n 's/^ollama_ipv4=//p' "${EGRESS_STATE}")"
+    policy_sha256="$(sed -n 's/^policy_sha256=//p' "${EGRESS_STATE}")"
+    IFS=, read -r -a ollama_ips <<<"${ollama_csv}"
+    expected_policy_sha256="$({ printf '%s\n' "${subnet}"; printf '%s\n' "${ollama_ips[@]}"; } | sha256sum | awk '{print $1}')"
+    if [[ "$(sed -n 's/^schema=//p' "${EGRESS_STATE}")" != 'gloops.hermes-handshake-egress.v1' ]] \
+      || [[ "$(sed -n 's/^network=//p' "${EGRESS_STATE}")" != 'paperclip-execution' ]] \
+      || [[ "$(sed -n 's/^chain=//p' "${EGRESS_STATE}")" != "${EGRESS_CHAIN}" ]] \
+      || [[ "${policy_sha256}" != "${expected_policy_sha256}" ]] \
+      || [[ "$(wc -l <"${EGRESS_STATE}")" -ne 6 ]] \
+      || [[ -z "${subnet}" || ${#ollama_ips[@]} -eq 0 ]]; then
+      fail 'live handshake egress state is malformed'
+    elif ! iptables -C DOCKER-USER -s "${subnet}" -m comment --comment paperclip-hermes-handshake-egress -j "${EGRESS_CHAIN}" \
+      || ! iptables -C "${EGRESS_CHAIN}" -d "${subnet}" -m comment --comment paperclip-hermes-handshake-egress -j RETURN \
+      || ! iptables -C "${EGRESS_CHAIN}" -m comment --comment paperclip-hermes-handshake-deny -j REJECT --reject-with icmp-port-unreachable; then
+      fail 'live handshake egress firewall boundary is incomplete'
+    elif [[ "$(iptables -S DOCKER-USER | grep -Fc -- "-j ${EGRESS_CHAIN}")" -ne 1 ]] \
+      || [[ "$(iptables -S "${EGRESS_CHAIN}" | grep -c '^-A ')" -ne $((${#ollama_ips[@]} + 2)) ]]; then
+      fail 'live handshake egress firewall contains unexpected rules'
+    else
+      for ip in "${ollama_ips[@]}"; do
+        iptables -C "${EGRESS_CHAIN}" -p tcp -d "${ip}" --dport 443 \
+          -m comment --comment paperclip-hermes-handshake-ollama -j RETURN \
+          || fail "live handshake egress firewall is missing Ollama destination ${ip}:443"
+      done
+      pass 'live whole-container egress is restricted to the Docker subnet and resolved ollama.com IPv4 destinations on TCP 443'
+    fi
+  fi
+
   deadline=$((SECONDS + 60))
   health=''
   while ((SECONDS < deadline)); do

@@ -49,6 +49,9 @@ if [[ -x /usr/local/lib/paperclip-gloops/github-app-credentials.py ]]; then
   /usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-projector
   /usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes
 fi
+if [[ -x /usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh ]]; then
+  /usr/local/lib/paperclip-gloops/remove-hermes-handshake-egress.sh
+fi
 
 restore_stage="$(mktemp -d /home/paperclip/.paperclip.restore.XXXXXX)"
 trap 'rm -rf "${restore_stage}"' EXIT

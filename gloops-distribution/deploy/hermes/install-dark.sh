@@ -37,6 +37,7 @@ install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"
+"${SCRIPT_DIR}/remove-hermes-handshake-egress.sh"
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
@@ -51,6 +52,8 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-handshake-profile.sh" "${LIB_DIR}/prepare-hermes-handshake-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-profile.sh" "${LIB_DIR}/verify-hermes-handshake-profile.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/install-hermes-handshake-egress.sh" "${LIB_DIR}/install-hermes-handshake-egress.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/remove-hermes-handshake-egress.sh" "${LIB_DIR}/remove-hermes-handshake-egress.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${LIB_DIR}/verify-hermes-command-security-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/load-hermes-execution-image.sh" "${LIB_DIR}/load-hermes-execution-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/provision-tirith.sh"

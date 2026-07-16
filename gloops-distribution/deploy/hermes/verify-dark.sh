@@ -171,6 +171,16 @@ elif grep -Fq 'gloops-zero-work-' <<<"${firewall_rules}"; then
 else
   echo "PASS no zero-work egress proof rule remains installed"
 fi
+if [[ -e /run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE ]]; then
+  echo "FAIL Hermes handshake egress state remains while dark" >&2
+  failed=1
+elif iptables -nL PCLIP-HSHAKE-EGRESS >/dev/null 2>&1 \
+  || grep -Fq -- '-j PCLIP-HSHAKE-EGRESS' <<<"${firewall_rules:-}"; then
+  echo "FAIL Hermes handshake egress firewall policy remains while dark" >&2
+  failed=1
+else
+  echo "PASS no Hermes handshake egress policy remains while dark"
+fi
 
 if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
   echo "PASS exact image digest is installed"
