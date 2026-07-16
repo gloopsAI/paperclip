@@ -290,12 +290,21 @@ for index in $(seq 1 "$REFERENCE_RUNS"); do
   container_absent=false
   state_absent=false
   claimed_key_absent=false
+  claimed_key_readable=false
+  claimed_key_mode=''
+  claimed_key_owner=''
+  claimed_key_proof="${diag_dir}/claimed-key-proof.json"
+  if [[ -f "$claimed_key_proof" ]]; then
+    claimed_key_readable="$(jq -r '.readableByUid10001 == true' "$claimed_key_proof")"
+    claimed_key_mode="$(jq -r '.mode // empty' "$claimed_key_proof")"
+    claimed_key_owner="$(jq -r '.owner // empty' "$claimed_key_proof")"
+  fi
   company_is_absent "$company_id" && company_absent=true
   ! docker inspect "$container_name" >/dev/null 2>&1 && container_absent=true
   [[ ! -e "$state_dir" ]] && state_absent=true
   [[ ! -e "$join_output" && ! -e "${state_dir}/workspace/paperclip-claimed-api-key.json" ]] && claimed_key_absent=true
 
-  if [[ "$e2e_passed" == true && "$company_absent" == true && "$container_absent" == true && "$state_absent" == true && "$claimed_key_absent" == true ]]; then
+  if [[ "$e2e_passed" == true && "$company_absent" == true && "$container_absent" == true && "$state_absent" == true && "$claimed_key_absent" == true && "$claimed_key_readable" == true && "$claimed_key_mode" == 600 && "$claimed_key_owner" == 10001:10001 ]]; then
     result="passed"
   else
     result="failed"
@@ -311,7 +320,10 @@ for index in $(seq 1 "$REFERENCE_RUNS"); do
     --argjson containerAbsent "$container_absent" \
     --argjson stateAbsent "$state_absent" \
     --argjson claimedKeyAbsent "$claimed_key_absent" \
-    '{label:$label,result:$result,companyId:$companyId,durationSeconds:$durationSeconds,e2ePassed:$e2ePassed,cleanup:{companyAbsent:$companyAbsent,containerAbsent:$containerAbsent,stateAbsent:$stateAbsent,claimedKeyAbsent:$claimedKeyAbsent}}' \
+    --argjson claimedKeyReadableByUid10001 "$claimed_key_readable" \
+    --arg claimedKeyMode "$claimed_key_mode" \
+    --arg claimedKeyOwner "$claimed_key_owner" \
+    '{label:$label,result:$result,companyId:$companyId,durationSeconds:$durationSeconds,e2ePassed:$e2ePassed,claimedKeyProof:{readableByUid10001:$claimedKeyReadableByUid10001,mode:$claimedKeyMode,owner:$claimedKeyOwner},cleanup:{companyAbsent:$companyAbsent,containerAbsent:$containerAbsent,stateAbsent:$stateAbsent,claimedKeyAbsent:$claimedKeyAbsent}}' \
     >> "$results_file"
 
   if [[ "$result" != "passed" ]]; then

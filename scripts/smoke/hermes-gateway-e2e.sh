@@ -842,14 +842,26 @@ join_hermes_agent() {
 
 install_claimed_key_in_container() {
   log "placing newly claimed Paperclip key in container workspace"
+  local proof mode owner
   jq -nc --arg token "$AGENT_API_KEY" '{token:$token,apiKey:$token}' \
     | docker exec --interactive --user 10001:10001 "$HERMES_CONTAINER_NAME" \
       sh -lc 'umask 077; cat > /home/hermes/workspace/paperclip-claimed-api-key.json'
-  docker exec --user 10001:10001 "$HERMES_CONTAINER_NAME" sh -lc '
-    test -r /home/hermes/workspace/paperclip-claimed-api-key.json
-    test "$(stat -c %a /home/hermes/workspace/paperclip-claimed-api-key.json)" = 600
+  proof="$(docker exec --user 10001:10001 "$HERMES_CONTAINER_NAME" sh -lc '
+    set -eu
+    file=/home/hermes/workspace/paperclip-claimed-api-key.json
+    test -r "$file"
+    test "$(stat -c %a "$file")" = 600
+    test "$(stat -c %u:%g "$file")" = 10001:10001
     test ! -e "$HERMES_HOME/host-sentinel.txt"
-  '
+    printf "%s %s\n" "$(stat -c %a "$file")" "$(stat -c %u:%g "$file")"
+  ')"
+  read -r mode owner <<<"$proof"
+  [[ "$mode" == 600 && "$owner" == 10001:10001 ]] || fail "claimed key proof returned unexpected metadata"
+  jq -nc \
+    --arg mode "$mode" \
+    --arg owner "$owner" \
+    '{readableByUid10001:true,mode:$mode,owner:$owner}' \
+    > "${HERMES_SMOKE_DIAG_DIR}/claimed-key-proof.json"
 }
 
 patch_agent_instructions_with_claimed_key() {

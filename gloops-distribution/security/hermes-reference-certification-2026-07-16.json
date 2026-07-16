@@ -8,9 +8,9 @@
     "gloopsPaperclipCommit": "0ec0377ef7ba65de2db6085590d9ca4da8228c3c",
     "hermesGatewayImage": "paperclip-hermes-gateway-smoke@sha256:2d90f263e09fe0c4a1c9c6a2dd5b2f8dffd9a818d535a713732785ac0cf25620",
     "hermesVersion": "0.17.0",
-    "matrixScriptSha256": "55fd8ba9dbaa9d782841ab43fe9750cbb61e0c01e1101bd9fd280963c086afb2",
+    "matrixScriptSha256": "742f59869734f37b6cf7e530a487bbf1f407e0f62d1b07cb72ba52e934410868",
     "referenceMockSha256": "5e52dd1c7393ebe82779df7d8e982836dd26e96152f981b311424cfc37199dc8",
-    "e2eScriptSha256": "81a625e1c9c0cb30a220a6675fc3262ab21be6fe0cdd61a68e5572f9629397be",
+    "e2eScriptSha256": "221b42a782de8a50130b99fac0ba95a2e8b69daafe4fa20df5688bcbcfd8c49a",
     "gatewayEntrypointSha256": "8906dc6eb1306a6ff910ded6c0013e23110fc896a02d5c80c7cee92b24f69dfe"
   },
   "controls": {
@@ -58,11 +58,11 @@
     }
   ],
   "claimedKeyOwnershipCorrection": {
-    "completedAt": "2026-07-16T21:35:44Z",
+    "completedAt": "2026-07-16T21:42:02Z",
     "method": "The claimed key was written and read by the running Hermes container as UID:GID 10001:10001 with mode 0600; no host ownership assumption remained.",
     "status": "passed",
     "rawReceipt": "gloops-distribution/security/evidence/hermes-reference-claimed-key-ownership-correction.json",
-    "rawReceiptSha256": "d856eace8bcbbd150fdb60f58f87001d9e04a993d9d09eb41f0900740dabda47"
+    "rawReceiptSha256": "6ad5df63a8cbedb10d28f5104714f8e92a5ac199f434878414f1cf1dbf350988"
   },
   "nonProductFailure": {
     "observed": true,

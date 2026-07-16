@@ -226,6 +226,18 @@ const hermesReferenceCertificationPath = new URL(
   "../gloops-distribution/security/hermes-reference-certification-2026-07-16.json",
   import.meta.url,
 );
+const hermesReferenceMatrixPath = new URL(
+  "../scripts/smoke/hermes-gateway-reference-matrix.sh",
+  import.meta.url,
+);
+const hermesReferenceMockPath = new URL(
+  "../scripts/smoke/openai-compatible-reference-mock.mjs",
+  import.meta.url,
+);
+const hermesGatewayE2ePath = new URL(
+  "../scripts/smoke/hermes-gateway-e2e.sh",
+  import.meta.url,
+);
 const hermesStartupEgressRootCausePath = new URL(
   "../gloops-distribution/security/hermes-startup-egress-root-cause-2026-07-16.json",
   import.meta.url,
@@ -457,6 +469,16 @@ if (hermesReferenceCertification) {
   } else {
     for (const result of hermesReferenceCertification.results) verifyHermesReferenceReceipt(result);
   }
+  const certificationInputs = hermesReferenceCertification.inputs ?? {};
+  for (const [label, path, expected] of [
+    ["reference matrix", hermesReferenceMatrixPath, certificationInputs.matrixScriptSha256],
+    ["reference mock", hermesReferenceMockPath, certificationInputs.referenceMockSha256],
+    ["Hermes gateway E2E", hermesGatewayE2ePath, certificationInputs.e2eScriptSha256],
+  ]) {
+    if (sha256File(path) !== expected) {
+      fail(`${label}: certification input digest does not match the current source`);
+    }
+  }
   const ownershipProof = hermesReferenceCertification.claimedKeyOwnershipCorrection;
   if (
     ownershipProof?.status !== "passed" ||
@@ -478,6 +500,9 @@ if (hermesReferenceCertification) {
       ownershipReceipt?.totalRuns !== 1 ||
       ownershipReceipt?.passedRuns !== 1 ||
       ownershipReceipt?.runs?.[0]?.e2ePassed !== true ||
+      ownershipReceipt?.runs?.[0]?.claimedKeyProof?.readableByUid10001 !== true ||
+      ownershipReceipt?.runs?.[0]?.claimedKeyProof?.mode !== "600" ||
+      ownershipReceipt?.runs?.[0]?.claimedKeyProof?.owner !== "10001:10001" ||
       ownershipReceipt?.runs?.[0]?.cleanup?.claimedKeyAbsent !== true
     ) {
       fail("Hermes claimed-key ownership correction receipt must reproduce its passing cleanup claim");
