@@ -13,9 +13,11 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -27,10 +29,10 @@ HERMES = "/opt/hermes/.venv/bin/hermes"
 CREDENTIAL_RECEIPT = Path("/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
-SYSTEMD_STOP_TIMEOUT_SECONDS = 90
-HELPER_BUDGET_SECONDS = 80
+SYSTEMD_STOP_TIMEOUT_SECONDS = 120
+HELPER_BUDGET_SECONDS = 100
 CONTAINER_STOP_TIMEOUT_SECONDS = 20
-RECEIPT_RESERVE_SECONDS = 2
+RECEIPT_RESERVE_SECONDS = 12
 FORCED_DARK_RESERVE_SECONDS = CONTAINER_STOP_TIMEOUT_SECONDS + RECEIPT_RESERVE_SECONDS
 PLANNED_STOP_TIMEOUT_SECONDS = HELPER_BUDGET_SECONDS - FORCED_DARK_RESERVE_SECONDS
 STATE_COMMAND = (
@@ -45,6 +47,10 @@ STATE_COMMAND = (
 
 
 class StopError(RuntimeError):
+    pass
+
+
+class ReceiptDeadlineExceeded(StopError):
     pass
 
 
@@ -126,16 +132,44 @@ def validate_history(records: list[dict[str, object]]) -> None:
         prior = str(record["receiptDigest"])
 
 
-def append_receipt(receipt: dict[str, object]) -> None:
+def acquire_history_lock(lock_fd: int, deadline: float) -> None:
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReceiptDeadlineExceeded("Hermes stop receipt lock deadline exceeded")
+            time.sleep(min(0.05, remaining))
+
+
+def append_receipt(receipt: dict[str, object], deadline: float | None = None) -> None:
     attempt_id = receipt.get("attemptId")
     if not isinstance(attempt_id, str) or not attempt_id:
         raise StopError("Hermes stop receipt has no attempt identity")
+    if deadline is None:
+        deadline = time.monotonic() + RECEIPT_RESERVE_SECONDS
     HISTORY_LOCK.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(HISTORY_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    alarm_armed = False
+    previous_handler = None
     try:
         os.chmod(HISTORY_LOCK, 0o600)
         os.chown(HISTORY_LOCK, 0, 0)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        acquire_history_lock(lock_fd, deadline)
+        if threading.current_thread() is threading.main_thread() and hasattr(signal, "SIGALRM"):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReceiptDeadlineExceeded("Hermes stop receipt persistence deadline exceeded")
+
+            def receipt_alarm(_signum, _frame):
+                raise ReceiptDeadlineExceeded("Hermes stop receipt persistence deadline exceeded")
+
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, receipt_alarm)
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            alarm_armed = True
         records = [json.loads(line) for line in HISTORY.read_text().splitlines()] if HISTORY.exists() else []
         if not all(isinstance(record, dict) for record in records):
             raise StopError("Hermes stop history is malformed")
@@ -148,25 +182,20 @@ def append_receipt(receipt: dict[str, object]) -> None:
             "previousReceiptDigest": records[-1]["receiptDigest"] if records else None,
         }
         record["receiptDigest"] = record_digest(record)
-        history_parent_created = not HISTORY.parent.exists()
-        HISTORY.parent.mkdir(parents=True, exist_ok=True)
-        if history_parent_created:
-            fsync_directory(HISTORY.parent.parent)
-        history_created = not HISTORY.exists()
-        history_fd = os.open(HISTORY, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-        try:
-            os.chmod(HISTORY, 0o600)
-            os.chown(HISTORY, 0, 0)
-            payload = (json.dumps(record, sort_keys=True) + "\n").encode()
-            if os.write(history_fd, payload) != len(payload):
-                raise StopError("Hermes stop history append was incomplete")
-            os.fsync(history_fd)
-        finally:
-            os.close(history_fd)
-        if history_created:
-            fsync_directory(HISTORY.parent)
+        payload = "".join(json.dumps(value, sort_keys=True) + "\n" for value in [*records, record])
+        atomic_write(HISTORY, payload)
+        persisted = [json.loads(line) for line in HISTORY.read_text().splitlines()]
+        validate_history(persisted)
+        if persisted[-1].get("attemptId") != attempt_id:
+            raise StopError("Hermes stop receipt was not durably projected")
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if alarm_armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
         os.close(lock_fd)
 
 
@@ -296,7 +325,7 @@ def main() -> int:
         receipt["status"] = "not-present"
     receipt["error"] = "; ".join(errors) or None
     receipt["completedAt"] = now()
-    append_receipt(receipt)
+    append_receipt(receipt, helper_deadline)
 
     if receipt["status"] not in {"succeeded", "not-present"}:
         print(f"stop-hermes-execution: {receipt['error']}", file=sys.stderr)
