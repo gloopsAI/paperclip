@@ -215,6 +215,7 @@ for required in \
   '--network paperclip-execution' \
   '--read-only' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
+  '--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700' \
   '--cap-drop ALL' \
   '--cap-add CHOWN' \
   '--cap-add DAC_OVERRIDE' \
@@ -312,6 +313,33 @@ PY
       pass 'live home has no environment file'
     else
       fail 'live home contains an environment file'
+    fi
+    if [[ "$(docker inspect --format '{{index .HostConfig.Tmpfs "/opt/data"}}' "${CONTAINER}")" == *'uid=10000'* ]] \
+      && [[ "$(docker inspect --format '{{index .HostConfig.Tmpfs "/opt/data"}}' "${CONTAINER}")" == *'gid=10000'* ]] \
+      && [[ "$(docker inspect --format '{{index .HostConfig.Tmpfs "/opt/data"}}' "${CONTAINER}")" == *'mode=0700'* ]] \
+      && docker exec -i --user 10000:10000 "${CONTAINER}" /opt/hermes/.venv/bin/python - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+root = Path("/opt/data")
+metadata = root.stat()
+assert stat.S_IMODE(metadata.st_mode) == 0o700
+assert (metadata.st_uid, metadata.st_gid) == (10000, 10000)
+mount_lines = Path("/proc/self/mountinfo").read_text().splitlines()
+assert any(
+    line.split()[4] == "/opt/data"
+    and line.split(" - ", 1)[1].split()[0] == "tmpfs"
+    for line in mount_lines
+)
+probe = root / ".gloops-lifecycle-write-probe"
+probe.write_text("ok")
+probe.unlink()
+PY
+    then
+      pass 'live Hermes identity exclusively owns the ephemeral lifecycle root'
+    else
+      fail 'live lifecycle root cannot persist planned-stop state as the Hermes identity'
     fi
     if docker exec --user 10000:10000 --env HOME=/opt/data --env HERMES_HOME=/opt/data \
       "${CONTAINER}" /opt/hermes/.venv/bin/python -c \
