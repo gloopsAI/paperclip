@@ -722,6 +722,8 @@ for (const required of [
   "docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}'",
   "docker network inspect -f '{{.EnableIPv6}}'",
   "getent ahostsv4 ollama.com",
+  "not address.is_global",
+  "address in network",
   "iptables -N \"${CHAIN}\"",
   "iptables -A \"${CHAIN}\" -d \"${subnet}\"",
   "--dport 443",
@@ -743,6 +745,7 @@ for (const forbidden of ["ACCEPT", "api.x.ai", "grok", "xai"] ) {
 }
 for (const required of [
   "iptables -S DOCKER-USER",
+  "refusing to discard active handshake egress state while Docker firewall cleanup is unavailable",
   'args[-2:] == ["-j", chain]',
   "shlex.split(rule)",
   "subprocess.run([\"iptables\", \"-D\"",

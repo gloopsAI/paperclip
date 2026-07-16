@@ -180,6 +180,8 @@ if [[ "${MODE}" == '--live' ]]; then
     elif [[ "$(iptables -S DOCKER-USER | grep -Fc -- "-j ${EGRESS_CHAIN}")" -ne 1 ]] \
       || [[ "$(iptables -S "${EGRESS_CHAIN}" | grep -c '^-A ')" -ne $((${#ollama_ips[@]} + 2)) ]]; then
       fail 'live handshake egress firewall contains unexpected rules'
+    elif [[ "$(iptables -S DOCKER-USER | grep '^-A ' | head -n 1)" != *"-j ${EGRESS_CHAIN}" ]]; then
+      fail 'live handshake egress firewall is not the first Docker forwarding policy'
     else
       for ip in "${ollama_ips[@]}"; do
         iptables -C "${EGRESS_CHAIN}" -p tcp -d "${ip}" --dport 443 \

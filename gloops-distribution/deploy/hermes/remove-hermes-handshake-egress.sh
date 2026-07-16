@@ -9,6 +9,11 @@ readonly STATE_FILE='/run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE'
   exit 1
 }
 
+if [[ -e "${STATE_FILE}" ]] \
+  && { ! command -v iptables >/dev/null || ! iptables -nL DOCKER-USER >/dev/null 2>&1; }; then
+  echo 'refusing to discard active handshake egress state while Docker firewall cleanup is unavailable' >&2
+  exit 1
+fi
 if command -v iptables >/dev/null && iptables -nL DOCKER-USER >/dev/null 2>&1; then
   command -v python3 >/dev/null || {
     echo 'python3 is required to remove the Hermes handshake egress policy safely' >&2

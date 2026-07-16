@@ -52,15 +52,21 @@ mapfile -t ollama_ips < <(
   echo 'ollama.com did not resolve to any IPv4 address' >&2
   exit 1
 }
-python3 - "${ollama_ips[@]}" <<'PY'
+(${#ollama_ips[@]} <= 16) || {
+  echo 'ollama.com resolved to an unexpectedly large IPv4 set' >&2
+  exit 1
+}
+python3 - "${subnet}" "${ollama_ips[@]}" <<'PY'
 import ipaddress, sys
-for value in sys.argv[1:]:
-    if ipaddress.ip_address(value).version != 4:
-        raise SystemExit(f"non-IPv4 Ollama address: {value}")
+network = ipaddress.ip_network(sys.argv[1], strict=True)
+for value in sys.argv[2:]:
+    address = ipaddress.ip_address(value)
+    if address.version != 4 or not address.is_global or address in network:
+        raise SystemExit(f"unsafe Ollama IPv4 destination: {value}")
 PY
 
 cleanup_on_error() {
-  local status="$?"
+  local status="${1:-$?}"
   rm -f "${state_tmp:-}"
   if [[ -x "${CLEANUP}" ]]; then
     "${CLEANUP}" || true
@@ -80,7 +86,9 @@ PY
   exit "${status}"
 }
 state_tmp=''
-trap cleanup_on_error ERR INT TERM
+trap cleanup_on_error ERR
+trap 'cleanup_on_error 130' INT
+trap 'cleanup_on_error 143' TERM
 
 iptables -N "${CHAIN}"
 iptables -A "${CHAIN}" -d "${subnet}" -m comment --comment "${JUMP_COMMENT}" -j RETURN
