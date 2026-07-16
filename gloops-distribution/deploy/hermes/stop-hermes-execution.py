@@ -27,7 +27,12 @@ HERMES = "/opt/hermes/.venv/bin/hermes"
 CREDENTIAL_RECEIPT = Path("/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json")
 HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/hermes-stop-history.lock")
-PLANNED_STOP_TIMEOUT_SECONDS = 60
+SYSTEMD_STOP_TIMEOUT_SECONDS = 90
+HELPER_BUDGET_SECONDS = 80
+CONTAINER_STOP_TIMEOUT_SECONDS = 20
+RECEIPT_RESERVE_SECONDS = 2
+FORCED_DARK_RESERVE_SECONDS = CONTAINER_STOP_TIMEOUT_SECONDS + RECEIPT_RESERVE_SECONDS
+PLANNED_STOP_TIMEOUT_SECONDS = HELPER_BUDGET_SECONDS - FORCED_DARK_RESERVE_SECONDS
 STATE_COMMAND = (
     "import json,os,pathlib; "
     "p=pathlib.Path(os.environ.get('HERMES_HOME','/opt/data'))/'gateway_state.json'; "
@@ -51,8 +56,16 @@ def run(args: list[str], timeout: float = 15) -> subprocess.CompletedProcess[str
     return subprocess.run(args, text=True, capture_output=True, timeout=timeout)
 
 
-def container_exists() -> bool:
-    return run([DOCKER, "inspect", CONTAINER], timeout=5).returncode == 0
+def timeout_before(deadline: float, maximum: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("stop-hermes-execution deadline", 0)
+    return min(maximum, remaining)
+
+
+def container_exists(deadline: float | None = None) -> bool:
+    timeout = 5 if deadline is None else timeout_before(deadline, 5)
+    return run([DOCKER, "inspect", CONTAINER], timeout=timeout).returncode == 0
 
 
 def read_lifecycle_id() -> str | None:
@@ -157,7 +170,7 @@ def append_receipt(receipt: dict[str, object]) -> None:
         os.close(lock_fd)
 
 
-def read_gateway_record() -> dict[str, object] | None:
+def read_gateway_record(deadline: float) -> dict[str, object] | None:
     state = run(
         [
             DOCKER,
@@ -169,7 +182,7 @@ def read_gateway_record() -> dict[str, object] | None:
             "-c",
             STATE_COMMAND,
         ],
-        timeout=5,
+        timeout=timeout_before(deadline, 5),
     )
     if state.returncode != 0:
         return None
@@ -177,8 +190,8 @@ def read_gateway_record() -> dict[str, object] | None:
     return value if isinstance(value, dict) else None
 
 
-def planned_stop() -> tuple[bool, str]:
-    before = read_gateway_record()
+def planned_stop(deadline: float) -> tuple[bool, str]:
+    before = read_gateway_record(deadline)
     if (
         not isinstance(before, dict)
         or before.get("gateway_state") != "running"
@@ -202,16 +215,15 @@ def planned_stop() -> tuple[bool, str]:
             "gateway",
             "stop",
         ],
-        timeout=30,
+        timeout=timeout_before(deadline, 30),
     )
     if command.returncode != 0:
         return False, (command.stderr or command.stdout).strip()[-500:]
 
-    deadline = time.monotonic() + PLANNED_STOP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        if not container_exists():
+        if not container_exists(deadline):
             return False, "container exited before gateway_state=stopped was observed"
-        state = read_gateway_record()
+        state = read_gateway_record(deadline)
         if (
             isinstance(state, dict)
             and state.get("gateway_state") == "stopped"
@@ -221,18 +233,21 @@ def planned_stop() -> tuple[bool, str]:
             and state["updated_at"] > before["updated_at"]
         ):
             return True, ""
-        time.sleep(0.25)
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
     return False, (
         "gateway_state did not become stopped within "
         f"{PLANNED_STOP_TIMEOUT_SECONDS} seconds"
     )
 
 
-def stop_container() -> tuple[bool, str]:
-    if not container_exists():
+def stop_container(deadline: float) -> tuple[bool, str]:
+    if not container_exists(deadline):
         return True, ""
-    stopped = run([DOCKER, "stop", "--time", "10", CONTAINER], timeout=20)
-    if stopped.returncode == 0 or not container_exists():
+    stopped = run(
+        [DOCKER, "stop", "--time", "10", CONTAINER],
+        timeout=timeout_before(deadline, CONTAINER_STOP_TIMEOUT_SECONDS),
+    )
+    if stopped.returncode == 0 or not container_exists(deadline):
         return True, ""
     return False, (stopped.stderr or stopped.stdout).strip()[-500:]
 
@@ -241,6 +256,8 @@ def main() -> int:
     if os.geteuid() != 0:
         raise StopError("run as root")
 
+    helper_deadline = time.monotonic() + HELPER_BUDGET_SECONDS
+    planned_stop_deadline = helper_deadline - FORCED_DARK_RESERVE_SECONDS
     receipt: dict[str, object] = {
         "schemaVersion": "gloops.hermes-stop-receipt.v1",
         "attemptId": str(uuid4()),
@@ -256,7 +273,7 @@ def main() -> int:
     errors: list[str] = []
     if receipt["containerPresent"]:
         try:
-            graceful, detail = planned_stop()
+            graceful, detail = planned_stop(planned_stop_deadline)
             receipt["plannedStopAccepted"] = graceful
             receipt["gatewayState"] = "stopped" if graceful else None
             if not graceful:
@@ -265,7 +282,8 @@ def main() -> int:
             errors.append(f"planned stop failed: {error}")
 
     try:
-        stopped, detail = stop_container()
+        stop_deadline = helper_deadline - RECEIPT_RESERVE_SECONDS
+        stopped, detail = stop_container(stop_deadline)
         receipt["containerStopped"] = stopped
         if not stopped:
             errors.append(detail or "container stop failed")

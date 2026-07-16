@@ -502,8 +502,19 @@ for (const required of [
     fail(`Hermes execution service is missing ${required}`);
   }
 }
-if (!stopHermesExecution.includes("PLANNED_STOP_TIMEOUT_SECONDS = 60")) {
-  fail("Hermes planned-stop evidence window must cover the observed s6 teardown");
+for (const required of [
+  "SYSTEMD_STOP_TIMEOUT_SECONDS = 90",
+  "HELPER_BUDGET_SECONDS = 80",
+  "CONTAINER_STOP_TIMEOUT_SECONDS = 20",
+  "RECEIPT_RESERVE_SECONDS = 2",
+  "FORCED_DARK_RESERVE_SECONDS = CONTAINER_STOP_TIMEOUT_SECONDS + RECEIPT_RESERVE_SECONDS",
+  "PLANNED_STOP_TIMEOUT_SECONDS = HELPER_BUDGET_SECONDS - FORCED_DARK_RESERVE_SECONDS",
+  "timeout=timeout_before(deadline, 30)",
+  "timeout=timeout_before(deadline, CONTAINER_STOP_TIMEOUT_SECONDS)",
+]) {
+  if (!stopHermesExecution.includes(required)) {
+    fail(`Hermes planned-stop helper is missing bounded deadline invariant ${required}`);
+  }
 }
 for (const forbidden of ["/opt/paperclip/hermes-home", "--publish", "XAI_API_KEY", "GROK_API_KEY", "SLACK_"]) {
   if (hermesExecutionService.includes(forbidden)) {
