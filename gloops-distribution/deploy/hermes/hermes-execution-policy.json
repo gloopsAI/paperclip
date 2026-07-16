@@ -33,12 +33,31 @@
     "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
   },
   "runtime": {
-    "image": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
-    "imageAcquisition": "preprovisioned-local-digest",
+    "image": "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac",
+    "imageAcquisition": "root-only-content-addressed-archive",
+    "imageArchive": {
+      "path": "/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst",
+      "sha256": "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"
+    },
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
     "rootHomeEphemeral": true,
     "persistentPaths": ["cache", "logs", "memories", "sessions", "workspace"],
+    "commandSecurity": {
+      "scanner": "tirith",
+      "version": "0.3.3",
+      "path": "/opt/data/bin/tirith",
+      "sha256": "55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe",
+      "mount": "read-only",
+      "autoInstall": false,
+      "failureMode": "closed"
+    },
+    "imageCorrection": {
+      "baseImage": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
+      "scope": "tirith-circuit-breaker-obeys-fail-closed",
+      "buildNetwork": "none",
+      "behavioralVerification": "three-scanner-failures-then-block"
+    },
     "backgroundExecution": {
       "cronProvider": "disabled",
       "kanbanDispatcher": false,

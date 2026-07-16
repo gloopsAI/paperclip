@@ -5,6 +5,7 @@ readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly DATABASE_DIR="${STATE_DIR}/instances/default/db"
 readonly BACKUP_ROOT='/opt/paperclip/backups'
 readonly SERVICE_FILE='/etc/systemd/system/paperclip.service'
+readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst'
 
 [[ "${EUID}" -eq 0 ]] || {
   echo "run with sudo" >&2
@@ -30,6 +31,10 @@ done
   echo "prior Paperclip service definition is missing: ${SERVICE_FILE}" >&2
   exit 1
 }
+[[ "$(stat -c '%a:%U:%G' "${HERMES_IMAGE_ARCHIVE}" 2>/dev/null || true)" == '600:root:root' ]] || {
+  echo "Hermes execution image archive is missing or not root-protected: ${HERMES_IMAGE_ARCHIVE}" >&2
+  exit 1
+}
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 destination="${1:-${BACKUP_ROOT}/dark-install-${stamp}}"
@@ -45,9 +50,10 @@ trap 'rm -rf "${stage}"' EXIT
 tar --zstd -cf "${stage}/paperclip-state.tar.zst" -C /home/paperclip .paperclip
 tar --zstd -cf "${stage}/paperclip-db-physical.tar.zst" -C "${STATE_DIR}/instances/default" db
 install -m 0600 -o root -g root "${SERVICE_FILE}" "${stage}/paperclip.service.before"
+ln "${HERMES_IMAGE_ARCHIVE}" "${stage}/$(basename "${HERMES_IMAGE_ARCHIVE}")"
 (
   cd "${stage}"
-  sha256sum paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before >SHA256SUMS
+  sha256sum hermes-execution-*.tar.zst paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before >SHA256SUMS
 )
 chmod 0600 "${stage}/SHA256SUMS" "${stage}"/*.zst
 mv "${stage}" "${destination}"

@@ -11,5 +11,6 @@ agent:
 security:
   redact_secrets: true
   tirith_enabled: true
+  tirith_path: /opt/data/bin/tirith
   tirith_fail_open: false
 _config_version: 35

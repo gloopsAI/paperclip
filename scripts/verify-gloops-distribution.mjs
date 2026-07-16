@@ -25,6 +25,30 @@ const installDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/install-dark.sh",
   import.meta.url,
 );
+const provisionTirithPath = new URL(
+  "../gloops-distribution/deploy/hermes/provision-tirith.sh",
+  import.meta.url,
+);
+const hermesExecutionDockerfilePath = new URL(
+  "../gloops-distribution/deploy/hermes/Dockerfile.hermes-execution",
+  import.meta.url,
+);
+const patchHermesCommandSecurityPath = new URL(
+  "../gloops-distribution/deploy/hermes/patch-hermes-command-security.py",
+  import.meta.url,
+);
+const buildHermesExecutionImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/build-hermes-execution-image.sh",
+  import.meta.url,
+);
+const verifyHermesCommandSecurityImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-command-security-image.sh",
+  import.meta.url,
+);
+const loadHermesExecutionImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/load-hermes-execution-image.sh",
+  import.meta.url,
+);
 const preflightPath = new URL(
   "../gloops-distribution/deploy/hermes/preflight.sh",
   import.meta.url,
@@ -43,6 +67,10 @@ const rehearseZeroWorkPath = new URL(
 );
 const rollbackPath = new URL(
   "../gloops-distribution/deploy/hermes/rollback.sh",
+  import.meta.url,
+);
+const backupDarkPath = new URL(
+  "../gloops-distribution/deploy/hermes/backup-dark.sh",
   import.meta.url,
 );
 const hermesExecutionConfigPath = new URL(
@@ -111,6 +139,12 @@ const workflow = readFileSync(workflowPath, "utf8");
 const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
+const provisionTirith = readFileSync(provisionTirithPath, "utf8");
+const hermesExecutionDockerfile = readFileSync(hermesExecutionDockerfilePath, "utf8");
+const patchHermesCommandSecurity = readFileSync(patchHermesCommandSecurityPath, "utf8");
+const buildHermesExecutionImage = readFileSync(buildHermesExecutionImagePath, "utf8");
+const verifyHermesCommandSecurityImage = readFileSync(verifyHermesCommandSecurityImagePath, "utf8");
+const loadHermesExecutionImage = readFileSync(loadHermesExecutionImagePath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
@@ -121,6 +155,7 @@ const rehearseZeroWorkExecutable = rehearseZeroWork
   .filter((line) => line.length > 0 && !line.startsWith("#"))
   .join("\n");
 const rollback = readFileSync(rollbackPath, "utf8");
+const backupDark = readFileSync(backupDarkPath, "utf8");
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
 const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
@@ -317,6 +352,26 @@ for (const required of [
     fail(`zero-work rehearsal is missing ${required}`);
   }
 }
+for (const [surface, content, required] of [
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78"],
+  ["Hermes derivative patch", patchHermesCommandSecurity, 'if cfg["tirith_fail_open"]:'],
+  ["Hermes derivative patch", patchHermesCommandSecurity, '"action": "block"'],
+  ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
+  ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._circuit_open is True"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "tirith disabled (circuit breaker, fail-closed)"],
+  ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "assert security._install_thread is None"],
+  ["Hermes image loader", loadHermesExecutionImage, "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"],
+  ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
+  ["Hermes image loader", loadHermesExecutionImage, "docker load"],
+  ["cold rollback backup", backupDark, "hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst"],
+  ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
+]) {
+  if (!content.includes(required)) {
+    fail(`${surface} is missing ${required}`);
+  }
+}
 const cleanupMatch = rehearseZeroWork.match(/cleanup\(\) \{([\s\S]*?)\n\}/);
 for (const required of [
   'kill "${evidence_pid}"',
@@ -404,6 +459,19 @@ if (!installDark.includes('rehearse-zero-work.sh')) {
   fail("dark installer must install the zero-work rehearsal harness");
 }
 for (const required of [
+  "VERSION='0.3.3'",
+  "ARCHIVE_SHA256='6cdbe35e8f9ccf42e70ad95b501c93cd218ac18201c3df958d54f6ba0d995ce2'",
+  "BINARY_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'",
+  'https://github.com/sheeki03/tirith/releases/download/v${VERSION}/${ARCHIVE}',
+  "curl --fail --location --proto '=https' --tlsv1.2",
+  'tar -xOf "${stage}/${ARCHIVE}" tirith',
+  'install -m 0555 -o root -g root',
+]) {
+  if (!provisionTirith.includes(required)) {
+    fail(`Tirith provisioner is missing ${required}`);
+  }
+}
+for (const required of [
   "did not become healthy within",
   "http://127.0.0.1:3100/api/health",
   "curl --fail --silent --show-error --max-time 5",
@@ -414,7 +482,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78";
+  "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -475,8 +543,42 @@ if (
 if (hermesExecutionPolicy.runtime?.image !== hermesExecutionImage) {
   fail("Hermes execution image must be immutable and exact");
 }
-if (hermesExecutionPolicy.runtime?.imageAcquisition !== "preprovisioned-local-digest") {
+if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addressed-archive") {
   fail("Hermes execution image acquisition must be explicit");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
+  JSON.stringify({
+    path: "/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst",
+    sha256: "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d",
+  })
+) {
+  fail("Hermes execution image archive must be content-addressed and exact");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.commandSecurity) !==
+  JSON.stringify({
+    scanner: "tirith",
+    version: "0.3.3",
+    path: "/opt/data/bin/tirith",
+    sha256: "55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe",
+    mount: "read-only",
+    autoInstall: false,
+    failureMode: "closed",
+  })
+) {
+  fail("Hermes command scanner must be exact, immutable, offline, and fail-closed");
+}
+if (
+  JSON.stringify(hermesExecutionPolicy.runtime?.imageCorrection) !==
+  JSON.stringify({
+    baseImage: "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
+    scope: "tirith-circuit-breaker-obeys-fail-closed",
+    buildNetwork: "none",
+    behavioralVerification: "three-scanner-failures-then-block",
+  })
+) {
+  fail("Hermes execution image correction must be narrow, offline, and behaviorally verified");
 }
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.backgroundExecution) !==
@@ -498,9 +600,10 @@ if (
 }
 if (
   !/^cron:\n  provider: disabled$/m.test(hermesExecutionConfig) ||
-  !/^kanban:\n  dispatch_in_gateway: false$/m.test(hermesExecutionConfig)
+  !/^kanban:\n  dispatch_in_gateway: false$/m.test(hermesExecutionConfig) ||
+  !/^security:\n  redact_secrets: true\n  tirith_enabled: true\n  tirith_path: \/opt\/data\/bin\/tirith\n  tirith_fail_open: false$/m.test(hermesExecutionConfig)
 ) {
-  fail("Hermes cron and kanban background execution must be disabled");
+  fail("Hermes background execution and command-security policy must be exact");
 }
 for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
   if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
@@ -520,6 +623,7 @@ for (const required of [
   "src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly",
   "src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly",
   "src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly",
+  "src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly",
   "--health-cmd",
   "http://127.0.0.1:8642/v1/models",
   "--memory 2048m",
@@ -575,6 +679,9 @@ for (const error of validateHermesRuntimePrivileges(hermesExecutionService)) {
 for (const required of [
   "prepare-hermes-execution-profile.sh",
   "verify-hermes-execution-profile.sh",
+  "verify-hermes-command-security-image.sh",
+  "load-hermes-execution-image.sh",
+  "provision-tirith.sh",
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
@@ -591,7 +698,7 @@ for (const required of [
   "hermes-cron-disabled",
   "github-app.json",
   "systemctl mask paperclip-gloops.service paperclip-hermes-execution.service",
-  "pre-provisioned immutable Hermes execution image is missing",
+  "load-hermes-execution-image.sh",
 ]) {
   if (!installDark.includes(required)) {
     fail(`dark installer does not govern ${required}`);
@@ -628,6 +735,8 @@ for (const required of [
   "paperclip-hermes-execution.service",
   "hermes-execution-profile",
   "hermes-execution-state",
+  "hermes-execution-*.tar.zst",
+  "/usr/local/lib/paperclip-gloops/tools",
   "docker network rm paperclip-execution",
   "github-app-credentials.py revoke-projector",
   "github-app-credentials.py revoke-hermes",
@@ -665,6 +774,9 @@ for (const required of [
   "live authenticated API boundary is healthy",
   "live Hermes identity exclusively owns the ephemeral lifecycle root",
   "live persistent Hermes state mounts are exact and writable only by the fixed Hermes identity",
+  "pinned Tirith command scanner is immutable and verified before activation",
+  "live Tirith scanner is the exact read-only pre-provisioned binary",
+  "--arg destination '/opt/data/bin'",
   "docker inspect --format '{{json .Mounts}}'",
   'type == "array"',
   'and all(.[];',

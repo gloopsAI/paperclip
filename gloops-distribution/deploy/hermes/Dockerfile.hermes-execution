@@ -1,0 +1,7 @@
+FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78
+
+ARG SOURCE_DATE_EPOCH
+COPY patch-hermes-command-security.py /tmp/patch-hermes-command-security.py
+RUN SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" python /tmp/patch-hermes-command-security.py \
+  && rm -f /tmp/patch-hermes-command-security.py \
+  && rm -f /opt/hermes/tools/__pycache__/tirith_security*.pyc

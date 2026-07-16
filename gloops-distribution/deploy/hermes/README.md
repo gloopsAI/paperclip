@@ -15,6 +15,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - Paperclip has its own bounded post-start barrier. `systemctl start paperclip-gloops.service` does not succeed until Docker health and the host loopback health boundary both pass, so an activator cannot race container creation when issuing the one authorized wake.
 - The exact image is pinned by digest. CPU, memory, PID, concurrency, temporary storage, and container-log bounds are enforced at runtime. Persistent state has a 10 GiB admission ceiling and a 10 GiB host free-space reserve.
 - The sidecar drops all Linux capabilities and restores only `CHOWN`, `DAC_OVERRIDE`, `SETGID`, `SETUID`, and `KILL`. `KILL` is required solely so the root s6 supervisor can signal the uid-10000 gateway child during bounded graceful shutdown; the zero-work rehearsal rejects a forced or failed stop.
+- Hermes command scanning uses Tirith 0.3.3 from a root-owned, read-only mount with pinned archive and binary SHA-256 digests. It is provisioned during the explicit dark-install release step; runtime auto-download is disabled by the explicit scanner path. The execution image is a network-free derivative of the exact upstream Hermes image with one source-guarded correction: the scanner circuit breaker obeys `tirith_fail_open: false`. The accepted image is distributed as a root-only, SHA-256-pinned Docker archive and copied into every cold rollback backup, so installation does not depend on a mutable tag or a locally reproducible rebuild. Installation and every activation preflight induce the full three-failure circuit-open sequence and reject the image unless the next dangerous command remains blocked.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
 - A claim-time task execution gate applies one atomic run, retry, token, and wall-time budget across scheduler, continuation, and recovery paths. The bounded-pilot profile permits exactly one run and zero retries, with fixed task ceilings of 50,000 input tokens, 16,000 output tokens, and 3,600,000 milliseconds. Each provider invocation is separately capped at 30,000 input tokens, 8,000 output tokens, eight turns, and 32 tool calls. An exhausted task is terminally denied before adapter invocation; only an explicit user-authored reset epoch opens a new budget.
 
@@ -29,6 +30,17 @@ both `995:985`, matching the host `paperclip` owner; keep all three in lockstep
 so native PostgreSQL user discovery and persisted-state permissions remain valid.
 
 ## Install dark
+
+`build-hermes-execution-image.sh` is a release-authoring helper, not an install
+dependency. Release authors use it to build the narrow derivative with no
+network and then export one accepted candidate to the exact root-only archive
+pinned by `load-hermes-execution-image.sh`. Operators do not rebuild during
+installation; the archive is the content-addressed release and recovery
+artifact.
+
+```bash
+sudo ./load-hermes-execution-image.sh
+```
 
 First capture and validate an offline rollback backup while both Paperclip services are inactive:
 

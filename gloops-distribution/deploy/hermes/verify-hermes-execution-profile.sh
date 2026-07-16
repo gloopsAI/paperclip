@@ -17,6 +17,11 @@ readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
 readonly CREDENTIAL_RECEIPT='/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
+readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
+readonly TIRITH_VERSION='0.3.3'
+readonly TIRITH_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'
+readonly HERMES_IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
+readonly COMMAND_SECURITY_VERIFIER='/usr/local/lib/paperclip-gloops/verify-hermes-command-security-image.sh'
 failed=0
 
 pass() { echo "PASS $1"; }
@@ -26,6 +31,12 @@ fail() { echo "FAIL $1" >&2; failed=1; }
   echo 'usage: verify-hermes-execution-profile.sh [--source|--live]' >&2
   exit 2
 }
+
+if "${COMMAND_SECURITY_VERIFIER}" "${HERMES_IMAGE}"; then
+  pass 'Hermes command scanner remains fail-closed after its circuit breaker opens'
+else
+  fail 'Hermes command scanner can fail open after its circuit breaker opens'
+fi
 
 [[ -f "${RUNTIME_ENV}" ]] || fail 'dedicated credential environment is missing'
 if [[ -f "${RUNTIME_ENV}" ]]; then
@@ -64,7 +75,7 @@ fi
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
-  'hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78' \
+  'sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac' \
   - /config.yaml <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -73,7 +84,12 @@ assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
 assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
-assert d["security"]["redact_secrets"] is True and d["security"]["tirith_fail_open"] is False
+assert d["security"] == {
+    "redact_secrets": True,
+    "tirith_enabled": True,
+    "tirith_path": "/opt/data/bin/tirith",
+    "tirith_fail_open": False,
+}
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
 PY
 then
@@ -107,10 +123,29 @@ if jq -e '
   .network.apiPort == 8642 and
   .network.apiAuthentication == "bearer-key-required" and
   .network.publishedPorts == [] and
-  .runtime.image == "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78" and
-  .runtime.imageAcquisition == "preprovisioned-local-digest" and
+  .runtime.image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
+  .runtime.imageAcquisition == "root-only-content-addressed-archive" and
+  .runtime.imageArchive == {
+    "path": "/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst",
+    "sha256": "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"
+  } and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
+  .runtime.commandSecurity == {
+    "scanner": "tirith",
+    "version": "0.3.3",
+    "path": "/opt/data/bin/tirith",
+    "sha256": "55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe",
+    "mount": "read-only",
+    "autoInstall": false,
+    "failureMode": "closed"
+  } and
+  .runtime.imageCorrection == {
+    "baseImage": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
+    "scope": "tirith-circuit-breaker-obeys-fail-closed",
+    "buildNetwork": "none",
+    "behavioralVerification": "three-scanner-failures-then-block"
+  } and
   .runtime.backgroundExecution == {
     "cronProvider": "disabled",
     "kanbanDispatcher": false,
@@ -148,6 +183,14 @@ for path in cache logs memories sessions; do
 done
 if [[ "${state_identity_failed}" -eq 0 ]]; then
   pass 'persistent Hermes state is writable only by the fixed Hermes identity'
+fi
+
+if [[ "$(stat -c '%a:%U:%G' "${TIRITH}" 2>/dev/null || true)" == '555:root:root' ]] \
+  && [[ "$(sha256sum "${TIRITH}" 2>/dev/null | cut -d' ' -f1)" == "${TIRITH_SHA256}" ]] \
+  && "${TIRITH}" --version | grep -Fq "${TIRITH_VERSION}"; then
+  pass 'pinned Tirith command scanner is immutable and verified before activation'
+else
+  fail 'pinned Tirith command scanner is absent, mutable, or inexact'
 fi
 
 for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
@@ -245,6 +288,8 @@ for required_credential_mount in \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
+grep -Fq -- '--mount type=bind,src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly' "${UNIT}" \
+  || fail 'unit is missing the read-only pinned Tirith mount'
 for path in cache logs memories sessions; do
   # The trailing space makes this an exact writable mount token and rejects
   # both destination suffix drift and an appended `,readonly` option.
@@ -327,6 +372,24 @@ PY
       pass 'live container mounts only the dedicated profile and state'
     else
       fail 'live mount metadata is invalid or includes the broad Hermes home'
+    fi
+    if jq -e \
+      --arg source '/usr/local/lib/paperclip-gloops/tools' \
+      --arg destination '/opt/data/bin' '
+        type == "array"
+        and ([.[] | select(.Destination == $destination)] | length) == 1
+        and any(.[];
+          .Type == "bind"
+          and .Source == $source
+          and .Destination == $destination
+          and .RW == false
+        )
+      ' "${live_mounts}" >/dev/null \
+      && docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/tirith --version \
+        | grep -Fq "${TIRITH_VERSION}"; then
+      pass 'live Tirith scanner is the exact read-only pre-provisioned binary'
+    else
+      fail 'live Tirith scanner is missing, writable, inexact, or unusable'
     fi
     live_state_mounts_valid=1
     for path in cache logs memories sessions; do

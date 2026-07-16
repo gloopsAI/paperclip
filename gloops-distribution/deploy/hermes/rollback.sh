@@ -20,6 +20,13 @@ zstd -t "${backup_dir}/paperclip-state.tar.zst"
 zstd -t "${backup_dir}/paperclip-db-physical.tar.zst"
 tar --zstd -tf "${backup_dir}/paperclip-state.tar.zst" >/dev/null
 tar --zstd -tf "${backup_dir}/paperclip-db-physical.tar.zst" >/dev/null
+shopt -s nullglob
+hermes_image_archives=("${backup_dir}"/hermes-execution-*.tar.zst)
+shopt -u nullglob
+for hermes_image_archive in "${hermes_image_archives[@]}"; do
+  zstd -t "${hermes_image_archive}"
+  tar --zstd -tf "${hermes_image_archive}" >/dev/null
+done
 
 if [[ "${mode}" == '--check' ]]; then
   echo "rollback artifacts are valid"
@@ -62,5 +69,6 @@ rm -f /etc/paperclip-gloops/hermes-execution.env
 rm -f /etc/paperclip-gloops/operator-board-token /etc/paperclip-gloops/projector-github-secret-id
 rm -rf /run/paperclip-gloops
 rm -rf /opt/paperclip/hermes-execution-profile /opt/paperclip/hermes-execution-state
+rm -rf /usr/local/lib/paperclip-gloops/tools
 docker network rm paperclip-execution >/dev/null 2>&1 || true
 echo "rollback restored the prior state and service definition; all Paperclip services remain dark"
