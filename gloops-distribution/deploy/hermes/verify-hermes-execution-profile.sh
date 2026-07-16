@@ -245,6 +245,10 @@ for required_credential_mount in \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
+for path in cache logs memories sessions; do
+  required_state_mount="--mount type=bind,src=${STATE_DIR}/${path},dst=/opt/data/${path}"
+  grep -Fq -- "${required_state_mount}" "${UNIT}" || fail "unit is missing: ${required_state_mount}"
+done
 if grep -Fq -- '--health-cmd' "${UNIT}" \
   && grep -Fq -- 'gateway run --replace' "${UNIT}"; then
   pass 'unit declares a gateway health check and single-instance replacement'
@@ -308,6 +312,28 @@ PY
       fail 'live container mounts the broad Hermes home'
     else
       pass 'live container mounts only the dedicated profile and state'
+    fi
+    live_state_mounts_valid=1
+    for path in cache logs memories sessions; do
+      expected_state_mount="${STATE_DIR}/${path} -> /opt/data/${path} (true)"
+      if ! grep -Fxq -- "${expected_state_mount}" "${live_mounts}"; then
+        fail "live persistent Hermes state mount is missing or read-only: ${expected_state_mount}"
+        live_state_mounts_valid=0
+      fi
+    done
+    if [[ "${live_state_mounts_valid}" -eq 1 ]] \
+      && docker exec -i --user 10000:10000 "${CONTAINER}" /opt/hermes/.venv/bin/python - <<'PY'
+from pathlib import Path
+
+for name in ("cache", "logs", "memories", "sessions"):
+    probe = Path("/opt/data") / name / ".gloops-persistent-state-write-probe"
+    probe.write_text("ok")
+    probe.unlink()
+PY
+    then
+      pass 'live persistent Hermes state mounts are exact and writable only by the fixed Hermes identity'
+    else
+      fail 'live persistent Hermes state mounts are absent, read-only, or not writable by Hermes'
     fi
     if [[ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "${CONTAINER}")" == "${NETWORK}" ]]; then
       pass 'live container uses the dedicated network'
