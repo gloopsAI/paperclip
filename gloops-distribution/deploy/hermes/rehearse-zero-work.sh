@@ -104,6 +104,10 @@ iptables -I DOCKER-USER 1 -s "${subnet}" ! -d "${subnet}" \
 egress_rule_installed=1
 
 systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
+# A masked unit is loaded from /dev/null. Reload after unmasking so this proof
+# executes the newly installed unit definitions instead of the manager's prior
+# cached definition.
+systemctl daemon-reload
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 systemctl start "${HERMES_UNIT}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
