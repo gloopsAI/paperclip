@@ -14,7 +14,7 @@ StartLimitBurst=3
 [Service]
 Type=simple
 EnvironmentFile=/etc/paperclip-gloops/runtime.env
-Environment=PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:07eb68e29e97059e66481c7e4dc008253f4240ec7f00b9a03e0f13ca32c494fe
+Environment=PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:cc1273169e31143ab510db9a3c719c9bf19762a767f88c4c039ef3781377c25f
 ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-projector
 ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh
