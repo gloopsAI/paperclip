@@ -99,6 +99,7 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import { parseControlledSwarmAdmissionPolicy } from "./controlled-swarm-admission.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
@@ -5045,6 +5046,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // Constructed during server startup. Enabling the gate with incomplete
   // ceilings fails closed before this service can invoke any adapter.
   const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
+  const runtimeEnv = options.runtimeEnv ?? process.env;
+  const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
   const allowsAutomaticRecoveryForContext = (context: Record<string, unknown>) => {
     const bindingPresent = Object.prototype.hasOwnProperty.call(
       context,
@@ -5060,7 +5063,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
-  const runtimeEnv = options.runtimeEnv ?? process.env;
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE);
   // Preview worktree instances suppress the run engine by default. Users can lift
   // that per-worktree via the `enableWorktreeRunExecution` experimental setting
@@ -5107,6 +5109,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const override = await resolveWorktreeRunExecutionOverride();
     return override.allowed ? override.cutoff : null;
   };
+  const getExecutionIssueCreatedAtGte = async () =>
+    controlledSwarmAdmissionPolicy.issueCreatedAtGte ?? await getWorktreeExecutionCutoff();
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -9661,7 +9665,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
-    const cutoff = await getWorktreeExecutionCutoff();
+    const cutoff = await getExecutionIssueCreatedAtGte();
     const dueRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -10099,6 +10103,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         reason: string;
         envelope: ExecutionAdmissionEnvelope | null;
       }
+    | {
+        kind: "company_wip_deferred";
+        observed: number;
+        limit: number;
+      }
     | { kind: "lost_race" };
 
   function priorExecutionRun(
@@ -10148,18 +10157,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }): Promise<ExecutionAdmissionClaim> {
     const { run, context, issueId, responsibleUserId, claimedAt } = input;
     if (!executionAdmissionPolicy.enabled) {
-      const claimed = await db
-        .update(heartbeatRuns)
-        .set({
-          status: "running",
-          responsibleUserId,
-          startedAt: run.startedAt ?? claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return claimed ? { kind: "claimed", run: claimed } : { kind: "lost_race" };
+      return db.transaction(async (tx) => {
+        const limit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
+        if (limit !== null) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${"company-wip:" + run.companyId}, 0))`,
+          );
+          const [row] = await tx
+            .select({ total: sql<number>`count(*)::integer` })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.status, "running"),
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+            ));
+          const observed = Number(row?.total ?? 0);
+          if (observed >= limit) {
+            return { kind: "company_wip_deferred" as const, observed, limit };
+          }
+        }
+        const claimed = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "running",
+            responsibleUserId,
+            startedAt: run.startedAt ?? claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return claimed ? { kind: "claimed" as const, run: claimed } : { kind: "lost_race" as const };
+      });
     }
 
     const [parentRun, wakeup] = await Promise.all([
@@ -10217,6 +10246,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     return db.transaction(async (tx) => {
+      const companyWipLimit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
+      if (companyWipLimit !== null) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${"company-wip:" + run.companyId}, 0))`,
+        );
+        const [row] = await tx
+          .select({ total: sql<number>`count(*)::integer` })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.status, "running"),
+            sql`${heartbeatRuns.id} <> ${run.id}`,
+          ));
+        const observed = Number(row?.total ?? 0);
+        if (observed >= companyWipLimit) {
+          return {
+            kind: "company_wip_deferred" as const,
+            observed,
+            limit: companyWipLimit,
+          };
+        }
+      }
       // Serialize decisions for a task budget so concurrent recovery paths
       // cannot both spend the same remaining attempt.
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity.budgetId}, 0))`);
@@ -10452,6 +10503,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       claimedAt,
     });
     if (admissionClaim.kind === "lost_race") return null;
+    if (admissionClaim.kind === "company_wip_deferred") {
+      logger.info(
+        {
+          runId: run.id,
+          companyId: run.companyId,
+          observed: admissionClaim.observed,
+          limit: admissionClaim.limit,
+        },
+        "claimQueuedRun: deferred by company active-run ceiling",
+      );
+      return null;
+    }
     if (admissionClaim.kind === "denied") {
       await finalizeExecutionAdmissionDenial(admissionClaim);
       return null;
@@ -11193,7 +11256,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage);
-      await startNextQueuedRunForAgent(run.agentId);
+      await startNextQueuedRunsForCompany(run.companyId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -11206,7 +11269,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
-    const cutoff = await getWorktreeExecutionCutoff();
+    const cutoff = await getExecutionIssueCreatedAtGte();
 
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -11225,7 +11288,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileStrandedAssignedIssues() {
-    return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getExecutionIssueCreatedAtGte() });
   }
 
   async function sweepStaleIssueLocks() {
@@ -11246,15 +11309,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
-    return recovery.scanSilentActiveRuns({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return recovery.scanSilentActiveRuns({ ...opts, issueCreatedAtGte: await getExecutionIssueCreatedAtGte() });
   }
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
-    return productivityReviews.reconcileProductivityReviews({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return productivityReviews.reconcileProductivityReviews({ ...opts, issueCreatedAtGte: await getExecutionIssueCreatedAtGte() });
   }
 
   async function reconcileTaskWatchdogs(opts?: { companyId?: string | null; runId?: string | null }) {
-    return taskWatchdogs.reconcileTaskWatchdogs({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return taskWatchdogs.reconcileTaskWatchdogs({ ...opts, issueCreatedAtGte: await getExecutionIssueCreatedAtGte() });
   }
 
   async function buildRunOutputSilence(
@@ -11276,7 +11339,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     force?: boolean;
     lookbackHours?: number;
   }) {
-    return recovery.reconcileIssueGraphLiveness({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return recovery.reconcileIssueGraphLiveness({ ...opts, issueCreatedAtGte: await getExecutionIssueCreatedAtGte() });
   }
 
   async function updateRuntimeState(
@@ -11336,7 +11399,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
-    const cutoff = await getWorktreeExecutionCutoff();
+    const cutoff = await getExecutionIssueCreatedAtGte();
 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -11417,6 +11480,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       return claimedRuns;
     });
+  }
+
+  async function startNextQueuedRunsForCompany(companyId: string) {
+    const queuedRows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "queued"),
+      ))
+      .orderBy(asc(heartbeatRuns.createdAt));
+    const seen = new Set<string>();
+    for (const row of queuedRows) {
+      if (seen.has(row.agentId)) continue;
+      seen.add(row.agentId);
+      await startNextQueuedRunForAgent(row.agentId);
+    }
   }
 
   async function executeRun(runId: string) {
@@ -13995,7 +14078,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          await startNextQueuedRunsForCompany(run.companyId);
         }
   }
 
@@ -14929,9 +15012,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
-    const worktreeExecutionCutoff = opts.requestedByActorType === "user"
-      ? null
-      : await getWorktreeExecutionCutoff();
+    const worktreeExecutionCutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte
+      ?? (opts.requestedByActorType === "user" ? null : await getWorktreeExecutionCutoff());
+    const executionCutoffReason = controlledSwarmAdmissionPolicy.issueCreatedAtGte
+      ? "heartbeat.execution_issue_created_at_cutoff"
+      : "heartbeat.worktree_execution_cutoff";
 
     const company = await db
       .select({ status: companies.status })
@@ -15004,8 +15089,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
       if (resolvedIssue) {
         if (worktreeExecutionCutoff && resolvedIssue.createdAt < worktreeExecutionCutoff) {
-          await writeSkippedHeartbeatRequest("heartbeat.worktree_execution_cutoff", {
-            reason: "worktree_execution_cutoff",
+          await writeSkippedHeartbeatRequest(executionCutoffReason, {
+            reason: executionCutoffReason,
             cutoff: worktreeExecutionCutoff.toISOString(),
             issueId: resolvedIssue.id,
           });
@@ -15214,11 +15299,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId,
             source,
             triggerDetail,
-            reason: "heartbeat.worktree_execution_cutoff",
+            reason: executionCutoffReason,
             payload: {
               ...(payload ?? {}),
               heartbeatSkip: {
-                reason: "worktree_execution_cutoff",
+                reason: executionCutoffReason,
                 cutoff: worktreeExecutionCutoff.toISOString(),
                 issueId: issue.id,
               },
@@ -16283,7 +16368,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    await startNextQueuedRunsForCompany(run.companyId);
     return cancelled;
   }
 
@@ -16721,7 +16806,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           skipped: 0,
         };
       }
-      const cutoff = await getWorktreeExecutionCutoff();
+      const cutoff = await getExecutionIssueCreatedAtGte();
 
       const allAgents = await db
         .select({ ...getTableColumns(agents) })

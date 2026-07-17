@@ -18,11 +18,13 @@ if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
 fi
 
 pnpm exec vitest run \
+  server/src/services/controlled-swarm-admission.test.ts \
   packages/adapter-utils/src/execution-envelope.test.ts \
   server/src/services/execution-admission.test.ts
 pnpm --filter @paperclipai/hermes-paperclip-adapter exec vitest run \
   src/gateway/server/execute.test.ts
 pnpm exec vitest run \
+  server/src/__tests__/heartbeat-controlled-swarm-admission.test.ts \
   server/src/__tests__/heartbeat-retry-scheduling.test.ts \
   server/src/__tests__/heartbeat-execution-admission.test.ts
 pnpm exec vitest run \
@@ -37,7 +39,9 @@ evidence_sha="$(
   shasum -a 256 \
     packages/adapter-utils/src/execution-envelope.test.ts \
     packages/adapters/hermes/src/gateway/server/execute.test.ts \
+    server/src/services/controlled-swarm-admission.test.ts \
     server/src/services/execution-admission.test.ts \
+    server/src/__tests__/heartbeat-controlled-swarm-admission.test.ts \
     server/src/__tests__/heartbeat-execution-admission.test.ts \
     server/src/__tests__/heartbeat-retry-scheduling.test.ts \
     server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts \
@@ -62,6 +66,8 @@ cat <<JSON
     "trustedPluginProjectionIsRunBound": "passed",
     "unsupportedAdapterCannotDispatch": "passed",
     "missingUsageFailsClosed": "passed",
+    "companyWipIsSerializedBeforeDispatch": "passed",
+    "historicalIssueReplayIsRejected": "passed",
     "ambiguousGrokApiHistoryBlocks": "passed",
     "nestedAndAlternateGrokApiConfigurationRefused": "passed",
     "ownerHandoffOccursAtMostOnce": "passed",
