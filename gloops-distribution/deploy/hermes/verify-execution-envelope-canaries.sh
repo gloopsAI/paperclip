@@ -3,28 +3,41 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${repo_root}"
-
-[[ "${PAPERCLIP_MTE_ENABLED:-false}" == "false" ]] || {
-  echo "Refusing canaries while MTE is enabled" >&2
-  exit 1
-}
-[[ "${HEARTBEAT_SCHEDULER_ENABLED:-false}" == "false" ]] || {
-  echo "Refusing canaries while heartbeat scheduling is enabled" >&2
-  exit 1
-}
+runtime_env="${repo_root}/gloops-distribution/deploy/hermes/runtime.env"
+for expected_runtime_line in \
+  'PAPERCLIP_MTE_ENABLED=false' \
+  'HEARTBEAT_SCHEDULER_ENABLED=false' \
+  'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' \
+  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' \
+  'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' \
+  'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' \
+  'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' \
+  'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' \
+  'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2'; do
+  grep -Fxq "${expected_runtime_line}" "${runtime_env}" || {
+    echo "Refusing source canaries because the governed runtime is missing ${expected_runtime_line}" >&2
+    exit 1
+  }
+done
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
   echo "Refusing canaries with Grok/xAI API configuration present" >&2
   exit 1
 fi
 
 pnpm exec vitest run \
+  server/src/services/controlled-swarm-admission.test.ts \
   packages/adapter-utils/src/execution-envelope.test.ts \
   server/src/services/execution-admission.test.ts
 pnpm --filter @paperclipai/hermes-paperclip-adapter exec vitest run \
   src/gateway/server/execute.test.ts
 pnpm exec vitest run \
+  server/src/services/company-queue-pump-lock.test.ts \
+  server/src/__tests__/heartbeat-controlled-swarm-admission.test.ts \
   server/src/__tests__/heartbeat-retry-scheduling.test.ts \
   server/src/__tests__/heartbeat-execution-admission.test.ts
+pnpm exec vitest run \
+  server/src/__tests__/server-startup-feedback-export.test.ts \
+  -t 'drives only bounded execution recovery when the global heartbeat scheduler is disabled|keeps periodic execution recovery single-flight when a cycle is slow'
 pnpm exec vitest run \
   server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts \
   -t 'rejects an agent-self-attested execution-truth receipt|blocks a recovery-owner side door to done without trusted execution truth'
@@ -37,21 +50,37 @@ evidence_sha="$(
   shasum -a 256 \
     packages/adapter-utils/src/execution-envelope.test.ts \
     packages/adapters/hermes/src/gateway/server/execute.test.ts \
+    server/src/config.ts \
+    server/src/index.ts \
+    server/src/services/company-queue-pump-lock.ts \
+    server/src/services/company-queue-pump-lock.test.ts \
+    server/src/services/controlled-swarm-admission.ts \
+    server/src/services/heartbeat.ts \
+    server/src/services/controlled-swarm-admission.test.ts \
     server/src/services/execution-admission.test.ts \
+    server/src/__tests__/heartbeat-controlled-swarm-admission.test.ts \
     server/src/__tests__/heartbeat-execution-admission.test.ts \
     server/src/__tests__/heartbeat-retry-scheduling.test.ts \
+    server/src/__tests__/server-startup-feedback-export.test.ts \
     server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts \
     server/src/__tests__/plugin-orchestration-apis.test.ts \
+    gloops-distribution/deploy/hermes/runtime.env \
+    gloops-distribution/deploy/hermes/preflight.sh \
+    gloops-distribution/deploy/hermes/rehearse-zero-work.sh \
+    gloops-distribution/deploy/hermes/verify-dark.sh \
   | shasum -a 256 | awk '{print $1}'
 )"
 
 cat <<JSON
 {
   "schemaVersion": "gloops.execution-envelope-canary-receipt.v1",
+  "artifactScope": "source",
   "repositoryHead": "${head_sha}",
   "evidenceDigest": "sha256:${evidence_sha}",
   "providersInvoked": false,
   "paperclipActivated": false,
+  "installedImageVerified": false,
+  "activationInterlock": "release_pin_required",
   "mteActivated": false,
   "scenarios": {
     "millionTokenPromptRefusedBeforeDispatch": "passed",
@@ -62,6 +91,14 @@ cat <<JSON
     "trustedPluginProjectionIsRunBound": "passed",
     "unsupportedAdapterCannotDispatch": "passed",
     "missingUsageFailsClosed": "passed",
+    "companyWipIsSerializedBeforeDispatch": "passed",
+    "companyQueueClaimsAreRoundRobinFair": "passed",
+    "companyQueuePumpRemainsSerializedWhenSlow": "passed",
+    "claimCancellationDoesNotReenterCompanyPump": "passed",
+    "historicalIssueReplayIsRejected": "passed",
+    "historicalRetryPromotionIsRejected": "passed",
+    "boundedRecoveryDriverExcludesTimersAndRoutines": "passed",
+    "boundedRecoveryDriverIsSingleFlight": "passed",
     "ambiguousGrokApiHistoryBlocks": "passed",
     "nestedAndAlternateGrokApiConfigurationRefused": "passed",
     "ownerHandoffOccursAtMostOnce": "passed",

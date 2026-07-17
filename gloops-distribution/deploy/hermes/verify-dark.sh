@@ -336,9 +336,14 @@ else
   failed=1
 fi
 
-if grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=1' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=0' /etc/paperclip-gloops/runtime.env \
+if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=50000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=16000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=3600000' /etc/paperclip-gloops/runtime.env \
@@ -346,9 +351,9 @@ if grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=8000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=8' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=32' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS exact bounded-pilot task and provider-invocation execution envelope is installed"
+  echo "PASS source-only controlled-swarm envelope is installed dark with the release-pin interlock engaged"
 else
-  echo "FAIL exact bounded-pilot execution envelope is missing or has drifted" >&2
+  echo "FAIL exact controlled-swarm execution envelope is missing or has drifted" >&2
   failed=1
 fi
 

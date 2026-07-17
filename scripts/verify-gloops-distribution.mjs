@@ -654,6 +654,8 @@ if (
 }
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
+  "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
   "PAPERCLIP_MTE_ENABLED=false",
   "issue_recovery_actions",
   "agent_wakeup_requests",

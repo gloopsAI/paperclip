@@ -36,6 +36,8 @@ done
   exit 1
 }
 grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 
 evidence_output="$(mktemp)"

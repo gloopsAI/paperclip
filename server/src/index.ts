@@ -838,6 +838,7 @@ export async function startServer(): Promise<StartedServer> {
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let executionRecoveryDriverInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1070,6 +1071,76 @@ export async function startServer(): Promise<StartedServer> {
       })();
     }, config.heartbeatSchedulerIntervalMs);
   }
+
+  if (!config.heartbeatSchedulerEnabled && config.executionRecoveryDriverEnabled) {
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    let executionRecoveryCycleInFlight: Promise<void> | null = null;
+
+    const runExecutionRecoveryCycle = async (phase: "startup" | "periodic") => {
+      if (heartbeatSchedulerStopped) return;
+      const suppression = await heartbeat.resolveSchedulingSuppression();
+      if (suppression.suppressed) {
+        logger.warn(
+          { phase, reason: suppression.reason },
+          "bounded execution recovery suppressed for this runtime instance",
+        );
+        return;
+      }
+
+      const reaped = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+      const promotion = await heartbeat.promoteDueScheduledRetries();
+      await heartbeat.resumeQueuedRuns();
+      if (reaped.reaped > 0 || promotion.promoted > 0) {
+        logger.warn(
+          {
+            phase,
+            reaped: reaped.reaped,
+            reapedRunIds: reaped.runIds,
+            promotedScheduledRetries: promotion.promoted,
+            promotedScheduledRetryRunIds: promotion.runIds,
+          },
+          "bounded execution recovery changed run state",
+        );
+      }
+    };
+
+    const startExecutionRecoveryCycle = (
+      phase: "startup" | "periodic",
+    ): Promise<void> | null => {
+      if (executionRecoveryCycleInFlight) {
+        logger.warn(
+          { phase },
+          "bounded execution recovery cycle skipped because the previous cycle is still running",
+        );
+        return null;
+      }
+
+      let cycle: Promise<void>;
+      cycle = runExecutionRecoveryCycle(phase).finally(() => {
+        if (executionRecoveryCycleInFlight === cycle) {
+          executionRecoveryCycleInFlight = null;
+        }
+      });
+      executionRecoveryCycleInFlight = cycle;
+      return cycle;
+    };
+
+    // This deliberately excludes timer heartbeats, routine triggers, issue
+    // monitors, watchdogs, and productivity reconciliation. It only advances
+    // already-admitted queued/retry work and reaps stale running rows.
+    await startExecutionRecoveryCycle("startup");
+    executionRecoveryDriverInterval = setInterval(() => {
+      const cycle = startExecutionRecoveryCycle("periodic");
+      if (cycle) {
+        trackHeartbeatSchedulerWork(
+          cycle.catch((err) => {
+            logger.error({ err }, "bounded execution recovery failed");
+          }),
+        );
+      }
+    }, config.executionRecoveryDriverIntervalMs);
+  }
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
@@ -1174,6 +1245,10 @@ export async function startServer(): Promise<StartedServer> {
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
+      }
+      if (executionRecoveryDriverInterval) {
+        clearInterval(executionRecoveryDriverInterval);
+        executionRecoveryDriverInterval = null;
       }
       await waitForHeartbeatSchedulerIdle();
 

@@ -26,10 +26,18 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
   echo "Maximum Token Efficiency must remain explicitly disabled" >&2
   exit 1
 }
+[[ "${PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED:-true}" == 'false' ]] || {
+  echo "the controlled-swarm runtime has not been bound to an accepted immutable image" >&2
+  exit 1
+}
 readonly -A EXPECTED_EXECUTION_ENVELOPE=(
+  [HEARTBEAT_SCHEDULER_ENABLED]='false'
+  [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='true'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
-  [PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK]='1'
-  [PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK]='0'
+  [PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS]='4'
+  [PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE]='2026-07-17T04:55:56.000Z'
+  [PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK]='3'
+  [PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK]='2'
   [PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK]='50000'
   [PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK]='16000'
   [PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK]='3600000'
@@ -40,7 +48,7 @@ readonly -A EXPECTED_EXECUTION_ENVELOPE=(
 )
 for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
   [[ "${!execution_setting:-}" == "${EXPECTED_EXECUTION_ENVELOPE[${execution_setting}]}" ]] || {
-    echo "${execution_setting} has drifted from the accepted bounded-pilot envelope" >&2
+    echo "${execution_setting} has drifted from the accepted controlled-swarm envelope" >&2
     exit 1
   }
 done
