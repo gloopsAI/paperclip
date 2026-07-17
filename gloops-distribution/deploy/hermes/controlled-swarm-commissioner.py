@@ -21,6 +21,58 @@ GOVERNANCE_MERGE = "3a5820722e8c6f55d6a1a730cada1cb4f1a1df77"
 AUTHORIZATION = "commission_twelve_ollama_roles"
 PROTOCOL_START = "<!-- GLOOPS_CONTROLLED_SWARM_PROTOCOL_START -->"
 PROTOCOL_END = "<!-- GLOOPS_CONTROLLED_SWARM_PROTOCOL_END -->"
+INSTRUCTION_VERSION = "gloops.controlled-swarm-instructions.v2"
+
+ROLE_CHARTERS = {
+    "Northstar": (
+        "portfolio and product owner",
+        "turn operator burden and evidence into ranked outcomes; do not implement or self-approve",
+    ),
+    "Atlas": (
+        "platform architect",
+        "settle scoped contracts and boundaries; do not widen authority or promote your own design",
+    ),
+    "Conductor": (
+        "program owner",
+        "maintain the bounded work graph, one accountable owner per stage, and honest terminal state",
+    ),
+    "Dispatch": (
+        "execution coordinator",
+        "route eligible ready work without polling, duplicate ownership, or invented capacity",
+    ),
+    "Mason": (
+        "accountable implementation owner",
+        "deliver the assigned change through pushed exact-head verification; never review or promote your own work",
+    ),
+    "Wren": (
+        "implementation engineer",
+        "deliver only the assigned bounded slice and its failure-path tests; never broaden the repository or task",
+    ),
+    "Scout": (
+        "implementation and investigation engineer",
+        "ground the assigned defect and implement only when the issue explicitly grants implementation authority",
+    ),
+    "Radar": (
+        "external-signal researcher",
+        "return cited decision-relevant findings; do not implement, mutate runtime, or treat popularity as evidence",
+    ),
+    "Context Steward": (
+        "context and continuation owner",
+        "compile compact resumable packets and measure reduction without deleting decisions, failures, or authority facts",
+    ),
+    "Argus": (
+        "independent quality owner",
+        "adversarially verify the exact head and unresolved-thread state; never repair or accept your own implementation",
+    ),
+    "Harbor": (
+        "release and promotion owner",
+        "prepare rollback-ready immutable promotion packets; act only under separate exact promotion authority",
+    ),
+    "Reception": (
+        "operator communications owner",
+        "project concise verified status and genuine actions; do not create work, approve changes, or hide blockers",
+    ),
+}
 
 ADMITTED = {
     "Northstar": "2f68703f-c2bd-40e1-a91e-70bc4d702e5e",
@@ -58,6 +110,44 @@ EXCLUDED = {
         "claude_local",
     ),
 }
+
+
+def compact_instructions(name: str) -> str:
+    try:
+        role, mandate = ROLE_CHARTERS[name]
+    except KeyError as exc:
+        raise CommissioningError(f"no compact charter exists for {name}") from exc
+    return f"""# GLoops controlled-swarm role
+
+Identity: {name}
+Role: {role}
+Campaign: {CAMPAIGN_ID}
+Mandate: {mandate}.
+
+## Authority and work discipline
+
+- The authenticated Paperclip issue, current execution stage, compact work packet, repository grant, accepted base, and ceilings are your complete authority. Host-observed facts win over prompts and output.
+- Work only the assigned stage. Do not discover credentials, inspect unrelated environment state, revive backlog, poll for work, create schedules, widen scope, lower a gate, merge, deploy, or change authority.
+- Missing repository, base, acceptance, ownership, reviewer, budget, or continuation evidence means `blocked`; it is not permission to reconstruct the whole program.
+- Read the smallest relevant code surface. Preserve decisions and failed-attempt evidence. Keep one accountable owner. Do not start a parallel implementation of the same task.
+- Code, tests, a draft PR, or review prose are progress—not completion. A review request requires a pushed exact head and required verification. Acceptance requires an independent reviewer, exact-head checks, and zero unresolved threads.
+- The campaign may end at independently accepted `repair_ready`. Promotion requires separate pre-existing authority and an owner independent of implementation and review.
+- xAI/Grok API, paid overage, direct credential-home/CLI projection, unattributed provider use, and speculative fallback are prohibited.
+
+{PROTOCOL_START}
+Emit at most one terminal line, never in a code fence:
+PAPERCLIP_SWARM_V1:{{"action":"review_ready","headSha":"<40-lowercase-hex>","summary":"<180 chars>"}}
+PAPERCLIP_SWARM_V1:{{"action":"accepted","headSha":"<40-lowercase-hex>","summary":"<180 chars>"}}
+PAPERCLIP_SWARM_V1:{{"action":"changes_requested","headSha":"<40-lowercase-hex>","summary":"<180 chars>"}}
+PAPERCLIP_SWARM_V1:{{"action":"blocked","reason":"<typed blocker and next condition, 240 chars>"}}
+PAPERCLIP_SWARM_V1:{{"action":"repair_proposal","repository":"<owner/repo>","component":"<bounded component>","title":"<title>","negativeTest":"<fail-before/pass-after>","summary":"<evidence>"}}
+Use only the action allowed by the host-owned stage. Malformed, duplicate, out-of-campaign, or unauthorized markers fail closed. Replayed delivery resumes the same idempotent transition; never invent a new side effect.
+{PROTOCOL_END}
+"""
+
+
+def instruction_digest(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class CommissioningError(RuntimeError):
@@ -143,7 +233,7 @@ def validate_approval(
         )
 
 
-def validate_roster(agents: object) -> None:
+def validate_roster(agents: object, *, require_compact_instructions: bool) -> None:
     if not isinstance(agents, list) or any(not isinstance(agent, dict) for agent in agents):
         raise CommissioningError("agent configuration response is malformed")
     expected_identities = {
@@ -165,6 +255,10 @@ def validate_roster(agents: object) -> None:
         agent = by_name[name]
         heartbeat = agent.get("runtimeConfig", {}).get("heartbeat", {})
         instructions = agent.get("adapterConfig", {}).get("instructions", "")
+        instruction_mismatch = (
+            require_compact_instructions
+            and instructions != compact_instructions(name)
+        )
         if (
             agent.get("id") != agent_id
             or agent.get("status") != "paused"
@@ -174,12 +268,10 @@ def validate_roster(agents: object) -> None:
             or heartbeat.get("wakeOnDemand") is not True
             or heartbeat.get("maxConcurrentRuns") != 1
             or not isinstance(instructions, str)
-            or instructions.count(PROTOCOL_START) != 1
-            or instructions.count(PROTOCOL_END) != 1
-            or CAMPAIGN_ID not in instructions
+            or instruction_mismatch
         ):
             raise CommissioningError(
-                f"admitted identity {name} has drifted from the exact paused protocol",
+                f"admitted identity {name} has drifted from the exact paused charter",
             )
 
     for name, (agent_id, status, adapter_type) in EXCLUDED.items():
@@ -228,6 +320,32 @@ class HostPlatform:
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read())
+
+    def set_agent_instructions(
+        self,
+        token: str,
+        agent_id: str,
+        instructions: str,
+    ) -> None:
+        payload = json.dumps(
+            {"adapterConfig": {"instructions": instructions}},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:3100/api/agents/{agent_id}",
+            data=payload,
+            method="PATCH",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if response.status != 200:
+                raise CommissioningError(
+                    f"Paperclip refused the compact charter for {agent_id}",
+                )
 
     def inspect_commissioned(self) -> bool:
         result = subprocess.run(
@@ -294,11 +412,80 @@ class Commissioner:
         validate_approval(approval, approved_image, dt.datetime.now(dt.timezone.utc))
         return approval, approved_image, token
 
+    def _capture_instructions(
+        self,
+        agents: object,
+    ) -> dict[str, str]:
+        validate_roster(agents, require_compact_instructions=False)
+        assert isinstance(agents, list)
+        by_name = {agent["name"]: agent for agent in agents}
+        captured: dict[str, str] = {}
+        for name in ADMITTED:
+            instructions = by_name[name].get("adapterConfig", {}).get(
+                "instructions",
+                "",
+            )
+            if not isinstance(instructions, str):
+                raise CommissioningError(
+                    f"admitted identity {name} has non-text instructions",
+                )
+            captured[name] = instructions
+        return captured
+
+    def _set_instructions(
+        self,
+        token: str,
+        instructions_by_name: dict[str, str],
+    ) -> None:
+        for name, agent_id in ADMITTED.items():
+            self.platform.set_agent_instructions(
+                token,
+                agent_id,
+                instructions_by_name[name],
+            )
+
+    def _instruction_receipt(
+        self,
+        prior: dict[str, str],
+    ) -> dict[str, object]:
+        before_bytes = sum(len(value.encode("utf-8")) for value in prior.values())
+        compact = {name: compact_instructions(name) for name in ADMITTED}
+        after_bytes = sum(len(value.encode("utf-8")) for value in compact.values())
+        changed = any(prior[name] != compact[name] for name in compact)
+        if changed and after_bytes >= before_bytes:
+            raise CommissioningError(
+                "compact charter did not reduce aggregate instruction bytes",
+            )
+        return {
+            "schemaVersion": INSTRUCTION_VERSION,
+            "setSha256": instruction_digest(
+                "".join(
+                    f"{name}\0{compact[name]}\0"
+                    for name in sorted(compact)
+                ),
+            ),
+            "beforeBytes": before_bytes,
+            "afterBytes": after_bytes,
+            "changed": changed,
+            "reductionBasisPoints": 0 if not changed else (
+                (before_bytes - after_bytes) * 10_000 // before_bytes
+            ),
+            "agents": {
+                name: {
+                    "beforeBytes": len(prior[name].encode("utf-8")),
+                    "afterBytes": len(compact[name].encode("utf-8")),
+                    "sha256": instruction_digest(compact[name]),
+                }
+                for name in sorted(compact)
+            },
+        }
+
     def _write_receipt(
         self,
         approval: dict[str, object],
         approved_image: str,
         approval_in_progress: Path,
+        instruction_receipt: dict[str, object],
     ) -> None:
         self.paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.paths.state_dir / f".commissioning.{os.getpid()}"
@@ -320,6 +507,7 @@ class Commissioner:
                 [EXCLUDED["Grok Burst"][0], EXCLUDED["Codex Burst"][0]],
             ),
             "executionProvider": "ollama-cloud-via-hermes-gateway",
+            "instructionSet": instruction_receipt,
             "timerHeartbeatsEnabled": False,
             "campaignEpochState": "unarmed",
             "outcome": "commissioned",
@@ -353,6 +541,9 @@ class Commissioner:
         )
         os.replace(self.paths.approval, approval_in_progress)
         barrier_changed = False
+        instructions_changed = False
+        prior_instructions: dict[str, str] = {}
+        token = ""
         try:
             for unit in (
                 "paperclip-campaign-deadman.service",
@@ -381,11 +572,28 @@ class Commissioner:
             approval, approved_image, token = self._read_context(
                 approval_in_progress,
             )
-            validate_roster(self.platform.fetch_agents(token))
+            prior_instructions = self._capture_instructions(
+                self.platform.fetch_agents(token),
+            )
+            instruction_receipt = self._instruction_receipt(prior_instructions)
+            instructions_changed = instruction_receipt["changed"] is True
+            if instructions_changed:
+                self._set_instructions(
+                    token,
+                    {
+                        name: compact_instructions(name)
+                        for name in ADMITTED
+                    },
+                )
+            validate_roster(
+                self.platform.fetch_agents(token),
+                require_compact_instructions=True,
+            )
             self._write_receipt(
                 approval,
                 approved_image,
                 approval_in_progress,
+                instruction_receipt,
             )
             self.platform.set_barrier(True)
             barrier_changed = True
@@ -401,16 +609,27 @@ class Commissioner:
                 raise CommissioningError(
                     "commissioning unexpectedly armed the campaign epoch",
                 )
-            validate_roster(self.platform.fetch_agents(token))
+            validate_roster(
+                self.platform.fetch_agents(token),
+                require_compact_instructions=True,
+            )
         except BaseException:
             if barrier_changed:
                 try:
                     self.platform.set_barrier(False)
                 finally:
-                    self.paths.receipt.unlink(missing_ok=True)
-                    self.platform.restart_paperclip()
+                    try:
+                        if instructions_changed:
+                            self._set_instructions(token, prior_instructions)
+                    finally:
+                        self.paths.receipt.unlink(missing_ok=True)
+                        self.platform.restart_paperclip()
             else:
-                self.paths.receipt.unlink(missing_ok=True)
+                try:
+                    if instructions_changed:
+                        self._set_instructions(token, prior_instructions)
+                finally:
+                    self.paths.receipt.unlink(missing_ok=True)
             raise
         finally:
             approval_in_progress.unlink(missing_ok=True)

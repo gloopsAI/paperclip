@@ -19,11 +19,6 @@ SPEC.loader.exec_module(MODULE)
 
 
 def exact_roster() -> list[dict[str, object]]:
-    instructions = (
-        f"{MODULE.PROTOCOL_START}\n"
-        f"campaign {MODULE.CAMPAIGN_ID}\n"
-        f"{MODULE.PROTOCOL_END}"
-    )
     agents: list[dict[str, object]] = []
     for name, agent_id in MODULE.ADMITTED.items():
         agents.append(
@@ -32,7 +27,9 @@ def exact_roster() -> list[dict[str, object]]:
                 "id": agent_id,
                 "status": "paused",
                 "adapterType": "hermes_gateway",
-                "adapterConfig": {"instructions": instructions},
+                "adapterConfig": {
+                    "instructions": MODULE.compact_instructions(name),
+                },
                 "runtimeConfig": {
                     "heartbeat": {
                         "enabled": False,
@@ -57,6 +54,19 @@ def exact_roster() -> list[dict[str, object]]:
     return agents
 
 
+def legacy_roster() -> list[dict[str, object]]:
+    agents = exact_roster()
+    for agent in agents:
+        if agent["name"] in MODULE.ADMITTED:
+            agent["adapterConfig"]["instructions"] = (
+                "legacy autonomous-agent context\n" * 400
+                + f"{MODULE.PROTOCOL_START}\n"
+                + f"campaign {MODULE.CAMPAIGN_ID}\n"
+                + f"{MODULE.PROTOCOL_END}"
+            )
+    return agents
+
+
 class FakePlatform:
     def __init__(
         self,
@@ -65,12 +75,17 @@ class FakePlatform:
         fail_first_restart: bool = False,
         create_epoch_after_restart: Path | None = None,
     ) -> None:
-        self.rosters = rosters or [exact_roster(), exact_roster()]
+        self.rosters = rosters or [
+            legacy_roster(),
+            exact_roster(),
+            exact_roster(),
+        ]
         self.fail_first_restart = fail_first_restart
         self.create_epoch_after_restart = create_epoch_after_restart
         self.restart_count = 0
         self.barrier = False
         self.calls: list[str] = []
+        self.instruction_updates: list[tuple[str, str]] = []
 
     def is_active(self, unit: str) -> bool:
         self.calls.append(f"is_active:{unit}")
@@ -91,6 +106,19 @@ class FakePlatform:
     def fetch_agents(self, token: str) -> object:
         self.calls.append("fetch_agents")
         return self.rosters.pop(0)
+
+    def set_agent_instructions(
+        self,
+        token: str,
+        agent_id: str,
+        instructions: str,
+    ) -> None:
+        self.calls.append(f"set_instructions:{agent_id}")
+        self.instruction_updates.append((agent_id, instructions))
+        for roster in self.rosters:
+            for agent in roster:
+                if agent["id"] == agent_id:
+                    agent["adapterConfig"]["instructions"] = instructions
 
     def inspect_commissioned(self) -> bool:
         self.calls.append("inspect")
@@ -152,12 +180,60 @@ class CommissionerTest(unittest.TestCase):
         self.commissioner(platform).run()
         self.assertTrue(platform.barrier)
         self.assertEqual(platform.restart_count, 1)
-        self.assertEqual(platform.calls.count("fetch_agents"), 2)
+        self.assertEqual(platform.calls.count("fetch_agents"), 3)
+        self.assertEqual(
+            sum(call.startswith("set_instructions:") for call in platform.calls),
+            len(MODULE.ADMITTED),
+        )
         self.assertTrue(self.paths.receipt.exists())
+        receipt = json.loads(self.paths.receipt.read_text(encoding="utf-8"))
+        self.assertEqual(
+            receipt["instructionSet"]["schemaVersion"],
+            MODULE.INSTRUCTION_VERSION,
+        )
+        self.assertGreater(
+            receipt["instructionSet"]["beforeBytes"],
+            receipt["instructionSet"]["afterBytes"],
+        )
+        self.assertGreater(
+            receipt["instructionSet"]["reductionBasisPoints"],
+            5000,
+        )
         self.assertFalse(self.paths.approval.exists())
         self.assertFalse(
             any("provider" in call.lower() for call in platform.calls),
         )
+
+    def test_compact_charters_are_role_specific_bounded_and_content_addressed(self) -> None:
+        values = {
+            name: MODULE.compact_instructions(name)
+            for name in MODULE.ADMITTED
+        }
+        self.assertEqual(len(values), len(set(values.values())))
+        for name, value in values.items():
+            with self.subTest(name=name):
+                self.assertLess(len(value.encode("utf-8")), 4_000)
+                self.assertEqual(value.count(MODULE.PROTOCOL_START), 1)
+                self.assertEqual(value.count(MODULE.PROTOCOL_END), 1)
+                self.assertIn(MODULE.CAMPAIGN_ID, value)
+                self.assertIn(f"Identity: {name}", value)
+                self.assertRegex(
+                    MODULE.instruction_digest(value),
+                    r"^sha256:[0-9a-f]{64}$",
+                )
+
+    def test_existing_compact_instructions_are_revalidated_without_rewrite(self) -> None:
+        platform = FakePlatform([
+            exact_roster(),
+            exact_roster(),
+            exact_roster(),
+        ])
+        self.commissioner(platform).run()
+        self.assertEqual(platform.instruction_updates, [])
+        self.assertTrue(platform.barrier)
+        receipt = json.loads(self.paths.receipt.read_text(encoding="utf-8"))
+        self.assertFalse(receipt["instructionSet"]["changed"])
+        self.assertEqual(receipt["instructionSet"]["reductionBasisPoints"], 0)
 
     def test_stale_or_malformed_approval_fails_before_restart(self) -> None:
         stale = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=5)
@@ -206,7 +282,7 @@ class CommissionerTest(unittest.TestCase):
         drifted = copy.deepcopy(exact_roster())
         mason = next(agent for agent in drifted if agent["name"] == "Mason")
         mason["runtimeConfig"]["heartbeat"]["maxConcurrentRuns"] = 2
-        platform = FakePlatform([exact_roster(), drifted])
+        platform = FakePlatform([legacy_roster(), exact_roster(), drifted])
         with self.assertRaises(MODULE.CommissioningError):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
@@ -219,6 +295,14 @@ class CommissionerTest(unittest.TestCase):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
         self.assertEqual(platform.restart_count, 2)
+        self.assertEqual(
+            len(platform.instruction_updates),
+            len(MODULE.ADMITTED) * 2,
+        )
+        restored = platform.instruction_updates[len(MODULE.ADMITTED):]
+        self.assertTrue(
+            all("legacy autonomous-agent context" in value for _, value in restored),
+        )
         self.assertFalse(self.paths.receipt.exists())
 
     def test_existing_epoch_refuses_without_restart(self) -> None:
