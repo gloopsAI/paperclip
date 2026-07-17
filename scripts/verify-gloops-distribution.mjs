@@ -688,10 +688,10 @@ for (const [surface, content, required] of [
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property Type=exec"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property RuntimeMaxSec=2"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "result}\" == 'timeout'"],
-  ["Hermes image loader", loadHermesExecutionImage, "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d"],
+  ["Hermes image loader", loadHermesExecutionImage, "58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3"],
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
-  ["cold rollback backup", backupDark, "hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst"],
+  ["cold rollback backup", backupDark, "hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
 ]) {
   if (!content.includes(required)) {
@@ -827,7 +827,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac";
+  "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -894,8 +894,8 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addre
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
   JSON.stringify({
-    path: "/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst",
-    sha256: "a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d",
+    path: "/opt/paperclip/release-artifacts/hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst",
+    sha256: "58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3",
   })
 ) {
   fail("Hermes execution image archive must be content-addressed and exact");

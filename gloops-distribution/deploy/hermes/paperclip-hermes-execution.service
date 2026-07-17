@@ -11,7 +11,7 @@ StartLimitBurst=2
 
 [Service]
 Type=simple
-Environment=HERMES_EXECUTION_IMAGE=sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac
+Environment=HERMES_EXECUTION_IMAGE=sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d
 ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-hermes
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source
