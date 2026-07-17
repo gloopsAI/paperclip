@@ -41,6 +41,30 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default.",
       },
       {
+        key: "subscriptionClass",
+        label: "Subscription class",
+        type: "text",
+        hint: "Optional operator-pinned subscription provenance (for example ollama-max). Persisted exactly as configured; never inferred from the model or path.",
+      },
+      {
+        key: "routingReason",
+        label: "Routing reason",
+        type: "text",
+        hint: "Optional operator-pinned reason this Hermes route was selected. Persisted exactly as configured.",
+      },
+      {
+        key: "fallbackOccurred",
+        label: "Fallback occurred",
+        type: "toggle",
+        hint: "Optional operator-pinned fallback observation. Leave unset when the gateway cannot authoritatively determine it.",
+      },
+      {
+        key: "executionProfile",
+        label: "Execution profile",
+        type: "text",
+        hint: "Optional operator-pinned execution profile (for example execution-only). Persisted exactly as configured.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",

@@ -5,6 +5,7 @@ import {
   agents as agentsTable,
   budgetIncidents,
   costEvents,
+  companies as companiesTable,
   heartbeatRuns,
   invites,
   issues as issuesTable,
@@ -74,7 +75,8 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { sanitizeRecord } from "../redaction.js";
+import { redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import { HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS } from "./heartbeat-run-summary.js";
 import {
   PAPERCLIP_EXECUTION_RECEIPT_KEY,
   evaluateExecutionTruthTransition,
@@ -87,6 +89,9 @@ import { parseExecutionAdmissionPolicy } from "./execution-admission.js";
 
 /** Maximum time (ms) a plugin fetch request may take before being aborted. */
 const PLUGIN_FETCH_TIMEOUT_MS = 30_000;
+const PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_CHARS = 256;
+const PLUGIN_ISSUE_IDEMPOTENCY_FINGERPRINT_VERSION = "plugin-issue-create:v1";
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 const DNS_LOOKUP_TIMEOUT_MS = 5_000;
@@ -622,6 +627,37 @@ export function buildHostServices(
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
 
+  const stableJson = (value: unknown): string => {
+    if (value === undefined) return "null";
+    if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+    if (isRecord(value)) {
+      return `{${Object.keys(value)
+        .filter((key) => value[key] !== undefined)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value) ?? "null";
+  };
+
+  const requirePluginIssueIdempotencyKey = (value: unknown): string | null => {
+    if (value == null) return null;
+    if (typeof value !== "string") {
+      throw new Error("Plugin issue idempotencyKey must be a string");
+    }
+    if (
+      value.length === 0
+      || value.length > PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_CHARS
+      || value.trim() !== value
+      || /[\u0000-\u001f\u007f]/u.test(value)
+    ) {
+      throw new Error(
+        `Plugin issue idempotencyKey must be 1-${PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_CHARS} visible characters without surrounding whitespace`,
+      );
+    }
+    return value;
+  };
+
   const readProviderMetadata = (metadata: Record<string, unknown> | null | undefined) => {
     if (!isRecord(metadata)) return null;
     if (isRecord(metadata.providerMetadata)) return { ...metadata.providerMetadata };
@@ -704,8 +740,9 @@ export function buildHostServices(
     entityId: string;
     details?: Record<string, unknown> | null;
     actor?: { actorAgentId?: string | null; actorUserId?: string | null; actorRunId?: string | null };
+    dbOrTx?: DbTransaction;
   }) => {
-    await logActivity(db, {
+    await logActivity((input.dbOrTx ?? db) as Db, {
       companyId: input.companyId,
       actorType: "plugin",
       actorId: pluginId,
@@ -771,6 +808,9 @@ export function buildHostServices(
       const result = isRecord(row.resultJson) ? row.resultJson : {};
       const metrics = isRecord(result.execution_metrics) ? result.execution_metrics : null;
       const route = isRecord(result.execution_route) ? result.execution_route : null;
+      const resultSummary = typeof result.summary === "string"
+        ? redactSensitiveText(result.summary).slice(0, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)
+        : null;
       const number = (value: unknown) => typeof value === "number" && Number.isFinite(value)
         ? Math.max(0, Math.floor(value))
         : 0;
@@ -796,6 +836,7 @@ export function buildHostServices(
         createdAt: row.createdAt.toISOString(),
         lastOutputAt: row.lastOutputAt?.toISOString() ?? null,
         contextInputBytes,
+        resultSummary,
         usage: {
           inputTokens: number(usage.inputTokens ?? usage.input_tokens),
           cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),
@@ -811,6 +852,19 @@ export function buildHostServices(
               modelId: typeof route.model_id === "string" ? route.model_id : null,
               transport,
               pathId: route.path_id,
+              runner: typeof route.runner === "string" ? route.runner : null,
+              subscriptionClass: typeof route.subscription_class === "string"
+                ? route.subscription_class
+                : null,
+              routingReason: typeof route.routing_reason === "string"
+                ? route.routing_reason
+                : null,
+              fallbackOccurred: typeof route.fallback_occurred === "boolean"
+                ? route.fallback_occurred
+                : null,
+              executionProfile: typeof route.execution_profile === "string"
+                ? route.execution_profile
+                : null,
             }
           : null,
       };
@@ -1597,13 +1651,21 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const {
+          actorAgentId,
+          actorUserId,
+          actorRunId,
+          originKind,
+          surfaceVisibility,
+          idempotencyKey: rawIdempotencyKey,
+          ...issueInput
+        } = params;
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
-        const issue = (await issues.create(companyId, {
+        const createInput = {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
@@ -1612,23 +1674,94 @@ export function buildHostServices(
           createdByUserId: actorUserId ?? null,
           actorResponsibleUserId: actorUserId ?? null,
           trustExplicitResponsibleUserId: true,
-        })) as Issue;
-        await logPluginActivity({
-          companyId,
-          action: "issue.created",
-          entityType: "issue",
-          entityId: issue.id,
-          actor: { actorAgentId, actorUserId, actorRunId },
-          details: {
-            title: issue.title,
-            identifier: issue.identifier,
-            originKind: normalizedOriginKind,
-            originId: issue.originId,
-            billingCode: issue.billingCode,
-            blockedByIssueIds: params.blockedByIssueIds ?? [],
-          },
+        };
+        const createAndLog = async (dbOrTx?: DbTransaction) => {
+          const issue = (await issues.create(companyId, createInput, dbOrTx)) as Issue;
+          await logPluginActivity({
+            companyId,
+            action: "issue.created",
+            entityType: "issue",
+            entityId: issue.id,
+            actor: { actorAgentId, actorUserId, actorRunId },
+            details: {
+              title: issue.title,
+              identifier: issue.identifier,
+              originKind: normalizedOriginKind,
+              originId: issue.originId,
+              billingCode: issue.billingCode,
+              blockedByIssueIds: params.blockedByIssueIds ?? [],
+            },
+            dbOrTx,
+          });
+          return issue;
+        };
+
+        const idempotencyKey = requirePluginIssueIdempotencyKey(rawIdempotencyKey);
+        if (!idempotencyKey) return createAndLog();
+
+        const keyHash = createHash("sha256")
+          .update(`${pluginKey}\u0000${idempotencyKey}`)
+          .digest("hex");
+        const fingerprintPrefix = `${PLUGIN_ISSUE_IDEMPOTENCY_FINGERPRINT_VERSION}:${keyHash}:`;
+        const requestHash = createHash("sha256")
+          .update(stableJson({
+            companyId,
+            pluginKey,
+            createInput,
+          }))
+          .digest("hex");
+        const originFingerprint = `${fingerprintPrefix}${requestHash}`;
+        (createInput as Record<string, unknown>).originFingerprint = originFingerprint;
+
+        const outcome = await db.transaction(async (tx) => {
+          // Serialize idempotent creates per company. This lock and the issue
+          // lookup/create/activity insert share one transaction, so concurrent
+          // replays cannot observe a partially created request or duplicate its
+          // audit activity.
+          await tx.execute(sql`
+            select ${companiesTable.id}
+            from ${companiesTable}
+            where ${companiesTable.id} = ${companyId}
+            for update
+          `);
+          const matches = await tx
+            .select({
+              id: issuesTable.id,
+              originKind: issuesTable.originKind,
+              originFingerprint: issuesTable.originFingerprint,
+            })
+            .from(issuesTable)
+            .where(and(
+              eq(issuesTable.companyId, companyId),
+              like(issuesTable.originFingerprint, `${fingerprintPrefix}%`),
+            ))
+            .limit(2);
+
+          if (matches.length > 1) {
+            throw new Error("Plugin issue idempotency scope contains multiple issues");
+          }
+          const existing = matches[0];
+          if (existing) {
+            if (existing.originFingerprint !== originFingerprint) {
+              throw new Error(
+                "Plugin issue idempotencyKey was already used with different create parameters",
+              );
+            }
+            if (
+              existing.originKind !== defaultPluginOriginKind
+              && !existing.originKind.startsWith(`${defaultPluginOriginKind}:`)
+            ) {
+              throw new Error("Plugin issue idempotency scope no longer belongs to this plugin");
+            }
+            return { issueId: existing.id, created: false as const };
+          }
+
+          const issue = await createAndLog(tx);
+          return { issue, issueId: issue.id, created: true as const };
         });
-        return issue;
+
+        if (outcome.created) return outcome.issue;
+        return requireInCompany("Issue", await issues.getById(outcome.issueId), companyId) as Issue;
       },
       async update(params) {
         const companyId = ensureCompanyId(params.companyId);
