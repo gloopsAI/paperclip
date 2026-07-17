@@ -595,8 +595,8 @@ class Commissioner:
                 approval_in_progress,
                 instruction_receipt,
             )
-            self.platform.set_barrier(True)
             barrier_changed = True
+            self.platform.set_barrier(True)
             self.platform.restart_paperclip()
             if not self.platform.is_active("paperclip-gloops.service"):
                 raise CommissioningError("Paperclip did not restart active")

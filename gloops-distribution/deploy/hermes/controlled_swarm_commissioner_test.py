@@ -73,6 +73,7 @@ class FakePlatform:
         rosters: list[list[dict[str, object]]] | None = None,
         *,
         fail_first_restart: bool = False,
+        fail_enable_barrier: bool = False,
         create_epoch_after_restart: Path | None = None,
     ) -> None:
         self.rosters = rosters or [
@@ -81,6 +82,7 @@ class FakePlatform:
             exact_roster(),
         ]
         self.fail_first_restart = fail_first_restart
+        self.fail_enable_barrier = fail_enable_barrier
         self.create_epoch_after_restart = create_epoch_after_restart
         self.restart_count = 0
         self.barrier = False
@@ -127,6 +129,8 @@ class FakePlatform:
     def set_barrier(self, commissioned: bool) -> None:
         self.calls.append(f"set_barrier:{str(commissioned).lower()}")
         self.barrier = commissioned
+        if commissioned and self.fail_enable_barrier:
+            raise RuntimeError("stubbed barrier failure after mutation")
 
 
 class CommissionerTest(unittest.TestCase):
@@ -302,6 +306,18 @@ class CommissionerTest(unittest.TestCase):
         restored = platform.instruction_updates[len(MODULE.ADMITTED):]
         self.assertTrue(
             all("legacy autonomous-agent context" in value for _, value in restored),
+        )
+        self.assertFalse(self.paths.receipt.exists())
+
+    def test_partial_barrier_failure_restores_barrier_and_instructions(self) -> None:
+        platform = FakePlatform(fail_enable_barrier=True)
+        with self.assertRaisesRegex(RuntimeError, "barrier failure"):
+            self.commissioner(platform).run()
+        self.assertFalse(platform.barrier)
+        self.assertEqual(platform.restart_count, 1)
+        self.assertEqual(
+            len(platform.instruction_updates),
+            len(MODULE.ADMITTED) * 2,
         )
         self.assertFalse(self.paths.receipt.exists())
 
