@@ -10540,16 +10540,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
+    const deferQueuePumpAfterClaimCancellation: CancelRunOptions = {
+      suppressImmediateRecovery: true,
+      deferCompanyQueuePump: true,
+    };
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelRunInternal(
+        run.id,
+        "Cancelled because the agent no longer exists",
+        deferQueuePumpAfterClaimCancellation,
+      );
       return null;
     }
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+      await cancelRunInternal(
+        run.id,
+        `Cancelled because the agent is not invokable: ${invokability.reason}`,
+        deferQueuePumpAfterClaimCancellation,
+      );
       return null;
     }
 
@@ -10564,7 +10576,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      await cancelRunInternal(run.id, budgetBlock.reason, deferQueuePumpAfterClaimCancellation);
       return null;
     }
 
@@ -10590,7 +10602,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
+        await cancelRunInternal(
+          run.id,
+          "Cancelled because issue is held by an active subtree pause hold",
+          deferQueuePumpAfterClaimCancellation,
+        );
         await logActivity(db, {
           companyId: run.companyId,
           actorType: "system",
@@ -16473,6 +16489,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    suppressImmediateRecovery?: boolean;
+    deferCompanyQueuePump?: boolean;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
@@ -16531,11 +16549,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.suppressImmediateRecovery,
+      });
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunsForCompany(run.companyId);
+    if (options.deferCompanyQueuePump) {
+      // Claim cancellation can run while both the per-agent start lock and the
+      // company queue-pump lock are held. Starting another company pump is
+      // still required, but awaiting it here would wait on our own outer lock.
+      // Fire-and-observe the deferred drain so the outer claim can release first.
+      void startNextQueuedRunsForCompany(run.companyId).catch((error) => {
+        logger.error(
+          { error, companyId: run.companyId, runId: run.id },
+          "deferred company queue pump after claim cancellation failed",
+        );
+      });
+    } else {
+      await startNextQueuedRunsForCompany(run.companyId);
+    }
     return cancelled;
   }
 

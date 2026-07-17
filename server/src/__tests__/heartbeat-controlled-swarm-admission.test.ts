@@ -4,7 +4,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  budgetPolicies,
   companies,
+  costEvents,
   createDb,
   heartbeatRuns,
   issues,
@@ -229,6 +231,105 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
 
     expect(new Set(adapterState.startedAgentIds.slice(0, 2))).toEqual(new Set(agentIds));
     expect(adapterState.maxActive).toBe(2);
+  });
+
+  it("cancels a budget-denied queued row without deadlocking the later eligible drain", async () => {
+    adapterState.active = 0;
+    adapterState.maxActive = 0;
+    adapterState.startedAgentIds = [];
+    adapterExecute.mockClear();
+    const { companyId, agentIds } = await seedCompany(2);
+    const [deniedAgentId, eligibleAgentId] = agentIds;
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: deniedAgentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+      createdByUserId: "operator",
+      updatedByUserId: "operator",
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: deniedAgentId,
+      provider: "test",
+      biller: "subscription",
+      billingType: "subscription",
+      model: "test-model",
+      costCents: 2,
+      occurredAt: new Date(),
+    });
+
+    const runIds: string[] = [];
+    for (const [index, agentId] of [deniedAgentId, eligibleAgentId].entries()) {
+      const wakeupRequestId = randomUUID();
+      const runId = randomUUID();
+      const createdAt = new Date(`2026-07-17T07:30:0${index}.000Z`);
+      runIds.push(runId);
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "controlled_swarm_budget_deadlock_test",
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "operator",
+        runId,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        wakeupRequestId,
+        responsibleUserId: "operator",
+        contextSnapshot: {},
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: { PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS: "1" },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await waitForTerminalRuns(db, runIds);
+    for (const runId of runIds) {
+      await heartbeat.waitForRunExecutionDrain(runId);
+    }
+
+    const rows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runIds));
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentId: deniedAgentId,
+        status: "cancelled",
+        error: expect.stringContaining("budget hard-stop"),
+      }),
+      expect.objectContaining({
+        agentId: eligibleAgentId,
+        status: "succeeded",
+      }),
+    ]));
+    expect(adapterState.startedAgentIds).toEqual([eligibleAgentId]);
+    expect(adapterState.maxActive).toBe(1);
   });
 
   it("rejects historical assignment wakes and queued-run replay before the campaign cutoff", async () => {

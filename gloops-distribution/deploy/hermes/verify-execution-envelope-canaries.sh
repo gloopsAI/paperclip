@@ -94,6 +94,7 @@ cat <<JSON
     "companyWipIsSerializedBeforeDispatch": "passed",
     "companyQueueClaimsAreRoundRobinFair": "passed",
     "companyQueuePumpRemainsSerializedWhenSlow": "passed",
+    "claimCancellationDoesNotReenterCompanyPump": "passed",
     "historicalIssueReplayIsRejected": "passed",
     "historicalRetryPromotionIsRejected": "passed",
     "boundedRecoveryDriverExcludesTimersAndRoutines": "passed",
