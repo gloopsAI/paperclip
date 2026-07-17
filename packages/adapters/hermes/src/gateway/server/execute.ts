@@ -667,12 +667,28 @@ async function pollStatus(input: {
       });
       const normalized = extractStatus(status);
       if (normalized && TERMINAL_STATUSES.has(normalized)) {
-        markTerminal(input.state, {
-          runId: input.state.runId,
-          status: normalized,
-          payload: asRecord(status),
-          output: extractOutput(status),
-        });
+        if (input.ctx.executionBudget) {
+          markTerminal(input.state, {
+            runId: input.state.runId,
+            status: "failed",
+            eventName: "execution.budget_evidence_missing",
+            payload: {
+              ...asRecord(status),
+              error:
+                "Hermes reached a terminal state through polling without a complete event stream; reserved turn and tool-call ceilings cannot be reconciled",
+              error_code: "execution_admission.provider_budget_evidence_missing",
+              polled_terminal_status: normalized,
+            },
+            output: extractOutput(status),
+          });
+        } else {
+          markTerminal(input.state, {
+            runId: input.state.runId,
+            status: normalized,
+            payload: asRecord(status),
+            output: extractOutput(status),
+          });
+        }
       }
     } catch (err) {
       if (input.signal.aborted) return;
@@ -855,7 +871,6 @@ function mergeTerminalPayload(
   const finalUsage = parseUsage(finalStatus);
   return {
     ...terminal,
-    status: extractStatus(finalStatus) ?? terminal.status,
     payload: {
       ...finalStatus,
       ...current,

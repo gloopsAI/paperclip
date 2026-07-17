@@ -10231,6 +10231,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  async function isAuthorizedIndependentExecutionStage(input: {
+    tx: Pick<Db, "select">;
+    run: typeof heartbeatRuns.$inferSelect;
+    context: Record<string, unknown>;
+    issueId: string | null;
+  }) {
+    if (!input.issueId || input.run.retryOfRunId) return false;
+    const wakeReason = readNonEmptyString(input.context.wakeReason);
+    const expectedStageType =
+      wakeReason === "execution_review_requested"
+        ? "review"
+        : wakeReason === "execution_approval_requested"
+          ? "approval"
+          : null;
+    if (!expectedStageType || readNonEmptyString(input.context.source) !== "issue.execution_stage") {
+      return false;
+    }
+
+    const stageContext = parseObject(input.context.executionStage);
+    const expectedWakeRole = expectedStageType === "review" ? "reviewer" : "approver";
+    if (
+      readNonEmptyString(stageContext.wakeRole) !== expectedWakeRole ||
+      readNonEmptyString(stageContext.stageType) !== expectedStageType
+    ) {
+      return false;
+    }
+
+    const issue = await input.tx
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        executionPolicy: issues.executionPolicy,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, input.issueId)))
+      .then((rows) => rows[0] ?? null);
+    const state = parseIssueExecutionState(issue?.executionState ?? null);
+    const policy = normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null);
+    const stageId = readNonEmptyString(stageContext.stageId);
+    const policyStage = policy?.stages.find((stage) => stage.id === stageId) ?? null;
+    const participant = state?.currentParticipant;
+    return Boolean(
+      issue &&
+      issue.assigneeAgentId === input.run.agentId &&
+      state?.status === "pending" &&
+      state.currentStageId === stageId &&
+      state.currentStageType === expectedStageType &&
+      participant?.type === "agent" &&
+      participant.agentId === input.run.agentId &&
+      policyStage?.type === expectedStageType &&
+      policyStage.participants.some(
+        (candidate) =>
+          candidate.type === "agent" &&
+          candidate.agentId === input.run.agentId,
+      ),
+    );
+  }
+
   async function claimQueuedRunWithExecutionAdmission(input: {
     run: typeof heartbeatRuns.$inferSelect;
     context: Record<string, unknown>;
@@ -10411,10 +10469,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priorBudgetCondition,
         ))
         .orderBy(asc(heartbeatRuns.createdAt));
+      const authorizedIndependentStage = await isAuthorizedIndependentExecutionStage({
+        tx,
+        run,
+        context,
+        issueId,
+      });
       const decision = evaluateExecutionAdmission(
         executionAdmissionPolicy,
         priorRows.map((row) => priorExecutionRun(row, claimedAt)),
-        { isRetry: Boolean(run.retryOfRunId) },
+        {
+          isRetry: Boolean(run.retryOfRunId),
+          isAuthorizedIndependentStage: authorizedIndependentStage,
+        },
       );
       const envelope = buildExecutionAdmissionEnvelope({
         identity,

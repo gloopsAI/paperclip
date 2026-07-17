@@ -243,14 +243,22 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
 export function evaluateExecutionAdmission(
   policy: Extract<ExecutionAdmissionPolicy, { enabled: true }>,
   priorRuns: PriorExecutionRun[],
-  currentRun: { isRetry?: boolean } = {},
+  currentRun: {
+    isRetry?: boolean;
+    isAuthorizedIndependentStage?: boolean;
+  } = {},
 ): { allowed: boolean; reason: ExecutionAdmissionReason | null; observed: ExecutionAdmissionUsage } {
   const observed = summarizePriorExecution(priorRuns);
   const remainingInputTokens = Math.max(0, policy.maxInputTokensPerTask - observed.inputTokens);
   const remainingOutputTokens = Math.max(0, policy.maxOutputTokensPerTask - observed.outputTokens);
+  const isUnclassifiedContinuation =
+    observed.runCount > 0 &&
+    currentRun.isRetry !== true &&
+    currentRun.isAuthorizedIndependentStage !== true;
   const reason = observed.runCount >= policy.maxRunsPerTask
     ? "run_limit_exhausted"
-    : currentRun.isRetry === true && observed.retryCount >= policy.maxRetriesPerTask
+    : isUnclassifiedContinuation ||
+        (currentRun.isRetry === true && observed.retryCount >= policy.maxRetriesPerTask)
       ? "retry_limit_exhausted"
       : observed.inputTokens >= policy.maxInputTokensPerTask
         ? "input_token_limit_exhausted"

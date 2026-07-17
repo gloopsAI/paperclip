@@ -741,6 +741,45 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/run-hermes-1"))).toBe(true);
   });
 
+  it("fails closed when polling reaches terminal state under a provider budget", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-budget-poll", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response("no stream", { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: "unverifiable polling result",
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      pollIntervalMs: 250,
+    });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-poll",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 500,
+      maxTurns: 2,
+      maxToolCalls: 2,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("execution_admission.provider_budget_evidence_missing");
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 0, tool_calls: 0 });
+  });
+
   it("maps HTTP auth failures", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 })));
     const result = await execute(makeCtx({

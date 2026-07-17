@@ -425,6 +425,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       const { companyId, agentId } = await seedDirectAgent();
       const issueId = randomUUID();
       const parentRunId = randomUUID();
+      const reviewStageId = randomUUID();
       await db.insert(issues).values({
         id: issueId,
         companyId,
@@ -435,6 +436,29 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
         assigneeAgentId: agentId,
         issueNumber: 1,
         identifier: `STAGE-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: false,
+          stages: [{
+            id: reviewStageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId }],
+          }],
+        },
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId },
+          returnAssignee: { type: "agent", agentId },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+        },
       });
       const parsedPolicy = parseExecutionAdmissionPolicy(process.env);
       if (!parsedPolicy.enabled) throw new Error("expected enabled execution policy");
@@ -486,6 +510,17 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
           issueId,
           skipIssueComment: true,
           wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+          executionStage: {
+            wakeRole: "reviewer",
+            stageId: reviewStageId,
+            stageType: "review",
+            currentParticipant: { type: "agent", agentId },
+            returnAssignee: { type: "agent", agentId },
+            reviewRequest: null,
+            lastDecisionOutcome: null,
+            allowedActions: ["approve", "request_changes"],
+          },
         },
       });
 
