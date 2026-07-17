@@ -90,6 +90,14 @@ class LiveReadinessTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ReadinessError, "installed egress unit hash"):
             self.verify()
 
+    def test_rejects_modified_proxy_bytes(self) -> None:
+        proxy = self.root / "usr/local/lib/paperclip-gloops/hermes-handshake-egress-proxy.py"
+        proxy.chmod(0o755)
+        proxy.write_text(proxy.read_text() + "\n# drift\n")
+        proxy.chmod(0o555)
+        with self.assertRaisesRegex(MODULE.ReadinessError, "installed egress proxy hash"):
+            self.verify()
+
     def test_rejects_higher_precedence_drop_in(self) -> None:
         (self.root / f"run/systemd/system/{MODULE.UNIT}.d").mkdir()
         with self.assertRaisesRegex(MODULE.ReadinessError, "higher-precedence"):

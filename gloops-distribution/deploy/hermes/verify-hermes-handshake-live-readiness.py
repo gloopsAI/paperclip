@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 UNIT = "paperclip-hermes-handshake-egress.service"
+EXPECTED_PROXY_SHA256 = "9d36abb8b879cc5b7bc5c67e3acb9a0668fb20471a7deb28a1637cf86e0a24a5"
 EXPECTED_UNIT_SHA256 = "bf082d5a327b0956cfc9c3c6d96b1a2fe6fccea7b858ced7a7842f4dbcba4049"
 EXPECTED_UNIT_LINES = {
     "ExecStartPost=/usr/bin/sh -ec 'for i in $(seq 1 50); do /usr/bin/ss -lntH sport = :18080 | /usr/bin/grep -Fq 172.30.241.1:18080 && exit 0; sleep 0.1; done; exit 1'",
@@ -153,6 +154,11 @@ def verify(root: Path, uid: int, gid: int) -> None:
         directory=False,
         label="proxy executable",
     )
+    proxy_sha256 = hashlib.sha256(proxy.read_bytes()).hexdigest()
+    if proxy_sha256 != EXPECTED_PROXY_SHA256:
+        raise ReadinessError(
+            f"installed egress proxy hash is {proxy_sha256}, expected {EXPECTED_PROXY_SHA256}"
+        )
     _require_path(
         unit_source,
         mode=0o644,
