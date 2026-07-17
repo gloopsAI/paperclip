@@ -59,6 +59,8 @@ rm -f /run/paperclip-campaign/deadman.sock
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-paperclip-subscription-clis.sh" "${LIB_DIR}/prepare-paperclip-subscription-clis.sh"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/paperclip-codex-container" "${LIB_DIR}/paperclip-codex-container"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/wait-paperclip-control-plane.sh" "${LIB_DIR}/wait-paperclip-control-plane.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-runtime-deadman.sh" "${LIB_DIR}/verify-runtime-deadman.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/campaign-deadman.py" "${LIB_DIR}/campaign-deadman.py"
@@ -143,6 +145,7 @@ systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.servi
 
 "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 "${LIB_DIR}/prepare-hermes-handshake-profile.sh"
+"${LIB_DIR}/prepare-paperclip-subscription-clis.sh"
 
 "${LIB_DIR}/configure-tailnet-https.sh"
 "${LIB_DIR}/verify-dark.sh"

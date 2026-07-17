@@ -33,6 +33,13 @@ for bound_unit in \
   "${repo_root}/gloops-distribution/deploy/hermes/paperclip-hermes-execution.service"; do
   grep -Fq 'BindsTo=paperclip-campaign-deadman.service' "${bound_unit}"
 done
+paperclip_unit="${repo_root}/gloops-distribution/deploy/hermes/paperclip-gloops.service"
+grep -Fq 'src=/opt/grok-build/bin/grok,dst=/opt/grok-build/bin/grok,readonly' "${paperclip_unit}"
+grep -Fq 'src=/home/paperclip/.grok,dst=/home/paperclip/.grok' "${paperclip_unit}"
+grep -Fq 'src=/opt/codex/0.142.5,dst=/opt/codex/0.142.5,readonly' "${paperclip_unit}"
+grep -Fq 'src=/home/paperclip/.codex,dst=/home/paperclip/.codex' "${paperclip_unit}"
+grep -Fq 'src=/usr/local/lib/paperclip-gloops/paperclip-codex-container,dst=/usr/local/bin/paperclip-codex,readonly' "${paperclip_unit}"
+gloops-distribution/deploy/hermes/paperclip_subscription_clis_test.sh
 rollback_script="${repo_root}/gloops-distribution/deploy/hermes/rollback.sh"
 backup_script="${repo_root}/gloops-distribution/deploy/hermes/backup-dark.sh"
 grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
@@ -117,6 +124,9 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/verify-rollback-dark.sh \
     gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh \
     gloops-distribution/deploy/hermes/preflight.sh \
+    gloops-distribution/deploy/hermes/prepare-paperclip-subscription-clis.sh \
+    gloops-distribution/deploy/hermes/paperclip-codex-container \
+    gloops-distribution/deploy/hermes/paperclip_subscription_clis_test.sh \
     gloops-distribution/deploy/hermes/rehearse-zero-work.sh \
     gloops-distribution/deploy/hermes/verify-dark.sh \
   | shasum -a 256 | awk '{print $1}'
@@ -163,6 +173,7 @@ cat <<JSON
     "boundedRecoveryDriverIsSingleFlight": "passed",
     "ambiguousGrokApiHistoryBlocks": "passed",
     "nestedAndAlternateGrokApiConfigurationRefused": "passed",
+    "subscriptionCliProjectionIsApiKeyFree": "passed",
     "ownerHandoffOccursAtMostOnce": "passed",
     "terminalOutcomeIsDeterministic": "passed"
   }

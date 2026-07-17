@@ -8,6 +8,13 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - The service cannot start without both an operator-created activation marker and an explicit unmask/enable action.
 - Tailnet-only HTTPS 8443 is configured through Tailscale Serve without Funnel. While dark it returns an unavailable-backend response because no Paperclip container or loopback HTTP listener exists.
 - Grok/xAI API credentials are neither configured nor mounted. Any later Grok execution must use the separately governed Grok CLI path.
+- General Paperclip execution projects the governed Grok Build binary plus its
+  OAuth home and the governed Codex binary plus a ChatGPT-subscription auth
+  home into the otherwise read-only control-plane container. A dedicated Codex
+  wrapper removes every API-key/access-token environment route before launch.
+  Startup fails closed when either binary or subscription state is absent;
+  neither CLI projection is present in the zero-tool provider-handshake
+  container.
 - The bounded-pilot sidecar receives only the Ollama Cloud credential and declares no fallback provider. Codex remains available outside this isolated profile but cannot be selected or automatically reached by the pilot.
 - GitHub publication uses the repository-installed `GLoops Autonomous Delivery` GitHub App. Its private key stays root-only on the host. Hermes and Paperclip independently mint, own, refresh, and revoke their own one-hour installation tokens so either service can restart without invalidating the other. Both tokens are restricted to the private `gloopsAI/gloops-paperclip-plugin` repository; the Paperclip read token is rotated only into the exact company secret declared by the trusted projector's persisted `githubTokenSecretRef` binding. Tokens are revoked and removed during shutdown. No Zach user credential or GitHub organization seat is mounted into either runtime.
 - Installed Paperclip plugin packages are mounted read-only. Provider credentials are never mounted. The Hermes execution workspace alone is mounted read-only so Paperclip can independently observe Git HEAD and dirtiness; all other Hermes state remains inaccessible.
