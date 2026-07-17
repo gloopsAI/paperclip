@@ -92,6 +92,7 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/paperclip-gloops.service \
     gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service \
     gloops-distribution/deploy/hermes/paperclip-hermes-execution.service \
+    gloops-distribution/deploy/hermes/install-dark.sh \
     gloops-distribution/deploy/hermes/preflight.sh \
     gloops-distribution/deploy/hermes/rehearse-zero-work.sh \
     gloops-distribution/deploy/hermes/verify-dark.sh \
