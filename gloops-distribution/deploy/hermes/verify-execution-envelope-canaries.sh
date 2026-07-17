@@ -8,7 +8,7 @@ for expected_runtime_line in \
   'PAPERCLIP_MTE_ENABLED=false' \
   'HEARTBEAT_SCHEDULER_ENABLED=false' \
   'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' \
-  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' \
+  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' \
   'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' \
   'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' \
@@ -123,7 +123,7 @@ cat <<JSON
   "providersInvoked": false,
   "paperclipActivated": false,
   "installedImageVerified": false,
-  "activationInterlock": "release_pin_required",
+  "activationInterlock": "immutable_release_pin_bound",
   "mteActivated": false,
   "scenarios": {
     "millionTokenPromptRefusedBeforeDispatch": "passed",

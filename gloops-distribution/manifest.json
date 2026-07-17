@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.716.0-gloops.10",
+    "version": "2026.717.0-gloops.11",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:a3b605c0eeeb73ea1b4813e755f59571234e8640a215cb01523dd2ef7267909d"
+    "digest": "sha256:b67dbf3b363c062cc882eeeb20f2d1cc335246c64af66590816990e190f21f09"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.716.0-gloops.10.json"
+    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.11.json"
   },
   "patches": [
     {
@@ -208,6 +208,28 @@
       "integratedCommits": ["5208ac5cb18fec960c6536351d47870b1ad54e0a"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Paperclip-to-Hermes adapter has equivalent reproducible exact-runtime reference certification, startup update checks cannot create undeclared network egress, and the bounded runtime deadman is independently proven in the installed environment."
+    },
+    {
+      "id": "controlled-swarm-admission-and-bounded-recovery",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "a62185c3cecd4d5a0c05209fe8aa5089486a7e10",
+      "sourceHead": "3c1fe3e1c59a9c94130291d2732ce2e3e06f1889",
+      "patchDiffSha256": "04d67140bdef681532be7105d1b91ed32417d107eb56b3e9c4e79e42462a5254",
+      "integratedCommits": ["3c1fe3e1c59a9c94130291d2732ce2e3e06f1889"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected runtime provides equivalent company-wide serialized WIP admission, historical-work cutoffs, fair queue pumping, non-reentrant recovery, and bounded retry ownership with exact receipts."
+    },
+    {
+      "id": "non-renewing-campaign-deadman-and-rollback-containment",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "3c1fe3e1c59a9c94130291d2732ce2e3e06f1889",
+      "sourceHead": "0568a4c0d1a196c8bc57c316e50a6aaf6add6a5b",
+      "patchDiffSha256": "46d9828570c2856d7e35ffbeef2c273dba60d62a7cf995c7f7b67d7d48fed5b3",
+      "integratedCommits": ["0568a4c0d1a196c8bc57c316e50a6aaf6add6a5b"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected runtime and host provide an equivalent root-owned, write-once 24-hour campaign epoch; fail-closed claim-time admission; restart-stable non-renewal; expiry shutdown; immutable evidence; and rollback verification that cannot certify a surviving broker or socket."
     }
   ],
   "releasePolicy": {

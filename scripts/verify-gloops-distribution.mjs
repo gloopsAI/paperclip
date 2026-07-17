@@ -655,7 +655,7 @@ if (
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
   "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
   "PAPERCLIP_MTE_ENABLED=false",
   "issue_recovery_actions",
   "agent_wakeup_requests",
@@ -1727,10 +1727,14 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
   }
+}
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
+  fail("dark verification still expects the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",
