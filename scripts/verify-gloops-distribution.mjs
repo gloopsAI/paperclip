@@ -94,6 +94,14 @@ const activateControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/activate-controlled-swarm.sh",
   import.meta.url,
 );
+const commissionControlledSwarmPath = new URL(
+  "../gloops-distribution/deploy/hermes/commission-controlled-swarm.sh",
+  import.meta.url,
+);
+const setControlledSwarmCommissioningPath = new URL(
+  "../gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py",
+  import.meta.url,
+);
 const stopControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/stop-controlled-swarm.sh",
   import.meta.url,
@@ -288,6 +296,8 @@ const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
 const verifyCampaignDeadman = readFileSync(verifyCampaignDeadmanPath, "utf8");
 const rehearseCampaignDeadman = readFileSync(rehearseCampaignDeadmanPath, "utf8");
 const activateControlledSwarm = readFileSync(activateControlledSwarmPath, "utf8");
+const commissionControlledSwarm = readFileSync(commissionControlledSwarmPath, "utf8");
+const setControlledSwarmCommissioning = readFileSync(setControlledSwarmCommissioningPath, "utf8");
 const stopControlledSwarm = readFileSync(stopControlledSwarmPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
   .split("\n")
@@ -730,7 +740,18 @@ for (const [surface, content, required] of [
   ["controlled-swarm activation", activateControlledSwarm, "inert activation unexpectedly armed the campaign epoch"],
   ["controlled-swarm activation", activateControlledSwarm, "inert activation requires the execution-commissioning barrier"],
   ["controlled-swarm activation", activateControlledSwarm, "--require-status unarmed"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "CONTROLLED_SWARM_COMMISSIONING_APPROVED"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "commission_twelve_ollama_roles"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "the twelve admitted identities are not exact and paused"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "an admitted identity has drifted from the exact execution protocol"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "Reflection Coach exclusion has drifted"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true"],
+  ["controlled-swarm commissioning", commissionControlledSwarm, "commissioning unexpectedly armed the campaign epoch"],
+  ["controlled-swarm commissioning rollback", commissionControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
+  ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "commissioning barrier line is missing or duplicated"],
+  ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "os.replace(temporary, path)"],
   ["controlled-swarm stop", stopControlledSwarm, "verify-dark.sh"],
+  ["controlled-swarm stop", stopControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
 ]) {
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);

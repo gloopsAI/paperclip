@@ -132,5 +132,17 @@ arms the campaign epoch. Inert activation also keeps
 `PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false`, so explicit authenticated
 admission and adapter invocation remain mechanically denied while the
 activation receipt is produced. A separate independently reviewed commissioning
-slice must flip that barrier after roster, queue, and provider reconciliation;
-only then can the first eligible admitted assignment arm the epoch.
+slice must flip that barrier after roster, queue, and provider reconciliation.
+
+`commission-controlled-swarm.sh` is that one-use transition. It requires a
+root-owned `0600` `CONTROLLED_SWARM_COMMISSIONING_APPROVED` receipt, binds it to
+campaign `controlled-swarm-20260717`, the exact installed image, and governance
+merge `3a5820722e8c6f55d6a1a730cada1cb4f1a1df77`, and verifies the exact
+twelve-role admitted roster plus the paused burst/excluded identities through
+the authenticated board API. It writes a root-owned commissioning receipt,
+atomically flips only the commissioning barrier, restarts Paperclip, proves the
+container received `true`, and requires the campaign epoch to remain unarmed.
+Any failure restores `false` and restarts the inert control plane. Preflight
+accepts `true` only with that exact commissioning receipt. Manual or deadman
+stop atomically restores `false` before dark verification. Only the first
+eligible admitted assignment may arm the epoch.

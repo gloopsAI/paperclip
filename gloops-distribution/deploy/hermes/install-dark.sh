@@ -67,6 +67,8 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/campaign-deadman-stop.sh" "${LIB_
 install -m 0755 -o root -g root "${SCRIPT_DIR}/campaign-deadman-rehearsal-stop.sh" "${LIB_DIR}/campaign-deadman-rehearsal-stop.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/rehearse-campaign-deadman.py" "${LIB_DIR}/rehearse-campaign-deadman.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/activate-controlled-swarm.sh" "${LIB_DIR}/activate-controlled-swarm.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/commission-controlled-swarm.sh" "${LIB_DIR}/commission-controlled-swarm.sh"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/set-controlled-swarm-commissioning.py" "${LIB_DIR}/set-controlled-swarm-commissioning.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-controlled-swarm.sh" "${LIB_DIR}/stop-controlled-swarm.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/observe-controlled-swarm.py" "${LIB_DIR}/observe-controlled-swarm.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/failure-alert.mjs" "${LIB_DIR}/failure-alert.mjs"

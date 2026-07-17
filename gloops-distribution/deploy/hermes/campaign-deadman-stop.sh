@@ -59,6 +59,9 @@ for unit in \
   fi
 done
 
+rm -f /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED
+/usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py false
+
 tmp="$(mktemp "${STATE_DIR}/last-stop.XXXXXX")"
 trap 'rm -f "${tmp}"' EXIT
 python3 - "${tmp}" "${REASON}" <<'PY'
