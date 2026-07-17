@@ -103,6 +103,22 @@ fi
   echo "the governed Grok CLI is unavailable" >&2
   exit 1
 }
+[[ -r /home/paperclip/.grok/auth.json ]] || {
+  echo "the governed Grok CLI OAuth state is unavailable" >&2
+  exit 1
+}
+[[ -x /opt/codex/0.142.5/bin/codex ]] || {
+  echo "the governed Codex subscription CLI is unavailable" >&2
+  exit 1
+}
+[[ -r /home/paperclip/.codex/auth.json ]] || {
+  echo "the projected Codex ChatGPT subscription state is unavailable" >&2
+  exit 1
+}
+[[ -x /usr/local/lib/paperclip-gloops/paperclip-codex-container ]] || {
+  echo "the API-key-stripping Codex container wrapper is unavailable" >&2
+  exit 1
+}
 
 if [[ -f "${HANDSHAKE_ACTIVE}" ]]; then
   [[ ! -e "${EXECUTION_MARKER}" ]] || {

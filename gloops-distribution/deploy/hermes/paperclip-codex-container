@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+unset OPENAI_API_KEY
+unset CODEX_API_KEY
+unset CODEX_ACCESS_TOKEN
+
+export HOME=/home/paperclip
+export CODEX_HOME=/home/paperclip/.codex
+export PATH=/opt/codex/0.142.5/bin:/usr/local/bin:/usr/bin:/bin
+
+exec /opt/codex/0.142.5/bin/codex "$@"
