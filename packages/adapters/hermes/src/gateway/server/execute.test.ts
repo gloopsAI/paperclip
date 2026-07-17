@@ -303,7 +303,14 @@ describe("execute", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }));
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      subscriptionClass: "ollama-max",
+      routingReason: "controlled-swarm-quality-pilot",
+      fallbackOccurred: false,
+      executionProfile: "execution-only",
+    }));
 
     expect(result).toMatchObject({
       exitCode: 0,
@@ -318,6 +325,11 @@ describe("execute", () => {
         provider_id: "ollama",
         transport: "api",
         path_id: "ollama-cloud",
+        runner: "hermes_gateway",
+        subscription_class: "ollama-max",
+        routing_reason: "controlled-swarm-quality-pilot",
+        fallback_occurred: false,
+        execution_profile: "execution-only",
       },
     });
   });
@@ -898,7 +910,7 @@ describe("testEnvironment", () => {
 });
 
 describe("mapFinalResultForTest", () => {
-  it("persists independently consumable execution-route and invocation metrics", () => {
+  it("persists independently consumable metrics without inventing unconfigured route facts", () => {
     const result = mapFinalResultForTest({
       terminal: {
         runId: "run-1",

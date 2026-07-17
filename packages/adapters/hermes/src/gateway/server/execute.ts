@@ -76,6 +76,12 @@ type ExecutionState = {
 };
 
 type TextRedactor = (value: string) => string;
+type ConfiguredExecutionRouteFacts = {
+  subscriptionClass?: string;
+  routingReason?: string;
+  fallbackOccurred?: boolean;
+  executionProfile?: string;
+};
 
 const CRITICAL_HEADERS = new Set([
   "authorization",
@@ -730,7 +736,26 @@ function extractErrorMessage(value: unknown): string | null {
   return nonEmpty(record?.error) ?? nonEmpty(record?.message) ?? nonEmpty(record?.detail) ?? extractOutput(value);
 }
 
-function executionRoute(model: string | null) {
+function configuredExecutionRouteFacts(config: Record<string, unknown>): ConfiguredExecutionRouteFacts {
+  const configuredString = (value: unknown) =>
+    typeof value === "string" && value.length > 0 ? value : null;
+  const subscriptionClass = configuredString(config.subscriptionClass);
+  const routingReason = configuredString(config.routingReason);
+  const executionProfile = configuredString(config.executionProfile);
+  return {
+    ...(subscriptionClass !== null ? { subscriptionClass } : {}),
+    ...(routingReason !== null ? { routingReason } : {}),
+    ...(typeof config.fallbackOccurred === "boolean"
+      ? { fallbackOccurred: config.fallbackOccurred }
+      : {}),
+    ...(executionProfile !== null ? { executionProfile } : {}),
+  };
+}
+
+function executionRoute(
+  model: string | null,
+  configuredFacts: ConfiguredExecutionRouteFacts = {},
+) {
   const providerId = model?.includes("/") ? model.split("/", 1)[0] : "hermes";
   return {
     provider_id: providerId,
@@ -738,6 +763,18 @@ function executionRoute(model: string | null) {
     transport: "api",
     path_id: model?.includes("/") ? `${providerId}-cloud` : "hermes-gateway",
     runner: "hermes_gateway",
+    ...(configuredFacts.subscriptionClass !== undefined
+      ? { subscription_class: configuredFacts.subscriptionClass }
+      : {}),
+    ...(configuredFacts.routingReason !== undefined
+      ? { routing_reason: configuredFacts.routingReason }
+      : {}),
+    ...(configuredFacts.fallbackOccurred !== undefined
+      ? { fallback_occurred: configuredFacts.fallbackOccurred }
+      : {}),
+    ...(configuredFacts.executionProfile !== undefined
+      ? { execution_profile: configuredFacts.executionProfile }
+      : {}),
   };
 }
 
@@ -746,6 +783,7 @@ function deterministicRefusal(input: {
   errorMessage: string;
   model?: string | null;
   resultJson?: Record<string, unknown>;
+  routeFacts?: ConfiguredExecutionRouteFacts;
 }): AdapterExecutionResult {
   const model = input.model ?? null;
   return {
@@ -761,7 +799,7 @@ function deterministicRefusal(input: {
     usageBasis: "per_run",
     resultJson: {
       provider_invocation: { attempted: false },
-      execution_route: executionRoute(model),
+      execution_route: executionRoute(model, input.routeFacts),
       ...input.resultJson,
     },
   };
@@ -853,6 +891,7 @@ export function mapFinalResultForTest(input: {
   strategy: SessionKeyStrategy;
   toolCallCount?: number;
   redactText?: TextRedactor;
+  routeFacts?: ConfiguredExecutionRouteFacts;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -902,7 +941,7 @@ export function mapFinalResultForTest(input: {
         turns: toolCallCount + 1,
       },
       provider_invocation: { attempted: true },
-      execution_route: executionRoute(model),
+      execution_route: executionRoute(model, input.routeFacts),
     },
   };
 }
@@ -963,6 +1002,7 @@ function errorResult(
   err: unknown,
   redactText: TextRedactor = sanitizeSensitiveText,
   providerInvocationAttempted = true,
+  routeFacts: ConfiguredExecutionRouteFacts = {},
 ): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
@@ -983,7 +1023,7 @@ function errorResult(
           usageBasis: "per_run" as const,
           resultJson: {
             provider_invocation: { attempted: false },
-            execution_route: executionRoute(null),
+            execution_route: executionRoute(null, routeFacts),
           },
         }),
     errorCode: code,
@@ -998,11 +1038,13 @@ function errorResult(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const routeFacts = configuredExecutionRouteFacts(ctx.config);
   const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   if (!apiBaseUrlValue) {
     return deterministicRefusal({
       errorCode: "hermes_gateway_api_base_url_missing",
       errorMessage: "Hermes gateway adapter requires apiBaseUrl.",
+      routeFacts,
     });
   }
 
@@ -1011,12 +1053,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return deterministicRefusal({
       errorCode: "hermes_gateway_api_base_url_invalid",
       errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
+      routeFacts,
     });
   }
   if (isRemotePlainHttp(baseUrl) && !allowsInsecureRemoteHttp(ctx.config)) {
     return deterministicRefusal({
       errorCode: "hermes_gateway_plain_http_remote_denied",
       errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
+      routeFacts,
     });
   }
 
@@ -1025,6 +1069,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return deterministicRefusal({
       errorCode: "hermes_gateway_api_key_missing",
       errorMessage: "Hermes gateway adapter requires apiKey.",
+      routeFacts,
     });
   }
 
@@ -1041,6 +1086,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return deterministicRefusal({
       errorCode: "execution_context.invalid_binding",
       errorMessage: "Bound execution context failed validation before provider dispatch.",
+      routeFacts,
     });
   }
   const configuredStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -1078,7 +1124,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   try {
     body = buildRunBody(ctx, sessionKey);
   } catch (error) {
-    return errorResult(error, redactText, false);
+    return errorResult(error, redactText, false, routeFacts);
   }
   const workspaceVerification = await verifyWorkspaceBeforeDispatch(ctx, binding);
   if (workspaceVerification && "error" in workspaceVerification) {
@@ -1087,6 +1133,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: workspaceVerification.error,
       model: nonEmpty(parseObject(body).model),
       resultJson: { workspace: workspaceVerification },
+      routeFacts,
     });
   }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
@@ -1126,7 +1173,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
   } catch (err) {
-    return errorResult(err, redactText);
+    return errorResult(err, redactText, true, routeFacts);
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
@@ -1191,7 +1238,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
         provider_invocation: { attempted: true },
-        execution_route: executionRoute(extractModel(finalStatus)),
+        execution_route: executionRoute(extractModel(finalStatus), routeFacts),
         ...(workspaceVerification ? { workspace: workspaceVerification } : {}),
       },
       sessionParams: {
@@ -1214,6 +1261,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     toolCallCount: state.toolCallCount,
     redactText,
+    routeFacts,
   });
   result.resultJson = {
     ...parseObject(result.resultJson),
