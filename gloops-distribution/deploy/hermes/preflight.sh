@@ -26,8 +26,13 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
   echo "Maximum Token Efficiency must remain explicitly disabled" >&2
   exit 1
 }
+[[ "${PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED:-true}" == 'false' ]] || {
+  echo "the controlled-swarm runtime has not been bound to an accepted immutable image" >&2
+  exit 1
+}
 readonly -A EXPECTED_EXECUTION_ENVELOPE=(
-  [HEARTBEAT_SCHEDULER_ENABLED]='true'
+  [HEARTBEAT_SCHEDULER_ENABLED]='false'
+  [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='true'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
   [PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS]='4'
   [PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE]='2026-07-17T04:55:56.000Z'

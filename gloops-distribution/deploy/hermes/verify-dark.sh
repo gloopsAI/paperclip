@@ -336,7 +336,9 @@ else
   failed=1
 fi
 
-if grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
+if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' /etc/paperclip-gloops/runtime.env \
@@ -349,7 +351,7 @@ if grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=true' /etc/paperclip-gloops/runtime.en
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=8000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=8' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=32' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS exact controlled-swarm task and provider-invocation execution envelope is installed"
+  echo "PASS source-only controlled-swarm envelope is installed dark with the release-pin interlock engaged"
 else
   echo "FAIL exact controlled-swarm execution envelope is missing or has drifted" >&2
   failed=1

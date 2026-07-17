@@ -7,6 +7,7 @@ const ENV_NAMES = [
   "PAPERCLIP_BIND",
   "PAPERCLIP_BIND_HOST",
   "HEARTBEAT_SCHEDULER_ENABLED",
+  "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED",
   "PAPERCLIP_DB_BACKUP_ENABLED",
   "PAPERCLIP_DEPLOYMENT_EXPOSURE",
   "PAPERCLIP_AUTH_BASE_URL_MODE",
@@ -34,6 +35,7 @@ describe("maintenance config safety", () => {
     process.env.PAPERCLIP_BIND = "lan";
     process.env.PAPERCLIP_BIND_HOST = "10.0.0.5";
     process.env.HEARTBEAT_SCHEDULER_ENABLED = "true";
+    process.env.PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED = "true";
     process.env.PAPERCLIP_DB_BACKUP_ENABLED = "true";
     process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "public";
     process.env.PAPERCLIP_AUTH_BASE_URL_MODE = "explicit";
@@ -55,6 +57,7 @@ describe("maintenance config safety", () => {
       authPublicBaseUrl: undefined,
       allowedHostnames: [],
       heartbeatSchedulerEnabled: false,
+      executionRecoveryDriverEnabled: false,
       databaseBackupEnabled: false,
       companyDeletionEnabled: false,
       telemetryEnabled: false,
@@ -67,6 +70,7 @@ describe("maintenance config safety", () => {
     process.env.HOST = "0.0.0.0";
     process.env.PAPERCLIP_BIND = "lan";
     process.env.HEARTBEAT_SCHEDULER_ENABLED = "true";
+    process.env.PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED = "true";
     process.env.PAPERCLIP_DB_BACKUP_ENABLED = "true";
 
     const { loadConfig } = await import("../config.js");
@@ -79,6 +83,7 @@ describe("maintenance config safety", () => {
       bind: "lan",
       databaseMode: "embedded-postgres",
       heartbeatSchedulerEnabled: false,
+      executionRecoveryDriverEnabled: false,
       databaseBackupEnabled: false,
       companyDeletionEnabled: false,
       telemetryEnabled: false,

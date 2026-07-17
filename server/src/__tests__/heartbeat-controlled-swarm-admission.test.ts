@@ -153,7 +153,11 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     const heartbeat = heartbeatService(db, {
       runtimeEnv: { PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS: "1" },
     });
-    await heartbeat.resumeQueuedRuns();
+    await Promise.all([
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.resumeQueuedRuns(),
+    ]);
     await waitForTerminalRuns(db, runIds);
     for (const runId of runIds) {
       await heartbeat.waitForRunExecutionDrain(runId);
@@ -213,7 +217,11 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     const heartbeat = heartbeatService(db, {
       runtimeEnv: { PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS: "2" },
     });
-    await heartbeat.resumeQueuedRuns();
+    await Promise.all([
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.resumeQueuedRuns(),
+    ]);
     await waitForTerminalRuns(db, runIds);
     for (const runId of runIds) {
       await heartbeat.waitForRunExecutionDrain(runId);
@@ -288,7 +296,7 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
       triggerDetail: "system",
       wakeupRequestId: queuedWakeId,
       responsibleUserId: "operator",
-      contextSnapshot: { issueId },
+      contextSnapshot: { taskId: issueId },
       createdAt: new Date("2026-07-17T06:01:00.000Z"),
       updatedAt: new Date("2026-07-17T06:01:00.000Z"),
     });

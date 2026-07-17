@@ -87,6 +87,8 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  executionRecoveryDriverEnabled: boolean;
+  executionRecoveryDriverIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -351,6 +353,13 @@ export function loadConfig(): Config {
       ? false
       : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    executionRecoveryDriverEnabled: operatorOnlyMode
+      ? false
+      : process.env.PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED === "true",
+    executionRecoveryDriverIntervalMs: Math.max(
+      10000,
+      Number(process.env.PAPERCLIP_EXECUTION_RECOVERY_DRIVER_INTERVAL_MS) || 30000,
+    ),
     companyDeletionEnabled,
     telemetryEnabled: operatorOnlyMode ? false : fileConfig?.telemetry?.enabled ?? true,
   };

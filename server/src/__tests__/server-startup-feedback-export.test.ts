@@ -181,6 +181,8 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     feedbackExportBackendToken: "telemetry-token",
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
+    executionRecoveryDriverEnabled: false,
+    executionRecoveryDriverIntervalMs: 30000,
     companyDeletionEnabled: false,
     ...overrides,
   };
@@ -383,6 +385,52 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("drives only bounded execution recovery when the global heartbeat scheduler is disabled", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: false,
+      executionRecoveryDriverEnabled: true,
+      executionRecoveryDriverIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileStrandedAssignedIssues).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileIssueGraphLiveness).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileTaskWatchdogs).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.scanSilentActiveRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileProductivityReviews).not.toHaveBeenCalled();
+
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
     }

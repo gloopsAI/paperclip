@@ -225,6 +225,7 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { withCompanyQueuePumpLock } from "./company-queue-pump-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -10448,7 +10449,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const cutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte;
     if (!cutoff) return null;
 
-    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const issueId = issueIdFromRunContext(run.contextSnapshot);
     if (!issueId) {
       return {
         errorCode: "execution_issue_required",
@@ -11632,32 +11633,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunsForCompany(companyId: string) {
-    const queuedRows = await db
-      .select({
-        agentId: heartbeatRuns.agentId,
-        createdAt: heartbeatRuns.createdAt,
-      })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, companyId),
-        eq(heartbeatRuns.status, "queued"),
-      ))
-      .orderBy(asc(heartbeatRuns.createdAt));
-    const seen = new Set<string>();
-    const agentIds: string[] = [];
-    for (const row of queuedRows) {
-      if (seen.has(row.agentId)) continue;
-      seen.add(row.agentId);
-      agentIds.push(row.agentId);
-    }
-    let claimedInRound = true;
-    while (claimedInRound) {
-      claimedInRound = false;
-      for (const agentId of agentIds) {
-        const claimed = await startNextQueuedRunForAgent(agentId, 1);
-        if (claimed.length > 0) claimedInRound = true;
+    return withCompanyQueuePumpLock(companyId, async () => {
+      const queuedRows = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      const seen = new Set<string>();
+      const agentIds: string[] = [];
+      for (const row of queuedRows) {
+        if (seen.has(row.agentId)) continue;
+        seen.add(row.agentId);
+        agentIds.push(row.agentId);
       }
-    }
+      let claimedInRound = true;
+      while (claimedInRound) {
+        claimedInRound = false;
+        for (const agentId of agentIds) {
+          const claimed = await startNextQueuedRunForAgent(agentId, 1);
+          if (claimed.length > 0) claimedInRound = true;
+        }
+      }
+    });
   }
 
   async function executeRun(runId: string) {

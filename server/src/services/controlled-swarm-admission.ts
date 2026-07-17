@@ -4,7 +4,6 @@ export interface ControlledSwarmAdmissionPolicy {
   companyMaxActiveRuns: number | null;
   issueCreatedAtGte: Date | null;
 }
-
 function parseOptionalPositiveInteger(
   name: string,
   raw: string | undefined,
@@ -45,4 +44,3 @@ export function parseControlledSwarmAdmissionPolicy(
     ),
   };
 }
-
