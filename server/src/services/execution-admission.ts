@@ -53,6 +53,7 @@ export type ExecutionAdmissionEnvelope = {
 };
 
 export type PriorExecutionRun = {
+  retryOfRunId?: string | null;
   inputTokens?: number | null;
   cachedInputTokens?: number | null;
   outputTokens?: number | null;
@@ -226,9 +227,10 @@ function nonNegative(value: number | null | undefined) {
 
 export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): ExecutionAdmissionUsage {
   return priorRuns.reduce<ExecutionAdmissionUsage>(
-    (total, run, index) => ({
+    (total, run) => ({
       runCount: total.runCount + 1,
-      retryCount: total.retryCount + (index === 0 ? 0 : 1),
+      // Independent workflow stages consume run budget but are not retries.
+      retryCount: total.retryCount + (run.retryOfRunId ? 1 : 0),
       inputTokens: total.inputTokens + nonNegative(run.inputTokens),
       cachedInputTokens: total.cachedInputTokens + nonNegative(run.cachedInputTokens),
       outputTokens: total.outputTokens + nonNegative(run.outputTokens),
@@ -241,13 +243,14 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
 export function evaluateExecutionAdmission(
   policy: Extract<ExecutionAdmissionPolicy, { enabled: true }>,
   priorRuns: PriorExecutionRun[],
+  currentRun: { isRetry?: boolean } = {},
 ): { allowed: boolean; reason: ExecutionAdmissionReason | null; observed: ExecutionAdmissionUsage } {
   const observed = summarizePriorExecution(priorRuns);
   const remainingInputTokens = Math.max(0, policy.maxInputTokensPerTask - observed.inputTokens);
   const remainingOutputTokens = Math.max(0, policy.maxOutputTokensPerTask - observed.outputTokens);
   const reason = observed.runCount >= policy.maxRunsPerTask
     ? "run_limit_exhausted"
-    : observed.runCount > 0 && observed.retryCount >= policy.maxRetriesPerTask
+    : currentRun.isRetry === true && observed.retryCount >= policy.maxRetriesPerTask
       ? "retry_limit_exhausted"
       : observed.inputTokens >= policy.maxInputTokensPerTask
         ? "input_token_limit_exhausted"

@@ -10187,7 +10187,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     | { kind: "lost_race" };
 
   function priorExecutionRun(
-    row: { usageJson: unknown; contextSnapshot: unknown; startedAt: Date | null; finishedAt: Date | null },
+    row: {
+      retryOfRunId: string | null;
+      usageJson: unknown;
+      contextSnapshot: unknown;
+      startedAt: Date | null;
+      finishedAt: Date | null;
+    },
     now: Date,
   ): PriorExecutionRun {
     const persistedUsage = parseObject(row.usageJson);
@@ -10213,6 +10219,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ))),
     };
     return {
+      retryOfRunId: row.retryOfRunId,
       inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
       outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
@@ -10391,6 +10398,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : exactBudgetCondition;
       const priorRows = await tx
         .select({
+          retryOfRunId: heartbeatRuns.retryOfRunId,
           usageJson: heartbeatRuns.usageJson,
           contextSnapshot: heartbeatRuns.contextSnapshot,
           startedAt: heartbeatRuns.startedAt,
@@ -10406,6 +10414,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const decision = evaluateExecutionAdmission(
         executionAdmissionPolicy,
         priorRows.map((row) => priorExecutionRun(row, claimedAt)),
+        { isRetry: Boolean(run.retryOfRunId) },
       );
       const envelope = buildExecutionAdmissionEnvelope({
         identity,
@@ -11793,6 +11802,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (
+      normalizeIssueExecutionPolicy(issueContext?.executionPolicy ?? null)?.commentRequired === false
+    ) {
+      context.skipIssueComment = true;
+    }
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;

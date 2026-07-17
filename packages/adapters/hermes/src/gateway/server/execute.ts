@@ -70,8 +70,12 @@ type ExecutionState = {
   terminal: TerminalState | null;
   resolveTerminal: (state: TerminalState) => void;
   terminalPromise: Promise<TerminalState>;
+  turnCount: number;
+  turnOpen: boolean;
   toolCallCount: number;
   toolCallIds: Set<string>;
+  activeToolCallIds: Set<string>;
+  anonymousActiveToolCalls: number;
   outputBytes: number;
 };
 
@@ -491,8 +495,12 @@ function createExecutionState(runId: string): ExecutionState {
     terminal: null,
     resolveTerminal,
     terminalPromise,
+    turnCount: 0,
+    turnOpen: false,
     toolCallCount: 0,
     toolCallIds: new Set<string>(),
+    activeToolCallIds: new Set<string>(),
+    anonymousActiveToolCalls: 0,
     outputBytes: 0,
   };
 }
@@ -539,6 +547,12 @@ async function handleEvent(
 
   const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
   if (eventName === "message.delta" && delta) {
+    // A turn is one assistant response phase, not one tool call. Tool calls
+    // emitted together remain in the same open turn until the batch settles.
+    if (!state.turnOpen) {
+      state.turnCount += 1;
+      state.turnOpen = true;
+    }
     const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
     state.outputBytes += Buffer.byteLength(sanitizedDelta, "utf8");
@@ -549,8 +563,34 @@ async function handleEvent(
   const toolStarted = eventName === "tool.started" ||
     (eventName === "hermes.tool.progress" && record?.status === "running");
   if (toolStarted && (!toolCallId || !state.toolCallIds.has(toolCallId))) {
+    if (!state.turnOpen) {
+      state.turnCount += 1;
+      state.turnOpen = true;
+    }
     if (toolCallId) state.toolCallIds.add(toolCallId);
+    if (toolCallId) state.activeToolCallIds.add(toolCallId);
+    else state.anonymousActiveToolCalls += 1;
     state.toolCallCount += 1;
+  }
+
+  const toolFinished = eventName === "tool.completed" ||
+    eventName === "tool.failed" ||
+    (
+      eventName === "hermes.tool.progress" &&
+      (record?.status === "completed" || record?.status === "failed")
+    );
+  if (toolFinished) {
+    if (toolCallId) state.activeToolCallIds.delete(toolCallId);
+    else if (state.anonymousActiveToolCalls > 0) state.anonymousActiveToolCalls -= 1;
+    if (state.activeToolCallIds.size === 0 && state.anonymousActiveToolCalls === 0) {
+      state.turnOpen = false;
+    }
+  }
+
+  const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
+  if (status && TERMINAL_STATUSES.has(status) && extractOutput(parsed) && !state.turnOpen) {
+    state.turnCount += 1;
+    state.turnOpen = true;
   }
 
   const budget = ctx.executionBudget;
@@ -558,7 +598,7 @@ async function handleEvent(
   const exceeded = budget
     ? state.toolCallCount > budget.maxToolCalls
       ? "tool_calls"
-      : state.toolCallCount + 1 > budget.maxTurns
+      : state.turnCount > budget.maxTurns
         ? "turns"
         : estimatedOutputTokens > budget.maxOutputTokens
           ? "output_tokens"
@@ -573,6 +613,7 @@ async function handleEvent(
         error: `Hermes run stopped after exceeding reserved ${exceeded}`,
         error_code: "execution_admission.provider_budget_exceeded",
         exceeded,
+        turn_count: state.turnCount,
         tool_call_count: state.toolCallCount,
         estimated_output_tokens: estimatedOutputTokens,
       },
@@ -580,7 +621,6 @@ async function handleEvent(
     return;
   }
 
-  const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
   if (status && TERMINAL_STATUSES.has(status)) {
     markTerminal(state, {
       runId: state.runId,
@@ -889,6 +929,7 @@ export function mapFinalResultForTest(input: {
   outputChunks: string[];
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
+  turnCount?: number;
   toolCallCount?: number;
   redactText?: TextRedactor;
   routeFacts?: ConfiguredExecutionRouteFacts;
@@ -905,6 +946,7 @@ export function mapFinalResultForTest(input: {
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
   const model = extractModel(payload);
+  const turnCount = Math.max(0, Math.floor(input.turnCount ?? 0));
   const toolCallCount = Math.max(0, Math.floor(input.toolCallCount ?? 0));
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
@@ -938,7 +980,7 @@ export function mapFinalResultForTest(input: {
       cost_usd: costUsd,
       execution_metrics: {
         tool_calls: toolCallCount,
-        turns: toolCallCount + 1,
+        turns: turnCount,
       },
       provider_invocation: { attempted: true },
       execution_route: executionRoute(model, input.routeFacts),
@@ -1259,6 +1301,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
+    turnCount: state.turnCount,
     toolCallCount: state.toolCallCount,
     redactText,
     routeFacts,

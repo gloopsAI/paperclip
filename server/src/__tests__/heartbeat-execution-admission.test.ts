@@ -416,6 +416,98 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     }
   });
 
+  it("admits a second independent stage while zero retries remain enforced", async () => {
+    const previousMaxRuns = process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK;
+    const previousMaxRetries = process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK;
+    process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = "2";
+    process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = "0";
+    try {
+      const { companyId, agentId } = await seedDirectAgent();
+      const issueId = randomUUID();
+      const parentRunId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Independent review stage",
+        status: "in_review",
+        priority: "medium",
+        responsibleUserId: "operator",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `STAGE-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      });
+      const parsedPolicy = parseExecutionAdmissionPolicy(process.env);
+      if (!parsedPolicy.enabled) throw new Error("expected enabled execution policy");
+      const parentEnvelope = buildExecutionAdmissionEnvelope({
+        identity: { budgetId: `issue:${issueId}:default`, epoch: "default" },
+        policy: parsedPolicy,
+        decision: evaluateExecutionAdmission(parsedPolicy, []),
+        evaluatedAt: new Date("2026-07-13T00:00:00Z"),
+      });
+      await db.insert(heartbeatRuns).values({
+        id: parentRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date("2026-07-13T00:00:00Z"),
+        finishedAt: new Date("2026-07-13T00:00:01Z"),
+        usageJson: { inputTokens: 1_000, outputTokens: 100 },
+        contextSnapshot: {
+          issueId,
+          skipIssueComment: true,
+          gloopsExecutionAdmission: parentEnvelope,
+        },
+      });
+
+      const stageRunId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: "workflow",
+        runId: stageRunId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: stageRunId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        retryOfRunId: null,
+        wakeupRequestId,
+        contextSnapshot: {
+          issueId,
+          skipIssueComment: true,
+          wakeReason: "execution_review_requested",
+        },
+      });
+
+      await heartbeatService(db).resumeQueuedRuns();
+      await waitForTerminalRuns(db, [stageRunId]);
+      const persisted = await heartbeatService(db).getRun(stageRunId);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      expect(persisted?.status).toBe("succeeded");
+      expect(persisted?.contextSnapshot).toMatchObject({
+        gloopsExecutionAdmission: {
+          attempt: 2,
+          decision: "allowed",
+          reason: null,
+          observed: { runCount: 1, retryCount: 0 },
+        },
+      });
+    } finally {
+      process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK = previousMaxRuns;
+      process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK = previousMaxRetries;
+    }
+  });
+
   it("denies a direct retry whose legacy parent has no admission envelope", async () => {
     const previousMaxRuns = process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK;
     const previousMaxRetries = process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK;

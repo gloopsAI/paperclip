@@ -390,11 +390,19 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (
+    stages.length === 0 &&
+    !monitor &&
+    !reviewPreset &&
+    !authorizationPolicy &&
+    parsed.data.commentRequired
+  ) {
+    return null;
+  }
 
   return {
     mode: parsed.data.mode ?? "normal",
-    commentRequired: true,
+    commentRequired: parsed.data.commentRequired,
     stages,
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),

@@ -47,7 +47,7 @@ describe("execution admission", () => {
     });
   });
 
-  it("allows the initial run when retries are disabled, then denies a continuation", () => {
+  it("allows an independent second stage when retries are disabled, but denies a retry", () => {
     const parsed = parseExecutionAdmissionPolicy({
       ...enabledEnv,
       PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "2",
@@ -60,10 +60,25 @@ describe("execution admission", () => {
       reason: null,
       observed: { runCount: 0, retryCount: 0 },
     });
-    expect(evaluateExecutionAdmission(parsed, [{}])).toMatchObject({
+    expect(evaluateExecutionAdmission(parsed, [{ retryOfRunId: null }])).toMatchObject({
+      allowed: true,
+      reason: null,
+      observed: { runCount: 1, retryCount: 0 },
+    });
+    expect(evaluateExecutionAdmission(parsed, [{ retryOfRunId: null }], { isRetry: true })).toMatchObject({
       allowed: false,
       reason: "retry_limit_exhausted",
       observed: { runCount: 1, retryCount: 0 },
+    });
+  });
+
+  it("counts only explicit retry runs against the retry budget", () => {
+    expect(evaluateExecutionAdmission(policy(), [
+      { retryOfRunId: null },
+      { retryOfRunId: "run-1" },
+    ])).toMatchObject({
+      allowed: true,
+      observed: { runCount: 2, retryCount: 1 },
     });
   });
 

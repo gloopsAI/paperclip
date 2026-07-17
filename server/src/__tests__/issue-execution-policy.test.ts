@@ -76,14 +76,26 @@ describe("normalizeIssueExecutionPolicy", () => {
     expect(result!.stages[0].participants[0].id).toBeDefined();
   });
 
-  it("always sets commentRequired to true", () => {
+  it("preserves an explicit false comment requirement", () => {
     const result = normalizeIssueExecutionPolicy({
       commentRequired: false,
       stages: [
         { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
       ],
     });
-    expect(result!.commentRequired).toBe(true);
+    expect(result!.commentRequired).toBe(false);
+  });
+
+  it("retains a comment-only policy that disables the default requirement", () => {
+    const result = normalizeIssueExecutionPolicy({
+      commentRequired: false,
+      stages: [],
+    });
+    expect(result).toMatchObject({
+      mode: "normal",
+      commentRequired: false,
+      stages: [],
+    });
   });
 
   it("defaults mode to normal", () => {

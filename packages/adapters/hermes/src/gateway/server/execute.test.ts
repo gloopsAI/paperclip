@@ -223,6 +223,99 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/budget-1/stop"))).toBe(true);
   });
 
+  it("counts parallel tool calls as one model turn", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "parallel-turns" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+          "event: message.delta",
+          "data: {\"delta\":\"done\"}",
+          "",
+          "event: run.completed",
+          "data: {\"status\":\"completed\",\"output\":\"done\"}",
+          "",
+        ].join("\n")), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-parallel",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 500,
+      maxTurns: 2,
+      maxToolCalls: 2,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 2, tool_calls: 2 });
+  });
+
+  it("stops the remote run when distinct model turns exceed the reservation", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "too-many-turns" }), { status: 200 });
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+          "event: message.delta",
+          "data: {\"delta\":\"third turn\"}",
+          "",
+        ].join("\n")), { status: 200 });
+      }
+      if (url.endsWith("/stop")) return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-turns",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 500,
+      maxTurns: 2,
+      maxToolCalls: 3,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.errorCode).toBe("execution_admission.provider_budget_exceeded");
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 3, tool_calls: 2 });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/too-many-turns/stop"))).toBe(true);
+  });
+
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -924,10 +1017,11 @@ describe("mapFinalResultForTest", () => {
       outputChunks: ["done"],
       sessionKey: "session-key",
       strategy: "issue",
+      turnCount: 3,
       toolCallCount: 7,
     });
 
-    expect(result.resultJson?.execution_metrics).toEqual({ turns: 8, tool_calls: 7 });
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 3, tool_calls: 7 });
     expect(result.resultJson?.execution_route).toEqual({
       provider_id: "ollama",
       model_id: "ollama/qwen3-coder",
