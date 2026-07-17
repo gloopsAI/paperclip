@@ -10187,7 +10187,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     | { kind: "lost_race" };
 
   function priorExecutionRun(
-    row: { usageJson: unknown; contextSnapshot: unknown; startedAt: Date | null; finishedAt: Date | null },
+    row: {
+      retryOfRunId: string | null;
+      usageJson: unknown;
+      contextSnapshot: unknown;
+      startedAt: Date | null;
+      finishedAt: Date | null;
+    },
     now: Date,
   ): PriorExecutionRun {
     const persistedUsage = parseObject(row.usageJson);
@@ -10213,6 +10219,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ))),
     };
     return {
+      retryOfRunId: row.retryOfRunId,
       inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
       outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
@@ -10222,6 +10229,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
         : 0,
     };
+  }
+
+  async function isAuthorizedIndependentExecutionStage(input: {
+    tx: Pick<Db, "select">;
+    run: typeof heartbeatRuns.$inferSelect;
+    context: Record<string, unknown>;
+    issueId: string | null;
+  }) {
+    if (!input.issueId || input.run.retryOfRunId) return false;
+    const wakeReason = readNonEmptyString(input.context.wakeReason);
+    const expectedStageType =
+      wakeReason === "execution_review_requested"
+        ? "review"
+        : wakeReason === "execution_approval_requested"
+          ? "approval"
+          : null;
+    if (!expectedStageType || readNonEmptyString(input.context.source) !== "issue.execution_stage") {
+      return false;
+    }
+
+    const stageContext = parseObject(input.context.executionStage);
+    const expectedWakeRole = expectedStageType === "review" ? "reviewer" : "approver";
+    if (
+      readNonEmptyString(stageContext.wakeRole) !== expectedWakeRole ||
+      readNonEmptyString(stageContext.stageType) !== expectedStageType
+    ) {
+      return false;
+    }
+
+    const issue = await input.tx
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        executionPolicy: issues.executionPolicy,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, input.issueId)))
+      .then((rows) => rows[0] ?? null);
+    const state = parseIssueExecutionState(issue?.executionState ?? null);
+    const policy = normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null);
+    const stageId = readNonEmptyString(stageContext.stageId);
+    const policyStage = policy?.stages.find((stage) => stage.id === stageId) ?? null;
+    const participant = state?.currentParticipant;
+    return Boolean(
+      issue &&
+      issue.assigneeAgentId === input.run.agentId &&
+      state?.status === "pending" &&
+      state.currentStageId === stageId &&
+      state.currentStageType === expectedStageType &&
+      participant?.type === "agent" &&
+      participant.agentId === input.run.agentId &&
+      policyStage?.type === expectedStageType &&
+      policyStage.participants.some(
+        (candidate) =>
+          candidate.type === "agent" &&
+          candidate.agentId === input.run.agentId,
+      ),
+    );
   }
 
   async function claimQueuedRunWithExecutionAdmission(input: {
@@ -10391,6 +10456,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : exactBudgetCondition;
       const priorRows = await tx
         .select({
+          retryOfRunId: heartbeatRuns.retryOfRunId,
           usageJson: heartbeatRuns.usageJson,
           contextSnapshot: heartbeatRuns.contextSnapshot,
           startedAt: heartbeatRuns.startedAt,
@@ -10403,9 +10469,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priorBudgetCondition,
         ))
         .orderBy(asc(heartbeatRuns.createdAt));
+      const authorizedIndependentStage = await isAuthorizedIndependentExecutionStage({
+        tx,
+        run,
+        context,
+        issueId,
+      });
       const decision = evaluateExecutionAdmission(
         executionAdmissionPolicy,
         priorRows.map((row) => priorExecutionRun(row, claimedAt)),
+        {
+          isRetry: Boolean(run.retryOfRunId),
+          isAuthorizedIndependentStage: authorizedIndependentStage,
+        },
       );
       const envelope = buildExecutionAdmissionEnvelope({
         identity,
@@ -11793,6 +11869,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    if (
+      normalizeIssueExecutionPolicy(issueContext?.executionPolicy ?? null)?.commentRequired === false
+    ) {
+      context.skipIssueComment = true;
+    }
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;

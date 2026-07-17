@@ -39,15 +39,31 @@ describe("execution admission", () => {
 
   it("allows an initial run and bounded continuations, then denies further execution", () => {
     expect(evaluateExecutionAdmission(policy(), [])).toMatchObject({ allowed: true });
-    expect(evaluateExecutionAdmission(policy(), [{}])).toMatchObject({ allowed: true });
-    expect(evaluateExecutionAdmission(policy(), [{}, {}])).toMatchObject({ allowed: true });
-    expect(evaluateExecutionAdmission(policy(), [{}, {}, {}])).toMatchObject({
+    expect(evaluateExecutionAdmission(
+      policy(),
+      [{ retryOfRunId: null }],
+      { isRetry: true },
+    )).toMatchObject({ allowed: true });
+    expect(evaluateExecutionAdmission(
+      policy(),
+      [{ retryOfRunId: null }, { retryOfRunId: "run-1" }],
+      { isRetry: true },
+    )).toMatchObject({ allowed: true });
+    expect(evaluateExecutionAdmission(
+      policy(),
+      [
+        { retryOfRunId: null },
+        { retryOfRunId: "run-1" },
+        { retryOfRunId: "run-2" },
+      ],
+      { isRetry: true },
+    )).toMatchObject({
       allowed: false,
       reason: "run_limit_exhausted",
     });
   });
 
-  it("allows the initial run when retries are disabled, then denies a continuation", () => {
+  it("allows an independent second stage when retries are disabled, but denies a retry", () => {
     const parsed = parseExecutionAdmissionPolicy({
       ...enabledEnv,
       PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "2",
@@ -60,10 +76,34 @@ describe("execution admission", () => {
       reason: null,
       observed: { runCount: 0, retryCount: 0 },
     });
-    expect(evaluateExecutionAdmission(parsed, [{}])).toMatchObject({
+    expect(evaluateExecutionAdmission(
+      parsed,
+      [{ retryOfRunId: null }],
+      { isAuthorizedIndependentStage: true },
+    )).toMatchObject({
+      allowed: true,
+      reason: null,
+      observed: { runCount: 1, retryCount: 0 },
+    });
+    expect(evaluateExecutionAdmission(parsed, [{ retryOfRunId: null }], { isRetry: true })).toMatchObject({
       allowed: false,
       reason: "retry_limit_exhausted",
       observed: { runCount: 1, retryCount: 0 },
+    });
+    expect(evaluateExecutionAdmission(parsed, [{ retryOfRunId: null }])).toMatchObject({
+      allowed: false,
+      reason: "retry_limit_exhausted",
+      observed: { runCount: 1, retryCount: 0 },
+    });
+  });
+
+  it("counts only explicit retry runs against the retry budget", () => {
+    expect(evaluateExecutionAdmission(policy(), [
+      { retryOfRunId: null },
+      { retryOfRunId: "run-1" },
+    ], { isAuthorizedIndependentStage: true })).toMatchObject({
+      allowed: true,
+      observed: { runCount: 2, retryCount: 1 },
     });
   });
 
@@ -93,13 +133,13 @@ describe("execution admission", () => {
   });
 
   it("denies when token or wall ceilings are already spent", () => {
-    expect(evaluateExecutionAdmission(policy(), [{ inputTokens: 1000 }]).reason).toBe(
+    expect(evaluateExecutionAdmission(policy(), [{ inputTokens: 1000 }], { isRetry: true }).reason).toBe(
       "input_token_limit_exhausted",
     );
-    expect(evaluateExecutionAdmission(policy(), [{ outputTokens: 200 }]).reason).toBe(
+    expect(evaluateExecutionAdmission(policy(), [{ outputTokens: 200 }], { isRetry: true }).reason).toBe(
       "output_token_limit_exhausted",
     );
-    expect(evaluateExecutionAdmission(policy(), [{ wallMs: 60000 }]).reason).toBe(
+    expect(evaluateExecutionAdmission(policy(), [{ wallMs: 60000 }], { isRetry: true }).reason).toBe(
       "wall_time_limit_exhausted",
     );
   });
