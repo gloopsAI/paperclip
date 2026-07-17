@@ -1,0 +1,38 @@
+[Unit]
+Description=Root-owned non-renewing Paperclip campaign deadman
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+RequiresMountsFor=/var/lib/paperclip-gloops
+Before=paperclip-hermes-execution.service paperclip-gloops.service
+OnFailure=paperclip-gloops-alert@%n.service
+StartLimitIntervalSec=900
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=root
+Group=paperclip
+RuntimeDirectory=paperclip-campaign
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/lib/paperclip-gloops/campaign-deadman.py --state-dir /var/lib/paperclip-gloops/campaign-deadman --socket /run/paperclip-campaign/deadman.sock --socket-gid 985 --campaign-id controlled-swarm-20260717 --duration-seconds 86400 --stop-command /usr/local/lib/paperclip-gloops/campaign-deadman-stop.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=15
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/etc/paperclip-gloops /run/paperclip-campaign /var/lib/paperclip-gloops /run/systemd /run/docker.sock
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_LINUX_IMMUTABLE
+AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_LINUX_IMMUTABLE
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

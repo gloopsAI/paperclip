@@ -17,9 +17,35 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
   check_inactive "${unit}"
 done
+
+if [[ "$(systemctl is-enabled paperclip-campaign-deadman.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-campaign-deadman.service is masked"
+else
+  echo "FAIL paperclip-campaign-deadman.service is not masked" >&2
+  failed=1
+fi
+if [[ -S /run/paperclip-campaign/deadman.sock ]]; then
+  echo "FAIL campaign deadman socket remains while dark" >&2
+  failed=1
+else
+  echo "PASS campaign deadman socket is absent while dark"
+fi
+epoch_invalid=0
+while IFS= read -r epoch_file; do
+  [[ "$(stat -c '%a:%U:%G' "${epoch_file}" 2>/dev/null || true)" == '600:root:root' ]] \
+    || epoch_invalid=1
+  lsattr -d "${epoch_file}" 2>/dev/null | awk '{print $1}' | grep -Fq 'i' \
+    || epoch_invalid=1
+done < <(find /var/lib/paperclip-gloops/campaign-deadman -type f -name epoch.json -print 2>/dev/null)
+if ((epoch_invalid == 0)); then
+  echo "PASS any durable campaign epoch is root-owned, mode 0600, and immutable"
+else
+  echo "FAIL a durable campaign epoch is mutable or improperly owned" >&2
+  failed=1
+fi
 
 if [[ "$(systemctl is-enabled paperclip-gloops.service 2>/dev/null || true)" == "masked" ]]; then
   echo "PASS paperclip-gloops.service is masked"
@@ -337,6 +363,10 @@ else
 fi
 
 if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
@@ -368,6 +398,7 @@ for required in \
   '--pids-limit 512' \
   '--log-opt max-size=10m' \
   '--log-opt max-file=3' \
+  '--mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly' \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace,readonly'; do
   if ! grep -Fq -- "${required}" "${unit_file}"; then
     echo "FAIL missing resource/security bound: ${required}" >&2
