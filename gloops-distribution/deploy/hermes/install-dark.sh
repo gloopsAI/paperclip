@@ -58,6 +58,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/install-hermes-handshake-egress.s
 install -m 0755 -o root -g root "${SCRIPT_DIR}/remove-hermes-handshake-egress.sh" "${LIB_DIR}/remove-hermes-handshake-egress.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/inspect-hermes-handshake-topology.sh" "${LIB_DIR}/inspect-hermes-handshake-topology.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/hermes-handshake-egress-proxy.py" "${LIB_DIR}/hermes-handshake-egress-proxy.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-live-readiness.py" "${LIB_DIR}/verify-hermes-handshake-live-readiness.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-egress-boundary.sh" "${LIB_DIR}/verify-hermes-handshake-egress-boundary.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-hermes-handshake-egress-failure.sh" "${LIB_DIR}/rehearse-hermes-handshake-egress-failure.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-handshake-control-plane-firewall.sh" "${LIB_DIR}/rehearse-handshake-control-plane-firewall.sh"

@@ -88,13 +88,7 @@ for active_marker in \
   fi
 done
 
-lib_dir='/usr/local/lib/paperclip-gloops'
-egress_proxy="${lib_dir}/hermes-handshake-egress-proxy.py"
-if [[ "$(stat -c '%a:%U:%G' "${lib_dir}" 2>/dev/null || true)" == '755:root:root' ]] \
-  && [[ "$(stat -c '%a:%U:%G' "${egress_proxy}" 2>/dev/null || true)" == '555:root:root' ]]; then
-  echo 'PASS Hermes handshake proxy path is immutable and traversable by its dynamic service identity'
-else
-  echo 'FAIL Hermes handshake proxy path is missing, mutable, or inaccessible to its dynamic service identity' >&2
+if ! /usr/local/lib/paperclip-gloops/verify-hermes-handshake-live-readiness.py; then
   failed=1
 fi
 
