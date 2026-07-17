@@ -626,6 +626,14 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const toolDispatcher = {
       registerPluginTools: vi.fn(),
     };
+    const jobScheduler = {
+      registerPlugin: vi.fn().mockResolvedValue(undefined),
+      unregisterPlugin: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+    };
+    const jobStore = {
+      syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
+    };
     const loader = pluginLoader(db, {
       enableLocalFilesystem: false,
       enableNpmDiscovery: false,
@@ -635,13 +643,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
         forPlugin: vi.fn(() => ({})),
         subscriptionCount: vi.fn(() => 0),
       },
-      jobScheduler: {
-        registerPlugin: vi.fn().mockResolvedValue(undefined),
-        stop: vi.fn(),
-      },
-      jobStore: {
-        syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
-      },
+      jobScheduler,
+      jobStore,
       toolDispatcher,
       lifecycleManager: {
         markError: vi.fn().mockResolvedValue(undefined),
@@ -678,6 +681,9 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       }),
       pluginId,
     );
+    expect(jobStore.syncJobDeclarations).toHaveBeenCalledWith(pluginId, []);
+    expect(jobScheduler.unregisterPlugin).toHaveBeenCalledWith(pluginId);
+    expect(jobScheduler.registerPlugin).not.toHaveBeenCalled();
     const [plugin] = await db
       .select()
       .from(plugins)

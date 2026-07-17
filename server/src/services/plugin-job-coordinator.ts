@@ -125,16 +125,18 @@ export function createPluginJobCoordinator(
       const manifest = plugin.manifestJson;
       const jobDeclarations = manifest.jobs ?? [];
 
+      // Empty is meaningful: a plugin upgrade may intentionally remove its
+      // scheduler authority. Always sync so prior declarations are paused.
+      await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
       if (jobDeclarations.length > 0) {
         log.info(
           { pluginId, pluginKey, jobCount: jobDeclarations.length },
           "syncing job declarations from manifest",
         );
-        await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
+        await scheduler.registerPlugin(pluginId);
+      } else {
+        await scheduler.unregisterPlugin(pluginId);
       }
-
-      // Register with the scheduler (computes nextRunAt for active jobs)
-      await scheduler.registerPlugin(pluginId);
     } catch (err) {
       log.error(
         {
