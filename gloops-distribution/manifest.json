@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.716.0-gloops.9",
+    "version": "2026.716.0-gloops.10",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:877b53e68de2fb2ab8935cebc9e590f6e63db41406cc8a030b7e0dc0c494a664"
+    "digest": "sha256:a3b605c0eeeb73ea1b4813e755f59571234e8640a215cb01523dd2ef7267909d"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.716.0-gloops.9.json"
+    "vex": "gloops-distribution/security/vex-2026.716.0-gloops.10.json"
   },
   "patches": [
     {
@@ -197,6 +197,17 @@
       "integratedCommits": ["ed0c817217d00f41e9eaf13f389a28c855ad6b65"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the readiness path has equivalent conntrack-scoped response admission plus live bridge-and-firewall regression proof, and every operator-only app startup path has direct executable negative coverage."
+    },
+    {
+      "id": "hermes-reference-path-certification-and-startup-egress-remediation",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "0ec0377ef7ba65de2db6085590d9ca4da8228c3c",
+      "sourceHead": "5208ac5cb18fec960c6536351d47870b1ad54e0a",
+      "patchDiffSha256": "a4fcb995e4b53d9345c9a07c7da163cfe6c2b9fc0b90f793f28838012afa66cb",
+      "integratedCommits": ["5208ac5cb18fec960c6536351d47870b1ad54e0a"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected Paperclip-to-Hermes adapter has equivalent reproducible exact-runtime reference certification, startup update checks cannot create undeclared network egress, and the bounded runtime deadman is independently proven in the installed environment."
     }
   ],
   "releasePolicy": {

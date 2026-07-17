@@ -10,7 +10,7 @@ readonly TOPOLOGY_INSPECTOR='/usr/local/lib/paperclip-gloops/inspect-hermes-hand
 readonly GUARD='/usr/local/lib/paperclip-gloops/hermes-handshake-guard/sitecustomize.py'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly CONTAINER='paperclip-hermes-handshake'
-readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
+readonly IMAGE='sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d'
 readonly EGRESS_STATE='/run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE'
 readonly INPUT_CHAIN='PCLIP-HS-IN'
 readonly FORWARD_CHAIN='PCLIP-HS-FWD'
@@ -154,7 +154,7 @@ if jq -e '
     "proxyMaxConnections":4
   } and
   .network.publishedPorts == [] and
-  .runtime.image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
+  .runtime.image == "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d" and
   .runtime.persistentPaths == [] and
   .runtime.repositoryMounts == [] and
   .runtime.githubCredentials == false and
@@ -278,7 +278,7 @@ if [[ "${MODE}" == '--live' ]]; then
   trap 'rm -f "${inspect}"' EXIT
   docker inspect "${CONTAINER}" >"${inspect}"
   if jq -e '
-    .[0].Config.Image == "sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac" and
+    .[0].Config.Image == "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d" and
     (.[0].HostConfig.PortBindings == {} or .[0].HostConfig.PortBindings == null) and
     (.[0].Config.Env | index("PYTHONPATH=/opt/paperclip-handshake-guard")) != null and
     (.[0].Config.Env | index("HTTPS_PROXY=http://172.30.241.1:18080")) != null and

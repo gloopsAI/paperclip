@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='sha256:d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac'
-readonly ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-d5394064690c323d2ec7e62defc0dd8986be080dcc18489998b2d6edd96b4fac.tar.zst'
-readonly ARCHIVE_SHA256='a22da81cc7368a20c8077e805afce079246b6d067d7425db7c59667b2cd5048d'
+readonly IMAGE='sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d'
+readonly ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst'
+readonly ARCHIVE_SHA256='58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3'
 
 [[ "${EUID}" -eq 0 ]] || {
   echo 'run with sudo' >&2
