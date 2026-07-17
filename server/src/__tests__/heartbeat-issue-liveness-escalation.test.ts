@@ -87,22 +87,23 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
-    runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    const heartbeat = heartbeatService(db);
+    const agentIds = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .then((rows) => rows.map((row) => row.id));
+    const runIds = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .then((rows) => rows.map((row) => row.id));
+    if (agentIds.length > 0) {
+      await db.update(agents).set({ status: "paused" });
+      await heartbeat.cancelInvocationsForAgents(agentIds, "test teardown");
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const runId of runIds) {
+      await heartbeat.waitForRunExecutionDrain(runId);
+    }
+    runningProcesses.clear();
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
