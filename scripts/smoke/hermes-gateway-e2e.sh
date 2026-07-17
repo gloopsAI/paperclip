@@ -45,6 +45,8 @@ HERMES_DIRECT_RUN_TIMEOUT_SEC="${HERMES_DIRECT_RUN_TIMEOUT_SEC:-180}"
 HERMES_DIRECT_RUN_EVENTS_TIMEOUT_SEC="${HERMES_DIRECT_RUN_EVENTS_TIMEOUT_SEC:-20}"
 HERMES_STOP_ASSERT="${HERMES_STOP_ASSERT:-auto}"
 HERMES_SMOKE_KEEP="${HERMES_SMOKE_KEEP:-0}"
+HERMES_SMOKE_STRICT_CLEANUP="${HERMES_SMOKE_STRICT_CLEANUP:-0}"
+HERMES_SMOKE_DELETE_COMPANY="${HERMES_SMOKE_DELETE_COMPANY:-0}"
 HERMES_SMOKE_NETWORK="${HERMES_SMOKE_NETWORK:-}"
 HERMES_DOCKER_ADD_HOST="${HERMES_DOCKER_ADD_HOST:-1}"
 HERMES_SMOKE_STATE_DIR="${HERMES_SMOKE_STATE_DIR:-${TMPDIR:-/tmp}/paperclip-hermes-gateway-smoke-${RUN_SUFFIX}}"
@@ -92,6 +94,8 @@ Common flags:
   HERMES_SMOKE_NETWORK=<docker-network>
   HERMES_DOCKER_ADD_HOST=0|1
   HERMES_SMOKE_KEEP=1                              # keep diagnostics/container
+  HERMES_SMOKE_STRICT_CLEANUP=1                    # cleanup errors fail the run
+  HERMES_SMOKE_DELETE_COMPANY=1                    # disposable company only
   HERMES_SMOKE_DIAG_DIR=/tmp/hermes-gateway-diag
   HERMES_SMOKE_MODEL_PROVIDER=openrouter
   HERMES_SMOKE_MODEL_DEFAULT=z-ai/glm-5.2
@@ -413,6 +417,38 @@ capture_diagnostics() {
 cleanup_paperclip_state() {
   [[ "$KEEP_ON_EXIT" != "1" ]] || return 0
 
+  if [[ "$HERMES_SMOKE_DELETE_COMPANY" == "1" ]]; then
+    [[ "$HERMES_SMOKE_STRICT_CLEANUP" == "1" ]] || {
+      warn "HERMES_SMOKE_DELETE_COMPANY requires HERMES_SMOKE_STRICT_CLEANUP=1"
+      return 1
+    }
+    [[ -n "$COMPANY_ID" ]] || {
+      warn "cannot delete disposable company without COMPANY_ID"
+      return 1
+    }
+    log "deleting disposable company ${COMPANY_ID}"
+    api_request "DELETE" "/companies/${COMPANY_ID}"
+    if [[ "$RESPONSE_CODE" != "200" && "$RESPONSE_CODE" != "404" ]]; then
+      warn "delete disposable company returned HTTP ${RESPONSE_CODE}"
+      return 1
+    fi
+    api_request "GET" "/companies/${COMPANY_ID}"
+    if [[ "$RESPONSE_CODE" != "404" ]]; then
+      warn "disposable company remained readable after delete (HTTP ${RESPONSE_CODE})"
+      return 1
+    fi
+    api_request "GET" "/companies"
+    if [[ "$RESPONSE_CODE" != "200" ]] || jq -e --arg id "$COMPANY_ID" '.[] | select(.id == $id)' <<<"$RESPONSE_BODY" >/dev/null; then
+      warn "disposable company remained present in the company collection"
+      return 1
+    fi
+    AGENT_ID=""
+    SMOKE_ISSUE_ID=""
+    JOIN_REQUEST_ID=""
+    INVITE_ID=""
+    return 0
+  fi
+
   if [[ -n "$SMOKE_ISSUE_ID" ]]; then
     log "deleting smoke issue ${SMOKE_ISSUE_ID}"
     api_request "DELETE" "/issues/${SMOKE_ISSUE_ID}"
@@ -444,21 +480,47 @@ cleanup_paperclip_state() {
 cleanup_local_state() {
   [[ "$KEEP_ON_EXIT" != "1" ]] || return 0
 
-  docker rm -f "$HERMES_CONTAINER_NAME" >/dev/null 2>&1 || true
-  rm -rf "$HERMES_SMOKE_STATE_DIR"
-  rm -f "$JOIN_OUTPUT_FILE"
+  local cleanup_failed=0
+  if docker inspect "$HERMES_CONTAINER_NAME" >/dev/null 2>&1; then
+    docker rm -f "$HERMES_CONTAINER_NAME" >/dev/null 2>&1 || cleanup_failed=1
+  fi
+  rm -rf "$HERMES_SMOKE_STATE_DIR" || cleanup_failed=1
+  rm -f "$JOIN_OUTPUT_FILE" || cleanup_failed=1
+  if [[ "$HERMES_SMOKE_STRICT_CLEANUP" == "1" ]]; then
+    if docker inspect "$HERMES_CONTAINER_NAME" >/dev/null 2>&1; then
+      warn "Hermes smoke container remains after cleanup"
+      cleanup_failed=1
+    fi
+    if [[ -e "$HERMES_SMOKE_STATE_DIR" ]]; then
+      warn "Hermes smoke state directory remains after cleanup"
+      cleanup_failed=1
+    fi
+    if [[ -e "$JOIN_OUTPUT_FILE" ]]; then
+      warn "claimed Paperclip key file remains after cleanup"
+      cleanup_failed=1
+    fi
+  fi
+  return "$cleanup_failed"
 }
 
 on_exit() {
   local status=$?
   if [[ "$status" -ne 0 ]]; then
-    KEEP_ON_EXIT=1
-    warn "smoke failed; preserving diagnostics/state"
+    warn "smoke failed; preserving sanitized diagnostics"
     capture_diagnostics || true
+    if [[ "$HERMES_SMOKE_STRICT_CLEANUP" != "1" ]]; then
+      KEEP_ON_EXIT=1
+    fi
   fi
 
-  cleanup_paperclip_state || true
-  cleanup_local_state || true
+  if ! cleanup_paperclip_state; then
+    warn "Paperclip cleanup failed"
+    status=1
+  fi
+  if ! cleanup_local_state; then
+    warn "local cleanup failed"
+    status=1
+  fi
 
   if [[ "$KEEP_ON_EXIT" == "1" ]]; then
     warn "retained diagnostics: ${HERMES_SMOKE_DIAG_DIR}"
@@ -780,13 +842,26 @@ join_hermes_agent() {
 
 install_claimed_key_in_container() {
   log "placing newly claimed Paperclip key in container workspace"
-  local key_file="${HERMES_SMOKE_STATE_DIR}/workspace/paperclip-claimed-api-key.json"
-  jq -nc --arg token "$AGENT_API_KEY" '{token:$token,apiKey:$token}' > "$key_file"
-  # The host-created bind-mounted file must be readable by the non-root hermes
-  # user inside the container. The state dir is still per-run and deleted on
-  # success unless HERMES_SMOKE_KEEP=1.
-  chmod 644 "$key_file"
-  docker exec "$HERMES_CONTAINER_NAME" sh -lc 'test -f /home/hermes/workspace/paperclip-claimed-api-key.json && test ! -e "$HERMES_HOME/host-sentinel.txt"'
+  local proof mode owner
+  jq -nc --arg token "$AGENT_API_KEY" '{token:$token,apiKey:$token}' \
+    | docker exec --interactive --user 10001:10001 "$HERMES_CONTAINER_NAME" \
+      sh -lc 'umask 077; cat > /home/hermes/workspace/paperclip-claimed-api-key.json'
+  proof="$(docker exec --user 10001:10001 "$HERMES_CONTAINER_NAME" sh -lc '
+    set -eu
+    file=/home/hermes/workspace/paperclip-claimed-api-key.json
+    test -r "$file"
+    test "$(stat -c %a "$file")" = 600
+    test "$(stat -c %u:%g "$file")" = 10001:10001
+    test ! -e "$HERMES_HOME/host-sentinel.txt"
+    printf "%s %s\n" "$(stat -c %a "$file")" "$(stat -c %u:%g "$file")"
+  ')"
+  read -r mode owner <<<"$proof"
+  [[ "$mode" == 600 && "$owner" == 10001:10001 ]] || fail "claimed key proof returned unexpected metadata"
+  jq -nc \
+    --arg mode "$mode" \
+    --arg owner "$owner" \
+    '{readableByUid10001:true,mode:$mode,owner:$owner}' \
+    > "${HERMES_SMOKE_DIAG_DIR}/claimed-key-proof.json"
 }
 
 patch_agent_instructions_with_claimed_key() {

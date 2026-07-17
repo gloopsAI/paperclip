@@ -1,0 +1,387 @@
+{
+  "schemaVersion": "gloops.hermes-reference-matrix.v1",
+  "label": "fork-stable-strict",
+  "status": "passed",
+  "startedAt": "2026-07-16T22:38:24Z",
+  "completedAt": "2026-07-16T22:44:34Z",
+  "runtimeSource": {
+    "commit": "a4a4c4d3f25f2afb8274729342ce66448f063b9f",
+    "treeClean": true,
+    "observedFrom": "/api/health serverInfo.git"
+  },
+  "boundary": {
+    "paperclipUrl": "http://127.0.0.1:3189",
+    "paperclipForHermes": "http://host.docker.internal:3189",
+    "mockProbeUrl": "http://127.0.0.1:8787/health",
+    "mockBaseUrl": "http://host.docker.internal:8787/v1",
+    "disposableCompanyPerRun": true,
+    "localTrustedRequired": true,
+    "productionPortRejected": true,
+    "realProviderCredentialsRejected": true,
+    "onboardingPacingSeconds": 11
+  },
+  "totalRuns": 20,
+  "passedRuns": 20,
+  "runs": [
+    {
+      "label": "fork-stable-strict-01",
+      "result": "passed",
+      "companyId": "7734d64c-02f9-46b0-b87a-c37e6754c7b0",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-02",
+      "result": "passed",
+      "companyId": "8654bfc0-2657-45ca-910b-ed956932f5db",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-03",
+      "result": "passed",
+      "companyId": "05d1202e-669c-4e92-858f-7c74ed0b276a",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-04",
+      "result": "passed",
+      "companyId": "2d8b328c-9e0e-404f-804e-a7275e0239a4",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-05",
+      "result": "passed",
+      "companyId": "ad4b44c7-8a63-48b6-a75e-13856af5efd0",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-06",
+      "result": "passed",
+      "companyId": "1a0955a6-4107-4065-a382-9e09369886a4",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-07",
+      "result": "passed",
+      "companyId": "d55f6bb4-7856-44a3-8701-dbfbbb4c31ba",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-08",
+      "result": "passed",
+      "companyId": "f4ae6914-4bee-4ba0-96ef-d9bdd208d0ce",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-09",
+      "result": "passed",
+      "companyId": "e39e7a1c-326c-40b0-8811-f6af05266036",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-10",
+      "result": "passed",
+      "companyId": "b235b916-1938-4d9a-9241-571eb0faa721",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-11",
+      "result": "passed",
+      "companyId": "cd57caf5-ddf3-43b1-9061-f5ae5788229f",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-12",
+      "result": "passed",
+      "companyId": "2a59bcd6-7f68-494e-ba74-5da3b98b9966",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-13",
+      "result": "passed",
+      "companyId": "fb7b8221-91f9-4c19-a33e-d0e22ecdb7ca",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-14",
+      "result": "passed",
+      "companyId": "135d90d9-f3ba-4ef2-a40c-9f2f5dd3f66f",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-15",
+      "result": "passed",
+      "companyId": "22f76840-9524-4ca4-a058-4d26fd635ead",
+      "durationSeconds": 7,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-16",
+      "result": "passed",
+      "companyId": "8a08e89f-37b5-4cdc-8df8-1826b5f8026b",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-17",
+      "result": "passed",
+      "companyId": "7e98d4b9-a7eb-4ad4-81f9-96d9e314c67e",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-18",
+      "result": "passed",
+      "companyId": "4f4e083e-b992-4030-a8aa-9b5b6f8c1b83",
+      "durationSeconds": 8,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-19",
+      "result": "passed",
+      "companyId": "b9b3b66f-fd88-4793-9547-905ca46dd3b1",
+      "durationSeconds": 9,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    },
+    {
+      "label": "fork-stable-strict-20",
+      "result": "passed",
+      "companyId": "5709d6d4-9dee-468e-9ced-50e93104b50d",
+      "durationSeconds": 7,
+      "e2ePassed": true,
+      "claimedKeyProof": {
+        "readableByUid10001": true,
+        "mode": "600",
+        "owner": "10001:10001"
+      },
+      "cleanup": {
+        "companyAbsent": true,
+        "containerAbsent": true,
+        "stateAbsent": true,
+        "claimedKeyAbsent": true
+      }
+    }
+  ]
+}

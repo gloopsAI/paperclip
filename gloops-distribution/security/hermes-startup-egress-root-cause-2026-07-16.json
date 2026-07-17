@@ -1,0 +1,33 @@
+{
+  "$schema": "https://gloops.ai/schemas/hermes-startup-egress-root-cause.v1.json",
+  "schemaVersion": 1,
+  "status": "verified",
+  "incident": {
+    "source": "retained Gate 6 zero-work rehearsal evidence",
+    "observedAt": "2026-07-16T18:57:36.397Z",
+    "observation": "The egress boundary denied CONNECT github.com:443 after the Hermes TUI gateway startup banner and before task execution.",
+    "productionImpact": "The connection was denied. No GitHub request completed, no task ran, and the host was returned to its verified dark state."
+  },
+  "attribution": {
+    "initiatingSubsystem": "Hermes TUI gateway automatic startup update checker",
+    "startupCallSite": "/opt/hermes/tui_gateway/server.py:120",
+    "startupCall": "prefetch_update_check()",
+    "networkCallSite": "/opt/hermes/hermes_cli/banner.py:533",
+    "networkPath": "prefetch_update_check -> check_for_updates -> git ls-remote https://github.com/NousResearch/hermes-agent.git",
+    "basis": [
+      "The exact installed image source calls prefetch_update_check unconditionally during gateway startup.",
+      "The exact installed image implementation launches a background thread that calls check_for_updates.",
+      "The update path invokes git ls-remote against the same github.com authority observed in the denied boundary event.",
+      "The denied event occurred immediately after the gateway startup banner and before execution activity."
+    ]
+  },
+  "remediation": {
+    "strategy": "Patch the derivative Hermes runtime image at build time so prefetch_update_check returns without creating a thread or performing network activity.",
+    "patch": "gloops-distribution/deploy/hermes/patch-hermes-startup-update-check.py",
+    "directTest": "gloops-distribution/deploy/hermes/patch_hermes_startup_update_check_test.py",
+    "imageTest": "gloops-distribution/deploy/hermes/verify-hermes-command-security-image.sh",
+    "failClosed": true,
+    "unknownOrAlreadyPatchedSourceRejected": true
+  },
+  "remainingProof": "The rebuilt derivative image must pass its direct verifier, a zero-work rehearsal with zero unexplained allowed or denied controls, and the independently reviewed bounded live gates before this incident is considered operationally closed."
+}

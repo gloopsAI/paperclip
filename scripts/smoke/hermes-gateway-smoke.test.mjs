@@ -8,7 +8,42 @@ import test from "node:test";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const joinScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-join.sh");
 const e2eScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-e2e.sh");
+const referenceMatrixScript = path.join(repoRoot, "scripts", "smoke", "hermes-gateway-reference-matrix.sh");
 const entrypointScript = path.join(repoRoot, "docker", "hermes-gateway-smoke", "entrypoint.sh");
+const providerVariables = [
+  "OPENROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "MISTRAL_API_KEY",
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_BASE",
+  "ANTHROPIC_BASE_URL",
+  "XAI_BASE_URL",
+  "GROK_BASE_URL",
+];
+
+function referenceEnv(overrides = {}) {
+  const env = { ...process.env };
+  for (const variable of providerVariables) delete env[variable];
+  delete env.COMPANY_ID;
+  delete env.PAPERCLIP_COMPANY_ID;
+  return {
+    ...env,
+    PAPERCLIP_API_URL: "http://127.0.0.1:3189",
+    PAPERCLIP_API_URL_FOR_HERMES: "http://host.docker.internal:3189",
+    PAPERCLIP_AUTH_HEADER: "Bearer test-only",
+    PAPERCLIP_SOURCE_COMMIT: "0123456789abcdef0123456789abcdef01234567",
+    REFERENCE_DISPOSABLE_ACK: "delete-disposable-companies",
+    REFERENCE_MOCK_PROBE_URL: "http://127.0.0.1:8787/health",
+    HERMES_REFERENCE_MOCK_BASE_URL: "http://host.docker.internal:8787/v1",
+    ...overrides,
+  };
+}
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -48,8 +83,103 @@ function runBashFunctions(scriptPath, functionNames, body) {
 }
 
 test("Hermes gateway smoke shell scripts pass bash syntax validation", () => {
-  const result = run("bash", ["-n", joinScript, e2eScript, entrypointScript]);
+  const result = run("bash", ["-n", joinScript, e2eScript, referenceMatrixScript, entrypointScript]);
   assertSuccess(result, "bash -n");
+});
+
+test("reference matrix help exposes bounded-run and receipt controls", () => {
+  const result = run("bash", [referenceMatrixScript, "--help"]);
+  assertSuccess(result, "hermes-gateway-reference-matrix.sh --help");
+  assert.match(result.stdout, /REFERENCE_RUNS=20/u);
+  assert.match(result.stdout, /REFERENCE_DELAY_SECONDS=11/u);
+  assert.match(result.stdout, /REFERENCE_RECEIPT/u);
+  assert.match(result.stdout, /delete-disposable-companies/u);
+  assert.match(result.stdout, /strict Paperclip\/Hermes Docker E2E/u);
+  assert.match(result.stdout, /never starts the\s+Paperclip server/u);
+});
+
+test("reference matrix accepts only a tied disposable local boundary", () => {
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv(),
+  });
+  assertSuccess(result, "reference boundary validation");
+});
+
+test("reference matrix rejects an ambiguous runtime commit", () => {
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv({ PAPERCLIP_SOURCE_COMMIT: "short" }),
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /PAPERCLIP_SOURCE_COMMIT/u);
+});
+
+test("reference matrix accepts only runtime-observed clean source provenance", () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const valid = JSON.stringify({
+    serverInfo: {
+      git: {
+        available: true,
+        fullSha: commit,
+        localChanges: {
+          available: true,
+          hasLocalChanges: false,
+          stagedFileCount: 0,
+          unstagedFileCount: 0,
+          untrackedFileCount: 0,
+        },
+      },
+    },
+  });
+  const accepted = runBashFunctions(
+    referenceMatrixScript,
+    ["fail", "validate_runtime_source_health"],
+    `PAPERCLIP_SOURCE_COMMIT=${commit}\nvalidate_runtime_source_health '${valid}'\n[[ "$observed_source_commit" == "$PAPERCLIP_SOURCE_COMMIT" ]]\n[[ "$observed_source_tree_clean" == true ]]`,
+  );
+  assertSuccess(accepted, "runtime provenance health acceptance");
+
+  for (const payload of [
+    valid.replace(commit, "89abcdef0123456789abcdef0123456789abcdef"),
+    valid.replace('"hasLocalChanges":false', '"hasLocalChanges":true').replace('"unstagedFileCount":0', '"unstagedFileCount":1'),
+  ]) {
+    const rejected = runBashFunctions(
+      referenceMatrixScript,
+      ["fail", "validate_runtime_source_health"],
+      `PAPERCLIP_SOURCE_COMMIT=${commit}\nvalidate_runtime_source_health '${payload}'`,
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /runtime provenance/u);
+  }
+});
+
+test("reference matrix rejects a remote or production Paperclip destination", () => {
+  for (const paperclipUrl of ["https://paperclip.example.com", "http://127.0.0.1:3100"]) {
+    const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+      env: referenceEnv({
+        PAPERCLIP_API_URL: paperclipUrl,
+        PAPERCLIP_API_URL_FOR_HERMES: "http://host.docker.internal:3100",
+      }),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /loopback|production port/u);
+  }
+});
+
+test("reference matrix rejects a model endpoint not tied to the local mock", () => {
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv({ HERMES_REFERENCE_MOCK_BASE_URL: "https://api.example.com/v1" }),
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /tie exactly to the local reference mock port/u);
+});
+
+test("reference matrix rejects real provider credentials without revealing them", () => {
+  const secret = "xai-real-secret-must-not-appear";
+  const result = run("bash", [referenceMatrixScript, "--validate-config"], {
+    env: referenceEnv({ XAI_API_KEY: secret }),
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /XAI_API_KEY must be unset/u);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(secret, "u"));
 });
 
 test("Hermes gateway smoke help documents operator safety flags", () => {
@@ -64,6 +194,8 @@ test("Hermes gateway smoke help documents operator safety flags", () => {
 
   const e2eHelp = run("bash", [e2eScript, "--help"]).stdout;
   assert.match(e2eHelp, /HERMES_SMOKE_KEEP/);
+  assert.match(e2eHelp, /HERMES_SMOKE_STRICT_CLEANUP/);
+  assert.match(e2eHelp, /HERMES_SMOKE_DELETE_COMPANY/);
   assert.match(e2eHelp, /HERMES_SMOKE_NETWORK/);
   assert.match(e2eHelp, /HERMES_SMOKE_MODEL_DEFAULT/);
   assert.match(e2eHelp, /Docker/);
