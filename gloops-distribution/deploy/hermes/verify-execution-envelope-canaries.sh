@@ -46,6 +46,10 @@ evidence_sha="$(
     server/src/__tests__/heartbeat-retry-scheduling.test.ts \
     server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts \
     server/src/__tests__/plugin-orchestration-apis.test.ts \
+    gloops-distribution/deploy/hermes/runtime.env \
+    gloops-distribution/deploy/hermes/preflight.sh \
+    gloops-distribution/deploy/hermes/rehearse-zero-work.sh \
+    gloops-distribution/deploy/hermes/verify-dark.sh \
   | shasum -a 256 | awk '{print $1}'
 )"
 
@@ -67,7 +71,10 @@ cat <<JSON
     "unsupportedAdapterCannotDispatch": "passed",
     "missingUsageFailsClosed": "passed",
     "companyWipIsSerializedBeforeDispatch": "passed",
+    "companyQueueClaimsAreRoundRobinFair": "passed",
     "historicalIssueReplayIsRejected": "passed",
+    "historicalRetryPromotionIsRejected": "passed",
+    "boundedRetryDriverIsEnabled": "passed",
     "ambiguousGrokApiHistoryBlocks": "passed",
     "nestedAndAlternateGrokApiConfigurationRefused": "passed",
     "ownerHandoffOccursAtMostOnce": "passed",

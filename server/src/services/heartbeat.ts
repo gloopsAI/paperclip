@@ -9665,7 +9665,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
-    const cutoff = await getExecutionIssueCreatedAtGte();
+    const worktreeRunCutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte
+      ? null
+      : await getWorktreeExecutionCutoff();
     const dueRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -9673,7 +9675,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         and(
           eq(heartbeatRuns.status, "scheduled_retry"),
           lte(heartbeatRuns.scheduledRetryAt, now),
-          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          worktreeRunCutoff ? gte(heartbeatRuns.createdAt, worktreeRunCutoff) : undefined,
         ),
       )
       .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
@@ -9682,6 +9684,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const promotedRunIds: string[] = [];
 
     for (const dueRun of dueRuns) {
+      const campaignScopeBlock = await getControlledSwarmIssueScopeBlock(dueRun);
+      if (campaignScopeBlock) {
+        await cancelRunForControlledSwarmIssueScope(dueRun, campaignScopeBlock);
+        continue;
+      }
       const result = await promoteScheduledRetryRun(dueRun, now);
       if (result.outcome === "promoted") {
         promotedRunIds.push(result.run.id);
@@ -9744,7 +9751,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     const now = input.now ?? new Date();
     const issue = await db
-      .select({ id: issues.id, companyId: issues.companyId })
+      .select({ id: issues.id, companyId: issues.companyId, createdAt: issues.createdAt })
       .from(issues)
       .where(eq(issues.id, input.issueId))
       .then((rows) => rows[0] ?? null);
@@ -9764,6 +9771,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome: "no_scheduled_retry" as const,
         message: "No live scheduled retry exists for this issue",
         scheduledRetry: null,
+      };
+    }
+    const campaignCutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte;
+    if (campaignCutoff && issue.createdAt < campaignCutoff) {
+      const block: ControlledSwarmIssueScopeBlock = {
+        errorCode: "execution_issue_created_at_cutoff",
+        reason: "Cancelled because the issue predates the controlled-swarm campaign cutoff",
+        issueId: issue.id,
+        cutoff: campaignCutoff.toISOString(),
+        issueCreatedAt: issue.createdAt.toISOString(),
+      };
+      const cancelled = await cancelRunForControlledSwarmIssueScope(scheduled.run, block);
+      return {
+        outcome: "gate_suppressed" as const,
+        message: block.reason,
+        scheduledRetry: summarizeIssueScheduledRetryRun({
+          run: cancelled ?? scheduled.run,
+          agentName: scheduled.agentName,
+        }),
       };
     }
 
@@ -9850,6 +9876,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : summarizeIssueScheduledRetryRun({ run: promotion.run ?? updated, agentName: scheduled.agentName });
 
     if (promotion.outcome === "promoted") {
+      if (controlledSwarmAdmissionPolicy.companyMaxActiveRuns !== null) {
+        void startNextQueuedRunsForCompany(issue.companyId).catch((error) => {
+          logger.error(
+            { err: error, companyId: issue.companyId, runId: promotion.run.id },
+            "failed to pump controlled-swarm queue after retry-now promotion",
+          );
+        });
+      }
       return {
         outcome: "promoted" as const,
         message: "Scheduled retry was promoted to the queued run pool",
@@ -10400,6 +10434,109 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await releaseIssueExecutionAndPromote(result.run, { suppressImmediateRecovery: true });
   }
 
+  type ControlledSwarmIssueScopeBlock = {
+    errorCode: "execution_issue_required" | "execution_issue_not_found" | "execution_issue_created_at_cutoff";
+    reason: string;
+    issueId: string | null;
+    cutoff: string;
+    issueCreatedAt: string | null;
+  };
+
+  async function getControlledSwarmIssueScopeBlock(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<ControlledSwarmIssueScopeBlock | null> {
+    const cutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte;
+    if (!cutoff) return null;
+
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    if (!issueId) {
+      return {
+        errorCode: "execution_issue_required",
+        reason: "Cancelled because controlled-swarm execution requires a campaign issue",
+        issueId: null,
+        cutoff: cutoff.toISOString(),
+        issueCreatedAt: null,
+      };
+    }
+
+    const issueIdMatch = isUuidLike(issueId)
+      ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
+      : eq(issues.identifier, issueId.toUpperCase());
+    const issue = await db
+      .select({ id: issues.id, createdAt: issues.createdAt })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), issueIdMatch))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) {
+      return {
+        errorCode: "execution_issue_not_found",
+        reason: "Cancelled because the controlled-swarm campaign issue does not exist",
+        issueId: null,
+        cutoff: cutoff.toISOString(),
+        issueCreatedAt: null,
+      };
+    }
+    if (issue.createdAt >= cutoff) return null;
+
+    return {
+      errorCode: "execution_issue_created_at_cutoff",
+      reason: "Cancelled because the issue predates the controlled-swarm campaign cutoff",
+      issueId: issue.id,
+      cutoff: cutoff.toISOString(),
+      issueCreatedAt: issue.createdAt.toISOString(),
+    };
+  }
+
+  async function cancelRunForControlledSwarmIssueScope(
+    run: typeof heartbeatRuns.$inferSelect,
+    block: ControlledSwarmIssueScopeBlock,
+  ) {
+    const now = new Date();
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: block.reason,
+      errorCode: block.errorCode,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: block.errorCode,
+        controlledSwarmIssueScope: block,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "controlled_swarm_issue_scope",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: block.reason,
+    });
+    if (block.issueId) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, block.issueId),
+          eq(issues.executionRunId, run.id),
+        ));
+    }
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: block.reason,
+      payload: block,
+    });
+    return cancelled;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -10416,6 +10553,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
+    const campaignScopeBlock = await getControlledSwarmIssueScopeBlock(run);
+    if (campaignScopeBlock) {
+      await cancelRunForControlledSwarmIssueScope(run, campaignScopeBlock);
+      return null;
+    }
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
@@ -11269,21 +11411,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
-    const cutoff = await getExecutionIssueCreatedAtGte();
+    const worktreeRunCutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte
+      ? null
+      : await getWorktreeExecutionCutoff();
 
     const queuedRuns = await db
-      .select({ agentId: heartbeatRuns.agentId })
+      .select({ companyId: heartbeatRuns.companyId })
       .from(heartbeatRuns)
       .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
       .where(and(
         eq(heartbeatRuns.status, "queued"),
         eq(companies.status, "active"),
-        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+        worktreeRunCutoff ? gte(heartbeatRuns.createdAt, worktreeRunCutoff) : undefined,
       ));
 
-    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
-    for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+    const companyIds = [...new Set(queuedRuns.map((r) => r.companyId))];
+    for (const companyId of companyIds) {
+      await startNextQueuedRunsForCompany(companyId);
     }
   }
 
@@ -11397,9 +11541,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startNextQueuedRunForAgent(agentId: string, maxClaims = Number.POSITIVE_INFINITY) {
     if ((await getSchedulingSuppression()).suppressed) return [];
-    const cutoff = await getExecutionIssueCreatedAtGte();
+    const worktreeRunCutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte
+      ? null
+      : await getWorktreeExecutionCutoff();
 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -11413,7 +11559,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const availableSlots = Math.min(
+        Math.max(0, policy.maxConcurrentRuns - runningCount),
+        Math.max(0, maxClaims),
+      );
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -11422,7 +11571,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(
           eq(heartbeatRuns.agentId, agentId),
           eq(heartbeatRuns.status, "queued"),
-          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          worktreeRunCutoff ? gte(heartbeatRuns.createdAt, worktreeRunCutoff) : undefined,
         ))
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
@@ -11495,10 +11644,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ))
       .orderBy(asc(heartbeatRuns.createdAt));
     const seen = new Set<string>();
+    const agentIds: string[] = [];
     for (const row of queuedRows) {
       if (seen.has(row.agentId)) continue;
       seen.add(row.agentId);
-      await startNextQueuedRunForAgent(row.agentId);
+      agentIds.push(row.agentId);
+    }
+    let claimedInRound = true;
+    while (claimedInRound) {
+      claimedInRound = false;
+      for (const agentId of agentIds) {
+        const claimed = await startNextQueuedRunForAgent(agentId, 1);
+        if (claimed.length > 0) claimedInRound = true;
+      }
     }
   }
 
@@ -14077,8 +14235,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               });
             }
           }
-          activeRunExecutions.delete(run.id);
-          await startNextQueuedRunsForCompany(run.companyId);
+          try {
+            await startNextQueuedRunsForCompany(run.companyId);
+          } finally {
+            activeRunExecutions.delete(run.id);
+          }
         }
   }
 
