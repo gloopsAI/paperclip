@@ -31,12 +31,13 @@ pnpm exec vitest run \
 pnpm --filter @paperclipai/hermes-paperclip-adapter exec vitest run \
   src/gateway/server/execute.test.ts
 pnpm exec vitest run \
+  server/src/services/company-queue-pump-lock.test.ts \
   server/src/__tests__/heartbeat-controlled-swarm-admission.test.ts \
   server/src/__tests__/heartbeat-retry-scheduling.test.ts \
   server/src/__tests__/heartbeat-execution-admission.test.ts
 pnpm exec vitest run \
   server/src/__tests__/server-startup-feedback-export.test.ts \
-  -t 'drives only bounded execution recovery when the global heartbeat scheduler is disabled'
+  -t 'drives only bounded execution recovery when the global heartbeat scheduler is disabled|keeps periodic execution recovery single-flight when a cycle is slow'
 pnpm exec vitest run \
   server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts \
   -t 'rejects an agent-self-attested execution-truth receipt|blocks a recovery-owner side door to done without trusted execution truth'
@@ -52,6 +53,7 @@ evidence_sha="$(
     server/src/config.ts \
     server/src/index.ts \
     server/src/services/company-queue-pump-lock.ts \
+    server/src/services/company-queue-pump-lock.test.ts \
     server/src/services/controlled-swarm-admission.ts \
     server/src/services/heartbeat.ts \
     server/src/services/controlled-swarm-admission.test.ts \
@@ -91,9 +93,11 @@ cat <<JSON
     "missingUsageFailsClosed": "passed",
     "companyWipIsSerializedBeforeDispatch": "passed",
     "companyQueueClaimsAreRoundRobinFair": "passed",
+    "companyQueuePumpRemainsSerializedWhenSlow": "passed",
     "historicalIssueReplayIsRejected": "passed",
     "historicalRetryPromotionIsRejected": "passed",
     "boundedRecoveryDriverExcludesTimersAndRoutines": "passed",
+    "boundedRecoveryDriverIsSingleFlight": "passed",
     "ambiguousGrokApiHistoryBlocks": "passed",
     "nestedAndAlternateGrokApiConfigurationRefused": "passed",
     "ownerHandoffOccursAtMostOnce": "passed",

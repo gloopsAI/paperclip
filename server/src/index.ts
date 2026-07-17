@@ -1075,6 +1075,7 @@ export async function startServer(): Promise<StartedServer> {
   if (!config.heartbeatSchedulerEnabled && config.executionRecoveryDriverEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    let executionRecoveryCycleInFlight: Promise<void> | null = null;
 
     const runExecutionRecoveryCycle = async (phase: "startup" | "periodic") => {
       if (heartbeatSchedulerStopped) return;
@@ -1104,16 +1105,40 @@ export async function startServer(): Promise<StartedServer> {
       }
     };
 
+    const startExecutionRecoveryCycle = (
+      phase: "startup" | "periodic",
+    ): Promise<void> | null => {
+      if (executionRecoveryCycleInFlight) {
+        logger.warn(
+          { phase },
+          "bounded execution recovery cycle skipped because the previous cycle is still running",
+        );
+        return null;
+      }
+
+      let cycle: Promise<void>;
+      cycle = runExecutionRecoveryCycle(phase).finally(() => {
+        if (executionRecoveryCycleInFlight === cycle) {
+          executionRecoveryCycleInFlight = null;
+        }
+      });
+      executionRecoveryCycleInFlight = cycle;
+      return cycle;
+    };
+
     // This deliberately excludes timer heartbeats, routine triggers, issue
     // monitors, watchdogs, and productivity reconciliation. It only advances
     // already-admitted queued/retry work and reaps stale running rows.
-    await runExecutionRecoveryCycle("startup");
+    await startExecutionRecoveryCycle("startup");
     executionRecoveryDriverInterval = setInterval(() => {
-      trackHeartbeatSchedulerWork(
-        runExecutionRecoveryCycle("periodic").catch((err) => {
-          logger.error({ err }, "bounded execution recovery failed");
-        }),
-      );
+      const cycle = startExecutionRecoveryCycle("periodic");
+      if (cycle) {
+        trackHeartbeatSchedulerWork(
+          cycle.catch((err) => {
+            logger.error({ err }, "bounded execution recovery failed");
+          }),
+        );
+      }
     }, config.executionRecoveryDriverIntervalMs);
   }
   

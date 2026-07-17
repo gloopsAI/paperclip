@@ -436,6 +436,56 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("keeps periodic execution recovery single-flight when a cycle is slow", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: false,
+      executionRecoveryDriverEnabled: true,
+      executionRecoveryDriverIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+    let releaseSlowReap!: (result: { reaped: number; runIds: string[] }) => void;
+
+    try {
+      await startServer();
+      heartbeatServiceMock.reapOrphanedRuns.mockImplementationOnce(
+        () => new Promise((resolve) => {
+          releaseSlowReap = resolve;
+        }),
+      );
+
+      intervalCallback?.();
+      await vi.waitFor(() => {
+        expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+      });
+
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(1);
+
+      releaseSlowReap({ reaped: 0, runIds: [] });
+      await vi.waitFor(() => {
+        expect(heartbeatServiceMock.promoteDueScheduledRetries).toHaveBeenCalledTimes(2);
+        expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalledTimes(2);
+      });
+
+      intervalCallback?.();
+      await vi.waitFor(() => {
+        expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(3);
+      });
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("refuses authenticated public startup without an external database URL", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       deploymentExposure: "public",
