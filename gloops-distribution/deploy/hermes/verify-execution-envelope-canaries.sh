@@ -72,6 +72,7 @@ pnpm exec vitest run \
 python3 -m unittest \
   gloops-distribution/deploy/hermes/campaign_deadman_test.py \
   gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py \
+  gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
   gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py
 gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
 
@@ -107,6 +108,8 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/rehearse-campaign-deadman.py \
     gloops-distribution/deploy/hermes/activate-controlled-swarm.sh \
     gloops-distribution/deploy/hermes/commission-controlled-swarm.sh \
+    gloops-distribution/deploy/hermes/controlled-swarm-commissioner.py \
+    gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
     gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py \
     gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
     gloops-distribution/deploy/hermes/stop-controlled-swarm.sh \
@@ -158,6 +161,10 @@ cat <<JSON
     "deadmanReadinessRaceIsBoundedAndFailClosed": "passed",
     "acceleratedHostDeadmanRehearsalIsInstalled": "passed",
     "activationRequiresExactRecentRehearsal": "passed",
+    "commissioningRequiresExactSixteenIdentityRoster": "passed",
+    "commissioningRevalidatesRosterAfterRestart": "passed",
+    "commissioningFailureRestoresInertBarrier": "passed",
+    "commissioningReceiptIsInvalidatedOnStop": "passed",
     "manualStopRestoresVerifiedDarkState": "passed",
     "rollbackRefusesActiveCampaignDeadman": "passed",
     "rollbackCannotCertifySurvivingDeadmanSocket": "passed",

@@ -59,7 +59,9 @@ for unit in \
   fi
 done
 
-rm -f /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED
+rm -f \
+  /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED \
+  /var/lib/paperclip-gloops/controlled-swarm/commissioning.json
 /usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py false
 
 tmp="$(mktemp "${STATE_DIR}/last-stop.XXXXXX")"

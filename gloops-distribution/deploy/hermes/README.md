@@ -138,11 +138,15 @@ slice must flip that barrier after roster, queue, and provider reconciliation.
 root-owned `0600` `CONTROLLED_SWARM_COMMISSIONING_APPROVED` receipt, binds it to
 campaign `controlled-swarm-20260717`, the exact installed image, and governance
 merge `3a5820722e8c6f55d6a1a730cada1cb4f1a1df77`, and verifies the exact
-twelve-role admitted roster plus the paused burst/excluded identities through
-the authenticated board API. It writes a root-owned commissioning receipt,
-atomically flips only the commissioning barrier, restarts Paperclip, proves the
-container received `true`, and requires the campaign epoch to remain unarmed.
-Any failure restores `false` and restarts the inert control plane. Preflight
-accepts `true` only with that exact commissioning receipt. Manual or deadman
-stop atomically restores `false` before dark verification. Only the first
-eligible admitted assignment may arm the epoch.
+sixteen-identity company roster: twelve admitted Hermes roles, two paused burst
+roles, the paused Fourth Pilot Engineer, and the pending Reflection Coach. Every
+admitted role must have the exact timer-disabled/on-demand/concurrency-one
+profile and exactly one campaign protocol through the authenticated board API.
+It writes a root-owned commissioning receipt, atomically flips only the
+commissioning barrier, restarts Paperclip, proves the container received
+`true`, revalidates the complete roster after restart, and requires the campaign
+epoch to remain unarmed. Any failure restores `false`, invalidates the receipt,
+and restarts the inert control plane. Preflight accepts `true` only with that
+exact commissioning receipt. Install, manual stop, and deadman stop invalidate
+the one-use commissioning authority and atomically restore `false` before dark
+verification. Only the first eligible admitted assignment may arm the epoch.
