@@ -737,6 +737,7 @@ function executionRoute(model: string | null) {
     model_id: model,
     transport: "api",
     path_id: model?.includes("/") ? `${providerId}-cloud` : "hermes-gateway",
+    runner: "hermes_gateway",
   };
 }
 

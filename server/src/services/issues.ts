@@ -565,6 +565,7 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -5975,6 +5976,7 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: IssueCreateInput,
+      dbOrTx?: DbTransaction,
     ) => {
       const {
         labelIds: inputLabelIds,
@@ -6006,7 +6008,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const createInTransaction = async (tx: DbTransaction) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -6221,7 +6223,8 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
         return withRelations;
-      });
+      };
+      return dbOrTx ? createInTransaction(dbOrTx) : db.transaction(createInTransaction);
     },
 
     update: async (

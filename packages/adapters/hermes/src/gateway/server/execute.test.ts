@@ -921,6 +921,7 @@ describe("mapFinalResultForTest", () => {
       model_id: "ollama/qwen3-coder",
       transport: "api",
       path_id: "ollama-cloud",
+      runner: "hermes_gateway",
     });
   });
 

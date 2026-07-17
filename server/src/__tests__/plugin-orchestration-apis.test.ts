@@ -260,6 +260,97 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     );
   });
 
+  it("returns one issue and records one create activity for concurrent and replayed idempotent creates", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const request = {
+      companyId,
+      title: "Idempotent child issue",
+      status: "todo" as const,
+      assigneeAgentId: agentId,
+      originId: "mission-idempotent",
+      actorAgentId: agentId,
+      idempotencyKey: "mission:alpha:child:1",
+    };
+
+    const concurrent = await Promise.all(
+      Array.from({ length: 6 }, () => services.issues.create(request)),
+    );
+    const replay = await services.issues.create(request);
+    const issueIds = new Set([...concurrent, replay].map((issue) => issue.id));
+
+    expect(issueIds).toEqual(new Set([concurrent[0]!.id]));
+    const stored = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originId, "mission-idempotent"),
+      ));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.originFingerprint).toMatch(/^plugin-issue-create:v1:[a-f0-9]{64}:[a-f0-9]{64}$/);
+    expect(stored[0]?.originFingerprint).not.toContain(request.idempotencyKey);
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.created"),
+        eq(activityLog.entityId, concurrent[0]!.id),
+      ));
+    expect(activities).toHaveLength(1);
+  });
+
+  it("rejects idempotency collisions while isolating keys by plugin and company", async () => {
+    const first = await seedCompanyAndAgent();
+    const second = await seedCompanyAndAgent();
+    const missions = buildHostServices(db, "missions-plugin-id", "paperclip.missions", createEventBusStub());
+    const planning = buildHostServices(db, "planning-plugin-id", "paperclip.planning", createEventBusStub());
+
+    const original = await missions.issues.create({
+      companyId: first.companyId,
+      title: "Original request",
+      idempotencyKey: "shared-key",
+    });
+    await expect(missions.issues.create({
+      companyId: first.companyId,
+      title: "Changed request",
+      idempotencyKey: "shared-key",
+    })).rejects.toThrow("idempotencyKey was already used with different create parameters");
+
+    const scopeBound = await missions.issues.create({
+      companyId: first.companyId,
+      title: "Scope-bound request",
+      idempotencyKey: "scope-key",
+    });
+    await db
+      .update(issues)
+      .set({ originKind: "plugin:other.plugin" })
+      .where(eq(issues.id, scopeBound.id));
+    await expect(missions.issues.create({
+      companyId: first.companyId,
+      title: "Scope-bound request",
+      idempotencyKey: "scope-key",
+    })).rejects.toThrow("idempotency scope no longer belongs to this plugin");
+
+    const otherPlugin = await planning.issues.create({
+      companyId: first.companyId,
+      title: "Original request",
+      idempotencyKey: "shared-key",
+    });
+    const otherCompany = await missions.issues.create({
+      companyId: second.companyId,
+      title: "Original request",
+      idempotencyKey: "shared-key",
+    });
+
+    expect(otherPlugin.id).not.toBe(original.id);
+    expect(otherCompany.id).not.toBe(original.id);
+    expect(otherPlugin.originKind).toBe("plugin:paperclip.planning");
+    expect(otherCompany.companyId).toBe(second.companyId);
+  });
+
   it("enforces plugin origin namespaces", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
@@ -780,6 +871,11 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           model_id: "ollama/qwen",
           transport: "api",
           path_id: "ollama-cloud",
+          runner: "hermes_gateway",
+          subscription_class: "ollama_max",
+          routing_reason: "cheapest_capable",
+          fallback_occurred: false,
+          execution_profile: "quality-pilot",
         },
       },
     });
@@ -799,9 +895,38 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           modelId: "ollama/qwen",
           transport: "api",
           pathId: "ollama-cloud",
+          runner: "hermes_gateway",
+          subscriptionClass: "ollama_max",
+          routingReason: "cheapest_capable",
+          fallbackOccurred: false,
+          executionProfile: "quality-pilot",
         },
       }),
     ]);
+
+    await db.update(heartbeatRuns).set({
+      resultJson: {
+        execution_metrics: { turns: 1, tool_calls: 0 },
+        execution_route: {
+          provider_id: "ollama",
+          model_id: "ollama/qwen",
+          transport: "api",
+          path_id: "ollama-cloud",
+        },
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    const absent = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(absent.runs[0]?.route).toEqual({
+      providerId: "ollama",
+      modelId: "ollama/qwen",
+      transport: "api",
+      pathId: "ollama-cloud",
+      runner: null,
+      subscriptionClass: null,
+      routingReason: null,
+      fallbackOccurred: null,
+      executionProfile: null,
+    });
 
     await db.update(heartbeatRuns).set({
       resultJson: {

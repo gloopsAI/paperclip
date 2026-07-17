@@ -1250,6 +1250,11 @@ export interface PluginIssueRunSummary {
     modelId: string | null;
     transport: "cli" | "api" | "local";
     pathId: string;
+    runner: string | null;
+    subscriptionClass: string | null;
+    routingReason: string | null;
+    fallbackOccurred: boolean | null;
+    executionProfile: string | null;
   } | null;
 }
 
@@ -1407,6 +1412,12 @@ export interface PluginIssuesClient {
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    /**
+     * Stable caller-supplied identity for this create request. Replays within
+     * the same plugin and company return the original issue. Reusing a key
+     * with different create parameters is rejected.
+     */
+    idempotencyKey?: string | null;
     actor?: PluginIssueMutationActor;
   }): Promise<Issue>;
   update(
