@@ -74,6 +74,41 @@ def _require_path(
         )
 
 
+def _require_protected_directory_chain(
+    root: Path,
+    absolute: str,
+    *,
+    uid: int,
+    gid: int,
+    require_final: bool,
+    label: str,
+) -> None:
+    current = root
+    parts = Path(absolute).parts
+    for index, part in enumerate(parts[1:], start=1):
+        current /= part
+        final = index == len(parts) - 1
+        if not current.exists() and not current.is_symlink():
+            if require_final:
+                raise ReadinessError(f"{label} is unavailable: {current}")
+            return
+        _require_path(
+            current,
+            mode=None,
+            uid=uid,
+            gid=gid,
+            directory=True,
+            label=label,
+        )
+        mode = stat.S_IMODE(current.stat().st_mode)
+        if mode & 0o022 or mode & stat.S_IXOTH == 0:
+            raise ReadinessError(
+                f"{label} chain is not root-protected and traversable: {current}"
+            )
+        if final:
+            return
+
+
 def verify(root: Path, uid: int, gid: int) -> None:
     # DynamicUser has no deployment-specific supplementary group. Every
     # ancestor therefore needs the world-execute bit, not merely a correct
@@ -128,27 +163,18 @@ def verify(root: Path, uid: int, gid: int) -> None:
     )
 
     protected_lookup_dirs = (
-        "/etc",
-        "/etc/systemd",
         "/etc/systemd/system",
-        "/usr/local/lib/systemd",
         "/usr/local/lib/systemd/system",
     )
     for absolute in protected_lookup_dirs:
-        path = _mapped(root, absolute)
-        _require_path(
-            path,
-            mode=None,
+        _require_protected_directory_chain(
+            root,
+            absolute,
             uid=uid,
             gid=gid,
-            directory=True,
+            require_final=True,
             label="systemd lookup directory",
         )
-        mode = stat.S_IMODE(path.stat().st_mode)
-        if mode & 0o022 or mode & stat.S_IXOTH == 0:
-            raise ReadinessError(
-                f"systemd lookup directory is not root-protected and traversable: {path}"
-            )
 
     if not unit_mask.is_symlink() or os.readlink(unit_mask) != "/dev/null":
         raise ReadinessError(
@@ -172,21 +198,14 @@ def verify(root: Path, uid: int, gid: int) -> None:
     )
     overrides = []
     for base in override_roots:
-        base_path = _mapped(root, base)
-        if base_path.exists() or base_path.is_symlink():
-            _require_path(
-                base_path,
-                mode=None,
-                uid=uid,
-                gid=gid,
-                directory=True,
-                label="systemd override search directory",
-            )
-            mode = stat.S_IMODE(base_path.stat().st_mode)
-            if mode & 0o022 or mode & stat.S_IXOTH == 0:
-                raise ReadinessError(
-                    f"systemd override search directory is not root-protected and traversable: {base_path}"
-                )
+        _require_protected_directory_chain(
+            root,
+            base,
+            uid=uid,
+            gid=gid,
+            require_final=False,
+            label="systemd override search directory",
+        )
         if base != "/usr/local/lib/systemd/system" and base != "/etc/systemd/system":
             overrides.append(_mapped(root, f"{base}/{UNIT}"))
         for relative in (*DROPIN_DIRS, *DEPENDENCY_DIRS):

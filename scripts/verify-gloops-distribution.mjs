@@ -1193,7 +1193,7 @@ for (const required of [
   "EXPECTED_UNIT_SHA256",
   "proxy ancestor is not traversable by DynamicUser",
   "proxy ancestor is writable outside root",
-  "systemd lookup directory is not root-protected and traversable",
+  "chain is not root-protected and traversable",
   "higher-precedence egress unit override exists",
   "paperclip-.service.d",
   "service.d",

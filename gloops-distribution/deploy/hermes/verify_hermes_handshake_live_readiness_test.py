@@ -110,6 +110,11 @@ class LiveReadinessTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ReadinessError, "higher-precedence"):
             self.verify()
 
+    def test_rejects_writable_systemd_search_ancestor(self) -> None:
+        (self.root / "run/systemd").chmod(0o777)
+        with self.assertRaisesRegex(MODULE.ReadinessError, "override search directory chain"):
+            self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()
