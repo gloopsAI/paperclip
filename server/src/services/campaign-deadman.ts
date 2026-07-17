@@ -203,4 +203,3 @@ export async function admitCampaignRun(
     epochSha256: response.epochSha256,
   };
 }
-

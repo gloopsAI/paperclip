@@ -32,6 +32,16 @@ for bound_unit in \
   "${repo_root}/gloops-distribution/deploy/hermes/paperclip-hermes-execution.service"; do
   grep -Fq 'BindsTo=paperclip-campaign-deadman.service' "${bound_unit}"
 done
+rollback_script="${repo_root}/gloops-distribution/deploy/hermes/rollback.sh"
+backup_script="${repo_root}/gloops-distribution/deploy/hermes/backup-dark.sh"
+grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${backup_script}"
+if grep -Fq 'rm -rf /var/lib/paperclip-gloops/campaign-deadman' "${rollback_script}"; then
+  echo "Refusing canaries because rollback deletes durable campaign epoch evidence" >&2
+  exit 1
+fi
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
   echo "Refusing canaries with Grok/xAI API configuration present" >&2
   exit 1
@@ -60,6 +70,7 @@ pnpm exec vitest run \
   -t 'accepts terminal truth only from a capability-scoped plugin projection bound to the run'
 python3 -m unittest \
   gloops-distribution/deploy/hermes/campaign_deadman_test.py
+gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
 
 head_sha="$(git rev-parse HEAD)"
 evidence_sha="$(
@@ -93,6 +104,10 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service \
     gloops-distribution/deploy/hermes/paperclip-hermes-execution.service \
     gloops-distribution/deploy/hermes/install-dark.sh \
+    gloops-distribution/deploy/hermes/backup-dark.sh \
+    gloops-distribution/deploy/hermes/rollback.sh \
+    gloops-distribution/deploy/hermes/verify-rollback-dark.sh \
+    gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh \
     gloops-distribution/deploy/hermes/preflight.sh \
     gloops-distribution/deploy/hermes/rehearse-zero-work.sh \
     gloops-distribution/deploy/hermes/verify-dark.sh \
@@ -127,6 +142,8 @@ cat <<JSON
     "deadmanDenialPreventsAdapterInvocation": "passed",
     "campaignEpochSurvivesRestartWithoutRenewal": "passed",
     "campaignExpiryRejectsFurtherAdmission": "passed",
+    "rollbackRefusesActiveCampaignDeadman": "passed",
+    "rollbackCannotCertifySurvivingDeadmanSocket": "passed",
     "historicalIssueReplayIsRejected": "passed",
     "historicalRetryPromotionIsRejected": "passed",
     "boundedRecoveryDriverExcludesTimersAndRoutines": "passed",
