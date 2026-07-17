@@ -46,9 +46,11 @@ def _require_path(
     label: str,
 ) -> None:
     try:
-        value = path.stat()
+        value = path.lstat()
     except OSError as exc:
         raise ReadinessError(f"{label} is unavailable: {path}: {exc}") from exc
+    if stat.S_ISLNK(value.st_mode):
+        raise ReadinessError(f"{label} must not be a symbolic link: {path}")
     if directory and not stat.S_ISDIR(value.st_mode):
         raise ReadinessError(f"{label} is not a directory: {path}")
     if not directory and not stat.S_ISREG(value.st_mode):
@@ -82,6 +84,10 @@ def verify(root: Path, uid: int, gid: int) -> None:
             raise ReadinessError(
                 f"proxy ancestor is not traversable by DynamicUser: {path}"
             )
+        if stat.S_IMODE(path.stat().st_mode) & 0o022:
+            raise ReadinessError(
+                f"proxy ancestor is writable outside root and cannot protect its child path: {path}"
+            )
 
     lib_dir = _mapped(root, "/usr/local/lib/paperclip-gloops")
     proxy = lib_dir / "hermes-handshake-egress-proxy.py"
@@ -113,6 +119,29 @@ def verify(root: Path, uid: int, gid: int) -> None:
         label="installed egress unit",
     )
 
+    protected_lookup_dirs = (
+        "/etc",
+        "/etc/systemd",
+        "/etc/systemd/system",
+        "/usr/local/lib/systemd",
+        "/usr/local/lib/systemd/system",
+    )
+    for absolute in protected_lookup_dirs:
+        path = _mapped(root, absolute)
+        _require_path(
+            path,
+            mode=None,
+            uid=uid,
+            gid=gid,
+            directory=True,
+            label="systemd lookup directory",
+        )
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & 0o022 or mode & stat.S_IXOTH == 0:
+            raise ReadinessError(
+                f"systemd lookup directory is not root-protected and traversable: {path}"
+            )
+
     if not unit_mask.is_symlink() or os.readlink(unit_mask) != "/dev/null":
         raise ReadinessError(
             f"egress unit is not masked by the exact /dev/null link: {unit_mask}"
@@ -131,11 +160,25 @@ def verify(root: Path, uid: int, gid: int) -> None:
         "/run/systemd/generator",
         "/usr/local/lib/systemd/system",
         "/usr/lib/systemd/system",
-        "/lib/systemd/system",
         "/run/systemd/generator.late",
     )
     overrides = []
     for base in override_roots:
+        base_path = _mapped(root, base)
+        if base_path.exists() or base_path.is_symlink():
+            _require_path(
+                base_path,
+                mode=None,
+                uid=uid,
+                gid=gid,
+                directory=True,
+                label="systemd override search directory",
+            )
+            mode = stat.S_IMODE(base_path.stat().st_mode)
+            if mode & 0o022 or mode & stat.S_IXOTH == 0:
+                raise ReadinessError(
+                    f"systemd override search directory is not root-protected and traversable: {base_path}"
+                )
         if base != "/usr/local/lib/systemd/system" and base != "/etc/systemd/system":
             overrides.append(_mapped(root, f"{base}/{UNIT}"))
         overrides.append(_mapped(root, f"{base}/{UNIT}.d"))

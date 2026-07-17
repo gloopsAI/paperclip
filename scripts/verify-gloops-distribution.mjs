@@ -1192,6 +1192,8 @@ if (!readFileSync(installDarkPath, "utf8").includes(
 for (const required of [
   "EXPECTED_UNIT_SHA256",
   "proxy ancestor is not traversable by DynamicUser",
+  "proxy ancestor is writable outside root",
+  "systemd lookup directory is not root-protected and traversable",
   "higher-precedence egress unit override exists",
   "installed egress unit hash",
   "RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK",

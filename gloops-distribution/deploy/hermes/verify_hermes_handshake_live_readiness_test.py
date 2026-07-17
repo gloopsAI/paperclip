@@ -60,6 +60,24 @@ class LiveReadinessTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ReadinessError, "not traversable by DynamicUser"):
             self.verify()
 
+    def test_rejects_world_writable_proxy_ancestor(self) -> None:
+        ancestor = self.root / "usr/local/lib"
+        ancestor.chmod(0o777)
+        with self.assertRaisesRegex(MODULE.ReadinessError, "writable outside root"):
+            self.verify()
+
+    def test_rejects_world_writable_unit_parent(self) -> None:
+        parent = self.root / "usr/local/lib/systemd/system"
+        parent.chmod(0o777)
+        with self.assertRaisesRegex(MODULE.ReadinessError, "systemd lookup directory"):
+            self.verify()
+
+    def test_rejects_world_writable_mask_parent(self) -> None:
+        parent = self.root / "etc/systemd/system"
+        parent.chmod(0o777)
+        with self.assertRaisesRegex(MODULE.ReadinessError, "systemd lookup directory"):
+            self.verify()
+
     def test_rejects_stale_installed_unit(self) -> None:
         unit = self.root / f"usr/local/lib/systemd/system/{MODULE.UNIT}"
         unit.write_text(
