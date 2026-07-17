@@ -626,6 +626,14 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const toolDispatcher = {
       registerPluginTools: vi.fn(),
     };
+    const jobScheduler = {
+      registerPlugin: vi.fn().mockResolvedValue(undefined),
+      unregisterPlugin: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+    };
+    const jobStore = {
+      syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
+    };
     const loader = pluginLoader(db, {
       enableLocalFilesystem: false,
       enableNpmDiscovery: false,
@@ -635,13 +643,8 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
         forPlugin: vi.fn(() => ({})),
         subscriptionCount: vi.fn(() => 0),
       },
-      jobScheduler: {
-        registerPlugin: vi.fn().mockResolvedValue(undefined),
-        stop: vi.fn(),
-      },
-      jobStore: {
-        syncJobDeclarations: vi.fn().mockResolvedValue(undefined),
-      },
+      jobScheduler,
+      jobStore,
       toolDispatcher,
       lifecycleManager: {
         markError: vi.fn().mockResolvedValue(undefined),
@@ -658,6 +661,11 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const result = await loader.loadSingle(pluginId);
 
     expect(result.success).toBe(true);
+    const startOrder = workerManager.startWorker.mock.invocationCallOrder[0]!;
+    expect(jobStore.syncJobDeclarations).toHaveBeenNthCalledWith(1, pluginId, []);
+    expect(jobStore.syncJobDeclarations.mock.invocationCallOrder[0]).toBeLessThan(startOrder);
+    expect(jobScheduler.unregisterPlugin.mock.invocationCallOrder[0]).toBeLessThan(startOrder);
+    expect(jobScheduler.unregisterPlugin.mock.invocationCallOrder[1]).toBeLessThan(startOrder);
     expect(workerManager.startWorker).toHaveBeenCalledWith(
       pluginId,
       expect.objectContaining({
@@ -678,6 +686,9 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       }),
       pluginId,
     );
+    expect(jobStore.syncJobDeclarations).toHaveBeenLastCalledWith(pluginId, []);
+    expect(jobScheduler.unregisterPlugin).toHaveBeenCalledWith(pluginId);
+    expect(jobScheduler.registerPlugin).not.toHaveBeenCalled();
     const [plugin] = await db
       .select()
       .from(plugins)

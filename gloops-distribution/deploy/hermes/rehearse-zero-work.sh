@@ -164,7 +164,11 @@ timeout --signal=TERM --kill-after=5s 180s docker exec \
         wakeups: (await tx`select count(*)::int as count from agent_wakeup_requests where created_at >= ${since}`)[0].count,
         recoveryActions: (await tx`select count(*)::int as count from issue_recovery_actions where created_at >= ${since}`)[0].count,
         costEvents: (await tx`select count(*)::int as count from cost_events where created_at >= ${since}`)[0].count,
-        pluginJobs: (await tx`select count(*)::int as count from plugin_jobs`)[0].count,
+        // Installed plugins may already own deterministic control-plane jobs.
+        // Zero-work proves that startup creates no new job registration; it
+        // must not reject a pre-existing, operator-installed job merely
+        // because the durable row predates this closed interval.
+        pluginJobs: (await tx`select count(*)::int as count from plugin_jobs where created_at >= ${since}`)[0].count,
         pluginJobRuns: (await tx`select count(*)::int as count from plugin_job_runs where created_at >= ${since}`)[0].count,
       };
       process.stdout.write(`${JSON.stringify({ since, counts })}\n`);
