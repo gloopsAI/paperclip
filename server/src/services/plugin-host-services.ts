@@ -74,7 +74,8 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { sanitizeRecord } from "../redaction.js";
+import { redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import { HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS } from "./heartbeat-run-summary.js";
 import {
   PAPERCLIP_EXECUTION_RECEIPT_KEY,
   evaluateExecutionTruthTransition,
@@ -771,6 +772,9 @@ export function buildHostServices(
       const result = isRecord(row.resultJson) ? row.resultJson : {};
       const metrics = isRecord(result.execution_metrics) ? result.execution_metrics : null;
       const route = isRecord(result.execution_route) ? result.execution_route : null;
+      const resultSummary = typeof result.summary === "string"
+        ? redactSensitiveText(result.summary).slice(0, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)
+        : null;
       const number = (value: unknown) => typeof value === "number" && Number.isFinite(value)
         ? Math.max(0, Math.floor(value))
         : 0;
@@ -796,6 +800,7 @@ export function buildHostServices(
         createdAt: row.createdAt.toISOString(),
         lastOutputAt: row.lastOutputAt?.toISOString() ?? null,
         contextInputBytes,
+        resultSummary,
         usage: {
           inputTokens: number(usage.inputTokens ?? usage.input_tokens),
           cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),

@@ -773,6 +773,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       lastOutputAt: new Date("2026-07-14T19:00:50.000Z"),
       usageJson: { inputTokens: 1_200, cachedInputTokens: 100, outputTokens: 300 },
       resultJson: {
+        summary: 'PAPERCLIP_SWARM_V1:{"action":"review_ready"}',
         execution_metrics: { turns: 4, tool_calls: 9 },
         execution_route: {
           provider_id: "ollama",
@@ -790,6 +791,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       expect.objectContaining({
         id: runId,
         contextInputBytes: Buffer.byteLength(JSON.stringify(contextSnapshot), "utf8"),
+        resultSummary: 'PAPERCLIP_SWARM_V1:{"action":"review_ready"}',
         usage: { inputTokens: 1_200, cachedInputTokens: 100, outputTokens: 300 },
         executionMetrics: { turns: 4, toolCalls: 9 },
         route: {
@@ -808,7 +810,38 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       },
     }).where(eq(heartbeatRuns.id, runId));
     const missing = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
-    expect(missing.runs[0]).toMatchObject({ executionMetrics: null, route: null });
+    expect(missing.runs[0]).toMatchObject({ resultSummary: null, executionMetrics: null, route: null });
+  });
+
+  it("redacts and bounds run summaries before projecting them to plugins", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Secret-safe run summary",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
+      resultJson: {
+        summary: `Authorization: Bearer ghp_${"s".repeat(40)} ${"x".repeat(700)}`,
+      },
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const summary = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+
+    expect(summary.runs[0]?.resultSummary).toHaveLength(500);
+    expect(summary.runs[0]?.resultSummary).toContain("***REDACTED***");
+    expect(summary.runs[0]?.resultSummary).not.toContain(`ghp_${"s".repeat(40)}`);
   });
 
   it("narrows orchestration cost summaries by subtree and billing code", async () => {

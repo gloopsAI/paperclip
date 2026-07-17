@@ -1229,6 +1229,13 @@ export interface PluginIssueRunSummary {
   lastOutputAt?: string | null;
   /** UTF-8 byte length of the persisted run context snapshot; content is not exposed. */
   contextInputBytes?: number;
+  /**
+   * Secret-redacted, bounded terminal summary emitted by the adapter.
+   * The host currently caps this at 500 characters. Plugins must treat it as
+   * untrusted agent output and bind any action to the authoritative run,
+   * issue, and actor identities before use.
+   */
+  resultSummary?: string | null;
   usage?: {
     inputTokens: number;
     cachedInputTokens: number;
