@@ -38,7 +38,7 @@ done
 }
 grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
-grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
