@@ -36,8 +36,9 @@ readonly -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
   [PAPERCLIP_CAMPAIGN_DURATION_SECONDS]='86400'
   [PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
+  [PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED]='false'
   [HEARTBEAT_SCHEDULER_ENABLED]='false'
-  [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='true'
+  [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
   [PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS]='4'
   [PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE]='2026-07-17T04:55:56.000Z'
@@ -63,7 +64,8 @@ systemctl is-active --quiet paperclip-campaign-deadman.service || {
 }
 /usr/local/lib/paperclip-gloops/verify-campaign-deadman.py \
   --socket "${CAMPAIGN_DEADMAN_SOCKET}" \
-  --campaign-id "${PAPERCLIP_CAMPAIGN_ID}"
+  --campaign-id "${PAPERCLIP_CAMPAIGN_ID}" \
+  --wait-seconds 15
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1

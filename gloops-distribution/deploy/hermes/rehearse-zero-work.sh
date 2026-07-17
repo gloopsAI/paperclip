@@ -37,10 +37,11 @@ done
   exit 1
 }
 grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
-grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 
 evidence_output="$(mktemp)"
@@ -115,7 +116,9 @@ systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
 # cached definition.
 systemctl daemon-reload
 systemctl start "${DEADMAN_UNIT}"
-/usr/local/lib/paperclip-gloops/verify-campaign-deadman.py
+/usr/local/lib/paperclip-gloops/verify-campaign-deadman.py \
+  --wait-seconds 15 \
+  --require-status unarmed
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 systemctl start "${HERMES_UNIT}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"

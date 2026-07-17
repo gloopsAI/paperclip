@@ -20,7 +20,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - Hermes command scanning uses Tirith 0.3.3 from a root-owned, read-only mount with pinned archive and binary SHA-256 digests. It is provisioned during the explicit dark-install release step; runtime auto-download is disabled by the explicit scanner path. The execution image is a network-free derivative of the exact upstream Hermes image with one source-guarded correction: the scanner circuit breaker obeys `tirith_fail_open: false`. The accepted image is distributed as a root-only, SHA-256-pinned Docker archive and copied into every cold rollback backup, so installation does not depend on a mutable tag or a locally reproducible rebuild. Installation and every activation preflight induce the full three-failure circuit-open sequence and reject the image unless the next dangerous command remains blocked.
 - Failure notifications are event-driven through the existing private Slack and AgentMail transports; no polling timer is installed.
 - A claim-time task execution gate applies one atomic run, retry, token, and wall-time budget across scheduler, continuation, and recovery paths. The controlled-swarm profile permits three runs and two retries per task, with fixed task ceilings of 50,000 input tokens, 16,000 output tokens, and 3,600,000 milliseconds. Each provider invocation is separately capped at 30,000 input tokens, 8,000 output tokens, eight turns, and 32 tool calls. A transaction-level company gate permits no more than four running heartbeats, and a fixed campaign cutoff makes all older issues ineligible across assignment, queued-run, scheduler, continuation, watchdog, and recovery paths. An exhausted task is terminally denied before adapter invocation; only an explicit user-authored reset epoch opens a new task budget.
-- The global heartbeat/routine scheduler remains disabled. A separate single-flight bounded execution-recovery driver may only reap stale running rows, promote already-admitted scheduled retries, and drain already-admitted queued runs. Company queue pumps remain serialized for their full duration so slow drains cannot defeat cross-agent round-robin fairness; claim-time cancellation defers its follow-on drain until the owning pump and agent lock can release, preventing self-reentrant deadlock. The driver does not tick agent timers, routines, issue monitors, watchdogs, productivity reviews, or other broad reconciliation paths. The issue-created cutoff prevents historical work from becoming eligible.
+- The global heartbeat/routine scheduler remains disabled. The single-flight bounded execution-recovery driver is installed but remains disabled for inert activation; enabling it requires a later independently reviewed commissioning slice after queue reconciliation. When commissioned, it may only reap stale running rows, promote already-admitted scheduled retries, and drain already-admitted queued runs. Company queue pumps remain serialized for their full duration so slow drains cannot defeat cross-agent round-robin fairness; claim-time cancellation defers its follow-on drain until the owning pump and agent lock can release, preventing self-reentrant deadlock. The driver does not tick agent timers, routines, issue monitors, watchdogs, productivity reviews, or other broad reconciliation paths. The issue-created cutoff prevents historical work from becoming eligible.
 - Every queued-to-running transition must obtain a receipt from the root-owned campaign deadman over its read-only Unix-socket mount. The first eligible claim atomically writes a root-owned, mode-0600, immutable epoch with an exact 24-hour deadline; later claims reuse that deadline, and service, process, host, marker, or partial-result restarts cannot renew it. Missing, malformed, mismatched, or expired receipts roll the database claim back before adapter invocation. The execution units are bound to the broker lifecycle, and its independent host monitor removes activation markers and stops Paperclip and Hermes at expiry. A new execution window requires a new operator-granted campaign identifier and a new dark-install/review cycle.
 - The controlled swarm may diagnose, implement, test, independently review, and prepare rollback-ready repairs to its own runtime. It cannot mutate the root deadman state, campaign identity, service definition, credentials, authority ceilings, security boundary, or production promotion gate. Self-repair therefore produces an independently accepted promotion packet; it does not silently self-promote.
 - A source change that affects the runtime ships with `PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true`. Live preflight refuses activation until a separate release-pin change binds the accepted source merge to its published immutable image digest and flips that interlock to `false`. Source canaries are not installation proof.
@@ -92,17 +92,45 @@ sudo ./rollback.sh --check /opt/paperclip/backups/dark-install-YYYYMMDDTHHMMSSZ
 
 `--restore` is a reserved operator action. It restores the prior state and legacy unit definition but intentionally leaves every Paperclip service disabled.
 
-## Reserved pilot activation
+## Controlled-swarm rehearsal and activation
 
-Activation is not part of dark installation. A later operator-approved quality pilot must, in order:
+Activation is not part of dark installation. After the accepted source is
+published and a separate release-pin change binds its immutable digest, run the
+root-only controls in this order:
 
-1. pass the backup, release, and dark-state receipts;
-2. record the vulnerability reachability/fixability disposition and show no unmitigated activation-blocking finding;
-3. re-verify tailnet-only HTTPS on port 8443, with no Funnel exposure;
-4. prove Maximum Token Efficiency remains default-off and remove or disable every Grok/xAI API configuration; later Grok work may use only the separately governed CLI path;
-5. unmask and start `paperclip-campaign-deadman.service`, then verify that it is either unarmed or active on the exact accepted, unexpired epoch;
-6. create `/etc/paperclip-gloops/ACTIVATION_APPROVED` containing the approval receipt identifier;
-7. unmask and start `paperclip-gloops.service` explicitly;
-8. prove authenticated health, zero initial agent/routine activity, and failure-alert delivery before issuing work.
+```bash
+sudo /usr/local/lib/paperclip-gloops/rehearse-campaign-deadman.py
+sudo PAPERCLIP_ZERO_WORK_OBSERVE_SECONDS=60 \
+  /usr/local/lib/paperclip-gloops/rehearse-zero-work.sh
+# Write a root:root 0600, four-hour-or-shorter approval receipt bound to the
+# exact approved image and rehearsal receipt path + SHA-256.
+sudo /usr/local/lib/paperclip-gloops/activate-controlled-swarm.sh
+```
 
-The activation marker alone is insufficient because the unit remains masked after installation.
+The accelerated deadman rehearsal executes the exact installed broker against
+an isolated harmless transient systemd target. It proves the logical 24-hour
+epoch is root-owned, immutable, non-renewing across restart, stops the target at
+expiry, and denies later admission without starting Paperclip or invoking a
+provider. Activation accepts only a recent receipt bound to the exact installed
+broker, stop actuator, and approved image. It consumes the one-use operator
+approval only after Paperclip, Hermes, and the deadman pass their live
+readiness barriers.
+
+The activation approval schema is
+`gloops.controlled-swarm-activation-approval.v1`. It authorizes only
+`activate_inert_control_plane`, names campaign `controlled-swarm-20260717`,
+binds the exact approved image and rehearsal receipt path/digest, and carries
+`authorizedAt` plus an `expiresAt` no more than four hours later. Dark install
+and every activation attempt consume it, including failed attempts; it cannot
+cross a release, rehearsal, or retry boundary.
+
+`observe-controlled-swarm.py` is read-only. `stop-controlled-swarm.sh` removes
+the runtime markers, stops the execution units, preserves any production epoch
+as evidence, masks the governed units, and requires the complete dark verifier
+to pass. Neither control creates work, unpauses agents, changes the roster, or
+arms the campaign epoch. Inert activation also keeps
+`PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false`, so explicit authenticated
+admission and adapter invocation remain mechanically denied while the
+activation receipt is produced. A separate independently reviewed commissioning
+slice must flip that barrier after roster, queue, and provider reconciliation;
+only then can the first eligible admitted assignment arm the epoch.

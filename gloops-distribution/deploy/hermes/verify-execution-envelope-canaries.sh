@@ -7,12 +7,13 @@ runtime_env="${repo_root}/gloops-distribution/deploy/hermes/runtime.env"
 for expected_runtime_line in \
   'PAPERCLIP_MTE_ENABLED=false' \
   'HEARTBEAT_SCHEDULER_ENABLED=false' \
-  'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' \
-  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' \
+  'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' \
+  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' \
   'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' \
   'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' \
+  'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' \
   'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' \
   'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' \
   'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' \
@@ -69,7 +70,8 @@ pnpm exec vitest run \
   server/src/__tests__/plugin-orchestration-apis.test.ts \
   -t 'accepts terminal truth only from a capability-scoped plugin projection bound to the run'
 python3 -m unittest \
-  gloops-distribution/deploy/hermes/campaign_deadman_test.py
+  gloops-distribution/deploy/hermes/campaign_deadman_test.py \
+  gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py
 gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
 
 head_sha="$(git rev-parse HEAD)"
@@ -97,8 +99,14 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/runtime.env \
     gloops-distribution/deploy/hermes/campaign-deadman.py \
     gloops-distribution/deploy/hermes/campaign_deadman_test.py \
+    gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py \
     gloops-distribution/deploy/hermes/campaign-deadman-stop.sh \
+    gloops-distribution/deploy/hermes/campaign-deadman-rehearsal-stop.sh \
     gloops-distribution/deploy/hermes/verify-campaign-deadman.py \
+    gloops-distribution/deploy/hermes/rehearse-campaign-deadman.py \
+    gloops-distribution/deploy/hermes/activate-controlled-swarm.sh \
+    gloops-distribution/deploy/hermes/stop-controlled-swarm.sh \
+    gloops-distribution/deploy/hermes/observe-controlled-swarm.py \
     gloops-distribution/deploy/hermes/paperclip-campaign-deadman.service \
     gloops-distribution/deploy/hermes/paperclip-gloops.service \
     gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service \
@@ -123,7 +131,7 @@ cat <<JSON
   "providersInvoked": false,
   "paperclipActivated": false,
   "installedImageVerified": false,
-  "activationInterlock": "immutable_release_pin_bound",
+  "activationInterlock": "release_pin_required",
   "mteActivated": false,
   "scenarios": {
     "millionTokenPromptRefusedBeforeDispatch": "passed",
@@ -140,8 +148,13 @@ cat <<JSON
     "claimCancellationDoesNotReenterCompanyPump": "passed",
     "firstClaimBindsHostOwnedCampaignEpoch": "passed",
     "deadmanDenialPreventsAdapterInvocation": "passed",
+    "uncommissionedSwarmDeniesAdapterInvocation": "passed",
     "campaignEpochSurvivesRestartWithoutRenewal": "passed",
     "campaignExpiryRejectsFurtherAdmission": "passed",
+    "deadmanReadinessRaceIsBoundedAndFailClosed": "passed",
+    "acceleratedHostDeadmanRehearsalIsInstalled": "passed",
+    "activationRequiresExactRecentRehearsal": "passed",
+    "manualStopRestoresVerifiedDarkState": "passed",
     "rollbackRefusesActiveCampaignDeadman": "passed",
     "rollbackCannotCertifySurvivingDeadmanSocket": "passed",
     "historicalIssueReplayIsRejected": "passed",

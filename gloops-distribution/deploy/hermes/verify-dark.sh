@@ -33,6 +33,30 @@ if [[ -S /run/paperclip-campaign/deadman.sock ]]; then
 else
   echo "PASS campaign deadman socket is absent while dark"
 fi
+if systemctl is-active --quiet paperclip-campaign-deadman-rehearsal-target.service \
+  || [[ -e /run/paperclip-campaign-rehearsal ]] \
+  || find /var/lib/paperclip-gloops/campaign-deadman-rehearsal \
+    -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+  echo "FAIL campaign deadman rehearsal state remains while dark" >&2
+  failed=1
+else
+  echo "PASS campaign deadman rehearsal target and runtime state are absent"
+fi
+for installed_control in \
+  /usr/local/lib/paperclip-gloops/campaign-deadman-rehearsal-stop.sh \
+  /usr/local/lib/paperclip-gloops/rehearse-campaign-deadman.py \
+  /usr/local/lib/paperclip-gloops/activate-controlled-swarm.sh \
+  /usr/local/lib/paperclip-gloops/stop-controlled-swarm.sh \
+  /usr/local/lib/paperclip-gloops/observe-controlled-swarm.py; do
+  installed_control_stat="$(stat -c '%a:%U:%G' "${installed_control}" 2>/dev/null || true)"
+  if [[ -f "${installed_control}" ]] \
+    && [[ "${installed_control_stat}" =~ ^(555|755):root:root$ ]]; then
+    echo "PASS installed controlled-swarm control is root-owned and protected: ${installed_control}"
+  else
+    echo "FAIL installed controlled-swarm control is missing or mutable: ${installed_control}" >&2
+    failed=1
+  fi
+done
 epoch_invalid=0
 while IFS= read -r epoch_file; do
   [[ "$(stat -c '%a:%U:%G' "${epoch_file}" 2>/dev/null || true)" == '600:root:root' ]] \
@@ -362,13 +386,14 @@ else
   failed=1
 fi
 
-if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloops/runtime.env \
+if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' /etc/paperclip-gloops/runtime.env \

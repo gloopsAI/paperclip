@@ -10219,6 +10219,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "company_wip_deferred" as const, observed, limit };
           }
         }
+        if (!controlledSwarmAdmissionPolicy.commissioned) {
+          throw new Error("controlled swarm is not commissioned for execution");
+        }
         const campaignEpoch = campaignDeadmanPolicy
           ? await campaignDeadmanAdmission(campaignDeadmanPolicy, {
             companyId: run.companyId,
@@ -10407,6 +10410,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : { kind: "lost_race" as const };
       }
 
+      if (!controlledSwarmAdmissionPolicy.commissioned) {
+        throw new Error("controlled swarm is not commissioned for execution");
+      }
       const campaignEpoch = campaignDeadmanPolicy
         ? await campaignDeadmanAdmission(campaignDeadmanPolicy, {
           companyId: run.companyId,
