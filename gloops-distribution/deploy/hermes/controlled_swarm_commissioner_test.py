@@ -28,6 +28,7 @@ def exact_roster() -> list[dict[str, object]]:
                 "status": "paused",
                 "adapterType": "hermes_gateway",
                 "adapterConfig": {
+                    **MODULE.EXECUTION_ROUTE,
                     "instructions": MODULE.compact_instructions(name),
                 },
                 "runtimeConfig": {
@@ -58,12 +59,16 @@ def legacy_roster() -> list[dict[str, object]]:
     agents = exact_roster()
     for agent in agents:
         if agent["name"] in MODULE.ADMITTED:
-            agent["adapterConfig"]["instructions"] = (
-                "legacy autonomous-agent context\n" * 400
-                + f"{MODULE.PROTOCOL_START}\n"
-                + f"campaign {MODULE.CAMPAIGN_ID}\n"
-                + f"{MODULE.PROTOCOL_END}"
-            )
+            agent["adapterConfig"] = {
+                "apiBaseUrl": "http://127.0.0.1:8642",
+                "timeoutSec": 600,
+                "instructions": (
+                    "legacy autonomous-agent context\n" * 400
+                    + f"{MODULE.PROTOCOL_START}\n"
+                    + f"campaign {MODULE.CAMPAIGN_ID}\n"
+                    + f"{MODULE.PROTOCOL_END}"
+                ),
+            }
     return agents
 
 
@@ -87,7 +92,8 @@ class FakePlatform:
         self.restart_count = 0
         self.barrier = False
         self.calls: list[str] = []
-        self.instruction_updates: list[tuple[str, str]] = []
+        self.config_updates: list[tuple[str, dict[str, object], bool]] = []
+        self.expected_journal: Path | None = None
 
     def is_active(self, unit: str) -> bool:
         self.calls.append(f"is_active:{unit}")
@@ -109,18 +115,30 @@ class FakePlatform:
         self.calls.append("fetch_agents")
         return self.rosters.pop(0)
 
-    def set_agent_instructions(
+    def set_agent_adapter_config(
         self,
         token: str,
         agent_id: str,
-        instructions: str,
+        adapter_config: dict[str, object],
+        *,
+        replace: bool,
     ) -> None:
-        self.calls.append(f"set_instructions:{agent_id}")
-        self.instruction_updates.append((agent_id, instructions))
+        if not replace and self.expected_journal is not None:
+            if not self.expected_journal.exists():
+                raise AssertionError("adapter mutation occurred before durable journal")
+        self.calls.append(f"set_adapter_config:{agent_id}:{str(replace).lower()}")
+        self.config_updates.append(
+            (agent_id, copy.deepcopy(adapter_config), replace),
+        )
         for roster in self.rosters:
             for agent in roster:
                 if agent["id"] == agent_id:
-                    agent["adapterConfig"]["instructions"] = instructions
+                    if replace:
+                        agent["adapterConfig"] = copy.deepcopy(adapter_config)
+                    else:
+                        agent["adapterConfig"].update(
+                            copy.deepcopy(adapter_config),
+                        )
 
     def inspect_commissioned(self) -> bool:
         self.calls.append("inspect")
@@ -173,6 +191,7 @@ class CommissionerTest(unittest.TestCase):
         self.paths.approval.chmod(0o600)
 
     def commissioner(self, platform: FakePlatform) -> object:
+        platform.expected_journal = self.paths.rollback_journal
         return MODULE.Commissioner(
             self.paths,
             platform,
@@ -186,10 +205,11 @@ class CommissionerTest(unittest.TestCase):
         self.assertEqual(platform.restart_count, 1)
         self.assertEqual(platform.calls.count("fetch_agents"), 3)
         self.assertEqual(
-            sum(call.startswith("set_instructions:") for call in platform.calls),
+            sum(call.startswith("set_adapter_config:") for call in platform.calls),
             len(MODULE.ADMITTED),
         )
         self.assertTrue(self.paths.receipt.exists())
+        self.assertFalse(self.paths.rollback_journal.exists())
         receipt = json.loads(self.paths.receipt.read_text(encoding="utf-8"))
         self.assertEqual(
             receipt["instructionSet"]["schemaVersion"],
@@ -203,6 +223,7 @@ class CommissionerTest(unittest.TestCase):
             receipt["instructionSet"]["reductionBasisPoints"],
             5000,
         )
+        self.assertEqual(receipt["executionRoute"], MODULE.EXECUTION_ROUTE)
         self.assertFalse(self.paths.approval.exists())
         self.assertFalse(
             any("provider" in call.lower() for call in platform.calls),
@@ -226,6 +247,28 @@ class CommissionerTest(unittest.TestCase):
                     r"^sha256:[0-9a-f]{64}$",
                 )
 
+    def test_compact_roster_rejects_provider_or_gateway_drift(self) -> None:
+        for key, value in (
+            ("provider", "grok"),
+            ("apiBaseUrl", "http://127.0.0.1:8642"),
+            ("model", "unexpected"),
+        ):
+            with self.subTest(key=key):
+                roster = exact_roster()
+                mason = next(
+                    agent for agent in roster
+                    if agent["name"] == "Mason"
+                )
+                mason["adapterConfig"][key] = value
+                with self.assertRaisesRegex(
+                    MODULE.CommissioningError,
+                    "exact paused charter",
+                ):
+                    MODULE.validate_roster(
+                        roster,
+                        require_compact_instructions=True,
+                    )
+
     def test_existing_compact_instructions_are_revalidated_without_rewrite(self) -> None:
         platform = FakePlatform([
             exact_roster(),
@@ -233,7 +276,7 @@ class CommissionerTest(unittest.TestCase):
             exact_roster(),
         ])
         self.commissioner(platform).run()
-        self.assertEqual(platform.instruction_updates, [])
+        self.assertEqual(platform.config_updates, [])
         self.assertTrue(platform.barrier)
         receipt = json.loads(self.paths.receipt.read_text(encoding="utf-8"))
         self.assertFalse(receipt["instructionSet"]["changed"])
@@ -286,12 +329,99 @@ class CommissionerTest(unittest.TestCase):
         drifted = copy.deepcopy(exact_roster())
         mason = next(agent for agent in drifted if agent["name"] == "Mason")
         mason["runtimeConfig"]["heartbeat"]["maxConcurrentRuns"] = 2
-        platform = FakePlatform([legacy_roster(), exact_roster(), drifted])
+        platform = FakePlatform([
+            legacy_roster(),
+            exact_roster(),
+            drifted,
+            exact_roster(),
+        ])
         with self.assertRaises(MODULE.CommissioningError):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
         self.assertEqual(platform.restart_count, 2)
         self.assertFalse(self.paths.receipt.exists())
+
+    def test_receipt_and_live_verification_reject_route_or_instruction_drift(
+        self,
+    ) -> None:
+        platform = FakePlatform()
+        self.commissioner(platform).run()
+        MODULE.verify_commissioned_state(
+            self.paths,
+            FakePlatform([exact_roster()]),
+            live=True,
+            enforce_root_ownership=False,
+        )
+
+        original = json.loads(self.paths.receipt.read_text(encoding="utf-8"))
+        for mutation in ("route", "instructions", "malformed-agent-list"):
+            with self.subTest(mutation=mutation):
+                receipt = copy.deepcopy(original)
+                if mutation == "route":
+                    receipt["executionRoute"]["provider"] = "grok"
+                elif mutation == "instructions":
+                    receipt["instructionSet"]["agents"]["Mason"]["sha256"] = (
+                        "sha256:" + "0" * 64
+                    )
+                else:
+                    receipt["admittedAgentIds"] = None
+                self.paths.receipt.write_text(
+                    json.dumps(receipt),
+                    encoding="utf-8",
+                )
+                with self.assertRaises(MODULE.CommissioningError):
+                    MODULE.verify_commissioned_state(
+                        self.paths,
+                        FakePlatform([exact_roster()]),
+                        live=False,
+                        enforce_root_ownership=False,
+                    )
+        self.paths.receipt.write_text(json.dumps(original), encoding="utf-8")
+
+        drifted = exact_roster()
+        mason = next(agent for agent in drifted if agent["name"] == "Mason")
+        mason["adapterConfig"]["instructions"] += "\ndrift"
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "exact paused charter",
+        ):
+            MODULE.verify_commissioned_state(
+                self.paths,
+                FakePlatform([drifted]),
+                live=True,
+                enforce_root_ownership=False,
+            )
+
+    def test_interrupted_journal_recovers_exact_configs_and_consumes_approval(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform([copy.deepcopy(prior_roster)])
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+        stale = self.paths.config_dir / (
+            ".CONTROLLED_SWARM_COMMISSIONING_APPROVED.123"
+        )
+        stale.write_text("{}\n", encoding="utf-8")
+        stale.chmod(0o600)
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "recovered interrupted commissioning",
+        ):
+            commissioner.run()
+        self.assertFalse(self.paths.rollback_journal.exists())
+        self.assertFalse(self.paths.approval.exists())
+        self.assertFalse(stale.exists())
+        self.assertFalse(platform.barrier)
+        self.assertEqual(platform.restart_count, 1)
+        self.assertEqual(len(platform.config_updates), len(MODULE.ADMITTED))
+        self.assertTrue(all(replace for _, _, replace in platform.config_updates))
 
     def test_restart_failure_rolls_back_false_and_removes_receipt(self) -> None:
         platform = FakePlatform(fail_first_restart=True)
@@ -300,12 +430,17 @@ class CommissionerTest(unittest.TestCase):
         self.assertFalse(platform.barrier)
         self.assertEqual(platform.restart_count, 2)
         self.assertEqual(
-            len(platform.instruction_updates),
+            len(platform.config_updates),
             len(MODULE.ADMITTED) * 2,
         )
-        restored = platform.instruction_updates[len(MODULE.ADMITTED):]
+        restored = platform.config_updates[len(MODULE.ADMITTED):]
         self.assertTrue(
-            all("legacy autonomous-agent context" in value for _, value in restored),
+            all(
+                replace
+                and "legacy autonomous-agent context"
+                in str(config.get("instructions"))
+                for _, config, replace in restored
+            ),
         )
         self.assertFalse(self.paths.receipt.exists())
 
@@ -316,7 +451,7 @@ class CommissionerTest(unittest.TestCase):
         self.assertFalse(platform.barrier)
         self.assertEqual(platform.restart_count, 1)
         self.assertEqual(
-            len(platform.instruction_updates),
+            len(platform.config_updates),
             len(MODULE.ADMITTED) * 2,
         )
         self.assertFalse(self.paths.receipt.exists())

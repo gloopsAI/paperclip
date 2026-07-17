@@ -36,6 +36,10 @@ if docker ps -a --format '{{.Names}}' \
   echo "refusing installation while a Paperclip or Hermes container exists" >&2
   exit 1
 fi
+if [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
+  echo "refusing dark installation with an unresolved commissioning rollback journal" >&2
+  exit 1
+fi
 "${SCRIPT_DIR}/load-hermes-execution-image.sh"
 "${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${HERMES_IMAGE}"
 [[ -f "${APP_KEY}" && "$(stat -c '%a:%U:%G' "${APP_KEY}")" =~ ^(400|600):root:root$ ]] || {

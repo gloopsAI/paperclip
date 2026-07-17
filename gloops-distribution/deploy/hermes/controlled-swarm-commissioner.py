@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import datetime as dt
 import fcntl
@@ -22,6 +23,16 @@ AUTHORIZATION = "commission_twelve_ollama_roles"
 PROTOCOL_START = "<!-- GLOOPS_CONTROLLED_SWARM_PROTOCOL_START -->"
 PROTOCOL_END = "<!-- GLOOPS_CONTROLLED_SWARM_PROTOCOL_END -->"
 INSTRUCTION_VERSION = "gloops.controlled-swarm-instructions.v2"
+ROLLBACK_JOURNAL_VERSION = "gloops.controlled-swarm-rollback-journal.v1"
+EXECUTION_ROUTE = {
+    "apiBaseUrl": "http://hermes-execution:8642",
+    "maxTurnsPerRun": 6,
+    "model": "kimi-k2.7-code",
+    "paperclipApiUrl": "http://paperclip-gloops:3100",
+    "persistSession": False,
+    "provider": "ollama-cloud",
+    "timeoutSec": 1200,
+}
 
 ROLE_CHARTERS = {
     "Northstar": (
@@ -150,6 +161,104 @@ def instruction_digest(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def expected_instruction_set() -> dict[str, object]:
+    compact = {name: compact_instructions(name) for name in ADMITTED}
+    return {
+        "setSha256": instruction_digest(
+            "".join(
+                f"{name}\0{compact[name]}\0"
+                for name in sorted(compact)
+            ),
+        ),
+        "afterBytes": sum(
+            len(value.encode("utf-8"))
+            for value in compact.values()
+        ),
+        "agents": {
+            name: {
+                "afterBytes": len(compact[name].encode("utf-8")),
+                "sha256": instruction_digest(compact[name]),
+            }
+            for name in sorted(compact)
+        },
+    }
+
+
+def validate_instruction_receipt(value: object) -> None:
+    if not isinstance(value, dict):
+        raise CommissioningError("commissioning instruction receipt is missing")
+    expected = expected_instruction_set()
+    before_bytes = value.get("beforeBytes")
+    after_bytes = value.get("afterBytes")
+    changed = value.get("changed")
+    reduction = value.get("reductionBasisPoints")
+    agents = value.get("agents")
+    if (
+        set(value) != {
+            "schemaVersion",
+            "setSha256",
+            "beforeBytes",
+            "afterBytes",
+            "changed",
+            "reductionBasisPoints",
+            "agents",
+        }
+        or value.get("schemaVersion") != INSTRUCTION_VERSION
+        or value.get("setSha256") != expected["setSha256"]
+        or after_bytes != expected["afterBytes"]
+        or type(before_bytes) is not int
+        or before_bytes <= 0
+        or not isinstance(changed, bool)
+        or type(reduction) is not int
+        or not isinstance(agents, dict)
+        or set(agents) != set(ADMITTED)
+    ):
+        raise CommissioningError("commissioning instruction receipt is invalid")
+    expected_agents = expected["agents"]
+    assert isinstance(expected_agents, dict)
+    for name in ADMITTED:
+        row = agents.get(name)
+        expected_row = expected_agents[name]
+        if (
+            not isinstance(row, dict)
+            or set(row) != {
+                "beforeBytes",
+                "afterBytes",
+                "sha256",
+            }
+            or type(row.get("beforeBytes")) is not int
+            or row.get("beforeBytes") < 0
+            or row.get("afterBytes") != expected_row["afterBytes"]
+            or row.get("sha256") != expected_row["sha256"]
+        ):
+            raise CommissioningError(
+                f"commissioning instruction receipt for {name} is invalid",
+            )
+    expected_reduction = (
+        0
+        if not changed
+        else (before_bytes - after_bytes) * 10_000 // before_bytes
+    )
+    if (
+        reduction != expected_reduction
+        or (changed and before_bytes <= after_bytes)
+        or (not changed and before_bytes != after_bytes)
+        or sum(row["beforeBytes"] for row in agents.values()) != before_bytes
+    ):
+        raise CommissioningError(
+            "commissioning instruction reduction evidence is inconsistent",
+        )
+
+
 class CommissioningError(RuntimeError):
     """A fail-closed commissioning refusal."""
 
@@ -186,6 +295,10 @@ class CommissioningPaths:
     @property
     def receipt(self) -> Path:
         return self.state_dir / "commissioning.json"
+
+    @property
+    def rollback_journal(self) -> Path:
+        return self.state_dir / "commissioning-rollback.json"
 
 
 def parse_timestamp(value: object, field: str) -> dt.datetime:
@@ -233,6 +346,69 @@ def validate_approval(
         )
 
 
+def validate_commissioning_receipt(
+    receipt: object,
+    approved_image: str,
+) -> None:
+    admitted_ids = (
+        receipt.get("admittedAgentIds")
+        if isinstance(receipt, dict)
+        else None
+    )
+    burst_ids = (
+        receipt.get("burstAgentIds")
+        if isinstance(receipt, dict)
+        else None
+    )
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != {
+            "schemaVersion",
+            "campaignId",
+            "approvedImage",
+            "governanceMerge",
+            "authorization",
+            "approvalSha256",
+            "commissionedAt",
+            "admittedAgentIds",
+            "burstAgentIds",
+            "executionProvider",
+            "executionRoute",
+            "instructionSet",
+            "timerHeartbeatsEnabled",
+            "campaignEpochState",
+            "outcome",
+        }
+        or receipt.get("schemaVersion")
+        != "gloops.controlled-swarm-commissioning.v1"
+        or receipt.get("campaignId") != CAMPAIGN_ID
+        or receipt.get("approvedImage") != approved_image
+        or receipt.get("governanceMerge") != GOVERNANCE_MERGE
+        or receipt.get("authorization") != AUTHORIZATION
+        or not is_sha256(receipt.get("approvalSha256"))
+        or not isinstance(receipt.get("commissionedAt"), str)
+        or not isinstance(admitted_ids, list)
+        or admitted_ids != sorted(ADMITTED.values())
+        or not isinstance(burst_ids, list)
+        or burst_ids
+        != sorted([
+            EXCLUDED["Grok Burst"][0],
+            EXCLUDED["Codex Burst"][0],
+        ])
+        or receipt.get("executionProvider")
+        != "ollama-cloud-via-hermes-gateway"
+        or receipt.get("executionRoute") != EXECUTION_ROUTE
+        or receipt.get("timerHeartbeatsEnabled") is not False
+        or receipt.get("campaignEpochState") != "unarmed"
+        or receipt.get("outcome") != "commissioned"
+    ):
+        raise CommissioningError(
+            "controlled-swarm commissioning receipt is invalid",
+        )
+    parse_timestamp(receipt["commissionedAt"], "commissionedAt")
+    validate_instruction_receipt(receipt.get("instructionSet"))
+
+
 def validate_roster(agents: object, *, require_compact_instructions: bool) -> None:
     if not isinstance(agents, list) or any(not isinstance(agent, dict) for agent in agents):
         raise CommissioningError("agent configuration response is malformed")
@@ -254,10 +430,22 @@ def validate_roster(agents: object, *, require_compact_instructions: bool) -> No
     for name, agent_id in ADMITTED.items():
         agent = by_name[name]
         heartbeat = agent.get("runtimeConfig", {}).get("heartbeat", {})
-        instructions = agent.get("adapterConfig", {}).get("instructions", "")
+        adapter_config = agent.get("adapterConfig", {})
+        if not isinstance(adapter_config, dict):
+            raise CommissioningError(
+                f"admitted identity {name} has malformed adapter configuration",
+            )
+        instructions = adapter_config.get("instructions", "")
         instruction_mismatch = (
             require_compact_instructions
             and instructions != compact_instructions(name)
+        )
+        route_mismatch = (
+            require_compact_instructions
+            and any(
+                adapter_config.get(key) != value
+                for key, value in EXECUTION_ROUTE.items()
+            )
         )
         if (
             agent.get("id") != agent_id
@@ -269,6 +457,7 @@ def validate_roster(agents: object, *, require_compact_instructions: bool) -> No
             or heartbeat.get("maxConcurrentRuns") != 1
             or not isinstance(instructions, str)
             or instruction_mismatch
+            or route_mismatch
         ):
             raise CommissioningError(
                 f"admitted identity {name} has drifted from the exact paused charter",
@@ -321,14 +510,19 @@ class HostPlatform:
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.loads(response.read())
 
-    def set_agent_instructions(
+    def set_agent_adapter_config(
         self,
         token: str,
         agent_id: str,
-        instructions: str,
+        adapter_config: dict[str, object],
+        *,
+        replace: bool,
     ) -> None:
         payload = json.dumps(
-            {"adapterConfig": {"instructions": instructions}},
+            {
+                "adapterConfig": adapter_config,
+                "replaceAdapterConfig": replace,
+            },
             separators=(",", ":"),
         ).encode("utf-8")
         request = urllib.request.Request(
@@ -344,7 +538,7 @@ class HostPlatform:
         with urllib.request.urlopen(request, timeout=10) as response:
             if response.status != 200:
                 raise CommissioningError(
-                    f"Paperclip refused the compact charter for {agent_id}",
+                    f"Paperclip refused the bounded adapter configuration for {agent_id}",
                 )
 
     def inspect_commissioned(self) -> bool:
@@ -412,42 +606,64 @@ class Commissioner:
         validate_approval(approval, approved_image, dt.datetime.now(dt.timezone.utc))
         return approval, approved_image, token
 
-    def _capture_instructions(
+    def _capture_adapter_configs(
         self,
         agents: object,
-    ) -> dict[str, str]:
+    ) -> dict[str, dict[str, object]]:
         validate_roster(agents, require_compact_instructions=False)
         assert isinstance(agents, list)
         by_name = {agent["name"]: agent for agent in agents}
-        captured: dict[str, str] = {}
+        captured: dict[str, dict[str, object]] = {}
         for name in ADMITTED:
-            instructions = by_name[name].get("adapterConfig", {}).get(
-                "instructions",
-                "",
-            )
+            adapter_config = by_name[name].get("adapterConfig", {})
+            if not isinstance(adapter_config, dict):
+                raise CommissioningError(
+                    f"admitted identity {name} has malformed adapter configuration",
+                )
+            instructions = adapter_config.get("instructions", "")
             if not isinstance(instructions, str):
                 raise CommissioningError(
                     f"admitted identity {name} has non-text instructions",
                 )
-            captured[name] = instructions
+            captured[name] = adapter_config
         return captured
 
-    def _set_instructions(
+    def _apply_compact_configs(
         self,
         token: str,
-        instructions_by_name: dict[str, str],
     ) -> None:
         for name, agent_id in ADMITTED.items():
-            self.platform.set_agent_instructions(
+            self.platform.set_agent_adapter_config(
                 token,
                 agent_id,
-                instructions_by_name[name],
+                {
+                    **EXECUTION_ROUTE,
+                    "instructions": compact_instructions(name),
+                },
+                replace=False,
+            )
+
+    def _restore_adapter_configs(
+        self,
+        token: str,
+        adapter_configs: dict[str, dict[str, object]],
+    ) -> None:
+        for name, agent_id in ADMITTED.items():
+            self.platform.set_agent_adapter_config(
+                token,
+                agent_id,
+                adapter_configs[name],
+                replace=True,
             )
 
     def _instruction_receipt(
         self,
-        prior: dict[str, str],
+        prior_configs: dict[str, dict[str, object]],
     ) -> dict[str, object]:
+        prior = {
+            name: str(config.get("instructions", ""))
+            for name, config in prior_configs.items()
+        }
         before_bytes = sum(len(value.encode("utf-8")) for value in prior.values())
         compact = {name: compact_instructions(name) for name in ADMITTED}
         after_bytes = sum(len(value.encode("utf-8")) for value in compact.values())
@@ -480,6 +696,144 @@ class Commissioner:
             },
         }
 
+    def _configs_need_update(
+        self,
+        prior_configs: dict[str, dict[str, object]],
+    ) -> bool:
+        for name, config in prior_configs.items():
+            if config.get("instructions") != compact_instructions(name):
+                return True
+            if any(
+                config.get(key) != value
+                for key, value in EXECUTION_ROUTE.items()
+            ):
+                return True
+        return False
+
+    def _write_rollback_journal(
+        self,
+        approval_in_progress: Path,
+        prior_configs: dict[str, dict[str, object]],
+    ) -> None:
+        self.paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.paths.rollback_journal.exists():
+            raise CommissioningError(
+                "interrupted commissioning requires rollback recovery",
+            )
+        temporary = self.paths.state_dir / f".commissioning-rollback.{os.getpid()}"
+        journal = {
+            "schemaVersion": ROLLBACK_JOURNAL_VERSION,
+            "campaignId": CAMPAIGN_ID,
+            "companyId": COMPANY_ID,
+            "approvalSha256": (
+                "sha256:"
+                + hashlib.sha256(approval_in_progress.read_bytes()).hexdigest()
+            ),
+            "createdAt": dt.datetime.now(dt.timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+            "agents": {
+                name: {
+                    "id": ADMITTED[name],
+                    "adapterConfig": prior_configs[name],
+                }
+                for name in sorted(ADMITTED)
+            },
+        }
+        temporary.write_text(
+            json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        if self.enforce_root_ownership:
+            os.chown(temporary, 0, 0)
+        os.replace(temporary, self.paths.rollback_journal)
+
+    def _read_rollback_journal(self) -> dict[str, dict[str, object]]:
+        self._require_protected_file(
+            self.paths.rollback_journal,
+            "commissioning rollback journal",
+        )
+        value = json.loads(
+            self.paths.rollback_journal.read_text(encoding="utf-8"),
+        )
+        if (
+            not isinstance(value, dict)
+            or set(value) != {
+                "schemaVersion",
+                "campaignId",
+                "companyId",
+                "approvalSha256",
+                "createdAt",
+                "agents",
+            }
+            or value.get("schemaVersion") != ROLLBACK_JOURNAL_VERSION
+            or value.get("campaignId") != CAMPAIGN_ID
+            or value.get("companyId") != COMPANY_ID
+            or not is_sha256(value.get("approvalSha256"))
+            or not isinstance(value.get("createdAt"), str)
+            or not isinstance(value.get("agents"), dict)
+            or set(value["agents"]) != set(ADMITTED)
+        ):
+            raise CommissioningError("commissioning rollback journal is invalid")
+        parse_timestamp(value["createdAt"], "createdAt")
+        result: dict[str, dict[str, object]] = {}
+        for name, agent_id in ADMITTED.items():
+            row = value["agents"].get(name)
+            if (
+                not isinstance(row, dict)
+                or set(row) != {"id", "adapterConfig"}
+                or row.get("id") != agent_id
+                or not isinstance(row.get("adapterConfig"), dict)
+            ):
+                raise CommissioningError(
+                    f"commissioning rollback journal for {name} is invalid",
+                )
+            result[name] = row["adapterConfig"]
+        return result
+
+    def _verify_adapter_configs(
+        self,
+        agents: object,
+        expected: dict[str, dict[str, object]],
+    ) -> None:
+        validate_roster(agents, require_compact_instructions=False)
+        assert isinstance(agents, list)
+        by_name = {agent["name"]: agent for agent in agents}
+        for name in ADMITTED:
+            if by_name[name].get("adapterConfig") != expected[name]:
+                raise CommissioningError(
+                    f"rollback did not restore the exact adapter configuration for {name}",
+                )
+
+    def _rollback_from_journal(self, token: str) -> None:
+        prior_configs = self._read_rollback_journal()
+        self._restore_adapter_configs(token, prior_configs)
+        self._verify_adapter_configs(
+            self.platform.fetch_agents(token),
+            prior_configs,
+        )
+        self.paths.rollback_journal.unlink()
+
+    def _recover_interrupted_commissioning(self) -> None:
+        self._require_protected_file(self.paths.token, "operator board token")
+        token = self.paths.token.read_text(encoding="utf-8").strip()
+        if not token:
+            raise CommissioningError("operator board token is empty")
+        self.platform.set_barrier(False)
+        if not self.platform.is_active("paperclip-gloops.service"):
+            self.platform.restart_paperclip()
+        self.platform.health()
+        self._rollback_from_journal(token)
+        self.paths.receipt.unlink(missing_ok=True)
+        self.platform.restart_paperclip()
+        self.platform.health()
+        for stale in self.paths.config_dir.glob(
+            ".CONTROLLED_SWARM_COMMISSIONING_APPROVED.*",
+        ):
+            stale.unlink()
+        self.paths.approval.unlink(missing_ok=True)
+
     def _write_receipt(
         self,
         approval: dict[str, object],
@@ -487,6 +841,7 @@ class Commissioner:
         approval_in_progress: Path,
         instruction_receipt: dict[str, object],
     ) -> None:
+        validate_instruction_receipt(instruction_receipt)
         self.paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = self.paths.state_dir / f".commissioning.{os.getpid()}"
         receipt = {
@@ -507,6 +862,7 @@ class Commissioner:
                 [EXCLUDED["Grok Burst"][0], EXCLUDED["Codex Burst"][0]],
             ),
             "executionProvider": "ollama-cloud-via-hermes-gateway",
+            "executionRoute": EXECUTION_ROUTE,
             "instructionSet": instruction_receipt,
             "timerHeartbeatsEnabled": False,
             "campaignEpochState": "unarmed",
@@ -535,14 +891,19 @@ class Commissioner:
             self._run_locked()
 
     def _run_locked(self) -> None:
+        if self.paths.rollback_journal.exists():
+            self._recover_interrupted_commissioning()
+            raise CommissioningError(
+                "recovered interrupted commissioning; fresh approval required",
+            )
         self._require_protected_file(self.paths.approval, "commissioning approval")
         approval_in_progress = self.paths.config_dir / (
             f".CONTROLLED_SWARM_COMMISSIONING_APPROVED.{os.getpid()}"
         )
         os.replace(self.paths.approval, approval_in_progress)
         barrier_changed = False
-        instructions_changed = False
-        prior_instructions: dict[str, str] = {}
+        configs_changed = False
+        journal_written = False
         token = ""
         try:
             for unit in (
@@ -572,19 +933,18 @@ class Commissioner:
             approval, approved_image, token = self._read_context(
                 approval_in_progress,
             )
-            prior_instructions = self._capture_instructions(
+            prior_configs = self._capture_adapter_configs(
                 self.platform.fetch_agents(token),
             )
-            instruction_receipt = self._instruction_receipt(prior_instructions)
-            instructions_changed = instruction_receipt["changed"] is True
-            if instructions_changed:
-                self._set_instructions(
-                    token,
-                    {
-                        name: compact_instructions(name)
-                        for name in ADMITTED
-                    },
+            instruction_receipt = self._instruction_receipt(prior_configs)
+            configs_changed = self._configs_need_update(prior_configs)
+            if configs_changed:
+                self._write_rollback_journal(
+                    approval_in_progress,
+                    prior_configs,
                 )
+                journal_written = True
+                self._apply_compact_configs(token)
             validate_roster(
                 self.platform.fetch_agents(token),
                 require_compact_instructions=True,
@@ -613,21 +973,22 @@ class Commissioner:
                 self.platform.fetch_agents(token),
                 require_compact_instructions=True,
             )
+            self.paths.rollback_journal.unlink(missing_ok=True)
         except BaseException:
             if barrier_changed:
                 try:
                     self.platform.set_barrier(False)
                 finally:
                     try:
-                        if instructions_changed:
-                            self._set_instructions(token, prior_instructions)
+                        if journal_written:
+                            self._rollback_from_journal(token)
                     finally:
                         self.paths.receipt.unlink(missing_ok=True)
                         self.platform.restart_paperclip()
             else:
                 try:
-                    if instructions_changed:
-                        self._set_instructions(token, prior_instructions)
+                    if journal_written:
+                        self._rollback_from_journal(token)
                 finally:
                     self.paths.receipt.unlink(missing_ok=True)
             raise
@@ -635,9 +996,80 @@ class Commissioner:
             approval_in_progress.unlink(missing_ok=True)
 
 
+def verify_commissioned_state(
+    paths: CommissioningPaths,
+    platform: HostPlatform,
+    *,
+    live: bool,
+    enforce_root_ownership: bool = True,
+) -> None:
+    commissioner = Commissioner(
+        paths,
+        platform,
+        enforce_root_ownership=enforce_root_ownership,
+    )
+    if paths.rollback_journal.exists():
+        raise CommissioningError(
+            "commissioning rollback journal remains unresolved",
+        )
+    commissioner._require_protected_file(
+        paths.receipt,
+        "commissioning receipt",
+    )
+    approved_image = paths.image.read_text(encoding="utf-8").strip()
+    receipt = json.loads(paths.receipt.read_text(encoding="utf-8"))
+    validate_commissioning_receipt(receipt, approved_image)
+    if not live:
+        return
+    commissioner._require_protected_file(paths.token, "operator board token")
+    token = paths.token.read_text(encoding="utf-8").strip()
+    if not token:
+        raise CommissioningError("operator board token is empty")
+    platform.health()
+    validate_roster(
+        platform.fetch_agents(token),
+        require_compact_instructions=True,
+    )
+
+
 def main() -> int:
     paths = CommissioningPaths()
-    Commissioner(paths, HostPlatform(paths)).run()
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--verify-receipt", action="store_true")
+    mode.add_argument("--verify-live", action="store_true")
+    mode.add_argument("--verify-live-if-commissioned", action="store_true")
+    args = parser.parse_args()
+    platform = HostPlatform(paths)
+    if args.verify_live_if_commissioned:
+        lines = paths.runtime_env.read_text(encoding="utf-8").splitlines()
+        if lines.count("PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false") == 1:
+            print("PASS controlled swarm remains inert and uncommissioned")
+            return 0
+        if lines.count("PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true") != 1:
+            raise CommissioningError(
+                "controlled-swarm commissioning barrier is malformed",
+            )
+    if (
+        args.verify_receipt
+        or args.verify_live
+        or args.verify_live_if_commissioned
+    ):
+        verify_commissioned_state(
+            paths,
+            platform,
+            live=args.verify_live or args.verify_live_if_commissioned,
+        )
+        print(
+            "PASS controlled-swarm commissioning receipt"
+            + (
+                " and live roster are exact"
+                if args.verify_live or args.verify_live_if_commissioned
+                else " is exact"
+            ),
+        )
+        return 0
+    Commissioner(paths, platform).run()
     print(
         "PASS controlled swarm is commissioned; "
         "roles remain paused and epoch unarmed",
