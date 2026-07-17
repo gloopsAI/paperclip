@@ -1700,13 +1700,12 @@ export function buildHostServices(
         if (!idempotencyKey) return createAndLog();
 
         const keyHash = createHash("sha256")
-          .update(`${pluginId}\u0000${idempotencyKey}`)
+          .update(`${pluginKey}\u0000${idempotencyKey}`)
           .digest("hex");
         const fingerprintPrefix = `${PLUGIN_ISSUE_IDEMPOTENCY_FINGERPRINT_VERSION}:${keyHash}:`;
         const requestHash = createHash("sha256")
           .update(stableJson({
             companyId,
-            pluginId,
             pluginKey,
             createInput,
           }))

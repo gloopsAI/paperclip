@@ -306,6 +306,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const first = await seedCompanyAndAgent();
     const second = await seedCompanyAndAgent();
     const missions = buildHostServices(db, "missions-plugin-id", "paperclip.missions", createEventBusStub());
+    const missionsAfterReinstall = buildHostServices(
+      db,
+      "missions-plugin-reinstalled-id",
+      "paperclip.missions",
+      createEventBusStub(),
+    );
     const planning = buildHostServices(db, "planning-plugin-id", "paperclip.planning", createEventBusStub());
 
     const original = await missions.issues.create({
@@ -313,6 +319,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       title: "Original request",
       idempotencyKey: "shared-key",
     });
+    const replayAfterReinstall = await missionsAfterReinstall.issues.create({
+      companyId: first.companyId,
+      title: "Original request",
+      idempotencyKey: "shared-key",
+    });
+    expect(replayAfterReinstall.id).toBe(original.id);
     await expect(missions.issues.create({
       companyId: first.companyId,
       title: "Changed request",
