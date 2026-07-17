@@ -876,6 +876,11 @@ if (
 if (!installDark.includes('rehearse-zero-work.sh')) {
   fail("dark installer must install the zero-work rehearsal harness");
 }
+if (!rehearseZeroWork.includes(
+  "select count(*)::int as count from plugin_jobs where created_at >= ${since}",
+)) {
+  fail("zero-work rehearsal must bound plugin-job registrations to the closed interval");
+}
 for (const required of [
   "VERSION='0.3.3'",
   "ARCHIVE_SHA256='6cdbe35e8f9ccf42e70ad95b501c93cd218ac18201c3df958d54f6ba0d995ce2'",
