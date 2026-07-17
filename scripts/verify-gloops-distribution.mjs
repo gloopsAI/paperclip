@@ -174,6 +174,14 @@ const hermesHandshakeEgressServicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-hermes-handshake-egress.service",
   import.meta.url,
 );
+const verifyHermesHandshakeLiveReadinessPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-hermes-handshake-live-readiness.py",
+  import.meta.url,
+);
+const verifyHermesHandshakeLiveReadinessTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify_hermes_handshake_live_readiness_test.py",
+  import.meta.url,
+);
 const verifyHermesHandshakeEgressBoundaryPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-handshake-egress-boundary.sh",
   import.meta.url,
@@ -303,6 +311,7 @@ const rehearseHermesHandshakeEgressFailure = readFileSync(rehearseHermesHandshak
 const rehearseHandshakeControlPlaneFirewall = readFileSync(rehearseHandshakeControlPlaneFirewallPath, "utf8");
 const hermesHandshakeEgressProxy = readFileSync(hermesHandshakeEgressProxyPath, "utf8");
 const hermesHandshakeEgressService = readFileSync(hermesHandshakeEgressServicePath, "utf8");
+const verifyHermesHandshakeLiveReadiness = readFileSync(verifyHermesHandshakeLiveReadinessPath, "utf8");
 const verifyHermesHandshakeEgressBoundary = readFileSync(verifyHermesHandshakeEgressBoundaryPath, "utf8");
 try {
   execFileSync("python3", [hermesHandshakeEgressProxyTestPath.pathname], {
@@ -319,6 +328,14 @@ try {
   });
 } catch (error) {
   fail(`Hermes handshake cleanup preflight tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("python3", [verifyHermesHandshakeLiveReadinessTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Hermes handshake live-readiness tests failed: ${error instanceof Error ? error.message : error}`);
 }
 const hermesHandshakeGuard = readFileSync(hermesHandshakeGuardPath, "utf8");
 const restoreHermesWorkspaceObserver = readFileSync(restoreHermesWorkspaceObserverPath, "utf8");
@@ -1150,6 +1167,7 @@ for (const required of [
   "DynamicUser=yes",
   "NoNewPrivileges=yes",
   "ProtectSystem=strict",
+  "RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK",
   "CapabilityBoundingSet=",
   "MemoryMax=128M",
   "CPUQuota=50%",
@@ -1162,6 +1180,33 @@ for (const required of [
 }
 if (hermesHandshakeEgressService.split("\n").filter((line) => line === "TasksMax=64").length !== 1) {
   fail("Hermes handshake egress service must declare exactly one TasksMax=64 directive");
+}
+if (!verifyDark.includes("/usr/local/lib/paperclip-gloops/verify-hermes-handshake-live-readiness.py")) {
+  fail("dark verifier must execute the installed Hermes live-readiness verifier");
+}
+if (!readFileSync(installDarkPath, "utf8").includes(
+  'install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-live-readiness.py"',
+)) {
+  fail("dark installer must install the Hermes live-readiness verifier as immutable root-owned code");
+}
+for (const required of [
+  "EXPECTED_UNIT_SHA256",
+  "EXPECTED_PROXY_SHA256",
+  "proxy ancestor is not traversable by DynamicUser",
+  "proxy ancestor is writable outside root",
+  "chain is not root-protected and traversable",
+  "higher-precedence egress unit override exists",
+  "paperclip-.service.d",
+  "service.d",
+  ".wants",
+  "installed egress unit hash",
+  "installed egress proxy hash",
+  "RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK",
+  "full DynamicUser path and exact masked egress unit",
+]) {
+  if (!verifyHermesHandshakeLiveReadiness.includes(required)) {
+    fail(`Hermes installed live-readiness verifier is missing ${required}`);
+  }
 }
 for (const required of [
   "kill -KILL \"${proxy_pid}\"",

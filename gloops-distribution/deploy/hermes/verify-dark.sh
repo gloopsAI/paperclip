@@ -88,6 +88,10 @@ for active_marker in \
   fi
 done
 
+if ! /usr/local/lib/paperclip-gloops/verify-hermes-handshake-live-readiness.py; then
+  failed=1
+fi
+
 for ephemeral_credential in \
   /var/lib/paperclip-gloops/credential-runtime/hermes-github-token \
   /var/lib/paperclip-gloops/credential-runtime/projector-github-token \

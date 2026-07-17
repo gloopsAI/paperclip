@@ -23,7 +23,10 @@ ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_UNIX
+# AF_NETLINK is required only by the root-defined ExecStartPost `ss` readiness
+# check. The proxy itself still opens only AF_INET/AF_UNIX sockets and has an
+# empty capability bounding set.
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
