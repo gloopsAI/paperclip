@@ -2168,6 +2168,15 @@ export function pluginLoader(
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
+      const jobDeclarations = manifest.jobs ?? [];
+      // Quiesce historical declarations before the replacement worker can
+      // become runnable. The scheduler is global, so waiting until after
+      // startWorker leaves a tick-sized window where an obsolete due job can
+      // still be dispatched.
+      await jobScheduler.unregisterPlugin(pluginId);
+      await jobStore.syncJobDeclarations(pluginId, []);
+      await jobScheduler.unregisterPlugin(pluginId);
+
       await workerManager.startWorker(pluginId, workerOptions);
       registered.worker = true;
 
@@ -2179,7 +2188,6 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
-      const jobDeclarations = manifest.jobs ?? [];
       // Empty is meaningful: it pauses durable declarations removed by a
       // plugin upgrade. Skipping the sync would leave a historical recurring
       // job active after the manifest becomes event-driven.

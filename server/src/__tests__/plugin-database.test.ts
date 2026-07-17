@@ -661,6 +661,11 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     const result = await loader.loadSingle(pluginId);
 
     expect(result.success).toBe(true);
+    const startOrder = workerManager.startWorker.mock.invocationCallOrder[0]!;
+    expect(jobStore.syncJobDeclarations).toHaveBeenNthCalledWith(1, pluginId, []);
+    expect(jobStore.syncJobDeclarations.mock.invocationCallOrder[0]).toBeLessThan(startOrder);
+    expect(jobScheduler.unregisterPlugin.mock.invocationCallOrder[0]).toBeLessThan(startOrder);
+    expect(jobScheduler.unregisterPlugin.mock.invocationCallOrder[1]).toBeLessThan(startOrder);
     expect(workerManager.startWorker).toHaveBeenCalledWith(
       pluginId,
       expect.objectContaining({
@@ -681,7 +686,7 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       }),
       pluginId,
     );
-    expect(jobStore.syncJobDeclarations).toHaveBeenCalledWith(pluginId, []);
+    expect(jobStore.syncJobDeclarations).toHaveBeenLastCalledWith(pluginId, []);
     expect(jobScheduler.unregisterPlugin).toHaveBeenCalledWith(pluginId);
     expect(jobScheduler.registerPlugin).not.toHaveBeenCalled();
     const [plugin] = await db
