@@ -46,6 +46,9 @@ for installed_control in \
   /usr/local/lib/paperclip-gloops/campaign-deadman-rehearsal-stop.sh \
   /usr/local/lib/paperclip-gloops/rehearse-campaign-deadman.py \
   /usr/local/lib/paperclip-gloops/activate-controlled-swarm.sh \
+  /usr/local/lib/paperclip-gloops/commission-controlled-swarm.sh \
+  /usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py \
+  /usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py \
   /usr/local/lib/paperclip-gloops/stop-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/observe-controlled-swarm.py; do
   installed_control_stat="$(stat -c '%a:%U:%G' "${installed_control}" 2>/dev/null || true)"
@@ -57,6 +60,14 @@ for installed_control in \
     failed=1
   fi
 done
+if [[ -e /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED ]] \
+  || compgen -G '/etc/paperclip-gloops/.CONTROLLED_SWARM_COMMISSIONING_APPROVED.*' >/dev/null \
+  || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning.json ]]; then
+  echo "FAIL replayable controlled-swarm commissioning authority remains while dark" >&2
+  failed=1
+else
+  echo "PASS controlled-swarm commissioning authority is absent while dark"
+fi
 epoch_invalid=0
 while IFS= read -r epoch_file; do
   [[ "$(stat -c '%a:%U:%G' "${epoch_file}" 2>/dev/null || true)" == '600:root:root' ]] \

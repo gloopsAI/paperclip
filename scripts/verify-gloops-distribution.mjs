@@ -94,6 +94,18 @@ const activateControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/activate-controlled-swarm.sh",
   import.meta.url,
 );
+const commissionControlledSwarmPath = new URL(
+  "../gloops-distribution/deploy/hermes/commission-controlled-swarm.sh",
+  import.meta.url,
+);
+const controlledSwarmCommissionerPath = new URL(
+  "../gloops-distribution/deploy/hermes/controlled-swarm-commissioner.py",
+  import.meta.url,
+);
+const setControlledSwarmCommissioningPath = new URL(
+  "../gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py",
+  import.meta.url,
+);
 const stopControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/stop-controlled-swarm.sh",
   import.meta.url,
@@ -288,6 +300,9 @@ const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
 const verifyCampaignDeadman = readFileSync(verifyCampaignDeadmanPath, "utf8");
 const rehearseCampaignDeadman = readFileSync(rehearseCampaignDeadmanPath, "utf8");
 const activateControlledSwarm = readFileSync(activateControlledSwarmPath, "utf8");
+const commissionControlledSwarm = readFileSync(commissionControlledSwarmPath, "utf8");
+const controlledSwarmCommissioner = readFileSync(controlledSwarmCommissionerPath, "utf8");
+const setControlledSwarmCommissioning = readFileSync(setControlledSwarmCommissioningPath, "utf8");
 const stopControlledSwarm = readFileSync(stopControlledSwarmPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
   .split("\n")
@@ -730,7 +745,19 @@ for (const [surface, content, required] of [
   ["controlled-swarm activation", activateControlledSwarm, "inert activation unexpectedly armed the campaign epoch"],
   ["controlled-swarm activation", activateControlledSwarm, "inert activation requires the execution-commissioning barrier"],
   ["controlled-swarm activation", activateControlledSwarm, "--require-status unarmed"],
+  ["controlled-swarm commissioning wrapper", commissionControlledSwarm, "controlled-swarm-commissioner.py"],
+  ["controlled-swarm commissioning", controlledSwarmCommissioner, "CONTROLLED_SWARM_COMMISSIONING_APPROVED"],
+  ["controlled-swarm commissioning", controlledSwarmCommissioner, "commission_twelve_ollama_roles"],
+  ["controlled-swarm commissioning", controlledSwarmCommissioner, "the company roster is not the exact authorized 16 identities"],
+  ["controlled-swarm commissioning", controlledSwarmCommissioner, "has drifted from the exact paused protocol"],
+  ["controlled-swarm commissioning", controlledSwarmCommissioner, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true"],
+  ["controlled-swarm commissioning", controlledSwarmCommissioner, "commissioning unexpectedly armed the campaign epoch"],
+  ["controlled-swarm commissioning rollback", controlledSwarmCommissioner, "self.platform.set_barrier(False)"],
+  ["controlled-swarm commissioning revalidation", controlledSwarmCommissioner, "validate_roster(self.platform.fetch_agents(token))"],
+  ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "commissioning barrier line is missing or duplicated"],
+  ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "os.replace(temporary, path)"],
   ["controlled-swarm stop", stopControlledSwarm, "verify-dark.sh"],
+  ["controlled-swarm stop", stopControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
 ]) {
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);

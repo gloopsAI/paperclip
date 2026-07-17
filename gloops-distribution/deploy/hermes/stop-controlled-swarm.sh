@@ -19,7 +19,8 @@ flock -n 9 || {
 rm -f \
   "${CONFIG_DIR}/ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
-  "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED"
+  "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED" \
+  "${CONFIG_DIR}/CONTROLLED_SWARM_COMMISSIONING_APPROVED"
 "${LIB_DIR}/campaign-deadman-stop.sh" operator_requested_stop
 systemctl stop paperclip-campaign-deadman.service
 systemctl mask \
@@ -30,6 +31,7 @@ systemctl reset-failed \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
   paperclip-campaign-deadman.service
+"${LIB_DIR}/set-controlled-swarm-commissioning.py" false
 "${LIB_DIR}/verify-dark.sh"
 
 install -d -m 0700 -o root -g root "${STATE_DIR}"

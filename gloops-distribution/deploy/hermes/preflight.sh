@@ -36,7 +36,6 @@ readonly -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
   [PAPERCLIP_CAMPAIGN_DURATION_SECONDS]='86400'
   [PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
-  [PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED]='false'
   [HEARTBEAT_SCHEDULER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
@@ -58,6 +57,59 @@ for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
     exit 1
   }
 done
+case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-}" in
+  false) ;;
+  true)
+    commissioning_receipt='/var/lib/paperclip-gloops/controlled-swarm/commissioning.json'
+    [[ -f "${commissioning_receipt}" \
+      && "$(stat -c '%a:%U:%G' "${commissioning_receipt}")" == '600:root:root' ]] || {
+      echo "commissioned execution requires the root-owned commissioning receipt" >&2
+      exit 1
+    }
+    python3 - "${commissioning_receipt}" "${PAPERCLIP_IMAGE}" <<'PY'
+import json
+import pathlib
+import sys
+
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+admitted = {
+    "2f68703f-c2bd-40e1-a91e-70bc4d702e5e",
+    "5768cc30-f8b9-4b20-871e-badf7d574b9b",
+    "15cdc815-2a68-437b-a93b-d1f1157aa8a3",
+    "fd571350-6da8-482e-a17e-7edb914fa612",
+    "76a090e6-1523-4086-be5f-2a7dd7a37238",
+    "3298054f-0fc5-4ff9-8c53-b1382b3046d3",
+    "a89f54cc-3f1b-4157-b25b-c6c7a4fdcc1a",
+    "532a3827-3133-45a6-834a-486415c53b87",
+    "81a870b3-a474-44be-95e7-1151a9532832",
+    "843c62bc-6f32-420e-9b62-7a2d6a34846f",
+    "a3a1cb4c-390a-4d40-9a88-8609183ed012",
+    "f57fe56c-639d-4826-b462-ff2e8a0116c4",
+}
+bursts = {
+    "fb0a4d29-a670-464a-8956-b9dfdb4e4529",
+    "a9ff2c34-0bd1-44e9-866a-3b03ce678cf4",
+}
+if (
+    receipt.get("schemaVersion") != "gloops.controlled-swarm-commissioning.v1"
+    or receipt.get("campaignId") != "controlled-swarm-20260717"
+    or receipt.get("approvedImage") != sys.argv[2]
+    or receipt.get("governanceMerge") != "3a5820722e8c6f55d6a1a730cada1cb4f1a1df77"
+    or receipt.get("authorization") != "commission_twelve_ollama_roles"
+    or receipt.get("outcome") != "commissioned"
+    or receipt.get("timerHeartbeatsEnabled") is not False
+    or receipt.get("campaignEpochState") != "unarmed"
+    or set(receipt.get("admittedAgentIds", [])) != admitted
+    or set(receipt.get("burstAgentIds", [])) != bursts
+):
+    raise SystemExit("controlled-swarm commissioning receipt is invalid")
+PY
+    ;;
+  *)
+    echo "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED is not an exact boolean" >&2
+    exit 1
+    ;;
+esac
 systemctl is-active --quiet paperclip-campaign-deadman.service || {
   echo "the root-owned campaign deadman must be active before execution" >&2
   exit 1
