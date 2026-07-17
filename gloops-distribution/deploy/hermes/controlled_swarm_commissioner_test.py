@@ -20,7 +20,7 @@ SPEC.loader.exec_module(MODULE)
 
 def exact_roster() -> list[dict[str, object]]:
     agents: list[dict[str, object]] = []
-    for name, agent_id in MODULE.ADMITTED.items():
+    for index, (name, agent_id) in enumerate(MODULE.ADMITTED.items(), start=1):
         agents.append(
             {
                 "name": name,
@@ -29,6 +29,13 @@ def exact_roster() -> list[dict[str, object]]:
                 "adapterType": "hermes_gateway",
                 "adapterConfig": {
                     **MODULE.EXECUTION_ROUTE,
+                    "apiKey": {
+                        "type": "secret_ref",
+                        "secretId": (
+                            f"00000000-0000-4000-8000-{index:012d}"
+                        ),
+                        "version": "latest",
+                    },
                     "instructions": MODULE.compact_instructions(name),
                 },
                 "runtimeConfig": {
@@ -61,6 +68,11 @@ def legacy_roster() -> list[dict[str, object]]:
         if agent["name"] in MODULE.ADMITTED:
             agent["adapterConfig"] = {
                 "apiBaseUrl": "http://127.0.0.1:8642",
+                "apiKey": copy.deepcopy(agent["adapterConfig"]["apiKey"]),
+                "payloadTemplate": {
+                    "input": "legacy payload override",
+                },
+                "provider": "unused-legacy-provider",
                 "timeoutSec": 600,
                 "instructions": (
                     "legacy autonomous-agent context\n" * 400
@@ -123,7 +135,12 @@ class FakePlatform:
         *,
         replace: bool,
     ) -> None:
-        if not replace and self.expected_journal is not None:
+        if (
+            adapter_config.get("instructions", "").startswith(
+                "# GLoops controlled-swarm role",
+            )
+            and self.expected_journal is not None
+        ):
             if not self.expected_journal.exists():
                 raise AssertionError("adapter mutation occurred before durable journal")
         self.calls.append(f"set_adapter_config:{agent_id}:{str(replace).lower()}")
@@ -161,6 +178,8 @@ class CommissionerTest(unittest.TestCase):
             epoch=root / "epoch.json",
             lock=root / "commission.lock",
             helper=root / "helper",
+            sidecar_config=root / "hermes-execution-config.yaml",
+            sidecar_policy=root / "hermes-execution-policy.json",
         )
         self.paths.config_dir.mkdir()
         self.paths.runtime_env.write_text(
@@ -170,6 +189,14 @@ class CommissionerTest(unittest.TestCase):
         self.paths.image.write_text("ghcr.io/gloopsai/paperclip-gloops@sha256:test\n")
         self.paths.token.write_text("board-token\n")
         self.paths.token.chmod(0o600)
+        self.paths.sidecar_config.write_bytes(
+            SCRIPT.with_name("hermes-execution-config.yaml").read_bytes(),
+        )
+        self.paths.sidecar_config.chmod(0o600)
+        self.paths.sidecar_policy.write_bytes(
+            SCRIPT.with_name("hermes-execution-policy.json").read_bytes(),
+        )
+        self.paths.sidecar_policy.chmod(0o600)
         self.write_approval()
 
     def tearDown(self) -> None:
@@ -268,6 +295,34 @@ class CommissionerTest(unittest.TestCase):
                         roster,
                         require_compact_instructions=True,
                     )
+
+    def test_gateway_secret_binding_is_required_and_payload_overrides_are_removed(
+        self,
+    ) -> None:
+        roster = legacy_roster()
+        mason = next(agent for agent in roster if agent["name"] == "Mason")
+        del mason["adapterConfig"]["apiKey"]
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "exact paused charter",
+        ):
+            MODULE.validate_roster(
+                roster,
+                require_compact_instructions=False,
+            )
+
+        platform = FakePlatform()
+        self.commissioner(platform).run()
+        applied = platform.config_updates[:len(MODULE.ADMITTED)]
+        self.assertTrue(all(replace for _, _, replace in applied))
+        for _, config, _ in applied:
+            self.assertEqual(
+                set(config),
+                set(MODULE.EXECUTION_ROUTE) | {"apiKey", "instructions"},
+            )
+            self.assertNotIn("payloadTemplate", config)
+            self.assertNotIn("provider", config)
+            self.assertNotIn("model", config)
 
     def test_existing_compact_instructions_are_revalidated_without_rewrite(self) -> None:
         platform = FakePlatform([
@@ -389,6 +444,21 @@ class CommissionerTest(unittest.TestCase):
                 self.paths,
                 FakePlatform([drifted]),
                 live=True,
+                enforce_root_ownership=False,
+            )
+
+        self.paths.sidecar_config.write_text(
+            "model:\n  provider: grok\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "Ollama-only route evidence",
+        ):
+            MODULE.verify_commissioned_state(
+                self.paths,
+                FakePlatform([exact_roster()]),
+                live=False,
                 enforce_root_ownership=False,
             )
 

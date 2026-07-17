@@ -14,6 +14,7 @@ from pathlib import Path
 import stat
 import subprocess
 import urllib.request
+import uuid
 
 
 CAMPAIGN_ID = "controlled-swarm-20260717"
@@ -26,12 +27,25 @@ INSTRUCTION_VERSION = "gloops.controlled-swarm-instructions.v2"
 ROLLBACK_JOURNAL_VERSION = "gloops.controlled-swarm-rollback-journal.v1"
 EXECUTION_ROUTE = {
     "apiBaseUrl": "http://hermes-execution:8642",
-    "maxTurnsPerRun": 6,
-    "model": "kimi-k2.7-code",
+    "dangerouslyAllowInsecureRemoteHttp": True,
+    "executionProfile": "paperclip-execution-only",
+    "fallbackOccurred": False,
     "paperclipApiUrl": "http://paperclip-gloops:3100",
-    "persistSession": False,
-    "provider": "ollama-cloud",
+    "routingReason": "controlled-swarm-ollama-only",
+    "sessionKeyStrategy": "none",
+    "subscriptionClass": "ollama-max",
     "timeoutSec": 1200,
+}
+SIDECAR_ROUTE_EVIDENCE = {
+    "schemaVersion": "gloops.controlled-swarm-sidecar-route.v1",
+    "provider": "ollama-cloud",
+    "model": "kimi-k2.7-code",
+    "configSha256": (
+        "sha256:eb220e56779325943333d8a745d133f5c990f1bb151fad1a9f54fa395c94fbc9"
+    ),
+    "policySha256": (
+        "sha256:e5365212756513970edd402384010800a177ee00aabbdaedff6bd044f2bed051"
+    ),
 }
 
 ROLE_CHARTERS = {
@@ -170,6 +184,22 @@ def is_sha256(value: object) -> bool:
     )
 
 
+def is_secret_ref(value: object) -> bool:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"type", "secretId", "version"}
+        or value.get("type") != "secret_ref"
+        or value.get("version") != "latest"
+        or not isinstance(value.get("secretId"), str)
+    ):
+        return False
+    try:
+        uuid.UUID(value["secretId"])
+    except ValueError:
+        return False
+    return True
+
+
 def expected_instruction_set() -> dict[str, object]:
     compact = {name: compact_instructions(name) for name in ADMITTED}
     return {
@@ -275,6 +305,12 @@ class CommissioningPaths:
     helper: Path = Path(
         "/usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py",
     )
+    sidecar_config: Path = Path(
+        "/usr/local/lib/paperclip-gloops/hermes-execution-config.yaml",
+    )
+    sidecar_policy: Path = Path(
+        "/usr/local/lib/paperclip-gloops/hermes-execution-policy.json",
+    )
 
     @property
     def approval(self) -> Path:
@@ -374,6 +410,8 @@ def validate_commissioning_receipt(
             "burstAgentIds",
             "executionProvider",
             "executionRoute",
+            "gatewayAuthentication",
+            "sidecarRouteEvidence",
             "instructionSet",
             "timerHeartbeatsEnabled",
             "campaignEpochState",
@@ -398,6 +436,13 @@ def validate_commissioning_receipt(
         or receipt.get("executionProvider")
         != "ollama-cloud-via-hermes-gateway"
         or receipt.get("executionRoute") != EXECUTION_ROUTE
+        or receipt.get("gatewayAuthentication")
+        != {
+            "field": "apiKey",
+            "binding": "per-agent-secret-ref",
+            "version": "latest",
+        }
+        or receipt.get("sidecarRouteEvidence") != SIDECAR_ROUTE_EVIDENCE
         or receipt.get("timerHeartbeatsEnabled") is not False
         or receipt.get("campaignEpochState") != "unarmed"
         or receipt.get("outcome") != "commissioned"
@@ -436,6 +481,7 @@ def validate_roster(agents: object, *, require_compact_instructions: bool) -> No
                 f"admitted identity {name} has malformed adapter configuration",
             )
         instructions = adapter_config.get("instructions", "")
+        api_key_binding = adapter_config.get("apiKey")
         instruction_mismatch = (
             require_compact_instructions
             and instructions != compact_instructions(name)
@@ -447,6 +493,11 @@ def validate_roster(agents: object, *, require_compact_instructions: bool) -> No
                 for key, value in EXECUTION_ROUTE.items()
             )
         )
+        config_shape_mismatch = (
+            require_compact_instructions
+            and set(adapter_config)
+            != set(EXECUTION_ROUTE) | {"apiKey", "instructions"}
+        )
         if (
             agent.get("id") != agent_id
             or agent.get("status") != "paused"
@@ -456,8 +507,10 @@ def validate_roster(agents: object, *, require_compact_instructions: bool) -> No
             or heartbeat.get("wakeOnDemand") is not True
             or heartbeat.get("maxConcurrentRuns") != 1
             or not isinstance(instructions, str)
+            or not is_secret_ref(api_key_binding)
             or instruction_mismatch
             or route_mismatch
+            or config_shape_mismatch
         ):
             raise CommissioningError(
                 f"admitted identity {name} has drifted from the exact paused charter",
@@ -595,6 +648,76 @@ class Commissioner:
         ):
             raise CommissioningError(f"{label} must be root-owned")
 
+    def _fsync_directory(self, directory: Path) -> None:
+        descriptor = os.open(
+            directory,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _write_protected_json(self, path: Path, value: object) -> None:
+        parent_existed = path.parent.exists()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+        if self.enforce_root_ownership:
+            os.chown(path.parent, 0, 0)
+        if not parent_existed:
+            self._fsync_directory(path.parent.parent)
+        temporary = path.parent / (
+            f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write(
+                    json.dumps(value, sort_keys=True, separators=(",", ":"))
+                    + "\n",
+                )
+                os.fchmod(output.fileno(), 0o600)
+                if self.enforce_root_ownership:
+                    os.fchown(output.fileno(), 0, 0)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+            self._fsync_directory(path.parent)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
+    def _durable_unlink(self, path: Path) -> None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        self._fsync_directory(path.parent)
+
+    def _verify_sidecar_route_evidence(self) -> None:
+        for path, field, label in (
+            (
+                self.paths.sidecar_config,
+                "configSha256",
+                "Hermes execution config",
+            ),
+            (
+                self.paths.sidecar_policy,
+                "policySha256",
+                "Hermes execution policy",
+            ),
+        ):
+            self._require_protected_file(path, label)
+            digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest != SIDECAR_ROUTE_EVIDENCE[field]:
+                raise CommissioningError(
+                    f"{label} does not match the Ollama-only route evidence",
+                )
+
     def _read_context(self, approval_in_progress: Path) -> tuple[dict[str, object], str, str]:
         self._require_protected_file(approval_in_progress, "commissioning approval")
         self._require_protected_file(self.paths.token, "operator board token")
@@ -604,6 +727,7 @@ class Commissioner:
         if not token:
             raise CommissioningError("operator board token is empty")
         validate_approval(approval, approved_image, dt.datetime.now(dt.timezone.utc))
+        self._verify_sidecar_route_evidence()
         return approval, approved_image, token
 
     def _capture_adapter_configs(
@@ -628,19 +752,33 @@ class Commissioner:
             captured[name] = adapter_config
         return captured
 
+    def _target_adapter_config(
+        self,
+        name: str,
+        prior_config: dict[str, object],
+    ) -> dict[str, object]:
+        api_key = prior_config.get("apiKey")
+        if not is_secret_ref(api_key):
+            raise CommissioningError(
+                f"admitted identity {name} lacks an exact gateway secret binding",
+            )
+        return {
+            **EXECUTION_ROUTE,
+            "apiKey": api_key,
+            "instructions": compact_instructions(name),
+        }
+
     def _apply_compact_configs(
         self,
         token: str,
+        prior_configs: dict[str, dict[str, object]],
     ) -> None:
         for name, agent_id in ADMITTED.items():
             self.platform.set_agent_adapter_config(
                 token,
                 agent_id,
-                {
-                    **EXECUTION_ROUTE,
-                    "instructions": compact_instructions(name),
-                },
-                replace=False,
+                self._target_adapter_config(name, prior_configs[name]),
+                replace=True,
             )
 
     def _restore_adapter_configs(
@@ -701,12 +839,7 @@ class Commissioner:
         prior_configs: dict[str, dict[str, object]],
     ) -> bool:
         for name, config in prior_configs.items():
-            if config.get("instructions") != compact_instructions(name):
-                return True
-            if any(
-                config.get(key) != value
-                for key, value in EXECUTION_ROUTE.items()
-            ):
+            if config != self._target_adapter_config(name, config):
                 return True
         return False
 
@@ -715,12 +848,10 @@ class Commissioner:
         approval_in_progress: Path,
         prior_configs: dict[str, dict[str, object]],
     ) -> None:
-        self.paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.paths.rollback_journal.exists():
             raise CommissioningError(
                 "interrupted commissioning requires rollback recovery",
             )
-        temporary = self.paths.state_dir / f".commissioning-rollback.{os.getpid()}"
         journal = {
             "schemaVersion": ROLLBACK_JOURNAL_VERSION,
             "campaignId": CAMPAIGN_ID,
@@ -740,14 +871,7 @@ class Commissioner:
                 for name in sorted(ADMITTED)
             },
         }
-        temporary.write_text(
-            json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
-        temporary.chmod(0o600)
-        if self.enforce_root_ownership:
-            os.chown(temporary, 0, 0)
-        os.replace(temporary, self.paths.rollback_journal)
+        self._write_protected_json(self.paths.rollback_journal, journal)
 
     def _read_rollback_journal(self) -> dict[str, dict[str, object]]:
         self._require_protected_file(
@@ -813,7 +937,7 @@ class Commissioner:
             self.platform.fetch_agents(token),
             prior_configs,
         )
-        self.paths.rollback_journal.unlink()
+        self._durable_unlink(self.paths.rollback_journal)
 
     def _recover_interrupted_commissioning(self) -> None:
         self._require_protected_file(self.paths.token, "operator board token")
@@ -825,7 +949,7 @@ class Commissioner:
             self.platform.restart_paperclip()
         self.platform.health()
         self._rollback_from_journal(token)
-        self.paths.receipt.unlink(missing_ok=True)
+        self._durable_unlink(self.paths.receipt)
         self.platform.restart_paperclip()
         self.platform.health()
         for stale in self.paths.config_dir.glob(
@@ -842,8 +966,6 @@ class Commissioner:
         instruction_receipt: dict[str, object],
     ) -> None:
         validate_instruction_receipt(instruction_receipt)
-        self.paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        temporary = self.paths.state_dir / f".commissioning.{os.getpid()}"
         receipt = {
             "schemaVersion": "gloops.controlled-swarm-commissioning.v1",
             "campaignId": CAMPAIGN_ID,
@@ -863,19 +985,18 @@ class Commissioner:
             ),
             "executionProvider": "ollama-cloud-via-hermes-gateway",
             "executionRoute": EXECUTION_ROUTE,
+            "gatewayAuthentication": {
+                "field": "apiKey",
+                "binding": "per-agent-secret-ref",
+                "version": "latest",
+            },
+            "sidecarRouteEvidence": SIDECAR_ROUTE_EVIDENCE,
             "instructionSet": instruction_receipt,
             "timerHeartbeatsEnabled": False,
             "campaignEpochState": "unarmed",
             "outcome": "commissioned",
         }
-        temporary.write_text(
-            json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
-        temporary.chmod(0o600)
-        if self.enforce_root_ownership:
-            os.chown(temporary, 0, 0)
-        os.replace(temporary, self.paths.receipt)
+        self._write_protected_json(self.paths.receipt, receipt)
 
     def run(self) -> None:
         if self.enforce_root_ownership and os.geteuid() != 0:
@@ -944,7 +1065,7 @@ class Commissioner:
                     prior_configs,
                 )
                 journal_written = True
-                self._apply_compact_configs(token)
+                self._apply_compact_configs(token, prior_configs)
             validate_roster(
                 self.platform.fetch_agents(token),
                 require_compact_instructions=True,
@@ -973,7 +1094,7 @@ class Commissioner:
                 self.platform.fetch_agents(token),
                 require_compact_instructions=True,
             )
-            self.paths.rollback_journal.unlink(missing_ok=True)
+            self._durable_unlink(self.paths.rollback_journal)
         except BaseException:
             if barrier_changed:
                 try:
@@ -983,14 +1104,14 @@ class Commissioner:
                         if journal_written:
                             self._rollback_from_journal(token)
                     finally:
-                        self.paths.receipt.unlink(missing_ok=True)
+                        self._durable_unlink(self.paths.receipt)
                         self.platform.restart_paperclip()
             else:
                 try:
                     if journal_written:
                         self._rollback_from_journal(token)
                 finally:
-                    self.paths.receipt.unlink(missing_ok=True)
+                    self._durable_unlink(self.paths.receipt)
             raise
         finally:
             approval_in_progress.unlink(missing_ok=True)
@@ -1016,6 +1137,7 @@ def verify_commissioned_state(
         paths.receipt,
         "commissioning receipt",
     )
+    commissioner._verify_sidecar_route_evidence()
     approved_image = paths.image.read_text(encoding="utf-8").strip()
     receipt = json.loads(paths.receipt.read_text(encoding="utf-8"))
     validate_commissioning_receipt(receipt, approved_image)
