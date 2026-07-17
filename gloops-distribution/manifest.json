@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.717.0-gloops.12",
+    "version": "2026.717.0-gloops.13",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:bfd94c5e90487cc8ada1504e778fe460ee720a1be7c67205c39e9390cd6077ff"
+    "digest": "sha256:07eb68e29e97059e66481c7e4dc008253f4240ec7f00b9a03e0f13ca32c494fe"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.12.json"
+    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.13.json"
   },
   "patches": [
     {
@@ -241,6 +241,20 @@
       "integratedCommits": ["db2e9b209cba7390bc91592ddca1417cbea72138"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides equivalent one-use artifact-bound inert activation, an application-level execution-commissioning barrier, root-only observation and stop controls, accelerated installed-deadman proof with cleanup-bound receipts, and independently accepted exact-head operational evidence."
+    },
+    {
+      "id": "plugin-orchestration-and-host-wake-idempotency",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "db2e9b209cba7390bc91592ddca1417cbea72138",
+      "sourceHead": "f440085b1bd6249f7cd751e21ae93a933195d45f",
+      "patchDiffSha256": "f409861872c75df5b4f8f07c396c1f763cc51be19bc96fca5cdc57f83ea3fa86",
+      "integratedCommits": [
+        "e1ff426690c347b60c8a7134e93b8cef79e2397a",
+        "f440085b1bd6249f7cd751e21ae93a933195d45f"
+      ],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected runtime has equivalent company-scoped transactional plugin issue-create idempotency, route provenance, and durable wake idempotency with faithful replay for queued, skipped, deferred, coalesced, and rejected outcomes."
     }
   ],
   "releasePolicy": {
