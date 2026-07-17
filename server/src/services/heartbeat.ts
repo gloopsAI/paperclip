@@ -30,6 +30,7 @@ import {
   agentConfigRevisions,
   agentRuntimeState,
   agentTaskSessions,
+  agentWakeupIdempotency,
   agentWakeupRequests,
   activityLog,
   approvals,
@@ -2037,6 +2038,38 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+}
+
+const WAKEUP_IDEMPOTENCY_KEY_MAX_CHARS = 512;
+
+function normalizeWakeupIdempotencyKey(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  if (
+    value.length === 0 ||
+    value.length > WAKEUP_IDEMPOTENCY_KEY_MAX_CHARS ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw conflict(
+      `Wake idempotency key must be 1-${WAKEUP_IDEMPOTENCY_KEY_MAX_CHARS} visible characters without surrounding whitespace`,
+    );
+  }
+  return value;
+}
+
+function buildWakeupRequestFingerprint(input: {
+  agentId: string;
+  source: NonNullable<WakeupOptions["source"]>;
+  triggerDetail: WakeupOptions["triggerDetail"] | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown>;
+  requestedByActorType: WakeupOptions["requestedByActorType"] | null;
+  requestedByActorId: string | null;
+}) {
+  return `sha256:${createHash("sha256")
+    .update(stableStringifyForFingerprint({ version: 1, ...input }))
+    .digest("hex")}`;
 }
 
 type UsageTotals = {
@@ -15194,24 +15227,101 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    const idempotencyKey = normalizeWakeupIdempotencyKey(opts.idempotencyKey);
+    const idempotencyFingerprint = idempotencyKey
+      ? buildWakeupRequestFingerprint({
+        agentId,
+        source,
+        triggerDetail,
+        reason,
+        payload,
+        contextSnapshot: enrichedContextSnapshot,
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+      })
+      : null;
+    const readIdempotencyReplay = async (executor: Db) => {
+      if (!idempotencyKey || !idempotencyFingerprint) {
+        return { found: false as const, run: null };
+      }
+      const existingIdempotency = await executor
+        .select()
+        .from(agentWakeupIdempotency)
+        .where(
+          and(
+            eq(agentWakeupIdempotency.companyId, agent.companyId),
+            eq(agentWakeupIdempotency.agentId, agentId),
+            eq(agentWakeupIdempotency.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!existingIdempotency) return { found: false as const, run: null };
+      if (existingIdempotency.requestFingerprint !== idempotencyFingerprint) {
+        throw conflict("Wake idempotency key was already used with different request parameters", {
+          idempotencyKey,
+          agentId,
+        });
+      }
+      const replayRun = existingIdempotency.runId
+        ? await executor
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, existingIdempotency.runId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : null;
+      if (existingIdempotency.runId && !replayRun) {
+        throw conflict("Wake idempotency outcome references a missing run", {
+          idempotencyKey,
+          agentId,
+          runId: existingIdempotency.runId,
+        });
+      }
+      return { found: true as const, run: replayRun };
+    };
+
+    const initialReplay = await readIdempotencyReplay(db);
+    if (initialReplay.found) return initialReplay.run;
 
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
     ) => {
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason: skipReason,
-        payload,
-        status: "skipped",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
-        ...patch,
+      await db.transaction(async (tx) => {
+        if (idempotencyKey) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${
+              `agent-wakeup:${agent.companyId}:${agentId}:${idempotencyKey}`
+            }, 0))`,
+          );
+          const replay = await readIdempotencyReplay(tx as unknown as Db);
+          if (replay.found) return;
+        }
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: skipReason,
+          payload,
+          status: "skipped",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey,
+          finishedAt: new Date(),
+          ...patch,
+        });
+        if (idempotencyKey && idempotencyFingerprint) {
+          await tx.insert(agentWakeupIdempotency).values({
+            companyId: agent.companyId,
+            agentId,
+            idempotencyKey,
+            requestFingerprint: idempotencyFingerprint,
+            outcomeKind: "skipped",
+            runId: null,
+          });
+        }
       });
     };
     const writeSkippedHeartbeatRequest = async (skipReason: string, details: Record<string, unknown>) => {
@@ -15474,6 +15584,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {
+        if (idempotencyKey) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${
+              `agent-wakeup:${agent.companyId}:${agentId}:${idempotencyKey}`
+            }, 0))`,
+          );
+          const replay = await readIdempotencyReplay(tx as unknown as Db);
+          if (replay.found) return { kind: "replayed" as const, run: replay.run };
+        }
+
+        const recordIdempotencyOutcome = async <
+          T extends { kind: string; run?: typeof heartbeatRuns.$inferSelect },
+        >(recordedOutcome: T): Promise<T> => {
+          if (idempotencyKey && idempotencyFingerprint) {
+            await tx.insert(agentWakeupIdempotency).values({
+              companyId: agent.companyId,
+              agentId,
+              idempotencyKey,
+              requestFingerprint: idempotencyFingerprint,
+              outcomeKind: recordedOutcome.kind,
+              runId: recordedOutcome.run?.id ?? null,
+            });
+          }
+          return recordedOutcome;
+        };
+
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
@@ -15509,10 +15645,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
             finishedAt: new Date(),
           });
-          return { kind: "skipped" as const };
+          return recordIdempotencyOutcome({ kind: "skipped" as const });
         }
 
         if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {
@@ -15533,10 +15669,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
             finishedAt: new Date(),
           });
-          return { kind: "skipped" as const };
+          return recordIdempotencyOutcome({ kind: "skipped" as const });
         }
 
         const cancelStaleScheduledRetry = async (scheduledRun: typeof heartbeatRuns.$inferSelect) => {
@@ -15789,10 +15925,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
             finishedAt: new Date(),
           });
-          return { kind: "skipped" as const };
+          return recordIdempotencyOutcome({ kind: "skipped" as const });
         }
 
         if (isolatedWorkspacesEnabled && !activeExecutionRun && issue.status !== "done" && issue.status !== "cancelled") {
@@ -15886,7 +16022,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "skipped",
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+              idempotencyKey,
               finishedAt: now,
             });
             await logActivity(tx as unknown as Db, {
@@ -15910,7 +16046,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 hasResolvablePriorSessionWorkspace,
               },
             });
-            return { kind: "skipped" as const };
+            return recordIdempotencyOutcome({ kind: "skipped" as const });
           }
         }
 
@@ -15970,12 +16106,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               coalescedCount: 1,
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+              idempotencyKey,
               runId: mergedRun.id,
               finishedAt: new Date(),
             });
 
-            return { kind: "coalesced" as const, run: mergedRun };
+            return recordIdempotencyOutcome({ kind: "coalesced" as const, run: mergedRun });
           }
 
           if (availableActiveExecutionRun) {
@@ -16023,7 +16159,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 })
                 .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
-              return { kind: "deferred" as const };
+              return recordIdempotencyOutcome({ kind: "deferred" as const });
             }
 
             await tx.insert(agentWakeupRequests).values({
@@ -16036,10 +16172,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               status: "deferred_issue_execution",
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+              idempotencyKey,
             });
 
-            return { kind: "deferred" as const };
+            return recordIdempotencyOutcome({ kind: "deferred" as const });
           }
         }
 
@@ -16142,10 +16278,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 status: "skipped",
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
-                idempotencyKey: opts.idempotencyKey ?? null,
+                idempotencyKey,
                 finishedAt: throttleNow,
               });
-              return { kind: "skipped" as const };
+              return recordIdempotencyOutcome({ kind: "skipped" as const });
             }
           }
         }
@@ -16170,7 +16306,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
             finishedAt: now,
           });
           if (source === "timer") {
@@ -16182,7 +16318,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               })
               .where(eq(agents.id, agentId));
           }
-          return { kind: "skipped" as const };
+          return recordIdempotencyOutcome({ kind: "skipped" as const });
         }
 
         const wakeupRequest = await tx
@@ -16197,7 +16333,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey,
           })
           .returning()
           .then((rows) => rows[0]);
@@ -16231,9 +16367,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // doesn't start it). It will be stamped in claimQueuedRun() once the run
         // transitions to "running" — Fix A (lazy locking).
 
-        return { kind: "queued" as const, run: newRun };
+        return recordIdempotencyOutcome({ kind: "queued" as const, run: newRun });
       });
 
+      if (outcome.kind === "replayed") return outcome.run;
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
@@ -16287,42 +16424,91 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
 
     if (coalescedTargetRun) {
-      const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-        coalescedTargetRun.contextSnapshot,
-        enrichedContextSnapshot,
-      );
-      const mergedRun = await db
-        .update(heartbeatRuns)
-        .set({
-          contextSnapshot: mergedContextSnapshot,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
-        .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+      const coalescedOutcome = await db.transaction(async (tx) => {
+        if (idempotencyKey) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${
+              `agent-wakeup:${agent.companyId}:${agentId}:${idempotencyKey}`
+            }, 0))`,
+          );
+          const replay = await readIdempotencyReplay(tx as unknown as Db);
+          if (replay.found) return { kind: "replayed" as const, run: replay.run };
+        }
+        await tx.execute(
+          sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
+        );
+        const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+          coalescedTargetRun.contextSnapshot,
+          enrichedContextSnapshot,
+        );
+        const mergedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: mergedContextSnapshot,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
+          .returning()
+          .then((rows) => rows[0] ?? coalescedTargetRun);
 
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "coalesced",
-        coalescedCount: 1,
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        runId: mergedRun.id,
-        finishedAt: new Date(),
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "coalesced",
+          coalescedCount: 1,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey,
+          runId: mergedRun.id,
+          finishedAt: new Date(),
+        });
+        if (idempotencyKey && idempotencyFingerprint) {
+          await tx.insert(agentWakeupIdempotency).values({
+            companyId: agent.companyId,
+            agentId,
+            idempotencyKey,
+            requestFingerprint: idempotencyFingerprint,
+            outcomeKind: "coalesced",
+            runId: mergedRun.id,
+          });
+        }
+        return { kind: "coalesced" as const, run: mergedRun };
       });
-      return mergedRun;
+      return coalescedOutcome.run;
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
+      if (idempotencyKey) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${
+            `agent-wakeup:${agent.companyId}:${agentId}:${idempotencyKey}`
+          }, 0))`,
+        );
+        const replay = await readIdempotencyReplay(tx as unknown as Db);
+        if (replay.found) return { kind: "replayed" as const, run: replay.run };
+      }
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
+      const recordIdempotencyOutcome = async <
+        T extends { kind: string; run?: typeof heartbeatRuns.$inferSelect },
+      >(recordedOutcome: T): Promise<T> => {
+        if (idempotencyKey && idempotencyFingerprint) {
+          await tx.insert(agentWakeupIdempotency).values({
+            companyId: agent.companyId,
+            agentId,
+            idempotencyKey,
+            requestFingerprint: idempotencyFingerprint,
+            outcomeKind: recordedOutcome.kind,
+            runId: recordedOutcome.run?.id ?? null,
+          });
+        }
+        return recordedOutcome;
+      };
 
       const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, policy, {}, tx);
       if (dailyCapBlock) {
@@ -16344,7 +16530,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "skipped",
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,
-          idempotencyKey: opts.idempotencyKey ?? null,
+          idempotencyKey,
           finishedAt: now,
         });
         if (source === "timer") {
@@ -16356,7 +16542,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             })
             .where(eq(agents.id, agentId));
         }
-        return { kind: "skipped" as const };
+        return recordIdempotencyOutcome({ kind: "skipped" as const });
       }
 
       const wakeupRequest = await tx
@@ -16371,7 +16557,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,
-          idempotencyKey: opts.idempotencyKey ?? null,
+          idempotencyKey,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -16401,9 +16587,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-      return { kind: "queued" as const, run: newRun };
+      return recordIdempotencyOutcome({ kind: "queued" as const, run: newRun });
     });
 
+    if (queueOutcome.kind === "replayed") return queueOutcome.run;
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
 
