@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:b67dbf3b363c062cc882eeeb20f2d1cc335246c64af66590816990e190f21f09'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:bfd94c5e90487cc8ada1504e778fe460ee720a1be7c67205c39e9390cd6077ff'
 failed=0
 
 check_inactive() {
@@ -386,7 +386,7 @@ else
   failed=1
 fi
 
-if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
+if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' /etc/paperclip-gloops/runtime.env \
