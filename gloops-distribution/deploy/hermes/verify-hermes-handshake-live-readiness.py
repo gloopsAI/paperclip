@@ -26,6 +26,14 @@ EXPECTED_UNIT_LINES = {
     "LimitNOFILE=64",
     "RuntimeMaxSec=900",
 }
+DROPIN_DIRS = (
+    f"{UNIT}.d",
+    "paperclip-hermes-handshake-.service.d",
+    "paperclip-hermes-.service.d",
+    "paperclip-.service.d",
+    "service.d",
+)
+DEPENDENCY_DIRS = (f"{UNIT}.wants", f"{UNIT}.requires", f"{UNIT}.upholds")
 
 
 class ReadinessError(RuntimeError):
@@ -181,7 +189,8 @@ def verify(root: Path, uid: int, gid: int) -> None:
                 )
         if base != "/usr/local/lib/systemd/system" and base != "/etc/systemd/system":
             overrides.append(_mapped(root, f"{base}/{UNIT}"))
-        overrides.append(_mapped(root, f"{base}/{UNIT}.d"))
+        for relative in (*DROPIN_DIRS, *DEPENDENCY_DIRS):
+            overrides.append(_mapped(root, f"{base}/{relative}"))
     for override in overrides:
         if override.exists() or override.is_symlink():
             raise ReadinessError(f"higher-precedence egress unit override exists: {override}")

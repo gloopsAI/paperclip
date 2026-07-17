@@ -95,6 +95,21 @@ class LiveReadinessTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ReadinessError, "higher-precedence"):
             self.verify()
 
+    def test_rejects_dash_prefix_drop_in(self) -> None:
+        (self.root / "etc/systemd/system/paperclip-.service.d").mkdir()
+        with self.assertRaisesRegex(MODULE.ReadinessError, "higher-precedence"):
+            self.verify()
+
+    def test_rejects_per_type_drop_in(self) -> None:
+        (self.root / "etc/systemd/system/service.d").mkdir()
+        with self.assertRaisesRegex(MODULE.ReadinessError, "higher-precedence"):
+            self.verify()
+
+    def test_rejects_added_dependency_directory(self) -> None:
+        (self.root / f"etc/systemd/system/{MODULE.UNIT}.wants").mkdir()
+        with self.assertRaisesRegex(MODULE.ReadinessError, "higher-precedence"):
+            self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()
