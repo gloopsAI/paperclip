@@ -47,7 +47,12 @@ install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
-rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"
+rm -f \
+  "${CONFIG_DIR}/ACTIVATION_APPROVED" \
+  "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
+  "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED" \
+  "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED"
+rm -f "${CONFIG_DIR}"/.CONTROLLED_SWARM_ACTIVATION_APPROVED.*
 "${SCRIPT_DIR}/remove-hermes-handshake-egress.sh"
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 rm -f /run/paperclip-campaign/deadman.sock
@@ -59,6 +64,11 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-runtime-deadman.sh" "${LIB
 install -m 0555 -o root -g root "${SCRIPT_DIR}/campaign-deadman.py" "${LIB_DIR}/campaign-deadman.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-campaign-deadman.py" "${LIB_DIR}/verify-campaign-deadman.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/campaign-deadman-stop.sh" "${LIB_DIR}/campaign-deadman-stop.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/campaign-deadman-rehearsal-stop.sh" "${LIB_DIR}/campaign-deadman-rehearsal-stop.sh"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/rehearse-campaign-deadman.py" "${LIB_DIR}/rehearse-campaign-deadman.py"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/activate-controlled-swarm.sh" "${LIB_DIR}/activate-controlled-swarm.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-controlled-swarm.sh" "${LIB_DIR}/stop-controlled-swarm.sh"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/observe-controlled-swarm.py" "${LIB_DIR}/observe-controlled-swarm.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/failure-alert.mjs" "${LIB_DIR}/failure-alert.mjs"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/configure-tailnet-https.sh" "${LIB_DIR}/configure-tailnet-https.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-dark.sh" "${LIB_DIR}/verify-dark.sh"

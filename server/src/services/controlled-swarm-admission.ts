@@ -1,8 +1,15 @@
 const COMPANY_ACTIVE_RUNS_MAX = 50;
 
 export interface ControlledSwarmAdmissionPolicy {
+  commissioned: boolean;
   companyMaxActiveRuns: number | null;
   issueCreatedAtGte: Date | null;
+}
+function parseOptionalBoolean(name: string, raw: string | undefined, fallback: boolean) {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be true or false`);
 }
 function parseOptionalPositiveInteger(
   name: string,
@@ -33,6 +40,11 @@ export function parseControlledSwarmAdmissionPolicy(
   env: Record<string, string | undefined> = process.env,
 ): ControlledSwarmAdmissionPolicy {
   return {
+    commissioned: parseOptionalBoolean(
+      "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED",
+      env.PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED,
+      true,
+    ),
     companyMaxActiveRuns: parseOptionalPositiveInteger(
       "PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS",
       env.PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS,

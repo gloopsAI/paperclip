@@ -681,6 +681,63 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     expect(adapterExecute).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps explicit admissions behind the controlled-swarm commissioning barrier", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "controlled_swarm_commissioning_barrier_test",
+      status: "queued",
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      wakeupRequestId,
+      responsibleUserId: "operator",
+      contextSnapshot: {},
+    });
+    const campaignDeadmanAdmission = vi.fn();
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED: "false",
+        PAPERCLIP_CAMPAIGN_ID: "controlled-swarm-20260717",
+        PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+      },
+      campaignDeadmanAdmission,
+    });
+
+    await expect(heartbeat.resumeQueuedRuns()).rejects.toThrow(
+      "controlled swarm is not commissioned for execution",
+    );
+    const persisted = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      status: "queued",
+      contextSnapshot: {},
+    });
+    expect(campaignDeadmanAdmission).not.toHaveBeenCalled();
+    expect(adapterExecute).not.toHaveBeenCalled();
+  });
+
   it("leaves the run queued and never invokes an adapter when the host deadman fails closed", async () => {
     adapterExecute.mockClear();
     const { companyId, agentIds: [agentId] } = await seedCompany(1);

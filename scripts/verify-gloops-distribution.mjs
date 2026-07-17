@@ -82,6 +82,22 @@ const rehearseZeroWorkPath = new URL(
   "../gloops-distribution/deploy/hermes/rehearse-zero-work.sh",
   import.meta.url,
 );
+const verifyCampaignDeadmanPath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-campaign-deadman.py",
+  import.meta.url,
+);
+const rehearseCampaignDeadmanPath = new URL(
+  "../gloops-distribution/deploy/hermes/rehearse-campaign-deadman.py",
+  import.meta.url,
+);
+const activateControlledSwarmPath = new URL(
+  "../gloops-distribution/deploy/hermes/activate-controlled-swarm.sh",
+  import.meta.url,
+);
+const stopControlledSwarmPath = new URL(
+  "../gloops-distribution/deploy/hermes/stop-controlled-swarm.sh",
+  import.meta.url,
+);
 const rollbackPath = new URL(
   "../gloops-distribution/deploy/hermes/rollback.sh",
   import.meta.url,
@@ -269,6 +285,10 @@ const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "u
 const verifyRuntimeDeadman = readFileSync(verifyRuntimeDeadmanPath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
 const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
+const verifyCampaignDeadman = readFileSync(verifyCampaignDeadmanPath, "utf8");
+const rehearseCampaignDeadman = readFileSync(rehearseCampaignDeadmanPath, "utf8");
+const activateControlledSwarm = readFileSync(activateControlledSwarmPath, "utf8");
+const stopControlledSwarm = readFileSync(stopControlledSwarmPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
   .split("\n")
   .map((line) => line.trim())
@@ -624,6 +644,9 @@ if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }
+if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true$/m.test(runtimeEnv)) {
+  fail("runtime-changing source must keep the release-pin activation interlock engaged");
+}
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
 }
@@ -654,7 +677,8 @@ if (
 }
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
-  "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
+  "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false",
+  "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
   "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
   "PAPERCLIP_MTE_ENABLED=false",
   "issue_recovery_actions",
@@ -688,6 +712,28 @@ for (const required of [
 ]) {
   if (!verifyHermesHandshakeEgressBoundary.includes(required)) {
     fail(`Hermes handshake executable negative egress proof is missing ${required}`);
+  }
+}
+for (const [surface, content, required] of [
+  ["deadman verifier", verifyCampaignDeadman, "--wait-seconds"],
+  ["deadman verifier", verifyCampaignDeadman, "wait_for_status"],
+  ["deadman verifier", verifyCampaignDeadman, "DeadmanVerificationError"],
+  ["zero-work rehearsal", rehearseZeroWorkExecutable, "--require-status unarmed"],
+  ["live preflight", preflight, "--wait-seconds 15"],
+  ["deadman rehearsal", rehearseCampaignDeadman, "duration_seconds=86_400"],
+  ["deadman rehearsal", rehearseCampaignDeadman, "productionEpochCreated"],
+  ["deadman rehearsal", rehearseCampaignDeadman, "providersInvoked"],
+  ["controlled-swarm activation", activateControlledSwarm, "CONTROLLED_SWARM_ACTIVATION_APPROVED"],
+  ["controlled-swarm activation", activateControlledSwarm, "no recent exact-artifact deadman rehearsal receipt exists"],
+  ["controlled-swarm activation", activateControlledSwarm, "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false"],
+  ["controlled-swarm activation", activateControlledSwarm, "controlled-swarm approval is stale, malformed, or artifact-mismatched"],
+  ["controlled-swarm activation", activateControlledSwarm, "inert activation unexpectedly armed the campaign epoch"],
+  ["controlled-swarm activation", activateControlledSwarm, "inert activation requires the execution-commissioning barrier"],
+  ["controlled-swarm activation", activateControlledSwarm, "--require-status unarmed"],
+  ["controlled-swarm stop", stopControlledSwarm, "verify-dark.sh"],
+]) {
+  if (!content.includes(required)) {
+    fail(`${surface} is missing ${required}`);
   }
 }
 for (const [surface, content, required] of [
@@ -1727,14 +1773,14 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
   }
 }
-if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
-  fail("dark verification still expects the source-only release-pin interlock");
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false")) {
+  fail("dark verification bypasses the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",
