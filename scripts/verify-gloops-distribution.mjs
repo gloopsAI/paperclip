@@ -1150,6 +1150,7 @@ for (const required of [
   "DynamicUser=yes",
   "NoNewPrivileges=yes",
   "ProtectSystem=strict",
+  "RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK",
   "CapabilityBoundingSet=",
   "MemoryMax=128M",
   "CPUQuota=50%",
@@ -1162,6 +1163,16 @@ for (const required of [
 }
 if (hermesHandshakeEgressService.split("\n").filter((line) => line === "TasksMax=64").length !== 1) {
   fail("Hermes handshake egress service must declare exactly one TasksMax=64 directive");
+}
+for (const required of [
+  "lib_dir='/usr/local/lib/paperclip-gloops'",
+  "'755:root:root'",
+  "'555:root:root'",
+  "Hermes handshake proxy path is immutable and traversable by its dynamic service identity",
+]) {
+  if (!verifyDark.includes(required)) {
+    fail(`dark verifier is missing the Hermes dynamic-user path invariant: ${required}`);
+  }
 }
 for (const required of [
   "kill -KILL \"${proxy_pid}\"",
