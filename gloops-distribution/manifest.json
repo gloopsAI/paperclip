@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.717.0-gloops.13",
+    "version": "2026.717.0-gloops.14",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:07eb68e29e97059e66481c7e4dc008253f4240ec7f00b9a03e0f13ca32c494fe"
+    "digest": "sha256:cc1273169e31143ab510db9a3c719c9bf19762a767f88c4c039ef3781377c25f"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.13.json"
+    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.14.json"
   },
   "patches": [
     {
@@ -255,6 +255,17 @@
       ],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime has equivalent company-scoped transactional plugin issue-create idempotency, route provenance, and durable wake idempotency with faithful replay for queued, skipped, deferred, coalesced, and rejected outcomes."
+    },
+    {
+      "id": "controlled-swarm-one-use-commissioning-transition",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "77497abbe8c4bfad81b9100371806a603c3c95fd",
+      "sourceHead": "90be60c5445d6a5d3fd42a6c729df45f6b76a605",
+      "patchDiffSha256": "35541523203621982d5900961097c3dbc4dcd91b623d0afee8e700a9a276bd55",
+      "integratedCommits": ["90be60c5445d6a5d3fd42a6c729df45f6b76a605"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected runtime provides an equivalent one-use, exact-roster commissioning transaction with post-restart revalidation, fail-closed rollback, non-replayable stop semantics, and behavioral authority-boundary evidence."
     }
   ],
   "releasePolicy": {
