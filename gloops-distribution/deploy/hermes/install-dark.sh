@@ -13,6 +13,17 @@ readonly APP_KEY="${CONFIG_DIR}/github-app/private-key.pem"
   echo "run with sudo" >&2
   exit 1
 }
+for command in python3 chattr lsattr systemctl docker; do
+  command -v "${command}" >/dev/null || {
+    echo "required campaign-deadman command is unavailable: ${command}" >&2
+    exit 1
+  }
+done
+[[ "$(id -u paperclip 2>/dev/null || true)" == '995' ]] \
+  && [[ "$(id -g paperclip 2>/dev/null || true)" == '985' ]] || {
+  echo "the campaign deadman requires the accepted paperclip identity 995:985" >&2
+  exit 1
+}
 
 for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
   if systemctl is-active --quiet "${unit}"; then
