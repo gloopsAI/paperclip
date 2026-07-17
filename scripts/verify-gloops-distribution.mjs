@@ -1191,6 +1191,7 @@ if (!readFileSync(installDarkPath, "utf8").includes(
 }
 for (const required of [
   "EXPECTED_UNIT_SHA256",
+  "EXPECTED_PROXY_SHA256",
   "proxy ancestor is not traversable by DynamicUser",
   "proxy ancestor is writable outside root",
   "chain is not root-protected and traversable",
@@ -1199,6 +1200,7 @@ for (const required of [
   "service.d",
   ".wants",
   "installed egress unit hash",
+  "installed egress proxy hash",
   "RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK",
   "full DynamicUser path and exact masked egress unit",
 ]) {
