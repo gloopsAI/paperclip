@@ -15263,6 +15263,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId,
         });
       }
+      if (existingIdempotency.outcomeKind === "rejected") {
+        throw new HttpError(
+          existingIdempotency.errorStatus ?? 409,
+          existingIdempotency.errorMessage ?? "Wake request was rejected",
+          existingIdempotency.errorDetails ?? undefined,
+        );
+      }
       const replayRun = existingIdempotency.runId
         ? await executor
           .select()
@@ -15287,6 +15294,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
+      rejection: HttpError | null = null,
     ) => {
       await db.transaction(async (tx) => {
         if (idempotencyKey) {
@@ -15318,8 +15326,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId,
             idempotencyKey,
             requestFingerprint: idempotencyFingerprint,
-            outcomeKind: "skipped",
+            outcomeKind: rejection ? "rejected" : "skipped",
             runId: null,
+            errorStatus: rejection?.status ?? null,
+            errorMessage: rejection?.message ?? null,
+            errorDetails: rejection?.details ?? null,
           });
         }
       });
@@ -15483,26 +15494,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId,
     });
     if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked");
-      throw conflict(budgetBlock.reason, {
+      const rejection = conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
       });
+      await writeSkippedRequest("budget.blocked", {}, rejection);
+      throw rejection;
     }
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      if (opts.requestedByActorType !== "user") {
-        await writeSkippedRequest("agent.not_invokable", {
-          error: invokability.message,
-        });
-      }
-      throw conflict(invokability.message, {
+      const rejection = conflict(invokability.message, {
         status: agent.status,
         reason: invokability.reason,
         invalidOrgChain: invokability.invalidOrgChain,
         ...invokability.details,
       });
+      if (opts.requestedByActorType !== "user") {
+        await writeSkippedRequest("agent.not_invokable", {
+          error: invokability.message,
+        }, rejection);
+      }
+      throw rejection;
     }
 
     const policy = parseHeartbeatPolicy(agent);

@@ -6,6 +6,9 @@ CREATE TABLE "agent_wakeup_idempotency" (
 	"request_fingerprint" text NOT NULL,
 	"outcome_kind" text NOT NULL,
 	"run_id" uuid,
+	"error_status" integer,
+	"error_message" text,
+	"error_details" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
