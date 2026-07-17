@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.717.0-gloops.14",
+    "version": "2026.717.0-gloops.15",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:cc1273169e31143ab510db9a3c719c9bf19762a767f88c4c039ef3781377c25f"
+    "digest": "sha256:7314eedaebf3f167ba3cb2f007e8c7ab66c42c62b7a0ebfb97b0801f913c37b1"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.14.json"
+    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.15.json"
   },
   "patches": [
     {
@@ -266,6 +266,17 @@
       "integratedCommits": ["90be60c5445d6a5d3fd42a6c729df45f6b76a605"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides an equivalent one-use, exact-roster commissioning transaction with post-restart revalidation, fail-closed rollback, non-replayable stop semantics, and behavioral authority-boundary evidence."
+    },
+    {
+      "id": "event-driven-plugin-job-retirement-and-zero-work-proof",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "308d955866d28df2e8a233026ef977cf3caa8875",
+      "sourceHead": "bdd506f1dae20ac4c52bc7134a1788d3ae5279fc",
+      "patchDiffSha256": "4c545fc213b3230fb46b4a1e0b800fb16864822340cebf19a9501511c6696d8b",
+      "integratedCommits": ["bdd506f1dae20ac4c52bc7134a1788d3ae5279fc"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until upstream synchronizes empty plugin job manifests before replacement-worker startup, pauses and unregisters removed durable schedules, and preserves closed-interval zero-work proof with no plugin job runs."
     }
   ],
   "releasePolicy": {
