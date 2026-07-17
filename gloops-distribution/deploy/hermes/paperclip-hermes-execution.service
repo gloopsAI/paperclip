@@ -1,8 +1,9 @@
 [Unit]
 Description=Paperclip Hermes execution-only sidecar (operator-activated only)
 Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
-Requires=docker.service
-After=docker.service network-online.target
+Requires=docker.service paperclip-campaign-deadman.service
+BindsTo=paperclip-campaign-deadman.service
+After=docker.service network-online.target paperclip-campaign-deadman.service
 Wants=network-online.target
 Conflicts=paperclip-hermes-handshake.service
 ConditionPathExists=/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED

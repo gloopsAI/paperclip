@@ -13,6 +13,10 @@ import {
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
+  CAMPAIGN_DEADMAN_SCHEMA_VERSION,
+  CAMPAIGN_EPOCH_CONTEXT_KEY,
+} from "../services/campaign-deadman.js";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -587,5 +591,152 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     await heartbeat.waitForRunExecutionDrain(retryRunId);
     expect(adapterExecute).toHaveBeenCalledTimes(1);
     expect(adapterState.startedAgentIds).toEqual([agentId]);
+  });
+
+  it("binds an attributable host-deadman epoch before adapter invocation", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "campaign_deadman_binding_test",
+      status: "queued",
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      wakeupRequestId,
+      responsibleUserId: "operator",
+      contextSnapshot: {},
+    });
+
+    const firstAdmittedAt = "2026-07-17T07:00:00.000Z";
+    const deadlineAt = "2026-07-18T07:00:00.000Z";
+    const campaignDeadmanAdmission = vi.fn(async (
+      policy: {
+        campaignId: string;
+        durationSeconds: number;
+      },
+      input: {
+        companyId: string;
+        runId: string;
+      },
+    ) => ({
+      schemaVersion: CAMPAIGN_DEADMAN_SCHEMA_VERSION,
+      campaignId: policy.campaignId,
+      companyId: input.companyId,
+      firstRunId: input.runId,
+      firstAdmittedAt,
+      deadlineAt,
+      durationSeconds: policy.durationSeconds,
+      epochSha256: `sha256:${"d".repeat(64)}`,
+    }));
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_CAMPAIGN_ID: "controlled-swarm-20260717",
+        PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+        PAPERCLIP_CAMPAIGN_DURATION_SECONDS: "86400",
+      },
+      campaignDeadmanAdmission,
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForTerminalRuns(db, [runId]);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect(campaignDeadmanAdmission).toHaveBeenCalledTimes(1);
+    expect(campaignDeadmanAdmission).toHaveBeenCalledWith(
+      expect.objectContaining({ campaignId: "controlled-swarm-20260717" }),
+      { companyId, runId },
+    );
+    const persisted = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.contextSnapshot).toMatchObject({
+      [CAMPAIGN_EPOCH_CONTEXT_KEY]: {
+        campaignId: "controlled-swarm-20260717",
+        companyId,
+        firstRunId: runId,
+        deadlineAt,
+      },
+    });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the run queued and never invokes an adapter when the host deadman fails closed", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "campaign_deadman_denial_test",
+      status: "queued",
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      wakeupRequestId,
+      responsibleUserId: "operator",
+      contextSnapshot: {},
+    });
+
+    const campaignDeadmanAdmission = vi.fn(async () => {
+      throw new Error("campaign deadman denied admission: expired");
+    });
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_CAMPAIGN_ID: "controlled-swarm-20260717",
+        PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+      },
+      campaignDeadmanAdmission,
+    });
+
+    await expect(heartbeat.resumeQueuedRuns()).rejects.toThrow(
+      "campaign deadman denied admission: expired",
+    );
+    const persisted = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toMatchObject({
+      status: "queued",
+      contextSnapshot: {},
+    });
+    expect(campaignDeadmanAdmission).toHaveBeenCalledTimes(1);
+    expect(adapterExecute).not.toHaveBeenCalled();
   });
 });

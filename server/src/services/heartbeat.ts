@@ -227,6 +227,11 @@ import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import { withCompanyQueuePumpLock } from "./company-queue-pump-lock.js";
 import {
+  admitCampaignRun,
+  CAMPAIGN_EPOCH_CONTEXT_KEY,
+  parseCampaignDeadmanPolicy,
+} from "./campaign-deadman.js";
+import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
   shouldCancelRunsForNonInvokableAgent,
@@ -5021,6 +5026,7 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  campaignDeadmanAdmission?: typeof admitCampaignRun;
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -5049,6 +5055,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
   const runtimeEnv = options.runtimeEnv ?? process.env;
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
+  const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
+  const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
   const allowsAutomaticRecoveryForContext = (context: Record<string, unknown>) => {
     const bindingPresent = Object.prototype.hasOwnProperty.call(
       context,
@@ -10211,10 +10219,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "company_wip_deferred" as const, observed, limit };
           }
         }
+        const campaignEpoch = campaignDeadmanPolicy
+          ? await campaignDeadmanAdmission(campaignDeadmanPolicy, {
+            companyId: run.companyId,
+            runId: run.id,
+          })
+          : null;
         const claimed = await tx
           .update(heartbeatRuns)
           .set({
             status: "running",
+            ...(campaignEpoch
+              ? {
+                contextSnapshot: {
+                  ...context,
+                  [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
+                },
+              }
+              : {}),
             responsibleUserId,
             startedAt: run.startedAt ?? claimedAt,
             updatedAt: claimedAt,
@@ -10385,11 +10407,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : { kind: "lost_race" as const };
       }
 
+      const campaignEpoch = campaignDeadmanPolicy
+        ? await campaignDeadmanAdmission(campaignDeadmanPolicy, {
+          companyId: run.companyId,
+          runId: run.id,
+        })
+        : null;
       const claimed = await tx
         .update(heartbeatRuns)
         .set({
           status: "running",
-          contextSnapshot: nextContext,
+          contextSnapshot: campaignEpoch
+            ? {
+              ...nextContext,
+              [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
+            }
+            : nextContext,
           responsibleUserId,
           startedAt: run.startedAt ?? claimedAt,
           updatedAt: claimedAt,

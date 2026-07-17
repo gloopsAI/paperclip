@@ -5,6 +5,7 @@ readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly PAPERCLIP_UNIT='paperclip-gloops.service'
 readonly HERMES_UNIT='paperclip-hermes-execution.service'
+readonly DEADMAN_UNIT='paperclip-campaign-deadman.service'
 readonly OBSERVE_SECONDS="${PAPERCLIP_ZERO_WORK_OBSERVE_SECONDS:-60}"
 
 [[ "${EUID}" -eq 0 ]] || {
@@ -17,7 +18,7 @@ readonly OBSERVE_SECONDS="${PAPERCLIP_ZERO_WORK_OBSERVE_SECONDS:-60}"
   exit 2
 }
 
-for unit in "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"; do
+for unit in "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing rehearsal while ${unit} is active" >&2
     exit 1
@@ -38,6 +39,8 @@ done
 grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 
 evidence_output="$(mktemp)"
@@ -67,6 +70,7 @@ cleanup() {
   fi
   systemctl stop "${PAPERCLIP_UNIT}"
   systemctl stop "${HERMES_UNIT}"
+  systemctl stop "${DEADMAN_UNIT}"
   if ((egress_rule_installed == 1)); then
     if iptables -D DOCKER-USER -s "${subnet}" ! -d "${subnet}" \
       -m comment --comment "${egress_comment}" -j REJECT; then
@@ -77,8 +81,8 @@ cleanup() {
     fi
   fi
   rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
-  systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
-  systemctl reset-failed "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
+  systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
+  systemctl reset-failed "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
   "${LIB_DIR}/verify-dark.sh"
   local dark_status=$?
   rm -f "${evidence_output}" "${evidence_error}"
@@ -105,11 +109,13 @@ iptables -I DOCKER-USER 1 -s "${subnet}" ! -d "${subnet}" \
   -m comment --comment "${egress_comment}" -j REJECT
 egress_rule_installed=1
 
-systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"
+systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
 # A masked unit is loaded from /dev/null. Reload after unmasking so this proof
 # executes the newly installed unit definitions instead of the manager's prior
 # cached definition.
 systemctl daemon-reload
+systemctl start "${DEADMAN_UNIT}"
+/usr/local/lib/paperclip-gloops/verify-campaign-deadman.py
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 systemctl start "${HERMES_UNIT}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
