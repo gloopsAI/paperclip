@@ -15017,6 +15017,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const executionCutoffReason = controlledSwarmAdmissionPolicy.issueCreatedAtGte
       ? "heartbeat.execution_issue_created_at_cutoff"
       : "heartbeat.worktree_execution_cutoff";
+    const executionCutoffPayloadReason = controlledSwarmAdmissionPolicy.issueCreatedAtGte
+      ? "execution_issue_created_at_cutoff"
+      : "worktree_execution_cutoff";
 
     const company = await db
       .select({ status: companies.status })
@@ -15090,7 +15093,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (resolvedIssue) {
         if (worktreeExecutionCutoff && resolvedIssue.createdAt < worktreeExecutionCutoff) {
           await writeSkippedHeartbeatRequest(executionCutoffReason, {
-            reason: executionCutoffReason,
+            reason: executionCutoffPayloadReason,
             cutoff: worktreeExecutionCutoff.toISOString(),
             issueId: resolvedIssue.id,
           });
@@ -15303,7 +15306,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             payload: {
               ...(payload ?? {}),
               heartbeatSkip: {
-                reason: executionCutoffReason,
+                reason: executionCutoffPayloadReason,
                 cutoff: worktreeExecutionCutoff.toISOString(),
                 issueId: issue.id,
               },

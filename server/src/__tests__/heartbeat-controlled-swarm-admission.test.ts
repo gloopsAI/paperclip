@@ -145,6 +145,9 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     });
     await heartbeat.resumeQueuedRuns();
     await waitForTerminalRuns(db, runIds);
+    for (const runId of runIds) {
+      await heartbeat.waitForRunExecutionDrain(runId);
+    }
 
     const rows = await db
       .select({ status: heartbeatRuns.status })
