@@ -17,7 +17,7 @@ if ! iptables -nL INPUT >/dev/null 2>&1 || ! iptables -nL DOCKER-USER >/dev/null
   echo 'FAIL rollback verifier cannot inspect firewall topology' >&2
   failed=1
 fi
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if ! active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null)"; then
     echo "FAIL rollback verifier cannot inspect unit state: ${unit}" >&2
     failed=1
@@ -31,7 +31,7 @@ if [[ "${paperclip_enablement}" != 'disabled' && "${paperclip_enablement}" != 'm
   echo "FAIL rollback left paperclip.service boot-eligible: ${paperclip_enablement:-unknown}" >&2
   failed=1
 fi
-for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
+for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if [[ "$(systemctl is-enabled "${unit}" 2>/dev/null || true)" != 'masked' ]]; then
     echo "FAIL rollback left governed unit unmasked: ${unit}" >&2
     failed=1

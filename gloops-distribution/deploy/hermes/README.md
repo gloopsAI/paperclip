@@ -170,3 +170,30 @@ refuse an unresolved rollback journal rather than deleting it. Install, manual
 stop, and deadman stop invalidate the one-use commissioning authority and
 atomically restore `false` before dark verification. Only the first eligible
 admitted assignment may arm the epoch.
+
+Commissioning keeps a root-owned, mode-`0600`, versioned phase journal through
+every durable transaction boundary: journal capture, configuration
+apply/verification, receipt write, barrier enablement, control-plane restart,
+and final live verification. Each transition atomically replaces and fsyncs
+the journal before execution advances. If the commissioner child exits or is
+killed while the journal remains, its root-owned wrapper first restores the
+false execution barrier and then starts only
+`paperclip-controlled-swarm-commissioning-recovery.service`. That unit is
+conditioned on both the orphan journal and the exact false barrier and invokes
+only the commissioner's bounded rollback path. Invalid journals refuse
+recovery; failed rollback leaves the barrier false and preserves the journal
+for operator reconciliation.
+
+Before minting live commissioning authority, rehearse the exact installed
+commissioner, wrapper, and recovery-unit bytes:
+
+```bash
+sudo /usr/local/lib/paperclip-gloops/rehearse-controlled-swarm-commissioning-recovery.py
+```
+
+The rehearsal SIGKILLs a subprocess after every durable phase, creates a new
+commissioner instance for recovery, repeats recovery to prove idempotency,
+refuses a corrupt journal, and induces a rollback failure to prove the system
+remains dark. It performs no provider call and no production-state mutation.
+The root-owned `0600` result is content-addressed under
+`/var/lib/paperclip-gloops/rehearsals/`.

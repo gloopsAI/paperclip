@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import urllib.request
@@ -24,7 +25,16 @@ AUTHORIZATION = "commission_twelve_ollama_roles"
 PROTOCOL_START = "<!-- GLOOPS_CONTROLLED_SWARM_PROTOCOL_START -->"
 PROTOCOL_END = "<!-- GLOOPS_CONTROLLED_SWARM_PROTOCOL_END -->"
 INSTRUCTION_VERSION = "gloops.controlled-swarm-instructions.v2"
-ROLLBACK_JOURNAL_VERSION = "gloops.controlled-swarm-rollback-journal.v1"
+ROLLBACK_JOURNAL_VERSION = "gloops.controlled-swarm-rollback-journal.v2"
+ROLLBACK_JOURNAL_PHASES = (
+    "journal_recorded",
+    "configs_applied",
+    "configs_verified",
+    "receipt_written",
+    "barrier_enabled",
+    "control_plane_restarted",
+    "live_verified",
+)
 EXECUTION_ROUTE = {
     "apiBaseUrl": "http://hermes-execution:8642",
     "dangerouslyAllowInsecureRemoteHttp": True,
@@ -631,10 +641,19 @@ class Commissioner:
         platform: HostPlatform,
         *,
         enforce_root_ownership: bool = True,
+        crash_after_phase: str | None = None,
     ) -> None:
         self.paths = paths
         self.platform = platform
         self.enforce_root_ownership = enforce_root_ownership
+        if (
+            crash_after_phase is not None
+            and crash_after_phase not in ROLLBACK_JOURNAL_PHASES
+        ):
+            raise CommissioningError(
+                f"unknown commissioning crash-rehearsal phase: {crash_after_phase}",
+            )
+        self.crash_after_phase = crash_after_phase
 
     def _require_protected_file(self, path: Path, label: str) -> None:
         try:
@@ -863,6 +882,10 @@ class Commissioner:
             "createdAt": dt.datetime.now(dt.timezone.utc)
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z"),
+            "updatedAt": dt.datetime.now(dt.timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+            "phase": "journal_recorded",
             "agents": {
                 name: {
                     "id": ADMITTED[name],
@@ -872,15 +895,21 @@ class Commissioner:
             },
         }
         self._write_protected_json(self.paths.rollback_journal, journal)
+        self._maybe_crash_after_phase("journal_recorded")
 
-    def _read_rollback_journal(self) -> dict[str, dict[str, object]]:
+    def _read_rollback_journal_value(self) -> dict[str, object]:
         self._require_protected_file(
             self.paths.rollback_journal,
             "commissioning rollback journal",
         )
-        value = json.loads(
-            self.paths.rollback_journal.read_text(encoding="utf-8"),
-        )
+        try:
+            value = json.loads(
+                self.paths.rollback_journal.read_text(encoding="utf-8"),
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CommissioningError(
+                "commissioning rollback journal is unreadable or corrupt",
+            ) from exc
         if (
             not isinstance(value, dict)
             or set(value) != {
@@ -889,6 +918,8 @@ class Commissioner:
                 "companyId",
                 "approvalSha256",
                 "createdAt",
+                "updatedAt",
+                "phase",
                 "agents",
             }
             or value.get("schemaVersion") != ROLLBACK_JOURNAL_VERSION
@@ -896,11 +927,22 @@ class Commissioner:
             or value.get("companyId") != COMPANY_ID
             or not is_sha256(value.get("approvalSha256"))
             or not isinstance(value.get("createdAt"), str)
+            or not isinstance(value.get("updatedAt"), str)
+            or value.get("phase") not in ROLLBACK_JOURNAL_PHASES
             or not isinstance(value.get("agents"), dict)
             or set(value["agents"]) != set(ADMITTED)
         ):
             raise CommissioningError("commissioning rollback journal is invalid")
-        parse_timestamp(value["createdAt"], "createdAt")
+        created_at = parse_timestamp(value["createdAt"], "createdAt")
+        updated_at = parse_timestamp(value["updatedAt"], "updatedAt")
+        if updated_at < created_at:
+            raise CommissioningError(
+                "commissioning rollback journal timestamps are inconsistent",
+            )
+        return value
+
+    def _read_rollback_journal(self) -> dict[str, dict[str, object]]:
+        value = self._read_rollback_journal_value()
         result: dict[str, dict[str, object]] = {}
         for name, agent_id in ADMITTED.items():
             row = value["agents"].get(name)
@@ -915,6 +957,33 @@ class Commissioner:
                 )
             result[name] = row["adapterConfig"]
         return result
+
+    def _maybe_crash_after_phase(self, phase: str) -> None:
+        if self.crash_after_phase == phase:
+            os.kill(os.getpid(), signal.SIGKILL)
+
+    def _advance_rollback_journal(self, phase: str) -> None:
+        if phase not in ROLLBACK_JOURNAL_PHASES:
+            raise CommissioningError(
+                f"unknown commissioning journal phase: {phase}",
+            )
+        value = self._read_rollback_journal_value()
+        current = value["phase"]
+        assert isinstance(current, str)
+        if ROLLBACK_JOURNAL_PHASES.index(phase) <= (
+            ROLLBACK_JOURNAL_PHASES.index(current)
+        ):
+            raise CommissioningError(
+                f"commissioning journal phase cannot move from {current} to {phase}",
+            )
+        value["phase"] = phase
+        value["updatedAt"] = (
+            dt.datetime.now(dt.timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        self._write_protected_json(self.paths.rollback_journal, value)
+        self._maybe_crash_after_phase(phase)
 
     def _verify_adapter_configs(
         self,
@@ -955,8 +1024,35 @@ class Commissioner:
         for stale in self.paths.config_dir.glob(
             ".CONTROLLED_SWARM_COMMISSIONING_APPROVED.*",
         ):
-            stale.unlink()
-        self.paths.approval.unlink(missing_ok=True)
+            self._durable_unlink(stale)
+        self._durable_unlink(self.paths.approval)
+
+    def recover(self) -> bool:
+        if self.enforce_root_ownership and os.geteuid() != 0:
+            raise CommissioningError(
+                "controlled-swarm commissioning recovery must run as root",
+            )
+        self.paths.lock.parent.mkdir(parents=True, exist_ok=True)
+        with self.paths.lock.open("a+", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise CommissioningError(
+                    "another controlled-swarm operation holds the activation lock",
+                ) from exc
+            if not self.paths.rollback_journal.exists():
+                return False
+            runtime_lines = self.paths.runtime_env.read_text(
+                encoding="utf-8",
+            ).splitlines()
+            if runtime_lines.count(
+                "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+            ) != 1:
+                raise CommissioningError(
+                    "commissioning recovery requires the exact false execution barrier",
+                )
+            self._recover_interrupted_commissioning()
+            return True
 
     def _write_receipt(
         self,
@@ -1022,6 +1118,7 @@ class Commissioner:
             f".CONTROLLED_SWARM_COMMISSIONING_APPROVED.{os.getpid()}"
         )
         os.replace(self.paths.approval, approval_in_progress)
+        self._fsync_directory(self.paths.config_dir)
         barrier_changed = False
         configs_changed = False
         journal_written = False
@@ -1059,26 +1156,35 @@ class Commissioner:
             )
             instruction_receipt = self._instruction_receipt(prior_configs)
             configs_changed = self._configs_need_update(prior_configs)
+            self._write_rollback_journal(
+                approval_in_progress,
+                prior_configs,
+            )
+            journal_written = True
             if configs_changed:
-                self._write_rollback_journal(
-                    approval_in_progress,
-                    prior_configs,
-                )
-                journal_written = True
                 self._apply_compact_configs(token, prior_configs)
+            self._advance_rollback_journal("configs_applied")
             validate_roster(
                 self.platform.fetch_agents(token),
                 require_compact_instructions=True,
             )
+            if journal_written:
+                self._advance_rollback_journal("configs_verified")
             self._write_receipt(
                 approval,
                 approved_image,
                 approval_in_progress,
                 instruction_receipt,
             )
+            if journal_written:
+                self._advance_rollback_journal("receipt_written")
             barrier_changed = True
             self.platform.set_barrier(True)
+            if journal_written:
+                self._advance_rollback_journal("barrier_enabled")
             self.platform.restart_paperclip()
+            if journal_written:
+                self._advance_rollback_journal("control_plane_restarted")
             if not self.platform.is_active("paperclip-gloops.service"):
                 raise CommissioningError("Paperclip did not restart active")
             self.platform.health()
@@ -1094,6 +1200,8 @@ class Commissioner:
                 self.platform.fetch_agents(token),
                 require_compact_instructions=True,
             )
+            if journal_written:
+                self._advance_rollback_journal("live_verified")
             self._durable_unlink(self.paths.rollback_journal)
         except BaseException:
             if barrier_changed:
@@ -1114,7 +1222,7 @@ class Commissioner:
                     self._durable_unlink(self.paths.receipt)
             raise
         finally:
-            approval_in_progress.unlink(missing_ok=True)
+            self._durable_unlink(approval_in_progress)
 
 
 def verify_commissioned_state(
@@ -1161,8 +1269,21 @@ def main() -> int:
     mode.add_argument("--verify-receipt", action="store_true")
     mode.add_argument("--verify-live", action="store_true")
     mode.add_argument("--verify-live-if-commissioned", action="store_true")
+    mode.add_argument("--recover-interrupted", action="store_true")
+    parser.add_argument(
+        "--rehearsal-crash-after-phase",
+        choices=ROLLBACK_JOURNAL_PHASES,
+    )
     args = parser.parse_args()
     platform = HostPlatform(paths)
+    if args.recover_interrupted:
+        recovered = Commissioner(paths, platform).recover()
+        print(
+            "PASS recovered interrupted controlled-swarm commissioning"
+            if recovered
+            else "PASS no interrupted controlled-swarm commissioning remains",
+        )
+        return 0
     if args.verify_live_if_commissioned:
         lines = paths.runtime_env.read_text(encoding="utf-8").splitlines()
         if lines.count("PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false") == 1:
@@ -1191,7 +1312,11 @@ def main() -> int:
             ),
         )
         return 0
-    Commissioner(paths, platform).run()
+    Commissioner(
+        paths,
+        platform,
+        crash_after_phase=args.rehearsal_crash_after_phase,
+    ).run()
     print(
         "PASS controlled swarm is commissioned; "
         "roles remain paused and epoch unarmed",

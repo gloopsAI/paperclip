@@ -91,6 +91,7 @@ class FakePlatform:
         *,
         fail_first_restart: bool = False,
         fail_enable_barrier: bool = False,
+        fail_restore: bool = False,
         create_epoch_after_restart: Path | None = None,
     ) -> None:
         self.rosters = rosters or [
@@ -100,6 +101,7 @@ class FakePlatform:
         ]
         self.fail_first_restart = fail_first_restart
         self.fail_enable_barrier = fail_enable_barrier
+        self.fail_restore = fail_restore
         self.create_epoch_after_restart = create_epoch_after_restart
         self.restart_count = 0
         self.barrier = False
@@ -135,6 +137,12 @@ class FakePlatform:
         *,
         replace: bool,
     ) -> None:
+        if (
+            self.fail_restore
+            and "legacy autonomous-agent context"
+            in str(adapter_config.get("instructions", ""))
+        ):
+            raise RuntimeError("stubbed rollback failure")
         if (
             adapter_config.get("instructions", "").startswith(
                 "# GLoops controlled-swarm role",
@@ -492,6 +500,118 @@ class CommissionerTest(unittest.TestCase):
         self.assertEqual(platform.restart_count, 1)
         self.assertEqual(len(platform.config_updates), len(MODULE.ADMITTED))
         self.assertTrue(all(replace for _, _, replace in platform.config_updates))
+
+    def test_journal_phase_is_versioned_durable_and_monotonic(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        commissioner = self.commissioner(FakePlatform())
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+        journal = json.loads(
+            self.paths.rollback_journal.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(journal["schemaVersion"], MODULE.ROLLBACK_JOURNAL_VERSION)
+        self.assertEqual(journal["phase"], "journal_recorded")
+        self.assertIn("updatedAt", journal)
+
+        commissioner._advance_rollback_journal("configs_applied")
+        advanced = json.loads(
+            self.paths.rollback_journal.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(advanced["phase"], "configs_applied")
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "cannot move",
+        ):
+            commissioner._advance_rollback_journal("journal_recorded")
+
+    def test_recovery_is_idempotent_after_first_exact_restore(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform([copy.deepcopy(prior_roster)])
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+
+        self.assertTrue(commissioner.recover())
+        calls_after_first = list(platform.calls)
+        self.assertFalse(commissioner.recover())
+        self.assertEqual(platform.calls, calls_after_first)
+        self.assertFalse(self.paths.rollback_journal.exists())
+        self.assertFalse(platform.barrier)
+
+    def test_corrupt_journal_refuses_recovery_without_mutation(self) -> None:
+        self.paths.state_dir.mkdir(mode=0o700)
+        self.paths.rollback_journal.write_text("{not-json\n", encoding="utf-8")
+        self.paths.rollback_journal.chmod(0o600)
+        platform = FakePlatform()
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "unreadable or corrupt",
+        ):
+            self.commissioner(platform).recover()
+        self.assertTrue(self.paths.rollback_journal.exists())
+        self.assertFalse(platform.barrier)
+        self.assertEqual(platform.config_updates, [])
+
+    def test_rollback_failure_remains_false_and_preserves_journal(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform(
+            [copy.deepcopy(prior_roster)],
+            fail_restore=True,
+        )
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "rollback failure"):
+            commissioner.recover()
+        self.assertFalse(platform.barrier)
+        self.assertTrue(self.paths.rollback_journal.exists())
+
+    def test_recovery_unit_is_root_only_bounded_and_false_barrier_conditioned(
+        self,
+    ) -> None:
+        unit = SCRIPT.with_name(
+            "paperclip-controlled-swarm-commissioning-recovery.service",
+        ).read_text(encoding="utf-8")
+        wrapper = SCRIPT.with_name("commission-controlled-swarm.sh").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("User=root", unit)
+        self.assertIn("Group=root", unit)
+        self.assertIn(
+            "ConditionPathExists=/var/lib/paperclip-gloops/controlled-swarm/"
+            "commissioning-rollback.json",
+            unit,
+        )
+        self.assertIn(
+            "ExecCondition=/usr/bin/grep -Fxq "
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+            unit,
+        )
+        self.assertIn("--recover-interrupted", unit)
+        self.assertIn("set-controlled-swarm-commissioning.py\" false", wrapper)
+        self.assertIn("systemctl start --wait", wrapper)
 
     def test_restart_failure_rolls_back_false_and_removes_receipt(self) -> None:
         platform = FakePlatform(fail_first_restart=True)

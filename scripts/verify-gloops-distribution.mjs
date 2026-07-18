@@ -102,6 +102,14 @@ const controlledSwarmCommissionerPath = new URL(
   "../gloops-distribution/deploy/hermes/controlled-swarm-commissioner.py",
   import.meta.url,
 );
+const rehearseControlledSwarmCommissioningRecoveryPath = new URL(
+  "../gloops-distribution/deploy/hermes/rehearse-controlled-swarm-commissioning-recovery.py",
+  import.meta.url,
+);
+const controlledSwarmCommissioningRecoveryServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-controlled-swarm-commissioning-recovery.service",
+  import.meta.url,
+);
 const setControlledSwarmCommissioningPath = new URL(
   "../gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py",
   import.meta.url,
@@ -302,6 +310,14 @@ const rehearseCampaignDeadman = readFileSync(rehearseCampaignDeadmanPath, "utf8"
 const activateControlledSwarm = readFileSync(activateControlledSwarmPath, "utf8");
 const commissionControlledSwarm = readFileSync(commissionControlledSwarmPath, "utf8");
 const controlledSwarmCommissioner = readFileSync(controlledSwarmCommissionerPath, "utf8");
+const rehearseControlledSwarmCommissioningRecovery = readFileSync(
+  rehearseControlledSwarmCommissioningRecoveryPath,
+  "utf8",
+);
+const controlledSwarmCommissioningRecoveryService = readFileSync(
+  controlledSwarmCommissioningRecoveryServicePath,
+  "utf8",
+);
 const setControlledSwarmCommissioning = readFileSync(setControlledSwarmCommissioningPath, "utf8");
 const stopControlledSwarm = readFileSync(stopControlledSwarmPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
@@ -752,7 +768,9 @@ for (const [surface, content, required] of [
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "has drifted from the exact paused charter"],
   ["controlled-swarm compact charter", controlledSwarmCommissioner, "def compact_instructions(name: str) -> str:"],
   ["controlled-swarm compact charter receipt", controlledSwarmCommissioner, '"instructionSet": instruction_receipt'],
-  ["controlled-swarm compact charter journal", controlledSwarmCommissioner, "gloops.controlled-swarm-rollback-journal.v1"],
+  ["controlled-swarm compact charter journal", controlledSwarmCommissioner, "gloops.controlled-swarm-rollback-journal.v2"],
+  ["controlled-swarm phase journal", controlledSwarmCommissioner, "ROLLBACK_JOURNAL_PHASES"],
+  ["controlled-swarm idempotent recovery", controlledSwarmCommissioner, "def recover(self) -> bool:"],
   ["controlled-swarm compact charter durable journal", controlledSwarmCommissioner, "os.fsync(output.fileno())"],
   ["controlled-swarm compact charter durable journal", controlledSwarmCommissioner, "self._fsync_directory(path.parent)"],
   ["controlled-swarm compact charter rollback", controlledSwarmCommissioner, "self._rollback_from_journal(token)"],
@@ -761,10 +779,23 @@ for (const [surface, content, required] of [
   ["controlled-swarm compact charter receipt preflight", preflight, "--verify-receipt"],
   ["controlled-swarm compact charter live verification", service, "--verify-live-if-commissioned"],
   ["controlled-swarm interrupted transaction install guard", installDark, "unresolved commissioning rollback journal"],
+  ["controlled-swarm recovery service install", installDark, "paperclip-controlled-swarm-commissioning-recovery.service"],
+  ["controlled-swarm recovery rehearsal install", installDark, "rehearse-controlled-swarm-commissioning-recovery.py"],
   ["controlled-swarm interrupted transaction dark guard", verifyDark, "commissioning-rollback.json"],
+  ["controlled-swarm recovery service dark mask", verifyDark, "paperclip-controlled-swarm-commissioning-recovery.service is masked"],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true"],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "commissioning unexpectedly armed the campaign epoch"],
   ["controlled-swarm commissioning rollback", controlledSwarmCommissioner, "self.platform.set_barrier(False)"],
+  ["controlled-swarm recovery wrapper fence", commissionControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
+  ["controlled-swarm recovery wrapper unit", commissionControlledSwarm, "paperclip-controlled-swarm-commissioning-recovery.service"],
+  ["controlled-swarm recovery service root identity", controlledSwarmCommissioningRecoveryService, "User=root"],
+  ["controlled-swarm recovery service orphan condition", controlledSwarmCommissioningRecoveryService, "ConditionPathExists=/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json"],
+  ["controlled-swarm recovery service false barrier", controlledSwarmCommissioningRecoveryService, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false"],
+  ["controlled-swarm recovery service bounded entrypoint", controlledSwarmCommissioningRecoveryService, "--recover-interrupted"],
+  ["controlled-swarm recovery rehearsal SIGKILL", rehearseControlledSwarmCommissioningRecovery, "os.WTERMSIG(status) != 9"],
+  ["controlled-swarm recovery rehearsal receipt", rehearseControlledSwarmCommissioningRecovery, "controlled-swarm-commissioning-recovery-rehearsal.v1"],
+  ["controlled-swarm recovery rehearsal corrupt refusal", rehearseControlledSwarmCommissioningRecovery, "corruptJournalRefused"],
+  ["controlled-swarm recovery rehearsal rollback dark", rehearseControlledSwarmCommissioningRecovery, "rollbackFailureRemainedDark"],
   ["controlled-swarm commissioning revalidation", controlledSwarmCommissioner, "require_compact_instructions=True"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "commissioning barrier line is missing or duplicated"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "os.replace(temporary, path)"],

@@ -16,7 +16,8 @@ for unit in \
   paperclip-gloops-handshake.service \
   paperclip-hermes-execution.service \
   paperclip-hermes-handshake.service \
-  paperclip-hermes-handshake-egress.service; do
+  paperclip-hermes-handshake-egress.service \
+  paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing rehearsal actuator because production unit ${unit} is active" >&2
     exit 1

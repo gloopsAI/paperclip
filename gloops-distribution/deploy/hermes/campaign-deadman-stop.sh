@@ -22,7 +22,8 @@ systemctl stop --no-block \
   paperclip-gloops-handshake.service \
   paperclip-hermes-execution.service \
   paperclip-hermes-handshake.service \
-  paperclip-hermes-handshake-egress.service 2>/dev/null || true
+  paperclip-hermes-handshake-egress.service \
+  paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 
 deadline=$((SECONDS + 120))
 while ((SECONDS < deadline)); do
@@ -32,7 +33,8 @@ while ((SECONDS < deadline)); do
     paperclip-gloops-handshake.service \
     paperclip-hermes-execution.service \
     paperclip-hermes-handshake.service \
-    paperclip-hermes-handshake-egress.service; do
+    paperclip-hermes-handshake-egress.service \
+    paperclip-controlled-swarm-commissioning-recovery.service; do
     systemctl is-active --quiet "${unit}" && active=1
   done
   ((active == 0)) && break
@@ -52,7 +54,8 @@ for unit in \
   paperclip-gloops-handshake.service \
   paperclip-hermes-execution.service \
   paperclip-hermes-handshake.service \
-  paperclip-hermes-handshake-egress.service; do
+  paperclip-hermes-handshake-egress.service \
+  paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "failed to stop ${unit}" >&2
     exit 1
