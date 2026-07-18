@@ -141,12 +141,32 @@ merge `3a5820722e8c6f55d6a1a730cada1cb4f1a1df77`, and verifies the exact
 sixteen-identity company roster: twelve admitted Hermes roles, two paused burst
 roles, the paused Fourth Pilot Engineer, and the pending Reflection Coach. Every
 admitted role must have the exact timer-disabled/on-demand/concurrency-one
-profile and exactly one campaign protocol through the authenticated board API.
-It writes a root-owned commissioning receipt, atomically flips only the
-commissioning barrier, restarts Paperclip, proves the container received
-`true`, revalidates the complete roster after restart, and requires the campaign
-epoch to remain unarmed. Any failure restores `false`, invalidates the receipt,
-and restarts the inert control plane. Preflight accepts `true` only with that
-exact commissioning receipt. Install, manual stop, and deadman stop invalidate
-the one-use commissioning authority and atomically restore `false` before dark
-verification. Only the first eligible admitted assignment may arm the epoch.
+profile. Before unpause it replaces each admitted role's accumulated legacy
+prompt with an exact role-specific compact charter and terminal protocol through
+the authenticated board API. It replaces each adapter configuration with only
+the gateway-native route fields, a required per-agent secret reference, and the
+compact charter, removing legacy payload templates, token aliases, unused model
+claims, and instruction-bundle paths. The gateway route is bound to the
+execution-only Hermes sidecar; commissioning verifies the exact installed
+sidecar config and policy digests that pin Ollama Cloud and
+`kimi-k2.7-code`. Grok/Codex burst identities remain excluded. The image binds
+those charters and route evidence. Before the first adapter
+mutation, commissioning durably journals every prior adapter configuration in a
+root-owned `0600` transaction file, fsyncs the file and parent directory, and
+only then issues the first board API mutation. It revalidates every charter byte and route
+field and records per-agent before/after sizes, content digests, aggregate
+reduction, the instruction-set digest, gateway authentication shape, and
+sidecar evidence. It writes a root-owned commissioning
+receipt, atomically flips only the commissioning barrier, restarts Paperclip,
+proves the container received `true`, revalidates the complete live roster,
+charters, and route after restart, and requires the campaign epoch to remain
+unarmed. Any ordinary failure or recovered interrupted transaction restores
+every prior adapter configuration exactly, restores `false`, invalidates the
+receipt and approval, durably removes the journal, and restarts the inert
+control plane. Preflight accepts
+`true` only with the fully validated receipt; Paperclip's post-start gate also
+requires the exact live charter and route. Dark installation and verification
+refuse an unresolved rollback journal rather than deleting it. Install, manual
+stop, and deadman stop invalidate the one-use commissioning authority and
+atomically restore `false` before dark verification. Only the first eligible
+admitted assignment may arm the epoch.
