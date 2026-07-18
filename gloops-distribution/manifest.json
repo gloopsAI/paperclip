@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.717.0-gloops.15",
+    "version": "2026.718.0-gloops.16",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:7314eedaebf3f167ba3cb2f007e8c7ab66c42c62b7a0ebfb97b0801f913c37b1"
+    "digest": "sha256:c4746284f126d8614f46ccbbdfc8cd742d010cae0cb1ba77a90206740638537f"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.717.0-gloops.15.json"
+    "vex": "gloops-distribution/security/vex-2026.718.0-gloops.16.json"
   },
   "patches": [
     {
@@ -277,6 +277,34 @@
       "integratedCommits": ["bdd506f1dae20ac4c52bc7134a1788d3ae5279fc"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream synchronizes empty plugin job manifests before replacement-worker startup, pauses and unregisters removed durable schedules, and preserves closed-interval zero-work proof with no plugin job runs."
+    },
+    {
+      "id": "bounded-hermes-stage-comment-and-turn-accounting",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "09cdcb96ed272580da257edf7757d5dcf24c79af",
+      "sourceHead": "250df82e971024199cf6893564c59d430616f7e5",
+      "patchDiffSha256": "f6eb1e7aeb686c9024c3d54c00b9ed6738a3274b466e6b04ade92a68685025e6",
+      "integratedCommits": ["682f5e1adcfc4dd35ca7e14d6dea7a7836e0415b"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected Paperclip-to-Hermes runtime enforces equivalent explicit comment policy, bounded turn and stage accounting, and independently counted review stages with admission and wake-batching regression proof."
+    },
+    {
+      "id": "compact-role-charter-transactional-commissioning",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "682f5e1adcfc4dd35ca7e14d6dea7a7836e0415b",
+      "sourceHead": "f2fc4c58f6fa2f41e8c8dc53240cc8d9ad119ff2",
+      "patchDiffSha256": "4b7f042abaf08a3377d8aa1754227fbee0491103fe571f53532c98e3322a9291",
+      "integratedCommits": [
+        "cef5d0c9448e2dc4b8fd3ad8bda89e27143c5ee1",
+        "2024c43f86986cacb64e1ab4d05175f8c167f2f3",
+        "3ea7c6e424e6be62383e12c2dbe225dbc078fdbf",
+        "39c4a10ae7a66f5e2830399a15d863e73df5a5b8",
+        "f2fc4c58f6fa2f41e8c8dc53240cc8d9ad119ff2"
+      ],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected runtime provides equivalent compact role-charter compilation and exact-roster commissioning with transactional durable gateway binding, post-restart revalidation, and fail-closed rollback of every partial authority transition."
     }
   ],
   "releasePolicy": {
