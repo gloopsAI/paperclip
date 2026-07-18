@@ -12,7 +12,6 @@ StartLimitBurst=2
 Type=oneshot
 User=root
 Group=root
-ExecCondition=/usr/bin/grep -Fxq PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false /etc/paperclip-gloops/runtime.env
 ExecStart=/usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py --recover-interrupted
 NoNewPrivileges=true
 PrivateDevices=true

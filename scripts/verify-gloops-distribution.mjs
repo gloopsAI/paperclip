@@ -126,6 +126,10 @@ const backupDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/backup-dark.sh",
   import.meta.url,
 );
+const backupDarkTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/backup_dark_test.sh",
+  import.meta.url,
+);
 const verifyRollbackDarkPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-rollback-dark.sh",
   import.meta.url,
@@ -343,6 +347,14 @@ try {
   });
 } catch (error) {
   fail(`Rollback terminal query-failure tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("bash", [backupDarkTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Cold-backup journal guard tests failed: ${error instanceof Error ? error.message : error}`);
 }
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
@@ -774,6 +786,8 @@ for (const [surface, content, required] of [
   ["controlled-swarm compact charter durable journal", controlledSwarmCommissioner, "os.fsync(output.fileno())"],
   ["controlled-swarm compact charter durable journal", controlledSwarmCommissioner, "self._fsync_directory(path.parent)"],
   ["controlled-swarm compact charter rollback", controlledSwarmCommissioner, "self._rollback_from_journal(token)"],
+  ["controlled-swarm effective runtime fence", controlledSwarmCommissioner, "def _fence_effective_runtime(self) -> None:"],
+  ["controlled-swarm effective runtime stop", controlledSwarmCommissioner, "self.platform.stop_paperclip()"],
   ["controlled-swarm gateway authentication", controlledSwarmCommissioner, '"binding": "per-agent-secret-ref"'],
   ["controlled-swarm gateway route evidence", controlledSwarmCommissioner, "SIDECAR_ROUTE_EVIDENCE"],
   ["controlled-swarm compact charter receipt preflight", preflight, "--verify-receipt"],
@@ -783,19 +797,25 @@ for (const [surface, content, required] of [
   ["controlled-swarm recovery rehearsal install", installDark, "rehearse-controlled-swarm-commissioning-recovery.py"],
   ["controlled-swarm interrupted transaction dark guard", verifyDark, "commissioning-rollback.json"],
   ["controlled-swarm recovery service dark mask", verifyDark, "paperclip-controlled-swarm-commissioning-recovery.service is masked"],
+  ["controlled-swarm recovery boot enable", activateControlledSwarm, 'systemctl enable "${COMMISSIONING_RECOVERY}"'],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true"],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "commissioning unexpectedly armed the campaign epoch"],
   ["controlled-swarm commissioning rollback", controlledSwarmCommissioner, "self.platform.set_barrier(False)"],
-  ["controlled-swarm recovery wrapper fence", commissionControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
+  ["controlled-swarm recovery wrapper delegation", commissionControlledSwarm, "systemctl start --wait"],
   ["controlled-swarm recovery wrapper unit", commissionControlledSwarm, "paperclip-controlled-swarm-commissioning-recovery.service"],
   ["controlled-swarm recovery service root identity", controlledSwarmCommissioningRecoveryService, "User=root"],
   ["controlled-swarm recovery service orphan condition", controlledSwarmCommissioningRecoveryService, "ConditionPathExists=/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json"],
-  ["controlled-swarm recovery service false barrier", controlledSwarmCommissioningRecoveryService, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false"],
   ["controlled-swarm recovery service bounded entrypoint", controlledSwarmCommissioningRecoveryService, "--recover-interrupted"],
   ["controlled-swarm recovery rehearsal SIGKILL", rehearseControlledSwarmCommissioningRecovery, "os.WTERMSIG(status) != 9"],
   ["controlled-swarm recovery rehearsal receipt", rehearseControlledSwarmCommissioningRecovery, "controlled-swarm-commissioning-recovery-rehearsal.v1"],
   ["controlled-swarm recovery rehearsal corrupt refusal", rehearseControlledSwarmCommissioningRecovery, "corruptJournalRefused"],
   ["controlled-swarm recovery rehearsal rollback dark", rehearseControlledSwarmCommissioningRecovery, "rollbackFailureRemainedDark"],
+  ["controlled-swarm installed recovery unit proof", rehearseControlledSwarmCommissioningRecovery, "def rehearse_installed_recovery_unit(module: Any)"],
+  ["controlled-swarm installed recovery unit receipt", rehearseControlledSwarmCommissioningRecovery, '"systemdUnitExecuted": True'],
+  ["controlled-swarm installed recovery phase matrix", rehearseControlledSwarmCommissioningRecovery, '"phaseMatrix": phase_rows'],
+  ["controlled-swarm narrow recovery proof claim", rehearseControlledSwarmCommissioningRecovery, '"gate2ExactTopologyClaimed": False'],
+  ["controlled-swarm split artifact proof label", rehearseControlledSwarmCommissioningRecovery, '"split_artifact_matrix_passed"'],
+  ["controlled-swarm source-only proof label", rehearseControlledSwarmCommissioningRecovery, '"source_harness_passed"'],
   ["controlled-swarm commissioning revalidation", controlledSwarmCommissioner, "require_compact_instructions=True"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "commissioning barrier line is missing or duplicated"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "os.replace(temporary, path)"],
@@ -805,6 +825,20 @@ for (const [surface, content, required] of [
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);
   }
+}
+if (
+  controlledSwarmCommissioningRecoveryService.includes(
+    "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+  )
+) {
+  fail("controlled-swarm recovery service must fence true persisted state itself");
+}
+if (
+  commissionControlledSwarm.includes(
+    'set-controlled-swarm-commissioning.py" false',
+  )
+) {
+  fail("controlled-swarm wrapper must not mask recovery-unit fencing");
 }
 for (const [surface, content, required] of [
   ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78"],
@@ -828,6 +862,10 @@ for (const [surface, content, required] of [
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
   ["cold rollback backup", backupDark, "hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
+  ["cold rollback backup transaction guard", backupDark, "refuse_unresolved_commissioning"],
+  ["cold rollback backup transaction journal", backupDark, "commissioning-rollback.json"],
+  ["rollback restore transaction guard", rollback, "refusing rollback restore with an unresolved commissioning rollback journal"],
+  ["rollback terminal transaction guard", verifyRollbackDark, "commissioning-rollback.json"],
 ]) {
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);
@@ -1572,6 +1610,15 @@ if (!backupDark.includes("refusing cold backup while a Paperclip or Hermes conta
 }
 if (!backupDark.includes("paperclip-hermes-handshake-egress.service")) {
   fail("cold backup must reject an active handshake egress service");
+}
+const backupJournalGuardIndex = backupDark.indexOf(
+  'refuse_unresolved_commissioning "${COMMISSIONING_ROLLBACK_JOURNAL}"',
+);
+if (
+  backupJournalGuardIndex < 0
+  || backupJournalGuardIndex > backupDark.indexOf('stamp="$(date -u')
+) {
+  fail("cold backup must reject an unresolved commissioning journal before staging");
 }
 if (!prepareHermesExecution.includes("paperclip-hermes-handshake-egress.service") ||
     !prepareHermesHandshake.includes("paperclip-hermes-handshake-egress.service")) {

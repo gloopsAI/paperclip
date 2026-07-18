@@ -11,10 +11,9 @@ status=$?
 set -e
 
 if ((status != 0)) && [[ -e "${JOURNAL}" ]]; then
-  # Fence execution before asking the narrowly conditioned recovery unit to
-  # invoke the commissioner's existing rollback path. This also covers SIGKILL
-  # of the commissioner child: the root-owned wrapper remains the parent.
-  "${LIB_DIR}/set-controlled-swarm-commissioning.py" false
+  # The root-owned wrapper remains alive if the commissioner child is killed.
+  # Recovery itself must fence persisted and effective execution before it
+  # parses or restores the journal; the wrapper must not mask that proof.
   systemctl start --wait "${RECOVERY_UNIT}"
 fi
 

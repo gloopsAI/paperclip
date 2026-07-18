@@ -12,9 +12,11 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 from typing import Any
+import uuid
 
 
 UTC = dt.timezone.utc
@@ -28,6 +30,18 @@ DEFAULT_RECEIPT_DIR = Path("/var/lib/paperclip-gloops/rehearsals")
 
 def sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def run(
+    *args: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
 
 
 def load_commissioner(source: Path) -> Any:
@@ -134,11 +148,21 @@ class PersistentPlatform:
             os.close(descriptor)
 
     def is_active(self, unit: str) -> bool:
+        if unit == "paperclip-gloops.service":
+            return bool(self._read()["paperclipActive"])
         return True
 
     def restart_paperclip(self) -> None:
         state = self._read()
         state["restartCount"] += 1
+        state["paperclipActive"] = True
+        state["effectiveBarrier"] = state["persistedBarrier"]
+        self._write(state)
+
+    def stop_paperclip(self) -> None:
+        state = self._read()
+        state["paperclipActive"] = False
+        state["effectiveBarrier"] = False
         self._write(state)
 
     def health(self) -> None:
@@ -173,11 +197,11 @@ class PersistentPlatform:
         raise RuntimeError(f"unknown rehearsed agent: {agent_id}")
 
     def inspect_commissioned(self) -> bool:
-        return self._read()["barrier"]
+        return bool(self._read()["effectiveBarrier"])
 
     def set_barrier(self, commissioned: bool) -> None:
         state = self._read()
-        state["barrier"] = commissioned
+        state["persistedBarrier"] = commissioned
         self._write(state)
         self.runtime_env.write_text(
             "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED="
@@ -237,7 +261,9 @@ def prepare_sandbox(module: Any, source_root: Path, root: Path) -> tuple[Any, Pa
         json.dumps(
             {
                 "roster": legacy_roster(module),
-                "barrier": False,
+                "persistedBarrier": False,
+                "effectiveBarrier": False,
+                "paperclipActive": True,
                 "restartCount": 0,
                 "failRestore": False,
             },
@@ -288,7 +314,7 @@ def rehearse_phase(
             )
 
         platform = PersistentPlatform(module, state_path, paths.runtime_env)
-        platform.set_barrier(False)
+        pre_recovery = platform._read()
         commissioner = module.Commissioner(
             paths,
             platform,
@@ -302,13 +328,23 @@ def rehearse_phase(
             raise RuntimeError(f"phase {phase} left replayable state")
         if platform.inspect_commissioned():
             raise RuntimeError(f"phase {phase} recovery left execution enabled")
+        state = platform._read()
+        if state["persistedBarrier"] or state["effectiveBarrier"]:
+            raise RuntimeError(f"phase {phase} did not leave both barriers false")
         assert_legacy_restored(module, platform)
         return {
             "phase": phase,
             "crashSignal": "SIGKILL",
             "recovered": True,
             "repeatedRecoveryNoOp": True,
-            "barrier": "false",
+            "preRecoveryPersistedBarrier": (
+                "true" if pre_recovery["persistedBarrier"] else "false"
+            ),
+            "preRecoveryEffectiveBarrier": (
+                "true" if pre_recovery["effectiveBarrier"] else "false"
+            ),
+            "persistedBarrier": "false",
+            "effectiveBarrier": "false",
             "priorConfigsRestored": True,
         }
 
@@ -321,6 +357,14 @@ def rehearse_corrupt_journal(module: Any, source_root: Path) -> bool:
         paths.state_dir.mkdir(mode=0o700)
         paths.rollback_journal.write_text("{not-json\n", encoding="utf-8")
         paths.rollback_journal.chmod(0o600)
+        state = platform._read()
+        state["persistedBarrier"] = True
+        state["effectiveBarrier"] = True
+        platform._write(state)
+        paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n",
+            encoding="utf-8",
+        )
         try:
             module.Commissioner(
                 paths,
@@ -331,6 +375,7 @@ def rehearse_corrupt_journal(module: Any, source_root: Path) -> bool:
             return (
                 paths.rollback_journal.exists()
                 and not platform.inspect_commissioned()
+                and platform._read()["persistedBarrier"] is False
             )
         return False
 
@@ -355,16 +400,342 @@ def rehearse_rollback_failure(module: Any, source_root: Path) -> bool:
         commissioner._write_rollback_journal(paths.approval, prior_configs)
         state = platform._read()
         state["failRestore"] = True
-        state["barrier"] = False
+        state["persistedBarrier"] = True
+        state["effectiveBarrier"] = True
+        state["paperclipActive"] = True
         platform._write(state)
+        paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n",
+            encoding="utf-8",
+        )
         try:
             commissioner.recover()
         except RuntimeError:
             return (
                 paths.rollback_journal.exists()
                 and not platform.inspect_commissioned()
+                and platform._read()["persistedBarrier"] is False
             )
         return False
+
+
+def rehearse_installed_recovery_unit(module: Any) -> dict[str, object]:
+    paths = module.CommissioningPaths()
+    platform = module.HostPlatform(paths)
+    unit = "paperclip-controlled-swarm-commissioning-recovery.service"
+    for required in (
+        "paperclip-campaign-deadman.service",
+        "paperclip-hermes-execution.service",
+        "paperclip-gloops.service",
+    ):
+        if not platform.is_active(required):
+            raise RuntimeError(
+                f"installed-unit rehearsal requires active inert topology: {required}",
+            )
+    enabled = run("systemctl", "is-enabled", unit, check=False).stdout.strip()
+    if enabled == "masked":
+        raise RuntimeError("installed commissioning recovery unit is masked")
+    runtime_lines = paths.runtime_env.read_text(encoding="utf-8").splitlines()
+    if runtime_lines.count(
+        "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+    ) != 1:
+        raise RuntimeError(
+            "installed-unit rehearsal requires the exact persisted false barrier",
+        )
+    if platform.inspect_commissioned():
+        raise RuntimeError(
+            "installed-unit rehearsal requires an effectively inert Paperclip",
+        )
+    if (
+        paths.rollback_journal.exists()
+        or paths.receipt.exists()
+        or paths.approval.exists()
+        or paths.epoch.exists()
+        or any(
+            paths.config_dir.glob(
+                ".CONTROLLED_SWARM_COMMISSIONING_APPROVED.*",
+            ),
+        )
+    ):
+        raise RuntimeError(
+            "installed-unit rehearsal refuses existing commissioning or epoch state",
+        )
+
+    commissioner = module.Commissioner(paths, platform)
+    commissioner._require_protected_file(paths.token, "operator board token")
+    token = paths.token.read_text(encoding="utf-8").strip()
+    if not token:
+        raise RuntimeError("installed-unit rehearsal board token is empty")
+    prior_configs = commissioner._capture_adapter_configs(
+        platform.fetch_agents(token),
+    )
+    prior_digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            prior_configs,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8"),
+    ).hexdigest()
+    approved_image = paths.image.read_text(encoding="utf-8").strip()
+    created_approvals: list[Path] = []
+    phase_rows: list[dict[str, object]] = []
+    try:
+        for phase_index, phase in enumerate(module.ROLLBACK_JOURNAL_PHASES):
+            if (
+                paths.rollback_journal.exists()
+                or paths.receipt.exists()
+                or paths.approval.exists()
+                or paths.epoch.exists()
+            ):
+                raise RuntimeError(
+                    f"installed-unit phase {phase} began with replayable state",
+                )
+            current = commissioner._capture_adapter_configs(
+                platform.fetch_agents(token),
+            )
+            current_digest = "sha256:" + hashlib.sha256(
+                json.dumps(
+                    current,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+            ).hexdigest()
+            if current_digest != prior_digest:
+                raise RuntimeError(
+                    f"installed-unit phase {phase} began with config drift",
+                )
+
+            approval = paths.config_dir / (
+                ".CONTROLLED_SWARM_COMMISSIONING_APPROVED."
+                f"rehearsal-{phase}-{uuid.uuid4().hex}"
+            )
+            created_approvals.append(approval)
+            now = dt.datetime.now(UTC)
+            approval_value = {
+                "schemaVersion": (
+                    "gloops.controlled-swarm-commissioning-approval.v1"
+                ),
+                "authorization": module.AUTHORIZATION,
+                "campaignId": module.CAMPAIGN_ID,
+                "approvedImage": approved_image,
+                "governanceMerge": module.GOVERNANCE_MERGE,
+                "authorizedAt": (now - dt.timedelta(minutes=1)).isoformat(),
+                "expiresAt": (now + dt.timedelta(minutes=30)).isoformat(),
+            }
+            commissioner._write_protected_json(approval, approval_value)
+            commissioner._write_rollback_journal(approval, prior_configs)
+            instruction_receipt = commissioner._instruction_receipt(
+                prior_configs,
+            )
+
+            for durable_phase in module.ROLLBACK_JOURNAL_PHASES[1 : phase_index + 1]:
+                if durable_phase == "configs_applied":
+                    commissioner._apply_compact_configs(token, prior_configs)
+                elif durable_phase == "configs_verified":
+                    module.validate_roster(
+                        platform.fetch_agents(token),
+                        require_compact_instructions=True,
+                    )
+                elif durable_phase == "receipt_written":
+                    commissioner._write_receipt(
+                        approval_value,
+                        approved_image,
+                        approval,
+                        instruction_receipt,
+                    )
+                elif durable_phase == "barrier_enabled":
+                    platform.set_barrier(True)
+                elif durable_phase == "control_plane_restarted":
+                    platform.restart_paperclip()
+                elif durable_phase == "live_verified":
+                    platform.health()
+                    if not platform.inspect_commissioned():
+                        raise RuntimeError(
+                            "live-verified phase did not load the true barrier",
+                        )
+                    module.validate_roster(
+                        platform.fetch_agents(token),
+                        require_compact_instructions=True,
+                    )
+                commissioner._advance_rollback_journal(durable_phase)
+
+            before_lines = paths.runtime_env.read_text(
+                encoding="utf-8",
+            ).splitlines()
+            before_persisted = before_lines.count(
+                "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true",
+            ) == 1
+            before_effective = platform.inspect_commissioned()
+            expected_before = (
+                (True, True)
+                if phase in ("control_plane_restarted", "live_verified")
+                else (
+                    (True, False)
+                    if phase == "barrier_enabled"
+                    else (False, False)
+                )
+            )
+            if (before_persisted, before_effective) != expected_before:
+                raise RuntimeError(
+                    f"installed-unit phase {phase} did not reproduce its exact "
+                    "pre-recovery barrier state",
+                )
+
+            run("systemctl", "reset-failed", unit, check=False)
+            run("systemctl", "start", "--wait", unit)
+            if paths.rollback_journal.exists():
+                raise RuntimeError(
+                    f"installed recovery unit left phase {phase} unresolved",
+                )
+            if paths.receipt.exists():
+                raise RuntimeError(
+                    f"installed recovery unit retained phase {phase} authority",
+                )
+            runtime_lines = paths.runtime_env.read_text(
+                encoding="utf-8",
+            ).splitlines()
+            if runtime_lines.count(
+                "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+            ) != 1 or platform.inspect_commissioned():
+                raise RuntimeError(
+                    f"installed recovery unit left phase {phase} commissioned",
+                )
+            if not platform.is_active("paperclip-gloops.service"):
+                raise RuntimeError(
+                    f"installed recovery unit did not restore phase {phase} inert",
+                )
+            restored = commissioner._capture_adapter_configs(
+                platform.fetch_agents(token),
+            )
+            restored_digest = "sha256:" + hashlib.sha256(
+                json.dumps(
+                    restored,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+            ).hexdigest()
+            if restored_digest != prior_digest:
+                raise RuntimeError(
+                    f"installed recovery unit did not restore phase {phase} configs",
+                )
+            condition = run(
+                "systemctl",
+                "show",
+                "--property=ConditionResult",
+                "--value",
+                unit,
+            ).stdout.strip()
+            result = run(
+                "systemctl",
+                "show",
+                "--property=Result",
+                "--value",
+                unit,
+            ).stdout.strip()
+            if condition != "yes" or result != "success":
+                raise RuntimeError(
+                    f"installed recovery unit failed phase {phase} "
+                    f"(condition={condition}, result={result})",
+                )
+
+            run("systemctl", "reset-failed", unit, check=False)
+            run("systemctl", "start", "--wait", unit)
+            repeated_condition = run(
+                "systemctl",
+                "show",
+                "--property=ConditionResult",
+                "--value",
+                unit,
+            ).stdout.strip()
+            if repeated_condition != "no":
+                raise RuntimeError(
+                    f"installed recovery unit replayed phase {phase}",
+                )
+            phase_rows.append(
+                {
+                    "phase": phase,
+                    "preRecoveryPersistedBarrier": (
+                        "true" if before_persisted else "false"
+                    ),
+                    "preRecoveryEffectiveBarrier": (
+                        "true" if before_effective else "false"
+                    ),
+                    "conditionResult": condition,
+                    "result": result,
+                    "repeatedConditionResult": repeated_condition,
+                    "priorConfigsSha256": prior_digest,
+                    "restoredConfigsSha256": restored_digest,
+                    "persistedBarrier": "false",
+                    "effectiveBarrier": "false",
+                },
+            )
+
+        sandbox = {
+            field: run(
+                "systemctl",
+                "show",
+                f"--property={field}",
+                "--value",
+                unit,
+            ).stdout.strip()
+            for field in (
+                "User",
+                "Group",
+                "NoNewPrivileges",
+                "PrivateDevices",
+                "PrivateTmp",
+                "ProtectHome",
+                "ProtectSystem",
+            )
+        }
+        expected = {
+            "User": "root",
+            "Group": "root",
+            "NoNewPrivileges": "yes",
+            "PrivateDevices": "yes",
+            "PrivateTmp": "yes",
+            "ProtectHome": "yes",
+            "ProtectSystem": "strict",
+        }
+        if sandbox != expected:
+            raise RuntimeError(
+                f"installed recovery unit sandbox drifted: {sandbox}",
+            )
+        return {
+            "systemdUnitExecuted": True,
+            "phaseMatrix": phase_rows,
+            "sandbox": sandbox,
+            "priorConfigsSha256": prior_digest,
+            "persistedBarrier": "false",
+            "effectiveBarrier": "false",
+            "realHostCommissionerSigkilled": False,
+            "gate2ExactTopologyClaimed": False,
+            "providersInvoked": False,
+        }
+    except BaseException:
+        journal_remains = paths.rollback_journal.exists()
+        try:
+            platform.set_barrier(False)
+            platform.stop_paperclip()
+        except BaseException as fence_error:
+            journal_status = (
+                "the rollback journal remains for operator reconciliation"
+                if journal_remains
+                else "the recovery unit had already consumed the rollback journal"
+            )
+            raise RuntimeError(
+                "installed-unit rehearsal failed and its emergency runtime "
+                f"fence also failed; {journal_status}",
+            ) from fence_error
+        raise
+    finally:
+        for approval in created_approvals:
+            approval.unlink(missing_ok=True)
+        directory = os.open(paths.config_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def write_receipt(receipt_dir: Path, receipt: dict[str, object]) -> Path:
@@ -434,18 +805,18 @@ def main() -> int:
     if (
         "User=root" not in unit_text
         or "ConditionPathExists=" not in unit_text
-        or "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false" not in unit_text
         or "--recover-interrupted" not in unit_text
+        or "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false" in unit_text
     ):
         raise SystemExit("installed commissioning recovery unit is not bounded")
     wrapper_text = wrapper.read_text(encoding="utf-8")
-    fence_index = wrapper_text.find(
-        'set-controlled-swarm-commissioning.py" false',
-    )
     recovery_index = wrapper_text.find('systemctl start --wait "${RECOVERY_UNIT}"')
-    if fence_index < 0 or recovery_index <= fence_index:
+    if (
+        recovery_index < 0
+        or 'set-controlled-swarm-commissioning.py" false' in wrapper_text
+    ):
         raise SystemExit(
-            "commissioning wrapper does not fence before bounded recovery",
+            "commissioning wrapper does not delegate fencing to bounded recovery",
         )
 
     module = load_commissioner(source)
@@ -458,6 +829,15 @@ def main() -> int:
     rollback_dark = rehearse_rollback_failure(module, source_root)
     if not corrupt_refused or not rollback_dark:
         raise SystemExit("commissioning recovery failure-path rehearsal failed")
+    systemd_proof = (
+        rehearse_installed_recovery_unit(module)
+        if args.allow_source_root is None
+        else {
+            "systemdUnitExecuted": False,
+            "reason": "source-only harness; root installed-unit proof not claimed",
+        }
+    )
+    installed_matrix = systemd_proof["systemdUnitExecuted"] is True
     receipt = {
         "schemaVersion": (
             "gloops.controlled-swarm-commissioning-recovery-rehearsal.v1"
@@ -473,15 +853,23 @@ def main() -> int:
         "recoveryUnitSha256": sha256(unit),
         "recoveryUnitRootOnly": True,
         "recoveryUnitRequiresOrphanJournal": True,
-        "recoveryUnitRequiresFalseBarrier": True,
-        "wrapperFencesBeforeRecovery": True,
+        "recoveryUnitRequiresFalseBarrier": False,
+        "recoveryUnitFencesBeforeRollback": True,
+        "wrapperDelegatesFencingToRecovery": True,
         "journalSchemaVersion": module.ROLLBACK_JOURNAL_VERSION,
+        "sourceCommissionerSigkillMatrix": True,
+        "gate2ExactTopologyClaimed": False,
         "phases": phases,
         "corruptJournalRefused": corrupt_refused,
         "rollbackFailureRemainedDark": rollback_dark,
+        "installedSystemdProof": systemd_proof,
         "providersInvoked": False,
-        "productionStateMutated": False,
-        "outcome": "passed",
+        "productionStateMutated": installed_matrix,
+        "outcome": (
+            "split_artifact_matrix_passed"
+            if installed_matrix
+            else "source_harness_passed"
+        ),
     }
     receipt_path = write_receipt(receipt_dir, receipt)
     mode = stat.S_IMODE(receipt_path.stat().st_mode)

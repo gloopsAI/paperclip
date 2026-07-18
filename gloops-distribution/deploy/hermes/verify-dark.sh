@@ -70,7 +70,8 @@ done
 if [[ -e /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED ]] \
   || compgen -G '/etc/paperclip-gloops/.CONTROLLED_SWARM_COMMISSIONING_APPROVED.*' >/dev/null \
   || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning.json ]] \
-  || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
+  || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]] \
+  || [[ -L /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
   echo "FAIL replayable controlled-swarm commissioning authority remains while dark" >&2
   failed=1
 else

@@ -153,6 +153,7 @@ trap cleanup EXIT
 
 systemctl unmask "${DEADMAN}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
 systemctl daemon-reload
+systemctl enable "${COMMISSIONING_RECOVERY}"
 systemctl start "${DEADMAN}"
 "${LIB_DIR}/verify-campaign-deadman.py" \
   --wait-seconds 15 \
