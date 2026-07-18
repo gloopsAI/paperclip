@@ -1,0 +1,37 @@
+[Unit]
+Description=Bounded recovery for an orphaned controlled-swarm commissioning journal
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+After=network-online.target docker.service paperclip-campaign-deadman.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json
+OnFailure=paperclip-gloops-alert@%n.service
+StartLimitIntervalSec=900
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py --recover-interrupted
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/usr/local/lib/paperclip-gloops
+ReadWritePaths=/etc/paperclip-gloops /var/lib/paperclip-gloops/controlled-swarm /run/lock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

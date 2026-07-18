@@ -25,7 +25,7 @@ done
   exit 1
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing installation while ${unit} is active" >&2
     exit 1
@@ -36,7 +36,8 @@ if docker ps -a --format '{{.Names}}' \
   echo "refusing installation while a Paperclip or Hermes container exists" >&2
   exit 1
 fi
-if [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
+if [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json \
+  || -L /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
   echo "refusing dark installation with an unresolved commissioning rollback journal" >&2
   exit 1
 fi
@@ -77,6 +78,7 @@ install -m 0555 -o root -g root "${SCRIPT_DIR}/rehearse-campaign-deadman.py" "${
 install -m 0755 -o root -g root "${SCRIPT_DIR}/activate-controlled-swarm.sh" "${LIB_DIR}/activate-controlled-swarm.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/commission-controlled-swarm.sh" "${LIB_DIR}/commission-controlled-swarm.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/controlled-swarm-commissioner.py" "${LIB_DIR}/controlled-swarm-commissioner.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/rehearse-controlled-swarm-commissioning-recovery.py" "${LIB_DIR}/rehearse-controlled-swarm-commissioning-recovery.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/set-controlled-swarm-commissioning.py" "${LIB_DIR}/set-controlled-swarm-commissioning.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-controlled-swarm.sh" "${LIB_DIR}/stop-controlled-swarm.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/observe-controlled-swarm.py" "${LIB_DIR}/observe-controlled-swarm.py"
@@ -126,6 +128,7 @@ install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake.servic
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-campaign-deadman.service" /usr/local/lib/systemd/system/paperclip-campaign-deadman.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-controlled-swarm-commissioning-recovery.service" /usr/local/lib/systemd/system/paperclip-controlled-swarm-commissioning-recovery.service
 
 "${LIB_DIR}/provision-tirith.sh"
 
@@ -142,8 +145,9 @@ systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service
-systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service 2>/dev/null || true
+systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
+systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.

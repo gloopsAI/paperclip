@@ -6,13 +6,25 @@ readonly DATABASE_DIR="${STATE_DIR}/instances/default/db"
 readonly BACKUP_ROOT='/opt/paperclip/backups'
 readonly SERVICE_FILE='/etc/systemd/system/paperclip.service'
 readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst'
+readonly COMMISSIONING_ROLLBACK_JOURNAL='/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json'
 
+refuse_unresolved_commissioning() {
+  local journal="${1:?commissioning rollback journal path is required}"
+  if [[ -e "${journal}" || -L "${journal}" ]]; then
+    echo "refusing cold backup while a controlled-swarm commissioning rollback journal survives: ${journal}" >&2
+    return 1
+  fi
+}
+
+main() {
 [[ "${EUID}" -eq 0 ]] || {
   echo "run with sudo" >&2
   exit 1
 }
 
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
+refuse_unresolved_commissioning "${COMMISSIONING_ROLLBACK_JOURNAL}"
+
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing cold backup while ${unit} is active" >&2
     exit 1
@@ -66,3 +78,8 @@ trap - EXIT
 
 "$(dirname "$0")/rollback.sh" --check "${destination}"
 echo "cold rollback backup captured: ${destination}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -265,7 +265,7 @@
       "patchDiffSha256": "35541523203621982d5900961097c3dbc4dcd91b623d0afee8e700a9a276bd55",
       "integratedCommits": ["90be60c5445d6a5d3fd42a6c729df45f6b76a605"],
       "owner": "GLoops Platform",
-      "retirementCondition": "Retain until the selected runtime provides an equivalent one-use, exact-roster commissioning transaction with post-restart revalidation, fail-closed rollback, non-replayable stop semantics, and behavioral authority-boundary evidence."
+      "retirementCondition": "Retain until the selected runtime provides an equivalent one-use, exact-roster commissioning transaction with a durable versioned phase journal, bounded orphan recovery under an exact false execution barrier, SIGKILL rehearsal at every durable phase, post-restart revalidation, fail-closed rollback, non-replayable stop semantics, and behavioral authority-boundary evidence."
     },
     {
       "id": "event-driven-plugin-job-retirement-and-zero-work-proof",

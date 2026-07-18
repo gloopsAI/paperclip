@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   check_inactive "${unit}"
 done
 
@@ -25,6 +25,12 @@ if [[ "$(systemctl is-enabled paperclip-campaign-deadman.service 2>/dev/null || 
   echo "PASS paperclip-campaign-deadman.service is masked"
 else
   echo "FAIL paperclip-campaign-deadman.service is not masked" >&2
+  failed=1
+fi
+if [[ "$(systemctl is-enabled paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-controlled-swarm-commissioning-recovery.service is masked"
+else
+  echo "FAIL paperclip-controlled-swarm-commissioning-recovery.service is not masked" >&2
   failed=1
 fi
 if [[ -S /run/paperclip-campaign/deadman.sock ]]; then
@@ -48,6 +54,7 @@ for installed_control in \
   /usr/local/lib/paperclip-gloops/activate-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/commission-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py \
+  /usr/local/lib/paperclip-gloops/rehearse-controlled-swarm-commissioning-recovery.py \
   /usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py \
   /usr/local/lib/paperclip-gloops/stop-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/observe-controlled-swarm.py; do
@@ -63,7 +70,8 @@ done
 if [[ -e /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED ]] \
   || compgen -G '/etc/paperclip-gloops/.CONTROLLED_SWARM_COMMISSIONING_APPROVED.*' >/dev/null \
   || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning.json ]] \
-  || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
+  || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]] \
+  || [[ -L /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
   echo "FAIL replayable controlled-swarm commissioning authority remains while dark" >&2
   failed=1
 else

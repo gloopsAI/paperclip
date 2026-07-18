@@ -23,14 +23,17 @@ rm -f \
   "${CONFIG_DIR}/CONTROLLED_SWARM_COMMISSIONING_APPROVED"
 "${LIB_DIR}/campaign-deadman-stop.sh" operator_requested_stop
 systemctl stop paperclip-campaign-deadman.service
+systemctl stop paperclip-controlled-swarm-commissioning-recovery.service
 systemctl mask \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
-  paperclip-campaign-deadman.service
+  paperclip-campaign-deadman.service \
+  paperclip-controlled-swarm-commissioning-recovery.service
 systemctl reset-failed \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
-  paperclip-campaign-deadman.service
+  paperclip-campaign-deadman.service \
+  paperclip-controlled-swarm-commissioning-recovery.service
 "${LIB_DIR}/set-controlled-swarm-commissioning.py" false
 "${LIB_DIR}/verify-dark.sh"
 

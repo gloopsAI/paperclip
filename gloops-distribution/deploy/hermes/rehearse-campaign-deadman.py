@@ -28,6 +28,7 @@ PRODUCTION_UNITS = (
     "paperclip-hermes-handshake.service",
     "paperclip-hermes-handshake-egress.service",
     "paperclip-campaign-deadman.service",
+    "paperclip-controlled-swarm-commissioning-recovery.service",
 )
 TARGET = "paperclip-campaign-deadman-rehearsal-target.service"
 CAMPAIGN_ID = "controlled-swarm-deadman-rehearsal"

@@ -91,6 +91,9 @@ class FakePlatform:
         *,
         fail_first_restart: bool = False,
         fail_enable_barrier: bool = False,
+        fail_disable_barrier: bool = False,
+        fail_restore: bool = False,
+        require_effective_dark_on_restore: bool = False,
         create_epoch_after_restart: Path | None = None,
     ) -> None:
         self.rosters = rosters or [
@@ -100,25 +103,39 @@ class FakePlatform:
         ]
         self.fail_first_restart = fail_first_restart
         self.fail_enable_barrier = fail_enable_barrier
+        self.fail_disable_barrier = fail_disable_barrier
+        self.fail_restore = fail_restore
+        self.require_effective_dark_on_restore = require_effective_dark_on_restore
         self.create_epoch_after_restart = create_epoch_after_restart
         self.restart_count = 0
         self.barrier = False
+        self.effective_barrier = False
+        self.paperclip_active = True
         self.calls: list[str] = []
         self.config_updates: list[tuple[str, dict[str, object], bool]] = []
         self.expected_journal: Path | None = None
 
     def is_active(self, unit: str) -> bool:
         self.calls.append(f"is_active:{unit}")
+        if unit == "paperclip-gloops.service":
+            return self.paperclip_active
         return True
 
     def restart_paperclip(self) -> None:
         self.calls.append("restart")
         self.restart_count += 1
+        self.paperclip_active = True
+        self.effective_barrier = self.barrier
         if self.restart_count == 1 and self.fail_first_restart:
             raise RuntimeError("stubbed restart failure")
         if self.restart_count == 1 and self.create_epoch_after_restart is not None:
             self.create_epoch_after_restart.parent.mkdir(parents=True, exist_ok=True)
             self.create_epoch_after_restart.write_text("{}\n", encoding="utf-8")
+
+    def stop_paperclip(self) -> None:
+        self.calls.append("stop")
+        self.paperclip_active = False
+        self.effective_barrier = False
 
     def health(self) -> None:
         self.calls.append("health")
@@ -135,6 +152,19 @@ class FakePlatform:
         *,
         replace: bool,
     ) -> None:
+        if (
+            self.require_effective_dark_on_restore
+            and "legacy autonomous-agent context"
+            in str(adapter_config.get("instructions", ""))
+            and self.effective_barrier
+        ):
+            raise AssertionError("rollback began while the effective barrier was true")
+        if (
+            self.fail_restore
+            and "legacy autonomous-agent context"
+            in str(adapter_config.get("instructions", ""))
+        ):
+            raise RuntimeError("stubbed rollback failure")
         if (
             adapter_config.get("instructions", "").startswith(
                 "# GLoops controlled-swarm role",
@@ -159,10 +189,12 @@ class FakePlatform:
 
     def inspect_commissioned(self) -> bool:
         self.calls.append("inspect")
-        return self.barrier
+        return self.effective_barrier
 
     def set_barrier(self, commissioned: bool) -> None:
         self.calls.append(f"set_barrier:{str(commissioned).lower()}")
+        if not commissioned and self.fail_disable_barrier:
+            raise RuntimeError("stubbed malformed barrier environment")
         self.barrier = commissioned
         if commissioned and self.fail_enable_barrier:
             raise RuntimeError("stubbed barrier failure after mutation")
@@ -393,7 +425,7 @@ class CommissionerTest(unittest.TestCase):
         with self.assertRaises(MODULE.CommissioningError):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
-        self.assertEqual(platform.restart_count, 2)
+        self.assertEqual(platform.restart_count, 3)
         self.assertFalse(self.paths.receipt.exists())
 
     def test_receipt_and_live_verification_reject_route_or_instruction_drift(
@@ -469,7 +501,16 @@ class CommissionerTest(unittest.TestCase):
             for agent in prior_roster
             if agent["name"] in MODULE.ADMITTED
         }
-        platform = FakePlatform([copy.deepcopy(prior_roster)])
+        platform = FakePlatform(
+            [copy.deepcopy(prior_roster)],
+            require_effective_dark_on_restore=True,
+        )
+        platform.barrier = True
+        platform.effective_barrier = True
+        self.paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n",
+            encoding="utf-8",
+        )
         commissioner = self.commissioner(platform)
         commissioner._write_rollback_journal(
             self.paths.approval,
@@ -489,16 +530,224 @@ class CommissionerTest(unittest.TestCase):
         self.assertFalse(self.paths.approval.exists())
         self.assertFalse(stale.exists())
         self.assertFalse(platform.barrier)
-        self.assertEqual(platform.restart_count, 1)
+        self.assertEqual(platform.restart_count, 2)
         self.assertEqual(len(platform.config_updates), len(MODULE.ADMITTED))
         self.assertTrue(all(replace for _, _, replace in platform.config_updates))
+
+    def test_journal_phase_is_versioned_durable_and_monotonic(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        commissioner = self.commissioner(FakePlatform())
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+        journal = json.loads(
+            self.paths.rollback_journal.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(journal["schemaVersion"], MODULE.ROLLBACK_JOURNAL_VERSION)
+        self.assertEqual(journal["phase"], "journal_recorded")
+        self.assertIn("updatedAt", journal)
+
+        commissioner._advance_rollback_journal("configs_applied")
+        advanced = json.loads(
+            self.paths.rollback_journal.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(advanced["phase"], "configs_applied")
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "cannot move",
+        ):
+            commissioner._advance_rollback_journal("journal_recorded")
+
+    def test_recovery_is_idempotent_after_first_exact_restore(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform([copy.deepcopy(prior_roster)])
+        platform.barrier = True
+        platform.effective_barrier = True
+        self.paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n",
+            encoding="utf-8",
+        )
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+
+        self.assertTrue(commissioner.recover())
+        calls_after_first = list(platform.calls)
+        self.assertFalse(commissioner.recover())
+        self.assertEqual(platform.calls, calls_after_first)
+        self.assertFalse(self.paths.rollback_journal.exists())
+        self.assertFalse(platform.barrier)
+        self.assertFalse(platform.effective_barrier)
+        stop_index = platform.calls.index("stop")
+        restore_index = next(
+            index
+            for index, call in enumerate(platform.calls)
+            if call.startswith("set_adapter_config:")
+        )
+        self.assertLess(stop_index, restore_index)
+
+    def test_corrupt_journal_refuses_recovery_without_mutation(self) -> None:
+        self.paths.state_dir.mkdir(mode=0o700)
+        self.paths.rollback_journal.write_text("{not-json\n", encoding="utf-8")
+        self.paths.rollback_journal.chmod(0o600)
+        platform = FakePlatform()
+        platform.barrier = True
+        platform.effective_barrier = True
+        self.paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "unreadable or corrupt",
+        ):
+            self.commissioner(platform).recover()
+        self.assertTrue(self.paths.rollback_journal.exists())
+        self.assertFalse(platform.barrier)
+        self.assertFalse(platform.effective_barrier)
+        self.assertIn("stop", platform.calls)
+        self.assertEqual(platform.restart_count, 1)
+        self.assertEqual(platform.config_updates, [])
+
+    def test_missing_recovery_token_still_fences_true_runtime(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform([copy.deepcopy(prior_roster)])
+        platform.barrier = True
+        platform.effective_barrier = True
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+        self.paths.token.unlink()
+
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "operator board token",
+        ):
+            commissioner.recover()
+
+        self.assertFalse(platform.barrier)
+        self.assertFalse(platform.effective_barrier)
+        self.assertIn("stop", platform.calls)
+        self.assertTrue(self.paths.rollback_journal.exists())
+        self.assertEqual(platform.config_updates, [])
+
+    def test_malformed_barrier_still_stops_effective_true_runtime(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform(
+            [copy.deepcopy(prior_roster)],
+            fail_disable_barrier=True,
+        )
+        platform.barrier = True
+        platform.effective_barrier = True
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+        self.paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n"
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "malformed barrier environment",
+        ):
+            commissioner.recover()
+
+        self.assertEqual(platform.calls[0], "stop")
+        self.assertIn("set_barrier:false", platform.calls)
+        self.assertFalse(platform.paperclip_active)
+        self.assertFalse(platform.effective_barrier)
+        self.assertTrue(platform.barrier)
+        self.assertTrue(self.paths.rollback_journal.exists())
+        self.assertEqual(platform.config_updates, [])
+
+    def test_rollback_failure_remains_false_and_preserves_journal(self) -> None:
+        prior_roster = legacy_roster()
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in prior_roster
+            if agent["name"] in MODULE.ADMITTED
+        }
+        platform = FakePlatform(
+            [copy.deepcopy(prior_roster)],
+            fail_restore=True,
+            require_effective_dark_on_restore=True,
+        )
+        platform.barrier = True
+        platform.effective_barrier = True
+        self.paths.runtime_env.write_text(
+            "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true\n",
+            encoding="utf-8",
+        )
+        commissioner = self.commissioner(platform)
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "rollback failure"):
+            commissioner.recover()
+        self.assertFalse(platform.barrier)
+        self.assertFalse(platform.effective_barrier)
+        self.assertTrue(self.paths.rollback_journal.exists())
+        self.assertIn("stop", platform.calls)
+        self.assertEqual(platform.restart_count, 1)
+
+    def test_recovery_unit_is_root_only_and_orphan_journal_conditioned(
+        self,
+    ) -> None:
+        unit = SCRIPT.with_name(
+            "paperclip-controlled-swarm-commissioning-recovery.service",
+        ).read_text(encoding="utf-8")
+        wrapper = SCRIPT.with_name("commission-controlled-swarm.sh").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("User=root", unit)
+        self.assertIn("Group=root", unit)
+        self.assertIn(
+            "ConditionPathExists=/var/lib/paperclip-gloops/controlled-swarm/"
+            "commissioning-rollback.json",
+            unit,
+        )
+        self.assertNotIn("PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false", unit)
+        self.assertIn("--recover-interrupted", unit)
+        self.assertNotIn("set-controlled-swarm-commissioning.py\" false", wrapper)
+        self.assertIn("systemctl start --wait", wrapper)
 
     def test_restart_failure_rolls_back_false_and_removes_receipt(self) -> None:
         platform = FakePlatform(fail_first_restart=True)
         with self.assertRaisesRegex(RuntimeError, "restart failure"):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
-        self.assertEqual(platform.restart_count, 2)
+        self.assertEqual(platform.restart_count, 3)
         self.assertEqual(
             len(platform.config_updates),
             len(MODULE.ADMITTED) * 2,
@@ -519,7 +768,7 @@ class CommissionerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "barrier failure"):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
-        self.assertEqual(platform.restart_count, 1)
+        self.assertEqual(platform.restart_count, 2)
         self.assertEqual(
             len(platform.config_updates),
             len(MODULE.ADMITTED) * 2,
@@ -539,7 +788,7 @@ class CommissionerTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.CommissioningError, "unexpectedly armed"):
             self.commissioner(platform).run()
         self.assertFalse(platform.barrier)
-        self.assertEqual(platform.restart_count, 2)
+        self.assertEqual(platform.restart_count, 3)
         self.assertFalse(self.paths.receipt.exists())
 
 

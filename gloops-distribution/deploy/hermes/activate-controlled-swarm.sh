@@ -10,6 +10,7 @@ readonly LOCK='/run/lock/paperclip-controlled-swarm.lock'
 readonly DEADMAN='paperclip-campaign-deadman.service'
 readonly HERMES='paperclip-hermes-execution.service'
 readonly PAPERCLIP='paperclip-gloops.service'
+readonly COMMISSIONING_RECOVERY='paperclip-controlled-swarm-commissioning-recovery.service'
 
 [[ "${EUID}" -eq 0 ]] || {
   echo "controlled-swarm activation must run as root" >&2
@@ -142,16 +143,17 @@ cleanup() {
     "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
     "${APPROVAL}" \
     "${approval_in_progress}"
-  systemctl stop "${PAPERCLIP}" "${HERMES}" "${DEADMAN}"
-  systemctl mask "${PAPERCLIP}" "${HERMES}" "${DEADMAN}"
-  systemctl reset-failed "${PAPERCLIP}" "${HERMES}" "${DEADMAN}"
+  systemctl stop "${PAPERCLIP}" "${HERMES}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl mask "${PAPERCLIP}" "${HERMES}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl reset-failed "${PAPERCLIP}" "${HERMES}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
   "${LIB_DIR}/verify-dark.sh"
   exit "${status}"
 }
 trap cleanup EXIT
 
-systemctl unmask "${DEADMAN}" "${HERMES}" "${PAPERCLIP}"
+systemctl unmask "${DEADMAN}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
 systemctl daemon-reload
+systemctl enable "${COMMISSIONING_RECOVERY}"
 systemctl start "${DEADMAN}"
 "${LIB_DIR}/verify-campaign-deadman.py" \
   --wait-seconds 15 \
