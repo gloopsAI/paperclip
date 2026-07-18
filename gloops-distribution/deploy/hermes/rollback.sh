@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly COMMISSIONING_ROLLBACK_JOURNAL='/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json'
+
 usage() {
   echo "usage: sudo $0 --check BACKUP_DIR | --restore BACKUP_DIR" >&2
   exit 2
@@ -33,6 +35,10 @@ if [[ "${mode}" == '--check' ]]; then
   exit 0
 fi
 [[ "${mode}" == '--restore' ]] || usage
+if [[ -e "${COMMISSIONING_ROLLBACK_JOURNAL}" || -L "${COMMISSIONING_ROLLBACK_JOURNAL}" ]]; then
+  echo "refusing rollback restore with an unresolved commissioning rollback journal" >&2
+  exit 1
+fi
 
 for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then

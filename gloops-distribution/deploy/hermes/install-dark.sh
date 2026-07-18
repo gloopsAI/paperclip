@@ -36,7 +36,8 @@ if docker ps -a --format '{{.Names}}' \
   echo "refusing installation while a Paperclip or Hermes container exists" >&2
   exit 1
 fi
-if [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
+if [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json \
+  || -L /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json ]]; then
   echo "refusing dark installation with an unresolved commissioning rollback journal" >&2
   exit 1
 fi

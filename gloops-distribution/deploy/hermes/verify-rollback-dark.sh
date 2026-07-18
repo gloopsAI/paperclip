@@ -45,6 +45,7 @@ for marker in \
   /etc/paperclip-gloops/ACTIVATION_APPROVED \
   /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED \
   /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED \
+  /var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json \
   /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE \
   /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE \
   /run/paperclip-gloops/HANDSHAKE_EGRESS_ACTIVE; do

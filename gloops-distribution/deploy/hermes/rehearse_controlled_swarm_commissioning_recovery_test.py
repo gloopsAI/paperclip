@@ -39,13 +39,23 @@ class CommissioningRecoveryRehearsalTest(unittest.TestCase):
                 f"controlled-swarm-commissioning-recovery-{digest}.json",
             )
             receipt = json.loads(payload)
-            self.assertEqual(receipt["outcome"], "passed")
+            self.assertEqual(receipt["outcome"], "source_harness_passed")
             self.assertFalse(receipt["providersInvoked"])
             self.assertFalse(receipt["productionStateMutated"])
+            self.assertFalse(
+                receipt["installedSystemdProof"]["systemdUnitExecuted"],
+            )
+            self.assertIn(
+                "source-only harness",
+                receipt["installedSystemdProof"]["reason"],
+            )
             self.assertTrue(receipt["recoveryUnitRootOnly"])
             self.assertTrue(receipt["recoveryUnitRequiresOrphanJournal"])
-            self.assertTrue(receipt["recoveryUnitRequiresFalseBarrier"])
-            self.assertTrue(receipt["wrapperFencesBeforeRecovery"])
+            self.assertFalse(receipt["recoveryUnitRequiresFalseBarrier"])
+            self.assertTrue(receipt["recoveryUnitFencesBeforeRollback"])
+            self.assertTrue(receipt["wrapperDelegatesFencingToRecovery"])
+            self.assertTrue(receipt["sourceCommissionerSigkillMatrix"])
+            self.assertFalse(receipt["gate2ExactTopologyClaimed"])
             self.assertTrue(receipt["corruptJournalRefused"])
             self.assertTrue(receipt["rollbackFailureRemainedDark"])
             self.assertEqual(
@@ -65,6 +75,31 @@ class CommissioningRecoveryRehearsalTest(unittest.TestCase):
             )
             self.assertTrue(
                 all(row["repeatedRecoveryNoOp"] for row in receipt["phases"]),
+            )
+            self.assertTrue(
+                all(row["persistedBarrier"] == "false" for row in receipt["phases"]),
+            )
+            self.assertTrue(
+                all(row["effectiveBarrier"] == "false" for row in receipt["phases"]),
+            )
+            pre_states = {
+                row["phase"]: (
+                    row["preRecoveryPersistedBarrier"],
+                    row["preRecoveryEffectiveBarrier"],
+                )
+                for row in receipt["phases"]
+            }
+            self.assertEqual(
+                pre_states,
+                {
+                    "journal_recorded": ("false", "false"),
+                    "configs_applied": ("false", "false"),
+                    "configs_verified": ("false", "false"),
+                    "receipt_written": ("false", "false"),
+                    "barrier_enabled": ("true", "false"),
+                    "control_plane_restarted": ("true", "true"),
+                    "live_verified": ("true", "true"),
+                },
             )
 
 

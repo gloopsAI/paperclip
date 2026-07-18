@@ -66,7 +66,11 @@ artifact.
 sudo ./load-hermes-execution-image.sh
 ```
 
-First capture and validate an offline rollback backup while both Paperclip services are inactive:
+First capture and validate an offline rollback backup while both Paperclip
+services are inactive. Backup refuses any surviving controlled-swarm
+commissioning rollback journal before it creates a staging directory, because
+the database and journal are one transaction boundary and the journal is not
+part of the cold archive:
 
 ```bash
 sudo ./backup-dark.sh
@@ -176,13 +180,15 @@ every durable transaction boundary: journal capture, configuration
 apply/verification, receipt write, barrier enablement, control-plane restart,
 and final live verification. Each transition atomically replaces and fsyncs
 the journal before execution advances. If the commissioner child exits or is
-killed while the journal remains, its root-owned wrapper first restores the
-false execution barrier and then starts only
+killed while the journal remains, its root-owned wrapper starts only
 `paperclip-controlled-swarm-commissioning-recovery.service`. That unit is
-conditioned on both the orphan journal and the exact false barrier and invokes
-only the commissioner's bounded rollback path. Invalid journals refuse
-recovery; failed rollback leaves the barrier false and preserves the journal
-for operator reconciliation.
+conditioned on the orphan journal; it does not require a pre-existing false
+barrier. Under the activation lock, the bounded recovery path atomically
+stops Paperclip and verifies it inactive, atomically persists false, restarts
+Paperclip dark, inspects the effective barrier as false, and only then parses
+or restores the journal. Invalid journals
+refuse rollback after the runtime fence; failed rollback leaves both barriers
+false and preserves the journal for operator reconciliation.
 
 Before minting live commissioning authority, rehearse the exact installed
 commissioner, wrapper, and recovery-unit bytes:
@@ -194,6 +200,25 @@ sudo /usr/local/lib/paperclip-gloops/rehearse-controlled-swarm-commissioning-rec
 The rehearsal SIGKILLs a subprocess after every durable phase, creates a new
 commissioner instance for recovery, repeats recovery to prove idempotency,
 refuses a corrupt journal, and induces a rollback failure to prove the system
-remains dark. It performs no provider call and no production-state mutation.
-The root-owned `0600` result is content-addressed under
+remains dark. The default root rehearsal then constructs each of the seven
+durable phase states against the real inert control plane, including persisted
+true at `barrier_enabled` and persisted/effective true after restart, and
+starts the exact installed root-owned systemd recovery unit for each. It
+verifies the journal condition, sandbox, one-shot execution, repeated
+no-journal skip, exact config restoration, and both false barriers. This
+temporarily mutates adapter configuration and the barrier under a bounded
+rehearsal, but performs no provider or repository call and restores the exact
+starting configs. A failed proof stops Paperclip dark and preserves its
+journal for reconciliation if recovery has not already consumed it. The
+root-owned `0600` result is content-addressed under
 `/var/lib/paperclip-gloops/rehearsals/`.
+
+For local tests, `--allow-source-root` runs only the isolated crash harness.
+Its receipt says `source_harness_passed`, records
+`systemdUnitExecuted=false`, and does not claim exact-topology proof. The root
+receipt says `split_artifact_matrix_passed`: it combines real SIGKILLs against
+the exact commissioner bytes in an isolated platform with the installed-unit
+phase matrix on the host. It explicitly records
+`gate2ExactTopologyClaimed=false` because it does not SIGKILL the real host
+commissioner at every phase. Gate 2 remains open until that final conjunctive
+host proof is independently accepted.

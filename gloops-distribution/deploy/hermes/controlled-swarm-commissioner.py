@@ -554,6 +554,16 @@ class HostPlatform:
             check=True,
         )
 
+    def stop_paperclip(self) -> None:
+        subprocess.run(
+            ["systemctl", "stop", "paperclip-gloops.service"],
+            check=True,
+        )
+        if self.is_active("paperclip-gloops.service"):
+            raise CommissioningError(
+                "Paperclip remained active after the recovery fence",
+            )
+
     def health(self) -> None:
         with urllib.request.urlopen(
             "http://127.0.0.1:3100/api/health",
@@ -1008,19 +1018,28 @@ class Commissioner:
         )
         self._durable_unlink(self.paths.rollback_journal)
 
+    def _restart_paperclip_dark(self) -> None:
+        self.platform.restart_paperclip()
+        self.platform.health()
+        if self.platform.inspect_commissioned():
+            raise CommissioningError(
+                "Paperclip retained the commissioned barrier during recovery",
+            )
+
+    def _fence_effective_runtime(self) -> None:
+        self.platform.stop_paperclip()
+        self.platform.set_barrier(False)
+        self._restart_paperclip_dark()
+
     def _recover_interrupted_commissioning(self) -> None:
+        self._fence_effective_runtime()
         self._require_protected_file(self.paths.token, "operator board token")
         token = self.paths.token.read_text(encoding="utf-8").strip()
         if not token:
             raise CommissioningError("operator board token is empty")
-        self.platform.set_barrier(False)
-        if not self.platform.is_active("paperclip-gloops.service"):
-            self.platform.restart_paperclip()
-        self.platform.health()
         self._rollback_from_journal(token)
         self._durable_unlink(self.paths.receipt)
-        self.platform.restart_paperclip()
-        self.platform.health()
+        self._restart_paperclip_dark()
         for stale in self.paths.config_dir.glob(
             ".CONTROLLED_SWARM_COMMISSIONING_APPROVED.*",
         ):
@@ -1042,15 +1061,6 @@ class Commissioner:
                 ) from exc
             if not self.paths.rollback_journal.exists():
                 return False
-            runtime_lines = self.paths.runtime_env.read_text(
-                encoding="utf-8",
-            ).splitlines()
-            if runtime_lines.count(
-                "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
-            ) != 1:
-                raise CommissioningError(
-                    "commissioning recovery requires the exact false execution barrier",
-                )
             self._recover_interrupted_commissioning()
             return True
 
@@ -1119,7 +1129,6 @@ class Commissioner:
         )
         os.replace(self.paths.approval, approval_in_progress)
         self._fsync_directory(self.paths.config_dir)
-        barrier_changed = False
         configs_changed = False
         journal_written = False
         token = ""
@@ -1178,7 +1187,6 @@ class Commissioner:
             )
             if journal_written:
                 self._advance_rollback_journal("receipt_written")
-            barrier_changed = True
             self.platform.set_barrier(True)
             if journal_written:
                 self._advance_rollback_journal("barrier_enabled")
@@ -1204,22 +1212,18 @@ class Commissioner:
                 self._advance_rollback_journal("live_verified")
             self._durable_unlink(self.paths.rollback_journal)
         except BaseException:
-            if barrier_changed:
+            if journal_written:
+                fenced = False
                 try:
-                    self.platform.set_barrier(False)
-                finally:
-                    try:
-                        if journal_written:
-                            self._rollback_from_journal(token)
-                    finally:
-                        self._durable_unlink(self.paths.receipt)
-                        self.platform.restart_paperclip()
-            else:
-                try:
-                    if journal_written:
-                        self._rollback_from_journal(token)
+                    self._fence_effective_runtime()
+                    fenced = True
+                    self._rollback_from_journal(token)
                 finally:
                     self._durable_unlink(self.paths.receipt)
+                    if fenced:
+                        self._restart_paperclip_dark()
+            else:
+                self._durable_unlink(self.paths.receipt)
             raise
         finally:
             self._durable_unlink(approval_in_progress)
