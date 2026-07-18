@@ -201,6 +201,14 @@ class FakePlatform:
 
 
 class CommissionerTest(unittest.TestCase):
+    def test_default_epoch_path_is_derived_from_successor_identity(self) -> None:
+        self.assertEqual(
+            MODULE.CommissioningPaths().epoch,
+            Path("/var/lib/paperclip-gloops/campaign-deadman")
+            / MODULE.CAMPAIGN_ID
+            / "epoch.json",
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
@@ -374,6 +382,7 @@ class CommissionerTest(unittest.TestCase):
         for overrides in (
             {"expiresAt": stale.isoformat()},
             {"authorization": "wrong"},
+            {"campaignId": "controlled-swarm-20260717"},
             {"unexpected": True},
         ):
             with self.subTest(overrides=overrides):

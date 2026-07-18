@@ -122,11 +122,27 @@ readiness barriers.
 
 The activation approval schema is
 `gloops.controlled-swarm-activation-approval.v1`. It authorizes only
-`activate_inert_control_plane`, names campaign `controlled-swarm-20260717`,
+`activate_inert_control_plane`, names campaign
+`controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139`,
 binds the exact approved image and rehearsal receipt path/digest, and carries
 `authorizedAt` plus an `expiresAt` no more than four hours later. Dark install
 and every activation attempt consume it, including failed attempts; it cannot
 cross a release, rehearsal, or retry boundary.
+
+The successor campaign identity is distinct from the preserved, expired
+`controlled-swarm-20260717` epoch. Every dark verification, execution preflight,
+and deadman start requires that predecessor evidence to remain root-owned,
+mode `0600`, immutable, integral, expired, and bound to its original identity.
+The date component is the successor identity's mint date, not its validity
+window or deadline; the random suffix prevents collision with another bounded
+campaign minted on the same day. The successor identity is consumed only when
+its epoch file is first created at Gate 3. If this release is superseded before
+that file ever exists, the unchanged identity may carry forward; after the file
+exists, the identity is permanently non-renewable.
+
+The successor release also advances the issue-creation admission floor to
+`2026-07-18T23:12:22.000Z`. Work created before that instant remains
+mechanically ineligible even if it was left open by the predecessor campaign.
 
 `observe-controlled-swarm.py` is read-only. `stop-controlled-swarm.sh` removes
 the runtime markers, stops the execution units, preserves any production epoch
@@ -140,7 +156,9 @@ slice must flip that barrier after roster, queue, and provider reconciliation.
 
 `commission-controlled-swarm.sh` is that one-use transition. It requires a
 root-owned `0600` `CONTROLLED_SWARM_COMMISSIONING_APPROVED` receipt, binds it to
-campaign `controlled-swarm-20260717`, the exact installed image, and governance
+campaign
+`controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139`,
+the exact installed image, and governance
 merge `3a5820722e8c6f55d6a1a730cada1cb4f1a1df77`, and verifies the exact
 sixteen-identity company roster: twelve admitted Hermes roles, two paused burst
 roles, the paused Fourth Pilot Engineer, and the pending Reflection Coach. Every

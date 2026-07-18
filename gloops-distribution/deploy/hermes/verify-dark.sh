@@ -51,6 +51,7 @@ fi
 for installed_control in \
   /usr/local/lib/paperclip-gloops/campaign-deadman-rehearsal-stop.sh \
   /usr/local/lib/paperclip-gloops/rehearse-campaign-deadman.py \
+  /usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py \
   /usr/local/lib/paperclip-gloops/activate-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/commission-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py \
@@ -67,6 +68,7 @@ for installed_control in \
     failed=1
   fi
 done
+"/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py" || failed=1
 if [[ -e /etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED ]] \
   || compgen -G '/etc/paperclip-gloops/.CONTROLLED_SWARM_COMMISSIONING_APPROVED.*' >/dev/null \
   || [[ -e /var/lib/paperclip-gloops/controlled-swarm/commissioning.json ]] \
@@ -406,8 +408,8 @@ else
   failed=1
 fi
 
-if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' /etc/paperclip-gloops/runtime.env \
+if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/runtime.env \
@@ -416,7 +418,7 @@ if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloop
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-18T23:12:22.000Z' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=50000' /etc/paperclip-gloops/runtime.env \

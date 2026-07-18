@@ -18,7 +18,9 @@ import urllib.request
 import uuid
 
 
-CAMPAIGN_ID = "controlled-swarm-20260717"
+CAMPAIGN_ID = (
+    "controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139"
+)
 COMPANY_ID = "89ed0964-d918-4fcc-b830-5be49d2d4089"
 GOVERNANCE_MERGE = "3a5820722e8c6f55d6a1a730cada1cb4f1a1df77"
 AUTHORIZATION = "commission_twelve_ollama_roles"
@@ -307,9 +309,10 @@ class CommissioningError(RuntimeError):
 class CommissioningPaths:
     config_dir: Path = Path("/etc/paperclip-gloops")
     state_dir: Path = Path("/var/lib/paperclip-gloops/controlled-swarm")
-    epoch: Path = Path(
-        "/var/lib/paperclip-gloops/campaign-deadman/"
-        "controlled-swarm-20260717/epoch.json",
+    epoch: Path = (
+        Path("/var/lib/paperclip-gloops/campaign-deadman")
+        / CAMPAIGN_ID
+        / "epoch.json"
     )
     lock: Path = Path("/run/lock/paperclip-controlled-swarm.lock")
     helper: Path = Path(
