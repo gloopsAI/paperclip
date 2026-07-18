@@ -813,7 +813,40 @@ for (const [surface, content, required] of [
   ["controlled-swarm installed recovery unit proof", rehearseControlledSwarmCommissioningRecovery, "def rehearse_installed_recovery_unit(module: Any)"],
   ["controlled-swarm installed recovery unit receipt", rehearseControlledSwarmCommissioningRecovery, '"systemdUnitExecuted": True'],
   ["controlled-swarm installed recovery phase matrix", rehearseControlledSwarmCommissioningRecovery, '"phaseMatrix": phase_rows'],
-  ["controlled-swarm narrow recovery proof claim", rehearseControlledSwarmCommissioningRecovery, '"gate2ExactTopologyClaimed": False'],
+  ["controlled-swarm exact wrapper proof", rehearseControlledSwarmCommissioningRecovery, "def rehearse_exact_installed_wrapper(module: Any)"],
+  ["controlled-swarm exact wrapper invocation", rehearseControlledSwarmCommissioningRecovery, '"--rehearsal-crash-after-phase"'],
+  ["controlled-swarm exact commissioner SIGKILL claim", rehearseControlledSwarmCommissioningRecovery, '"realHostCommissionerSigkilled": True'],
+  ["controlled-swarm exact proof predicate", rehearseControlledSwarmCommissioningRecovery, "def exact_host_proof_passed("],
+  ["controlled-swarm exact recovery no-op proof", rehearseControlledSwarmCommissioningRecovery, '"repeatedRecoveryNoOp": True'],
+  ["controlled-swarm exact recovery repository boundary", rehearseControlledSwarmCommissioningRecovery, '"repositoriesMutated": False'],
+  ["controlled-swarm fail-closed stop-before-barrier helper", rehearseControlledSwarmCommissioningRecovery, "def fail_closed_fence(paths: Any, platform: Any)"],
+  ["controlled-swarm fail-closed inactive proof", rehearseControlledSwarmCommissioningRecovery, '"paperclipInactiveBeforeBarrierWrite": True'],
+  ["controlled-swarm one-use approval cleanup", rehearseControlledSwarmCommissioningRecovery, "def cleanup_one_use_approvals(paths: Any)"],
+  ["controlled-swarm effective unit evidence", rehearseControlledSwarmCommissioningRecovery, "def effective_unit_evidence()"],
+  ["controlled-swarm canonical unit digest binding", rehearseControlledSwarmCommissioningRecovery, "EXPECTED_RECOVERY_UNIT_SHA256"],
+  ["controlled-swarm loaded unit argv binding", rehearseControlledSwarmCommissioningRecovery, '"loadedExecCommands": loaded_exec_commands'],
+  ["controlled-swarm loaded unit security binding", rehearseControlledSwarmCommissioningRecovery, '"loadedSecurityProperties": loaded_security'],
+  ["controlled-swarm loaded unit Conditions receipt", rehearseControlledSwarmCommissioningRecovery, '"loadedConditionsRaw": unit_properties["Conditions"]'],
+  ["controlled-swarm loaded unit digest", rehearseControlledSwarmCommissioningRecovery, "def loaded_unit_contract_digest("],
+  ["controlled-swarm exact stop timeout", controlledSwarmCommissioningRecoveryService, "TimeoutStopSec=180"],
+  ["controlled-swarm loaded stop timeout", rehearseControlledSwarmCommissioningRecovery, '"loadedTimeoutStopMicroseconds": loaded_timeout_stop_usec'],
+  ["controlled-swarm unique systemd invocation proof", rehearseControlledSwarmCommissioningRecovery, '"invocationId": invocation_id'],
+  ["controlled-swarm repository content digest", rehearseControlledSwarmCommissioningRecovery, "def repository_content_digest(repository: Path)"],
+  ["controlled-swarm command-specific status proof", rehearseControlledSwarmCommissioningRecovery, "def exec_status_for_argv("],
+  ["controlled-swarm one-read credential snapshot", rehearseControlledSwarmCommissioningRecovery, "def credential_history_snapshot()"],
+  ["controlled-swarm one-read active receipt", rehearseControlledSwarmCommissioningRecovery, "def protected_json_snapshot("],
+  ["controlled-swarm active receipt byte digest", rehearseControlledSwarmCommissioningRecovery, "return raw, payload, sha256_bytes(raw)"],
+  ["controlled-swarm duplicate-key rejection", rehearseControlledSwarmCommissioningRecovery, "object_pairs_hook=strict_json_object"],
+  ["controlled-swarm non-finite rejection", rehearseControlledSwarmCommissioningRecovery, "parse_constant=reject_json_constant"],
+  ["controlled-swarm finite canonical history", rehearseControlledSwarmCommissioningRecovery, "allow_nan=False"],
+  ["controlled-swarm credential lifecycle proof", rehearseControlledSwarmCommissioningRecovery, "def credential_lifecycle_evidence("],
+  ["controlled-swarm credential exact-prefix proof", rehearseControlledSwarmCommissioningRecovery, "history[:-1] != pre_history"],
+  ["controlled-swarm credential broker digest", rehearseControlledSwarmCommissioningRecovery, '"credentialBrokerSha256"'],
+  ["controlled-swarm read-only projector permissions", rehearseControlledSwarmCommissioningRecovery, '"contents": "read"'],
+  ["controlled-swarm durable credential transition proof", rehearseControlledSwarmCommissioningRecovery, '"durableLifecycleTransition": True'],
+  ["controlled-swarm exact revoke argv proof", rehearseControlledSwarmCommissioningRecovery, '"revokeProjectorCommandSucceeded": True'],
+  ["controlled-swarm exact topology proof claim", rehearseControlledSwarmCommissioningRecovery, '"gate2ExactTopologyClaimed": exact_host_proven'],
+  ["controlled-swarm exact topology outcome", rehearseControlledSwarmCommissioningRecovery, '"exact_host_conjunctive_passed"'],
   ["controlled-swarm split artifact proof label", rehearseControlledSwarmCommissioningRecovery, '"split_artifact_matrix_passed"'],
   ["controlled-swarm source-only proof label", rehearseControlledSwarmCommissioningRecovery, '"source_harness_passed"'],
   ["controlled-swarm commissioning revalidation", controlledSwarmCommissioner, "require_compact_instructions=True"],
@@ -825,6 +858,20 @@ for (const [surface, content, required] of [
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);
   }
+}
+const recoveryUnitSha256 = createHash("sha256")
+  .update(controlledSwarmCommissioningRecoveryService)
+  .digest("hex");
+const recoveryUnitPin = rehearseControlledSwarmCommissioningRecovery.match(
+  /EXPECTED_RECOVERY_UNIT_SHA256\s*=\s*\(\s*"sha256:([0-9a-f]{64})"\s*\)/,
+);
+if (
+  recoveryUnitPin === null
+  || recoveryUnitPin[1] !== recoveryUnitSha256
+) {
+  fail(
+    "controlled-swarm rehearsal canonical unit digest does not match the release asset",
+  );
 }
 if (
   controlledSwarmCommissioningRecoveryService.includes(

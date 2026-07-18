@@ -32,6 +32,7 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
 TimeoutStartSec=180
+TimeoutStopSec=180
 
 [Install]
 WantedBy=multi-user.target

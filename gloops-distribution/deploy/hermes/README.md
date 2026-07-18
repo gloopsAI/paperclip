@@ -200,25 +200,51 @@ sudo /usr/local/lib/paperclip-gloops/rehearse-controlled-swarm-commissioning-rec
 The rehearsal SIGKILLs a subprocess after every durable phase, creates a new
 commissioner instance for recovery, repeats recovery to prove idempotency,
 refuses a corrupt journal, and induces a rollback failure to prove the system
-remains dark. The default root rehearsal then constructs each of the seven
-durable phase states against the real inert control plane, including persisted
-true at `barrier_enabled` and persisted/effective true after restart, and
-starts the exact installed root-owned systemd recovery unit for each. It
-verifies the journal condition, sandbox, one-shot execution, repeated
-no-journal skip, exact config restoration, and both false barriers. This
-temporarily mutates adapter configuration and the barrier under a bounded
-rehearsal, but performs no provider or repository call and restores the exact
-starting configs. A failed proof stops Paperclip dark and preserves its
-journal for reconciliation if recovery has not already consumed it. The
-root-owned `0600` result is content-addressed under
+remains dark. The default root rehearsal retains that source harness and the
+installed-unit phase-state matrix, then adds the conjunctive proof: for every
+durable phase it invokes the exact installed wrapper and commissioner on the
+real inert topology with `--rehearsal-crash-after-phase`. The commissioner
+really receives SIGKILL, the surviving wrapper must start the exact installed
+root-owned recovery unit, and the rehearsal verifies a new systemd invocation,
+the journal condition, one-shot success, repeated no-journal skip, exact
+configuration restoration, and both persisted and effective false barriers.
+The final Gate 2 claim is emitted only when both earlier matrices, all seven
+exact-host wrapper phases, corrupt-journal refusal, and rollback-failure-dark
+proofs pass. It also binds the effective enabled recovery unit to the
+independently pinned SHA-256 of the canonical release asset, permits no
+drop-ins, and requires the exact normalized command argv, sole condition,
+timeout, writable paths, and security directives both on disk and in the
+systemd manager's loaded `ExecStart`, `Conditions`, timeout, path, and security
+properties. Both start and stop timeouts are explicit 180-second release
+contracts and are compared after normalizing the loaded systemd durations to
+microseconds. The effective-properties digest is computed only from those loaded
+values, so a canonical file that has not been daemon-reloaded cannot pass. The release verifier
+recomputes that pin from the source asset so a changed expected digest cannot
+bless drift. The proof also binds the Paperclip unit, runtime configuration,
+and installed GitHub credential broker. After every crash phase the rehearsal
+closes the active Paperclip and Hermes credential lifecycle, requires
+command-specific successful `revoke-projector` evidence (not an unrelated
+successful `ExecStopPost` command), snapshots and validates the complete
+hash-chained history from one strict UTF-8 byte read. Its JSON decoder rejects
+duplicate object keys and non-finite numbers, while canonical history hashing
+refuses to serialize them. Active credential receipts use the same protected,
+single-read strict snapshot; their semantics and SHA-256 are derived from the
+exact same bytes, including nested permissions. The proof requires the post-stop history to be the byte-logical
+exact prior prefix plus one new terminal record for that active lifecycle and
+projector fingerprint, and starts a globally unique new read-only lifecycle
+that appears in neither history nor an earlier phase. The rehearsal temporarily mutates
+adapter configuration and the barrier, but performs no provider call and no
+repository-content mutation, and restores the exact starting configs. A failed
+proof attempts the Paperclip stop and false-barrier write independently,
+requires Paperclip to be inactive before accepting the persisted false fence,
+invalidates all one-use approval files, and preserves any unresolved journal
+for reconciliation. The root-owned `0600` result is content-addressed under
 `/var/lib/paperclip-gloops/rehearsals/`.
 
 For local tests, `--allow-source-root` runs only the isolated crash harness.
-Its receipt says `source_harness_passed`, records
-`systemdUnitExecuted=false`, and does not claim exact-topology proof. The root
-receipt says `split_artifact_matrix_passed`: it combines real SIGKILLs against
-the exact commissioner bytes in an isolated platform with the installed-unit
-phase matrix on the host. It explicitly records
-`gate2ExactTopologyClaimed=false` because it does not SIGKILL the real host
-commissioner at every phase. Gate 2 remains open until that final conjunctive
-host proof is independently accepted.
+Its receipt says `source_harness_passed`, records both installed proofs as
+false, and does not claim exact-topology proof. A successful root receipt says
+`exact_host_conjunctive_passed` and records
+`gate2ExactTopologyClaimed=true`; a root run cannot reach that outcome from the
+split matrices alone. Gate 2 remains open until the exact content-addressed
+receipt and installed artifact are independently accepted.
