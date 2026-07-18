@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:1a7288514fb5de382053644ea09f8901bb5bb3041f93fd252df5cb6f8e11824a'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:5cfcc6ad73406d764a78f9259293281dde4bad3bb3949469e99739a78f761a64'
 readonly HERMES_IMAGE='sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'

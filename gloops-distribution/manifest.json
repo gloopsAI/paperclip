@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.718.0-gloops.17",
+    "version": "2026.718.0-gloops.18",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:1a7288514fb5de382053644ea09f8901bb5bb3041f93fd252df5cb6f8e11824a"
+    "digest": "sha256:5cfcc6ad73406d764a78f9259293281dde4bad3bb3949469e99739a78f761a64"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.718.0-gloops.17.json"
+    "vex": "gloops-distribution/security/vex-2026.718.0-gloops.18.json"
   },
   "patches": [
     {
@@ -319,6 +319,17 @@
       ],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host runtime provides equivalent root-owned, bounded, idempotent recovery for every durable interrupted-commissioning phase; fences persisted and effective execution before validation; fails dark on corrupt or ambiguous journals; and refuses backup, restore, or rollback certification while a commissioning journal survives."
+    },
+    {
+      "id": "exact-host-commissioning-sigkill-recovery-proof",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "be25ae3cf8fea8c029675a003a291d2e192d6982",
+      "sourceHead": "6f281e404e99dc6dd72889419f7aa8c53b3821c8",
+      "patchDiffSha256": "4f61e44fe23244b7c7ce5bc7c3adeb60d69af2e789b03eba5813469aaee0f813",
+      "integratedCommits": ["b4cb86d99f3edaf179470890521e6f5428817647"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected host runtime provides equivalent exact-installed-topology SIGKILL recovery proof for every durable commissioning phase, binds canonical and systemd-loaded recovery-unit properties plus credential lifecycle history, restores both execution barriers false after each phase, and emits an independently accepted content-addressed receipt."
     }
   ],
   "releasePolicy": {
