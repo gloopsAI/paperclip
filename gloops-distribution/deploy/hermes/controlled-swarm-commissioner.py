@@ -56,7 +56,7 @@ SIDECAR_ROUTE_EVIDENCE = {
         "sha256:eb220e56779325943333d8a745d133f5c990f1bb151fad1a9f54fa395c94fbc9"
     ),
     "policySha256": (
-        "sha256:e5365212756513970edd402384010800a177ee00aabbdaedff6bd044f2bed051"
+        "sha256:681d9f9404855ebed81a7e8ae8ce1f073fa7db6b0d890ca82bbfd38c65638e56"
     ),
 }
 

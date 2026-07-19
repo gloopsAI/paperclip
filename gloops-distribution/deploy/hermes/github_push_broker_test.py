@@ -8,7 +8,6 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import sqlite3
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -106,6 +105,40 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 side_effect=lambda path, _label: path.read_text().strip(),
             ), self.assertRaisesRegex(broker.BrokerError, "digest does not match"):
                 broker.load_authorization()
+
+    def test_gate25_broker_can_wait_boundedly_for_root_authorization(self):
+        run_id = "abababab-abab-4bab-8bab-abababababab"
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            authorization = self.authorization(run_id)
+            self.install_authorization(authorization)
+            calls = 0
+
+            def delayed_read(path: Path, _label: str) -> str:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise FileNotFoundError(path)
+                return path.read_text().strip()
+
+            with patch.dict(
+                os.environ,
+                {"PAPERCLIP_GITHUB_BROKER_AUTH_WAIT_SECONDS": "1"},
+            ), patch.object(
+                broker,
+                "read_root_secret",
+                side_effect=delayed_read,
+            ), patch.object(broker.time, "sleep"):
+                loaded, _digest = broker.load_authorization()
+            self.assertEqual(loaded["paperclipRunId"], run_id)
+            self.assertEqual(calls, 3)
+
+    def test_authorization_wait_is_fail_closed_and_capped(self):
+        for value in ("not-a-number", "-1", "31"):
+            with patch.dict(
+                os.environ,
+                {"PAPERCLIP_GITHUB_BROKER_AUTH_WAIT_SECONDS": value},
+            ), self.assertRaises(broker.BrokerError):
+                broker.authorization_wait_seconds()
 
     def test_allocation_is_durable_single_use_and_journal_is_hash_chained(self):
         run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

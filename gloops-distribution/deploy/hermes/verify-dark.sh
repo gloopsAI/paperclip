@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service paperclip-gate25-calibration.service paperclip-hermes-gate25-calibration.service paperclip-github-push-broker-gate25.service; do
   check_inactive "${unit}"
 done
 
@@ -31,6 +31,25 @@ if [[ "$(systemctl is-enabled paperclip-controlled-swarm-commissioning-recovery.
   echo "PASS paperclip-controlled-swarm-commissioning-recovery.service is masked"
 else
   echo "FAIL paperclip-controlled-swarm-commissioning-recovery.service is not masked" >&2
+  failed=1
+fi
+for unit in \
+  paperclip-gate25-calibration.service \
+  paperclip-hermes-gate25-calibration.service \
+  paperclip-github-push-broker-gate25.service; do
+  if [[ "$(systemctl is-enabled "${unit}" 2>/dev/null || true)" == "masked" ]]; then
+    echo "PASS ${unit} is masked"
+  else
+    echo "FAIL ${unit} is not masked" >&2
+    failed=1
+  fi
+done
+if [[ ! -e /etc/paperclip-gloops/GATE25_CALIBRATION_APPROVED ]] \
+  && ! compgen -G '/etc/paperclip-gloops/.GATE25_CALIBRATION_APPROVED.*' >/dev/null \
+  && [[ ! -e /run/paperclip-gate25 ]]; then
+  echo "PASS Gate 2.5 authority and runtime state are absent while dark"
+else
+  echo "FAIL Gate 2.5 authority or runtime state remains while dark" >&2
   failed=1
 fi
 if [[ -S /run/paperclip-campaign/deadman.sock ]]; then
@@ -58,7 +77,9 @@ for installed_control in \
   /usr/local/lib/paperclip-gloops/rehearse-controlled-swarm-commissioning-recovery.py \
   /usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py \
   /usr/local/lib/paperclip-gloops/stop-controlled-swarm.sh \
-  /usr/local/lib/paperclip-gloops/observe-controlled-swarm.py; do
+  /usr/local/lib/paperclip-gloops/observe-controlled-swarm.py \
+  /usr/local/lib/paperclip-gloops/run-gate25-calibration.py \
+  /usr/local/lib/paperclip-gloops/preflight-gate25-calibration.sh; do
   installed_control_stat="$(stat -c '%a:%U:%G' "${installed_control}" 2>/dev/null || true)"
   if [[ -f "${installed_control}" ]] \
     && [[ "${installed_control_stat}" =~ ^(555|755):root:root$ ]]; then
@@ -123,7 +144,9 @@ fi
 
 if [[ ! -S /run/paperclip-github-broker/broker.sock ]] \
   && [[ ! -e /etc/paperclip-gloops/github-push-authorization.json ]] \
-  && [[ ! -e /etc/paperclip-gloops/github-push-authorization.sha256 ]]; then
+  && [[ ! -e /etc/paperclip-gloops/github-push-authorization.sha256 ]] \
+  && ! compgen -G '/etc/paperclip-gloops/.github-push-authorization.json.*' >/dev/null \
+  && ! compgen -G '/etc/paperclip-gloops/.github-push-authorization.sha256.*' >/dev/null; then
   echo "PASS GitHub push socket and replayable root authorization are absent while dark"
 else
   echo "FAIL GitHub push socket or root authorization remains while dark" >&2

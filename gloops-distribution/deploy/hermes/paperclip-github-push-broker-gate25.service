@@ -1,0 +1,36 @@
+[Unit]
+Description=One-use Gate 2.5 root-owned GitHub push broker
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+Requires=docker.service
+After=network-online.target docker.service
+Wants=network-online.target
+Conflicts=paperclip-github-push-broker.service
+ConditionPathExists=/run/paperclip-gate25/BROKER_ACTIVE
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=PAPERCLIP_GITHUB_BROKER_AUTH_WAIT_SECONDS=10
+RuntimeDirectory=paperclip-github-broker
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/local/lib/paperclip-gloops/github-push-broker.py verify-journal
+ExecStart=/usr/local/lib/paperclip-gloops/github-push-broker.py serve
+ExecStopPost=-/usr/bin/rm -f /run/paperclip-github-broker/broker.sock
+Restart=no
+TimeoutStartSec=30
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+AmbientCapabilities=
+ReadWritePaths=/var/lib/paperclip-gloops/github-push-broker /run/paperclip-github-broker
+MemoryMax=384M
+TasksMax=96

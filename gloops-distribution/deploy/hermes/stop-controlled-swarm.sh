@@ -21,24 +21,37 @@ rm -f \
   "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
   "${CONFIG_DIR}/github-push-authorization.json" \
   "${CONFIG_DIR}/github-push-authorization.sha256" \
+  "${CONFIG_DIR}/GATE25_CALIBRATION_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_COMMISSIONING_APPROVED"
+rm -f "${CONFIG_DIR}"/.GATE25_CALIBRATION_APPROVED.*
+rm -f \
+  "${CONFIG_DIR}"/.github-push-authorization.json.* \
+  "${CONFIG_DIR}"/.github-push-authorization.sha256.*
 "${LIB_DIR}/campaign-deadman-stop.sh" operator_requested_stop
 systemctl stop paperclip-campaign-deadman.service
 systemctl stop paperclip-controlled-swarm-commissioning-recovery.service
 systemctl stop paperclip-github-push-broker.service
+systemctl stop paperclip-gate25-calibration.service paperclip-hermes-gate25-calibration.service paperclip-github-push-broker-gate25.service
+rm -rf /run/paperclip-gate25
 systemctl mask \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
   paperclip-github-push-broker.service \
   paperclip-campaign-deadman.service \
-  paperclip-controlled-swarm-commissioning-recovery.service
+  paperclip-controlled-swarm-commissioning-recovery.service \
+  paperclip-gate25-calibration.service \
+  paperclip-hermes-gate25-calibration.service \
+  paperclip-github-push-broker-gate25.service
 for unit in \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
   paperclip-github-push-broker.service \
   paperclip-campaign-deadman.service \
-  paperclip-controlled-swarm-commissioning-recovery.service
+  paperclip-controlled-swarm-commissioning-recovery.service \
+  paperclip-gate25-calibration.service \
+  paperclip-hermes-gate25-calibration.service \
+  paperclip-github-push-broker-gate25.service
 do
   systemctl reset-failed "${unit}" 2>/dev/null || true
 done

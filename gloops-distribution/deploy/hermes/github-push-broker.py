@@ -320,9 +320,36 @@ def assert_quiescent(connection: sqlite3.Connection) -> None:
         )
 
 
+def authorization_wait_seconds() -> float:
+    raw = os.environ.get("PAPERCLIP_GITHUB_BROKER_AUTH_WAIT_SECONDS", "0")
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise BrokerError("GitHub push authorization wait must be numeric") from error
+    if value < 0 or value > 30:
+        raise BrokerError("GitHub push authorization wait must be between 0 and 30 seconds")
+    return value
+
+
 def load_authorization() -> tuple[dict[str, Any], str]:
+    wait_deadline = time.monotonic() + authorization_wait_seconds()
+    while True:
+        try:
+            raw_authorization = read_root_secret(
+                AUTHORIZATION,
+                "GitHub push authorization",
+            )
+            recorded_digest = read_root_secret(
+                AUTHORIZATION_DIGEST,
+                "GitHub push authorization digest",
+            )
+            break
+        except FileNotFoundError:
+            if time.monotonic() >= wait_deadline:
+                raise
+            time.sleep(0.05)
     authorization = exact_keys(
-        json.loads(read_root_secret(AUTHORIZATION, "GitHub push authorization")),
+        json.loads(raw_authorization),
         {
             "schemaVersion",
             "calibrationId",
@@ -346,7 +373,6 @@ def load_authorization() -> tuple[dict[str, Any], str]:
         "root authorization",
     )
     authorization_digest = digest("gloops.github-push-authorization.v1", authorization)
-    recorded_digest = read_root_secret(AUTHORIZATION_DIGEST, "GitHub push authorization digest")
     if recorded_digest != authorization_digest:
         raise BrokerError("root authorization digest does not match its canonical body")
     if (

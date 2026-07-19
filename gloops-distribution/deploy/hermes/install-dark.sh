@@ -45,7 +45,7 @@ fi
   exit 1
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service paperclip-gate25-calibration.service paperclip-hermes-gate25-calibration.service paperclip-github-push-broker-gate25.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing installation while ${unit} is active" >&2
     exit 1
@@ -79,15 +79,20 @@ rm -f \
   "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED" \
   "${CONFIG_DIR}/github-push-authorization.json" \
   "${CONFIG_DIR}/github-push-authorization.sha256" \
+  "${CONFIG_DIR}/GATE25_CALIBRATION_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_COMMISSIONING_APPROVED" \
   /var/lib/paperclip-gloops/controlled-swarm/commissioning.json
 rm -f \
   "${CONFIG_DIR}"/.CONTROLLED_SWARM_ACTIVATION_APPROVED.* \
-  "${CONFIG_DIR}"/.CONTROLLED_SWARM_COMMISSIONING_APPROVED.*
+  "${CONFIG_DIR}"/.CONTROLLED_SWARM_COMMISSIONING_APPROVED.* \
+  "${CONFIG_DIR}"/.GATE25_CALIBRATION_APPROVED.* \
+  "${CONFIG_DIR}"/.github-push-authorization.json.* \
+  "${CONFIG_DIR}"/.github-push-authorization.sha256.*
 "${SCRIPT_DIR}/remove-hermes-handshake-egress.sh"
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 rm -f /run/paperclip-campaign/deadman.sock
+rm -rf /run/paperclip-gate25
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
@@ -106,6 +111,8 @@ install -m 0555 -o root -g root "${SCRIPT_DIR}/rehearse-controlled-swarm-commiss
 install -m 0555 -o root -g root "${SCRIPT_DIR}/set-controlled-swarm-commissioning.py" "${LIB_DIR}/set-controlled-swarm-commissioning.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-controlled-swarm.sh" "${LIB_DIR}/stop-controlled-swarm.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/observe-controlled-swarm.py" "${LIB_DIR}/observe-controlled-swarm.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/run-gate25-calibration.py" "${LIB_DIR}/run-gate25-calibration.py"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight-gate25-calibration.sh" "${LIB_DIR}/preflight-gate25-calibration.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/failure-alert.mjs" "${LIB_DIR}/failure-alert.mjs"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/configure-tailnet-https.sh" "${LIB_DIR}/configure-tailnet-https.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-dark.sh" "${LIB_DIR}/verify-dark.sh"
@@ -170,6 +177,9 @@ install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-campaign-deadman.service" /usr/local/lib/systemd/system/paperclip-campaign-deadman.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-controlled-swarm-commissioning-recovery.service" /usr/local/lib/systemd/system/paperclip-controlled-swarm-commissioning-recovery.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gate25-calibration.service" /usr/local/lib/systemd/system/paperclip-gate25-calibration.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-gate25-calibration.service" /usr/local/lib/systemd/system/paperclip-hermes-gate25-calibration.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-push-broker-gate25.service" /usr/local/lib/systemd/system/paperclip-github-push-broker-gate25.service
 
 "${LIB_DIR}/provision-tirith.sh"
 
@@ -188,8 +198,9 @@ systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
-systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl disable --now paperclip-gate25-calibration.service paperclip-hermes-gate25-calibration.service paperclip-github-push-broker-gate25.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service paperclip-gate25-calibration.service paperclip-hermes-gate25-calibration.service paperclip-github-push-broker-gate25.service
+systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service paperclip-gate25-calibration.service paperclip-hermes-gate25-calibration.service paperclip-github-push-broker-gate25.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.

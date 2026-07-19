@@ -138,6 +138,39 @@ sudo ./rollback.sh --check /opt/paperclip/backups/dark-install-YYYYMMDDTHHMMSSZ
 
 `--restore` is a reserved operator action. It restores the prior state and legacy unit definition but intentionally leaves every Paperclip service disabled.
 
+## Gate 2.5 one-use calibration
+
+Gate 2.5 is deliberately separate from controlled-swarm activation and
+commissioning. It does not create or consume a campaign epoch. A root-owned
+`0600` `GATE25_CALIBRATION_APPROVED` record authorizes one exact sandbox
+repository base, one implementation run by Mason, one independent review run
+by Argus, one new calibration branch ref, and no retry, PR, merge, deployment,
+recovery cycle, or unrelated wake. The approval expires within four hours and
+is consumed on every attempted execution.
+
+Run it only from a verified-dark installation:
+
+```bash
+sudo /usr/local/lib/paperclip-gloops/run-gate25-calibration.py
+```
+
+The launcher uses three dedicated, normally masked units. It starts Paperclip
+with scheduler and recovery disabled, WIP one, two total stage runs, and zero
+retries; temporarily activates only the two named identities on the
+Ollama-only Hermes route; and captures the company run inventory before and
+after. The GitHub broker remains one-run/one-new-ref. Its Gate 2.5 unit may
+wait at most ten seconds for root to install the run-bound authorization,
+closing the wake-to-authorization race without weakening the normal broker,
+whose wait remains zero.
+
+Success requires exactly two new non-retry runs, one posted and reconciled
+broker receipt, a completed independently reviewed issue, no surviving live
+run, exact restoration of both agent configurations to paused, and the full
+dark verifier after teardown. The root receipt contains only identifiers,
+bounded usage, digests, and terminal state—not raw prompts, model output, or
+logs. Any failure consumes the approval, stops and masks all three calibration
+units, removes replayable GitHub authority, and records a failed receipt.
+
 ## Controlled-swarm rehearsal and activation
 
 Activation is not part of dark installation. After the accepted source is

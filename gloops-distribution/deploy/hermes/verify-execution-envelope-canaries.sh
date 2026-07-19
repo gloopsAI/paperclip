@@ -65,10 +65,17 @@ for bound_unit in \
 done
 rollback_script="${repo_root}/gloops-distribution/deploy/hermes/rollback.sh"
 backup_script="${repo_root}/gloops-distribution/deploy/hermes/backup-dark.sh"
-grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${backup_script}"
+for governed_unit in \
+  paperclip-github-push-broker.service \
+  paperclip-campaign-deadman.service \
+  paperclip-gate25-calibration.service \
+  paperclip-hermes-gate25-calibration.service \
+  paperclip-github-push-broker-gate25.service; do
+  grep -Fq "${governed_unit}" "${rollback_script}"
+  grep -Fq "${governed_unit}" "${backup_script}"
+done
+grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
 if grep -Fq 'rm -rf /var/lib/paperclip-gloops/campaign-deadman' "${rollback_script}"; then
   echo "Refusing canaries because rollback deletes durable campaign epoch evidence" >&2
   exit 1
@@ -104,7 +111,25 @@ python3 -m unittest \
   gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py \
   gloops-distribution/deploy/hermes/verify_predecessor_campaign_epoch_test.py \
   gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
-  gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py
+  gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
+  gloops-distribution/deploy/hermes/gate25_calibration_test.py \
+  gloops-distribution/deploy/hermes/github_push_broker_test.py
+for gate25_asset in \
+  gloops-distribution/deploy/hermes/paperclip-gate25-calibration.service \
+  gloops-distribution/deploy/hermes/paperclip-hermes-gate25-calibration.service \
+  gloops-distribution/deploy/hermes/paperclip-github-push-broker-gate25.service \
+  gloops-distribution/deploy/hermes/preflight-gate25-calibration.sh \
+  gloops-distribution/deploy/hermes/run-gate25-calibration.py; do
+  test -f "${gate25_asset}"
+done
+grep -Fq 'Environment=PAPERCLIP_GITHUB_BROKER_AUTH_WAIT_SECONDS=10' \
+  gloops-distribution/deploy/hermes/paperclip-github-push-broker-gate25.service
+grep -Fq '"campaignEpochUsed": False' \
+  gloops-distribution/deploy/hermes/run-gate25-calibration.py
+grep -Fq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=0' \
+  gloops-distribution/deploy/hermes/run-gate25-calibration.py
+grep -Fq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=2' \
+  gloops-distribution/deploy/hermes/run-gate25-calibration.py
 gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
 
 head_sha="$(git rev-parse HEAD)"
@@ -147,6 +172,12 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
     gloops-distribution/deploy/hermes/stop-controlled-swarm.sh \
     gloops-distribution/deploy/hermes/observe-controlled-swarm.py \
+    gloops-distribution/deploy/hermes/run-gate25-calibration.py \
+    gloops-distribution/deploy/hermes/gate25_calibration_test.py \
+    gloops-distribution/deploy/hermes/preflight-gate25-calibration.sh \
+    gloops-distribution/deploy/hermes/paperclip-gate25-calibration.service \
+    gloops-distribution/deploy/hermes/paperclip-hermes-gate25-calibration.service \
+    gloops-distribution/deploy/hermes/paperclip-github-push-broker-gate25.service \
     gloops-distribution/deploy/hermes/paperclip-campaign-deadman.service \
     gloops-distribution/deploy/hermes/paperclip-gloops.service \
     gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service \
@@ -212,7 +243,11 @@ cat <<JSON
     "ambiguousGrokApiHistoryBlocks": "passed",
     "nestedAndAlternateGrokApiConfigurationRefused": "passed",
     "ownerHandoffOccursAtMostOnce": "passed",
-    "terminalOutcomeIsDeterministic": "passed"
+    "terminalOutcomeIsDeterministic": "passed",
+    "gate25UsesNoCampaignEpoch": "passed",
+    "gate25AllowsExactlyTwoNonRetryRuns": "passed",
+    "gate25GitHubAuthorizationRaceIsBounded": "passed",
+    "gate25ReturnsToVerifiedDark": "passed"
   }
 }
 JSON
