@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.21",
+    "version": "2026.719.0-gloops.22",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:c6d6856b0d875f7f824a40b1e1d087af4bf286b957ec0eecef79e7c11a35e39f"
+    "digest": "sha256:8a3a1220ef978e066f1f380eba7565ee6884c34ded06c73a4b090effe3bef895"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.21.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.22.json"
   },
   "patches": [
     {
@@ -363,6 +363,17 @@
       "integratedCommits": ["2d189c87dd4766a99b53095a215274b979458c68"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host supervisor equivalently treats reset-failed as best-effort cleanup while preserving checked failure semantics for the actual Paperclip restart during interrupted-commissioning recovery."
+    },
+    {
+      "id": "locked-commissioning-transition-journal",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "bab9ea3d4471742cb8d9d3fd73873ede14e1484c",
+      "sourceHead": "33917cd90c137dee84da2506ec0d4b676c54c1ec",
+      "patchDiffSha256": "dcd2c2c39d800fb0308403387b4c086447571b29b5f2907a1003cf6d28ed9dcb",
+      "integratedCommits": ["3a15c109b3d6e05d0aeb0396a97fa21c91159021"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected host supervisor provides an equivalent root-locked commissioning transition that admits only a structurally valid barrier-enabled rollback journal bound to the exact approval digest while all orphaned, malformed, wrong-phase, or mismatched journals remain fail-closed."
     }
   ],
   "releasePolicy": {
