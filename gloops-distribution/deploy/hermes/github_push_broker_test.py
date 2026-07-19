@@ -133,6 +133,22 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 broker.verify_journal(connection)
             connection.close()
 
+    def test_quiescent_precondition_rejects_unresolved_broker_work(self):
+        run_id = "abababab-abab-4bab-8bab-abababababab"
+        authorization = self.authorization(run_id)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            broker.assert_quiescent(connection)
+            broker.create_lease(
+                connection, authorization, authorization_digest, "c" * 40
+            )
+            with self.assertRaisesRegex(broker.BrokerError, "not quiescent"):
+                broker.assert_quiescent(connection)
+            connection.close()
+
     def test_paperclip_facts_must_match_every_authorized_identity(self):
         run_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         authorization = self.authorization(run_id)

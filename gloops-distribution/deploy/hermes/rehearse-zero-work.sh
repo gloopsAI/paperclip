@@ -5,6 +5,7 @@ readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly PAPERCLIP_UNIT='paperclip-gloops.service'
 readonly HERMES_UNIT='paperclip-hermes-execution.service'
+readonly GITHUB_BROKER_UNIT='paperclip-github-push-broker.service'
 readonly DEADMAN_UNIT='paperclip-campaign-deadman.service'
 readonly OBSERVE_SECONDS="${PAPERCLIP_ZERO_WORK_OBSERVE_SECONDS:-60}"
 
@@ -18,7 +19,11 @@ readonly OBSERVE_SECONDS="${PAPERCLIP_ZERO_WORK_OBSERVE_SECONDS:-60}"
   exit 2
 }
 
-for unit in "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"; do
+for unit in \
+  "${PAPERCLIP_UNIT}" \
+  "${HERMES_UNIT}" \
+  "${GITHUB_BROKER_UNIT}" \
+  "${DEADMAN_UNIT}"; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing rehearsal while ${unit} is active" >&2
     exit 1
@@ -43,6 +48,7 @@ grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca42
 grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
+"${LIB_DIR}/github-push-broker.py" assert-quiescent
 
 evidence_output="$(mktemp)"
 evidence_error="$(mktemp)"
@@ -71,6 +77,7 @@ cleanup() {
   fi
   systemctl stop "${PAPERCLIP_UNIT}"
   systemctl stop "${HERMES_UNIT}"
+  systemctl stop "${GITHUB_BROKER_UNIT}"
   systemctl stop "${DEADMAN_UNIT}"
   if ((egress_rule_installed == 1)); then
     if iptables -D DOCKER-USER -s "${subnet}" ! -d "${subnet}" \
@@ -82,8 +89,16 @@ cleanup() {
     fi
   fi
   rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
-  systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
-  systemctl reset-failed "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
+  systemctl mask \
+    "${PAPERCLIP_UNIT}" \
+    "${HERMES_UNIT}" \
+    "${GITHUB_BROKER_UNIT}" \
+    "${DEADMAN_UNIT}"
+  systemctl reset-failed \
+    "${PAPERCLIP_UNIT}" \
+    "${HERMES_UNIT}" \
+    "${GITHUB_BROKER_UNIT}" \
+    "${DEADMAN_UNIT}"
   "${LIB_DIR}/verify-dark.sh"
   local dark_status=$?
   rm -f "${evidence_output}" "${evidence_error}"
@@ -110,7 +125,11 @@ iptables -I DOCKER-USER 1 -s "${subnet}" ! -d "${subnet}" \
   -m comment --comment "${egress_comment}" -j REJECT
 egress_rule_installed=1
 
-systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}" "${DEADMAN_UNIT}"
+systemctl unmask \
+  "${PAPERCLIP_UNIT}" \
+  "${HERMES_UNIT}" \
+  "${GITHUB_BROKER_UNIT}" \
+  "${DEADMAN_UNIT}"
 # A masked unit is loaded from /dev/null. Reload after unmasking so this proof
 # executes the newly installed unit definitions instead of the manager's prior
 # cached definition.
@@ -121,10 +140,12 @@ systemctl start "${DEADMAN_UNIT}"
   --wait-seconds 15 \
   --require-status unarmed
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
+systemctl start "${GITHUB_BROKER_UNIT}"
 systemctl start "${HERMES_UNIT}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
 systemctl start "${PAPERCLIP_UNIT}"
 
+systemctl is-active --quiet "${GITHUB_BROKER_UNIT}"
 systemctl is-active --quiet "${HERMES_UNIT}"
 systemctl is-active --quiet "${PAPERCLIP_UNIT}"
 curl --fail --silent --show-error --max-time 5 \
@@ -157,7 +178,8 @@ timeout --signal=TERM --kill-after=5s 180s docker exec \
     await sql.begin(async (tx) => {
       await tx.unsafe(
         "LOCK TABLE agent_wakeup_requests, cost_events, heartbeat_runs, " +
-        "issue_recovery_actions, issues, plugin_jobs, plugin_job_runs IN ACCESS EXCLUSIVE MODE",
+        "issue_recovery_actions, issues, plugin_jobs, plugin_job_runs, " +
+        "repository_mutation_receipts IN ACCESS EXCLUSIVE MODE",
       );
       const counts = {
         issues: (await tx`select count(*)::int as count from issues where created_at >= ${since}`)[0].count,
@@ -171,6 +193,7 @@ timeout --signal=TERM --kill-after=5s 180s docker exec \
         // because the durable row predates this closed interval.
         pluginJobs: (await tx`select count(*)::int as count from plugin_jobs where created_at >= ${since}`)[0].count,
         pluginJobRuns: (await tx`select count(*)::int as count from plugin_job_runs where created_at >= ${since}`)[0].count,
+        repositoryMutations: (await tx`select count(*)::int as count from repository_mutation_receipts where created_at >= ${since}`)[0].count,
       };
       process.stdout.write(`${JSON.stringify({ since, counts })}\n`);
       await new Promise(() => setInterval(() => {}, 1000));
@@ -226,7 +249,16 @@ const { readFileSync } = require("node:fs");
 const lines = readFileSync(process.argv[2], "utf8").trim().split("\n").filter(Boolean);
 if (lines.length !== 1) throw new Error("expected exactly one zero-work evidence receipt");
 const receipt = JSON.parse(lines[0]);
-const expected = ["issues", "runs", "wakeups", "recoveryActions", "costEvents", "pluginJobs", "pluginJobRuns"];
+const expected = [
+  "issues",
+  "runs",
+  "wakeups",
+  "recoveryActions",
+  "costEvents",
+  "pluginJobs",
+  "pluginJobRuns",
+  "repositoryMutations",
+];
 if (Object.keys(receipt.counts).sort().join(",") !== expected.sort().join(",")) {
   throw new Error("zero-work evidence receipt has an unexpected shape");
 }
@@ -275,5 +307,5 @@ if find "${sessions_dir}" -mindepth 1 -print -quit | grep -q .; then
   exit 1
 fi
 
-echo "PASS closed-interval rehearsal created no issue, run, wakeup, recovery, cost, plugin-job, or plugin-job-run row"
+echo "PASS closed-interval rehearsal created no issue, run, wakeup, recovery, cost, plugin-job, plugin-job-run, or repository-mutation row"
 echo "PASS zero-work rehearsal admitted no Hermes continuation or external provider attempt"

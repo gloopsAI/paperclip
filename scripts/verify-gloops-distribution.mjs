@@ -897,7 +897,8 @@ for (const required of [
   "PAPERCLIP_MTE_ENABLED=false",
   "issue_recovery_actions",
   "agent_wakeup_requests",
-  "plugin_jobs, plugin_job_runs IN ACCESS EXCLUSIVE MODE",
+  'plugin_jobs, plugin_job_runs, "',
+  "repository_mutation_receipts IN ACCESS EXCLUSIVE MODE",
   "persistent Hermes session could auto-resume",
   "iptables -I DOCKER-USER 1",
   "iptables -L DOCKER-USER -v -n -x",
@@ -1094,14 +1095,21 @@ for (const [surface, content, required] of [
   }
 }
 const cleanupMatch = rehearseZeroWork.match(/cleanup\(\) \{([\s\S]*?)\n\}/);
+if (!rehearseZeroWork.includes(
+  '"${LIB_DIR}/github-push-broker.py" assert-quiescent',
+)) {
+  fail("zero-work rehearsal must refuse pending broker recovery work before activation");
+}
 for (const required of [
   'kill "${evidence_pid}"',
   'systemctl stop "${PAPERCLIP_UNIT}"',
   'systemctl stop "${HERMES_UNIT}"',
+  'systemctl stop "${GITHUB_BROKER_UNIT}"',
   "iptables -D DOCKER-USER",
   "failed to remove zero-work egress proof rule",
   'rm -f "${CONFIG_DIR}/ACTIVATION_APPROVED" "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
-  'systemctl mask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
+  "systemctl mask \\",
+  '"${GITHUB_BROKER_UNIT}"',
   '"${LIB_DIR}/verify-dark.sh"',
 ]) {
   if (!cleanupMatch?.[1].includes(required)) {
@@ -1111,15 +1119,19 @@ for (const required of [
 const trapIndex = rehearseZeroWorkExecutable.indexOf("trap cleanup EXIT");
 const egressDenyIndex = rehearseZeroWorkExecutable.indexOf("iptables -I DOCKER-USER 1");
 const unmaskIndex = rehearseZeroWorkExecutable.indexOf(
-  'systemctl unmask "${PAPERCLIP_UNIT}" "${HERMES_UNIT}"',
+  "systemctl unmask \\",
 );
 const daemonReloadIndex = rehearseZeroWorkExecutable.indexOf("systemctl daemon-reload", unmaskIndex);
 const hermesMarkerIndex = rehearseZeroWorkExecutable.indexOf(
   'install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"',
 );
+const brokerStartActivationIndex = rehearseZeroWorkExecutable.indexOf(
+  'systemctl start "${GITHUB_BROKER_UNIT}"',
+  hermesMarkerIndex,
+);
 const hermesStartActivationIndex = rehearseZeroWorkExecutable.indexOf(
   'systemctl start "${HERMES_UNIT}"',
-  hermesMarkerIndex,
+  brokerStartActivationIndex,
 );
 const paperclipMarkerIndex = rehearseZeroWorkExecutable.indexOf(
   'install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"',
@@ -1149,6 +1161,7 @@ if (
   unmaskIndex < 0 ||
   daemonReloadIndex < 0 ||
   hermesMarkerIndex < 0 ||
+  brokerStartActivationIndex < 0 ||
   hermesStartActivationIndex < 0 ||
   paperclipMarkerIndex < 0 ||
   paperclipStartActivationIndex < 0 ||
@@ -1163,7 +1176,8 @@ if (
     egressDenyIndex < unmaskIndex &&
     unmaskIndex < daemonReloadIndex &&
     daemonReloadIndex < hermesMarkerIndex &&
-    hermesMarkerIndex < hermesStartActivationIndex &&
+    hermesMarkerIndex < brokerStartActivationIndex &&
+    brokerStartActivationIndex < hermesStartActivationIndex &&
     hermesStartActivationIndex < paperclipMarkerIndex &&
     paperclipMarkerIndex < paperclipStartActivationIndex &&
     paperclipStartActivationIndex < clearProjectorIndex &&
@@ -1183,6 +1197,11 @@ if (!rehearseZeroWork.includes(
   "select count(*)::int as count from plugin_jobs where created_at >= ${since}",
 )) {
   fail("zero-work rehearsal must bound plugin-job registrations to the closed interval");
+}
+if (!rehearseZeroWork.includes(
+  "select count(*)::int as count from repository_mutation_receipts where created_at >= ${since}",
+)) {
+  fail("zero-work rehearsal must bound repository mutations to the closed interval");
 }
 for (const required of [
   "VERSION='0.3.3'",

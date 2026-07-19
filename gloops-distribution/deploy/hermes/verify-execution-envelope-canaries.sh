@@ -40,6 +40,17 @@ for successor_bound_file in \
   "${repo_root}/gloops-distribution/deploy/hermes/verify-dark.sh"; do
   grep -Fq "${successor_campaign_id}" "${successor_bound_file}"
 done
+zero_work_rehearsal="${repo_root}/gloops-distribution/deploy/hermes/rehearse-zero-work.sh"
+for broker_topology_line in \
+  "readonly GITHUB_BROKER_UNIT='paperclip-github-push-broker.service'" \
+  '"${LIB_DIR}/github-push-broker.py" assert-quiescent' \
+  'systemctl start "${GITHUB_BROKER_UNIT}"' \
+  'systemctl is-active --quiet "${GITHUB_BROKER_UNIT}"'; do
+  grep -Fq "${broker_topology_line}" "${zero_work_rehearsal}" || {
+    echo "Refusing canaries because zero-work rehearsal omits broker topology: ${broker_topology_line}" >&2
+    exit 1
+  }
+done
 predecessor_verifier="${repo_root}/gloops-distribution/deploy/hermes/verify-predecessor-campaign-epoch.py"
 grep -Fq "PREDECESSOR_CAMPAIGN_ID = \"${predecessor_campaign_id}\"" "${predecessor_verifier}"
 grep -Fq 'af8260a4c30f92c79a1c138e2951cbb40041ed58da40b86273a27881b2d07b0b' "${predecessor_verifier}"
