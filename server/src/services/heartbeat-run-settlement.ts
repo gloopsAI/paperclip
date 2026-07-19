@@ -15,6 +15,7 @@ import {
 } from "./provider-io-terminal-evidence.js";
 import type { PreparedProviderRequestIdentity } from "./provider-request-evidence.js";
 import { budgetService } from "./budgets.js";
+import { repositoryMutationReceiptService } from "./repository-mutation-receipts.js";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -25,7 +26,7 @@ export type HeartbeatRunMutationSettlement =
       disposition: "not_authorized";
     }
   | {
-      disposition: "reconciled_success";
+      disposition: "reconciled_success" | "bounded_failure" | "conflict";
       brokerReceiptDigest: string;
       remoteOldOid: string;
       remoteNewOid: string;
@@ -157,6 +158,15 @@ export function heartbeatRunSettlementService(
       if (!TERMINAL_STATUSES.has(input.terminalStatus)) {
         throw new HeartbeatRunSettlementConflictError("Atomic settlement requires a terminal run status");
       }
+      if (
+        input.terminalStatus === "succeeded"
+        && input.mutation.disposition !== "not_authorized"
+        && input.mutation.disposition !== "reconciled_success"
+      ) {
+        throw new HeartbeatRunSettlementConflictError(
+          "A successful run cannot settle with a failed or conflicting repository mutation",
+        );
+      }
       if (!Number.isSafeInteger(input.accounting.costCents) || input.accounting.costCents < 0) {
         throw new HeartbeatRunSettlementConflictError("Atomic settlement cost must be non-negative integer cents");
       }
@@ -180,6 +190,13 @@ export function heartbeatRunSettlementService(
         ) {
           throw new HeartbeatRunSettlementConflictError(
             `Heartbeat run identity does not match atomic settlement ${input.identity.heartbeatRunId}`,
+          );
+        }
+        const mutation = await repositoryMutationReceiptService(tx as unknown as Db)
+          .getForSettlement(input.identity.heartbeatRunId);
+        if (!isDeepStrictEqual(mutation, input.mutation)) {
+          throw new HeartbeatRunSettlementConflictError(
+            `Repository mutation authority changed before atomic settlement for run ${run.id}`,
           );
         }
 
@@ -370,15 +387,15 @@ export function heartbeatRunSettlementService(
             accountingContinuation,
             mutationDisposition: input.mutation.disposition,
             brokerReceiptDigest:
-              input.mutation.disposition === "reconciled_success"
+              input.mutation.disposition !== "not_authorized"
                 ? input.mutation.brokerReceiptDigest
                 : null,
             remoteOldOid:
-              input.mutation.disposition === "reconciled_success"
+              input.mutation.disposition !== "not_authorized"
                 ? input.mutation.remoteOldOid
                 : null,
             remoteNewOid:
-              input.mutation.disposition === "reconciled_success"
+              input.mutation.disposition !== "not_authorized"
                 ? input.mutation.remoteNewOid
                 : null,
             settledAt,

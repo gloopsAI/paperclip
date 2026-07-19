@@ -38,6 +38,7 @@
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
+    "build:github-push-tool": "esbuild gloops-distribution/deploy/hermes/github-push-tool.mjs --bundle --platform=node --format=cjs --target=node22 --outfile=gloops-distribution/deploy/hermes/github-push-tool.bundle.cjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "test:hermes-gateway-smoke": "node --test scripts/smoke/hermes-gateway-smoke.test.mjs scripts/smoke/openai-compatible-reference-mock.test.mjs scripts/smoke/wait-paperclip-control-plane.test.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
@@ -66,6 +67,7 @@
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.1",
+    "isomorphic-git": "1.38.8",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
   },

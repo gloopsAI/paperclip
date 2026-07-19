@@ -15,7 +15,8 @@ readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 readonly APP_CONFIG='/etc/paperclip-gloops/github-app.json'
 readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
-readonly CREDENTIAL_RECEIPT='/var/lib/paperclip-gloops/credential-runtime/credential-receipt.json'
+readonly GITHUB_BROKER_SOCKET='/run/paperclip-github-broker/broker.sock'
+readonly GITHUB_BROKER_TOOL='/usr/local/lib/paperclip-gloops/tools/github-push-tool.bundle.cjs'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
@@ -104,22 +105,28 @@ else
 fi
 
 if jq -e '
-  .schemaVersion == "gloops.hermes-execution-profile.v1" and
+  .schemaVersion == "gloops.hermes-execution-profile.v2" and
   .allowedProviders == ["ollama-cloud"] and
   .allowedRuntimeEnvironment == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"] and
   .allowedCredentialEnvironment == ["API_SERVER_KEY", "OLLAMA_API_KEY"] and
-  .allowedCredentialFiles == ["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"] and
+  .allowedCredentialFiles == ["/opt/data/auth.json"] and
   .github == {
-    "principal": "gloops-autonomous-delivery[bot]",
-    "credentialType": "github-app-installation-token",
+    "principal": "root-owned-github-app-broker",
+    "credentialType": "root-owned-unix-socket-broker",
     "appId": 4307157,
     "installationId": 146796843,
     "repositoryId": 1297008772,
     "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
-    "minimumPermission": "push",
-    "credentialMount": "read-only",
+    "permissions": {"contents":"write","metadata":"read"},
+    "credentialMount": "none",
     "maximumLifetimeSeconds": 3600,
-    "darkState": "revoked-and-absent"
+    "clientSocket": "/run/paperclip-github-broker/broker.sock",
+    "clientTool": "/opt/data/bin/github-push-tool.bundle.cjs",
+    "mutationClass": "create_one_branch_ref",
+    "maxLeases": 1,
+    "maxMutations": 1,
+    "branchPattern": "refs/heads/paperclip/<paperclip-run-id>/calibration",
+    "darkState": "broker-masked-socket-and-authorization-absent"
   } and
   .grok.mode == "host-cli-only" and
   .grok.apiEnvironmentAllowed == false and
@@ -203,9 +210,7 @@ for forbidden in "${PROFILE_DIR}/.env" "${STATE_DIR}/.env"; do
   [[ ! -e "${forbidden}" ]] || fail "forbidden environment file exists: ${forbidden}"
 done
 mapfile -t profile_entries < <(find "${PROFILE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)
-gh_entries="$(find "${PROFILE_DIR}/gh" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort | paste -sd ' ' -)"
-if [[ "${profile_entries[*]}" == 'auth.json config.yaml cron-disabled gh gitconfig policy.json' ]] \
-  && { [[ "${gh_entries}" == 'config.yml' ]] || [[ "${gh_entries}" == 'config.yml hosts.yml' ]]; }; then
+if [[ "${profile_entries[*]}" == 'auth.json config.yaml cron-disabled policy.json' ]]; then
   pass 'execution profile contains only declared credential and policy artifacts'
 else
   fail "execution profile contains undeclared artifacts: ${profile_entries[*]:-none}"
@@ -220,12 +225,8 @@ done
 if [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/auth.json" 2>/dev/null || true)" == '600:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/config.yaml" 2>/dev/null || true)" == '400:10000:10000' ]] \
   && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/cron-disabled" 2>/dev/null || true)" == '500:10000:10000' ]] \
-  && [[ "$(stat -c '%a:%u:%g' "${CRON_PROVIDER}" 2>/dev/null || true)" == '400:10000:10000' ]] \
-  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh" 2>/dev/null || true)" == '500:10000:10000' ]] \
-  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/config.yml" 2>/dev/null || true)" == '400:10000:10000' ]] \
-  && { [[ ! -e "${PROFILE_DIR}/gh/hosts.yml" ]] || [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gh/hosts.yml" 2>/dev/null || true)" == '400:10000:10000' ]]; } \
-  && [[ "$(stat -c '%a:%u:%g' "${PROFILE_DIR}/gitconfig" 2>/dev/null || true)" == '400:10000:10000' ]]; then
-  pass 'runtime profile and any ephemeral gh token are readable only by the fixed Hermes identity'
+  && [[ "$(stat -c '%a:%u:%g' "${CRON_PROVIDER}" 2>/dev/null || true)" == '400:10000:10000' ]]; then
+  pass 'runtime profile is readable only by the fixed Hermes identity and contains no Git credential home'
 else
   fail 'runtime profile ownership or modes do not match the fixed Hermes identity'
 fi
@@ -242,27 +243,11 @@ if jq -e '
 else
   fail 'GitHub App configuration or private-key protection is invalid'
 fi
-if [[ -f "${HERMES_TOKEN}" && -f "${PROFILE_DIR}/gh/hosts.yml" ]]; then
-  if jq -e '
-    .schemaVersion == "gloops.github-app-credential-receipt.v1" and
-    .appId == 4307157 and
-    .installationId == 146796843 and
-    .repositoryId == 1297008772 and
-    .repository == "gloopsAI/gloops-paperclip-plugin" and
-    .hermes.permissions == {"checks":"read","contents":"write","issues":"read","metadata":"read","pull_requests":"write","statuses":"read"} and
-    (.hermes.tokenFingerprint | test("^[0-9a-f]{64}$")) and
-    (.hermes.mintedAt | type == "string") and
-    (.hermes.expiresAt | type == "string") and
-    .hermes.revokedAt == null
-  ' "${CREDENTIAL_RECEIPT}" >/dev/null; then
-    pass 'short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope'
-  else
-    fail 'short-lived GitHub App credential receipt is invalid or over/under-scoped'
-  fi
-elif [[ "${MODE}" == '--source' && ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh/hosts.yml" ]]; then
-  pass 'dark source profile retains no GitHub installation token'
+if [[ ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh" && ! -e "${PROFILE_DIR}/gitconfig" ]] \
+  && [[ "$(stat -c '%a:%U:%G' "${GITHUB_BROKER_TOOL}" 2>/dev/null || true)" == '555:root:root' ]]; then
+  pass 'Hermes receives an immutable broker client and no GitHub installation token or credential config'
 else
-  fail 'GitHub installation token and gh credential file are inconsistent'
+  fail 'legacy GitHub write authority remains in the Hermes profile'
 fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
@@ -290,12 +275,19 @@ for required in \
 done
 for required_credential_mount in \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly' \
-  '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly' \
-  '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly'; do
+  '--mount type=bind,src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
 grep -Fq -- '--mount type=bind,src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly' "${UNIT}" \
   || fail 'unit is missing the read-only pinned Tirith mount'
+if grep -Fq -- 'dst=/opt/data/.config/gh' "${UNIT}" \
+  || grep -Fq -- 'dst=/opt/data/.gitconfig' "${UNIT}" \
+  || grep -Fq -- 'github-app-credentials.py refresh-hermes' "${UNIT}" \
+  || grep -Fq -- 'github-app-credentials.py revoke-hermes' "${UNIT}"; then
+  fail 'unit still projects legacy GitHub authority into Hermes'
+else
+  pass 'unit contains no legacy GitHub credential projection'
+fi
 for path in cache logs memories sessions; do
   # The trailing space makes this an exact writable mount token and rejects
   # both destination suffix drift and an appended `,readonly` option.
@@ -342,19 +334,14 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
-    hermes_fingerprint="$(jq -r '.hermes.tokenFingerprint // empty' "${CREDENTIAL_RECEIPT}")"
-    if [[ "${hermes_fingerprint}" =~ ^[0-9a-f]{64}$ ]] \
-      && docker exec -i --user 10000:10000 --env HOME=/opt/data "${CONTAINER}" \
-        /opt/hermes/.venv/bin/python - "${hermes_fingerprint}" <<'PY'
-import hashlib, pathlib, sys, yaml
-hosts = yaml.safe_load(pathlib.Path('/opt/data/.config/gh/hosts.yml').read_text())
-token = hosts['github.com']['oauth_token']
-raise SystemExit(0 if hashlib.sha256(token.encode()).hexdigest() == sys.argv[1] else 1)
-PY
-    then
-      pass 'live GitHub App token projection matches the broker-verified exact credential receipt'
+    if systemctl is-active --quiet paperclip-github-push-broker.service \
+      && [[ "$(stat -c '%a:%u:%g' "${GITHUB_BROKER_SOCKET}" 2>/dev/null || true)" == '660:0:10000' ]] \
+      && docker exec --user 10000:10000 "${CONTAINER}" /usr/local/bin/node -e \
+        "const fs=require('fs'); process.exit(fs.statSync('${GITHUB_BROKER_SOCKET}').isSocket()?0:1)" \
+      && ! grep -Eq '^(GITHUB_TOKEN|GH_TOKEN)=' "${live_env}"; then
+      pass 'live Hermes can reach only the authenticated broker socket and observes no GitHub token'
     else
-      fail 'live GitHub App token projection does not match its broker-verified receipt'
+      fail 'live GitHub broker socket boundary is missing, inaccessible, or credential-leaking'
     fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'

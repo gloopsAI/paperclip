@@ -13,7 +13,7 @@ readonly APP_KEY="${CONFIG_DIR}/github-app/private-key.pem"
   echo "run with sudo" >&2
   exit 1
 }
-for command in python3 chattr lsattr systemctl docker; do
+for command in python3 chattr lsattr systemctl docker getent groupadd useradd; do
   command -v "${command}" >/dev/null || {
     echo "required campaign-deadman command is unavailable: ${command}" >&2
     exit 1
@@ -24,8 +24,28 @@ done
   echo "the campaign deadman requires the accepted paperclip identity 995:985" >&2
   exit 1
 }
+if ! getent group paperclip-git-worker >/dev/null; then
+  [[ -z "$(getent group 10001 || true)" ]] || {
+    echo "gid 10001 is already owned by a different identity" >&2
+    exit 1
+  }
+  groupadd --system --gid 10001 paperclip-git-worker
+fi
+if ! id paperclip-git-worker >/dev/null 2>&1; then
+  [[ -z "$(getent passwd 10001 || true)" ]] || {
+    echo "uid 10001 is already owned by a different identity" >&2
+    exit 1
+  }
+  useradd --system --uid 10001 --gid 10001 --no-create-home \
+    --home-dir /nonexistent --shell /usr/sbin/nologin paperclip-git-worker
+fi
+[[ "$(id -u paperclip-git-worker)" == '10001' \
+  && "$(id -g paperclip-git-worker)" == '10001' ]] || {
+  echo "the Git protocol worker identity must be exactly 10001:10001" >&2
+  exit 1
+}
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing installation while ${unit} is active" >&2
     exit 1
@@ -51,11 +71,14 @@ fi
 install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
+install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/github-push-broker
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 rm -f \
   "${CONFIG_DIR}/ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
   "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED" \
+  "${CONFIG_DIR}/github-push-authorization.json" \
+  "${CONFIG_DIR}/github-push-authorization.sha256" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_COMMISSIONING_APPROVED" \
   /var/lib/paperclip-gloops/controlled-swarm/commissioning.json
@@ -109,6 +132,7 @@ install -m 0444 -o root -g root "${SCRIPT_DIR}/route-receipt/hermes-source-lock.
 install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/provision-tirith.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-broker.py" "${LIB_DIR}/github-push-broker.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-hermes-execution.py" "${LIB_DIR}/stop-hermes-execution.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-lifecycle-history.py" "${LIB_DIR}/verify-lifecycle-history.py"
 rm -rf "${LIB_DIR}/hermes-cron-disabled"
@@ -123,11 +147,24 @@ install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-policy.json" "${
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-config.yaml" "${LIB_DIR}/hermes-handshake-config.yaml"
 install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-policy.json" "${LIB_DIR}/hermes-handshake-policy.json"
 install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-handshake-resolv.conf" "${LIB_DIR}/hermes-handshake-resolv.conf"
-install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gitconfig"
-install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-execution-gh-config.yml" "${LIB_DIR}/hermes-execution-gh-config.yml"
+rm -f "${LIB_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gh-config.yml"
+install -d -m 0555 -o root -g root "${LIB_DIR}/tools"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-tool.bundle.cjs" "${LIB_DIR}/tools/github-push-tool.bundle.cjs"
+if [[ ! -f "${CONFIG_DIR}/github-broker-receipt-token" ]]; then
+  token_stage="$(mktemp "${CONFIG_DIR}/.github-broker-receipt-token.XXXXXX")"
+  python3 -c 'import secrets; print("pcp_broker_" + secrets.token_hex(32))' >"${token_stage}"
+  install -m 0640 -o root -g paperclip "${token_stage}" "${CONFIG_DIR}/github-broker-receipt-token"
+  rm -f "${token_stage}"
+fi
+[[ "$(stat -c '%a:%U:%G' "${CONFIG_DIR}/github-broker-receipt-token")" == '640:root:paperclip' ]] \
+  && grep -Eq '^pcp_broker_[0-9a-f]{64}$' "${CONFIG_DIR}/github-broker-receipt-token" || {
+  echo "the Paperclip broker receipt token is missing, malformed, or not root-protected" >&2
+  exit 1
+}
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-handshake.service" /usr/local/lib/systemd/system/paperclip-gloops-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-push-broker.service" /usr/local/lib/systemd/system/paperclip-github-push-broker.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
@@ -146,12 +183,13 @@ systemctl disable --now paperclip.service gloops-runner.service hermes-agent.ser
 systemctl disable --now paperclip-gloops.service 2>/dev/null || true
 systemctl disable --now paperclip-gloops-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
+systemctl disable --now paperclip-github-push-broker.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
-systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
+systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.

@@ -250,6 +250,22 @@ const githubAppCredentialsTestPath = new URL(
   "../gloops-distribution/deploy/hermes/github_app_credentials_test.py",
   import.meta.url,
 );
+const githubPushBrokerPath = new URL(
+  "../gloops-distribution/deploy/hermes/github-push-broker.py",
+  import.meta.url,
+);
+const githubPushBrokerTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/github_push_broker_test.py",
+  import.meta.url,
+);
+const githubPushToolTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/github-push-tool.test.mjs",
+  import.meta.url,
+);
+const githubPushBrokerServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-github-push-broker.service",
+  import.meta.url,
+);
 const stopHermesExecutionPath = new URL(
   "../gloops-distribution/deploy/hermes/stop-hermes-execution.py",
   import.meta.url,
@@ -401,10 +417,22 @@ try {
 } catch (error) {
   fail(`Cold-backup journal guard tests failed: ${error instanceof Error ? error.message : error}`);
 }
+try {
+  execFileSync("python3", [githubPushBrokerTestPath.pathname], {
+    stdio: "inherit",
+  });
+  execFileSync("node", ["--test", githubPushToolTestPath.pathname], {
+    stdio: "inherit",
+  });
+} catch {
+  fail("GitHub push broker contract tests failed");
+}
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
 const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
 const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
+const githubPushBroker = readFileSync(githubPushBrokerPath, "utf8");
+const githubPushBrokerService = readFileSync(githubPushBrokerServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
 const hermesHandshakeConfig = readFileSync(hermesHandshakeConfigPath, "utf8");
@@ -1200,7 +1228,7 @@ for (const required of [
 
 const hermesExecutionImage =
   "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca";
-if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
+if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v2") {
   fail("Hermes execution policy schema is not pinned");
 }
 if (
@@ -1217,30 +1245,34 @@ if (
 }
 if (
   JSON.stringify(hermesExecutionPolicy.allowedCredentialFiles) !==
-    JSON.stringify(["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"]) ||
+    JSON.stringify(["/opt/data/auth.json"]) ||
   JSON.stringify(hermesExecutionPolicy.github) !== JSON.stringify({
-    principal: "gloops-autonomous-delivery[bot]",
-    credentialType: "github-app-installation-token",
+    principal: "root-owned-github-app-broker",
+    credentialType: "root-owned-unix-socket-broker",
     appId: 4307157,
     installationId: 146796843,
     repositoryId: 1297008772,
     allowedRepositories: ["gloopsAI/gloops-paperclip-plugin"],
-    minimumPermission: "push",
-    credentialMount: "read-only",
+    permissions: { contents: "write", metadata: "read" },
+    credentialMount: "none",
     maximumLifetimeSeconds: 3600,
-    darkState: "revoked-and-absent",
+    clientSocket: "/run/paperclip-github-broker/broker.sock",
+    clientTool: "/opt/data/bin/github-push-tool.bundle.cjs",
+    mutationClass: "create_one_branch_ref",
+    maxLeases: 1,
+    maxMutations: 1,
+    branchPattern: "refs/heads/paperclip/<paperclip-run-id>/calibration",
+    darkState: "broker-masked-socket-and-authorization-absent",
   }) ||
   !hermesExecutionPolicy.forbiddenProviders?.includes("openai-codex")
 ) {
   fail("Hermes bounded-pilot GitHub credential and no-fallback boundary is not exact");
 }
-if (hermesExecutionGhConfig !== 'version: "1"\n') {
-  fail("Hermes GitHub CLI config must be deterministic and contain no mutable settings");
-}
-if (!prepareHermesExecution.includes('install -m 0400 -o 10000 -g 10000 "${LIB_DIR}/hermes-execution-gitconfig"') ||
-    !readFileSync(new URL("../gloops-distribution/deploy/hermes/hermes-execution-gitconfig", import.meta.url), "utf8")
-      .includes("4307157+gloops-autonomous-delivery[bot]@users.noreply.github.com")) {
-  fail("Hermes git identity must use the exact GitHub App bot noreply address");
+if (
+  !prepareHermesExecution.includes('rm -rf "${PROFILE_DIR}/gh"') ||
+  !prepareHermesExecution.includes('rm -f "${PROFILE_DIR}/gitconfig"')
+) {
+  fail("Hermes profile preparation must remove legacy GitHub credential and config projections");
 }
 if (
   hermesExecutionPolicy.grok?.mode !== "host-cli-only" ||
@@ -1651,8 +1683,9 @@ for (const required of [
   "--cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID --cap-add KILL --security-opt no-new-privileges:true",
   "--security-opt no-new-privileges:true",
   "--env-file /etc/paperclip-gloops/hermes-execution.env",
-  "src=/opt/paperclip/hermes-execution-profile/gh,dst=/opt/data/.config/gh,readonly",
-  "src=/opt/paperclip/hermes-execution-profile/gitconfig,dst=/opt/data/.gitconfig,readonly",
+  "Requires=docker.service paperclip-campaign-deadman.service paperclip-github-push-broker.service",
+  "BindsTo=paperclip-campaign-deadman.service paperclip-github-push-broker.service",
+  "src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker",
   "src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly",
   "src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly",
   "--health-cmd",
@@ -1663,13 +1696,53 @@ for (const required of [
   "--pids-limit 512",
   "gateway run --replace",
   "ExecStartPost=/usr/local/lib/paperclip-gloops/restore-hermes-workspace-observer.sh",
-  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-hermes",
   "ExecStop=/usr/local/lib/paperclip-gloops/stop-hermes-execution.py",
-  "ExecStopPost=/usr/local/lib/paperclip-gloops/github-app-credentials.py revoke-hermes",
   "TimeoutStopSec=120",
 ]) {
   if (!hermesExecutionService.includes(required)) {
     fail(`Hermes execution service is missing ${required}`);
+  }
+}
+for (const forbidden of [
+  "dst=/opt/data/.config/gh",
+  "dst=/opt/data/.gitconfig",
+  "github-app-credentials.py refresh-hermes",
+  "github-app-credentials.py revoke-hermes",
+]) {
+  if (hermesExecutionService.includes(forbidden)) {
+    fail(`Hermes execution service retains forbidden legacy GitHub surface ${forbidden}`);
+  }
+}
+for (const required of [
+  "Type=simple",
+  "ConditionPathExists=/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED",
+  "ExecStartPre=/usr/local/lib/paperclip-gloops/github-push-broker.py verify-journal",
+  "ExecStart=/usr/local/lib/paperclip-gloops/github-push-broker.py serve",
+  "RuntimeDirectory=paperclip-github-broker",
+  "NoNewPrivileges=yes",
+  "ProtectSystem=strict",
+  "ReadWritePaths=/var/lib/paperclip-gloops/github-push-broker /run/paperclip-github-broker",
+]) {
+  if (!githubPushBrokerService.includes(required)) {
+    fail(`root GitHub push broker service is missing ${required}`);
+  }
+}
+for (const required of [
+  "SO_PEERCRED",
+  "paperclip-github-push-{mode}-",
+  "LoadCredential=github-token:",
+  "\"validate\"",
+  "RestrictAddressFamilies=AF_UNIX",
+  "create_one_branch_ref",
+  "reconciled_success",
+  "bounded_failure",
+  "conflict",
+  "record_mint_intent",
+  "reconcile_pending",
+  "verify_journal",
+]) {
+  if (!githubPushBroker.includes(required)) {
+    fail(`root GitHub push broker is missing ${required}`);
   }
 }
 for (const path of ["cache", "logs", "memories", "sessions"]) {
@@ -1782,9 +1855,12 @@ for (const required of [
   "rehearse-handshake-control-plane-firewall.sh",
   "verify-rollback-dark.sh",
   "hermes-handshake-guard/sitecustomize.py",
-  "hermes-execution-gitconfig",
-  "hermes-execution-gh-config.yml",
   "github-app-credentials.py",
+  "github-push-broker.py",
+  "github-push-tool.bundle.cjs",
+  "paperclip-github-push-broker.service",
+  "github-broker-receipt-token",
+  "paperclip-git-worker",
   "stop-hermes-execution.py",
   "verify-lifecycle-history.py",
   "github-app-credentials.py\" migrate-persistent-state",
@@ -1912,7 +1988,8 @@ for (const required of [
   "secrets.token_hex(32)",
   '"ollama-cloud": [.credential_pool["ollama-cloud"][]',
   'base_url == "https://ollama.com/v1"',
-  'chmod 0500 "${PROFILE_DIR}/gh"',
+  'rm -rf "${PROFILE_DIR}/gh"',
+  'rm -f "${PROFILE_DIR}/gitconfig"',
   'install -d -m 0700 -o "${HERMES_UID}" -g "${HERMES_GID}" "${STATE_DIR}/${path}"',
 ]) {
   if (!prepareHermesExecution.includes(required)) {
@@ -1925,8 +2002,8 @@ if (prepareHermesExecution.includes("github-app-credentials.py\" refresh")) {
 for (const required of [
   "credential pool is limited to Ollama Cloud with no fallback credential",
   "persistent Hermes state is writable only by the fixed Hermes identity",
-  "short-lived GitHub App credential receipt preserves the broker-verified one-repository private write scope",
-  "live GitHub App token projection matches the broker-verified exact credential receipt",
+  "Hermes receives an immutable broker client and no GitHub installation token or credential config",
+  "live Hermes can reach only the authenticated broker socket and observes no GitHub token",
   "docker exec -i --user 10000:10000",
   "docker exec -i --user 10000:10000 \"${CONTAINER}\" /opt/hermes/.venv/bin/python - <<'PY'",
   "live container publishes no host ports",

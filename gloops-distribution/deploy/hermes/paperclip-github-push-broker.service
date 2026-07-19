@@ -1,0 +1,41 @@
+[Unit]
+Description=Paperclip root-owned one-run GitHub push broker
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+Requires=paperclip-campaign-deadman.service docker.service
+BindsTo=paperclip-campaign-deadman.service
+After=network-online.target docker.service paperclip-campaign-deadman.service
+Wants=network-online.target
+ConditionPathExists=/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED
+OnFailure=paperclip-gloops-alert@%n.service
+StartLimitIntervalSec=900
+StartLimitBurst=2
+
+[Service]
+Type=simple
+RuntimeDirectory=paperclip-github-broker
+RuntimeDirectoryMode=0755
+ExecStartPre=/usr/local/lib/paperclip-gloops/github-push-broker.py verify-journal
+ExecStart=/usr/local/lib/paperclip-gloops/github-push-broker.py serve
+ExecStopPost=-/usr/bin/rm -f /run/paperclip-github-broker/broker.sock
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=30
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+AmbientCapabilities=
+ReadWritePaths=/var/lib/paperclip-gloops/github-push-broker /run/paperclip-github-broker
+MemoryMax=384M
+TasksMax=96
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,10 @@
 {
-  "schemaVersion": "gloops.hermes-execution-profile.v1",
+  "schemaVersion": "gloops.hermes-execution-profile.v2",
   "profile": "paperclip-execution-only",
   "allowedProviders": ["ollama-cloud"],
   "allowedRuntimeEnvironment": ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"],
   "allowedCredentialEnvironment": ["API_SERVER_KEY", "OLLAMA_API_KEY"],
-  "allowedCredentialFiles": ["/opt/data/auth.json", "/opt/data/.config/gh/hosts.yml"],
+  "allowedCredentialFiles": ["/opt/data/auth.json"],
   "forbiddenProviders": ["anthropic", "openai-codex", "openrouter", "xai", "xai-oauth", "grok"],
   "forbiddenChannels": ["slack", "agentmail", "email", "telegram", "discord"],
   "grok": {
@@ -13,16 +13,22 @@
     "apiEnvironmentAllowed": false
   },
   "github": {
-    "principal": "gloops-autonomous-delivery[bot]",
-    "credentialType": "github-app-installation-token",
+    "principal": "root-owned-github-app-broker",
+    "credentialType": "root-owned-unix-socket-broker",
     "appId": 4307157,
     "installationId": 146796843,
     "repositoryId": 1297008772,
     "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
-    "minimumPermission": "push",
-    "credentialMount": "read-only",
+    "permissions": {"contents": "write", "metadata": "read"},
+    "credentialMount": "none",
     "maximumLifetimeSeconds": 3600,
-    "darkState": "revoked-and-absent"
+    "clientSocket": "/run/paperclip-github-broker/broker.sock",
+    "clientTool": "/opt/data/bin/github-push-tool.bundle.cjs",
+    "mutationClass": "create_one_branch_ref",
+    "maxLeases": 1,
+    "maxMutations": 1,
+    "branchPattern": "refs/heads/paperclip/<paperclip-run-id>/calibration",
+    "darkState": "broker-masked-socket-and-authorization-absent"
   },
   "network": {
     "name": "paperclip-execution",
