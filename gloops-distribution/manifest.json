@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.24",
+    "version": "2026.719.0-gloops.25",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:68dc6ad4788d3927a13d2af6929c3ef114a23ed04bec3d660ba3d19a167ad65d"
+    "digest": "sha256:89ca6d68dd5047e07cdeca304cd888d8ad08e928e943c5852cb15473f45eaa3d"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.24.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.25.json"
   },
   "patches": [
     {
@@ -396,6 +396,17 @@
       "integratedCommits": ["f06426802d1ebe3e3694361287379a1dfe79f481"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected provider runtime durably acknowledges the exact serialized request bytes, SHA-256 digest, identity tuple, and idempotency key before any provider invocation, with contradictory replay rejected without mutation."
+    },
+    {
+      "id": "terminal-provider-evidence-reconciliation",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "82dbe65d4df117891dc33f808873d4fd98e3e4d8",
+      "sourceHead": "005bacad0eb840529f5d915cd078c5f264866289",
+      "patchDiffSha256": "03a568d452c38ae10f96241c50acb505c370a5cbea62421f67cea8801db393c1",
+      "integratedCommits": ["5ff58795928d240e49c98a6401da0086a4b5bfc9"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected provider runtime and control plane equivalently reconcile exact raw and canonical terminal evidence, resolved route/model, terminal status, and usage against the prepared request and run identities before successful settlement, with immutable idempotent persistence and contradictory replay rejection."
     }
   ],
   "releasePolicy": {
