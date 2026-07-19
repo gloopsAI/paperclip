@@ -147,6 +147,16 @@ else
   echo "FAIL broker-to-Paperclip receipt credential is absent or unsafe" >&2
   failed=1
 fi
+if [[ ! -e /var/lib/paperclip-gloops/github-push-broker/tokens ]] \
+  && ! grep -aEq 'ghs_[A-Za-z0-9_]+' \
+    /var/lib/paperclip-gloops/github-push-broker/broker.sqlite3 \
+    /var/lib/paperclip-gloops/github-push-broker/broker.sqlite3-wal \
+    2>/dev/null; then
+  echo "PASS broker durable state contains no GitHub installation credential"
+else
+  echo "FAIL broker durable state retains a GitHub installation credential" >&2
+  failed=1
+fi
 
 if [[ "$(systemctl is-enabled paperclip-hermes-handshake.service 2>/dev/null || true)" == "masked" ]]; then
   echo "PASS paperclip-hermes-handshake.service is masked"

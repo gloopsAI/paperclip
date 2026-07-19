@@ -282,15 +282,13 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 connection, authorization, authorization_digest, "f" * 40
             )
             broker.mark_posted(connection, lease["nonce"], "prepared_posted")
-            token_path = broker.STATE_DIR / "token"
-            token_path.write_text("ghs_reconcile_only\n")
             broker.transition(
                 connection,
                 lease["nonce"],
                 "prepared",
                 "token_minted",
                 {},
-                token_path=str(token_path),
+                token_expires_at="2000-01-01T00:00:00Z",
             )
             broker.transition(
                 connection,
@@ -302,15 +300,29 @@ class GitHubPushBrokerTests(unittest.TestCase):
 
             class FakeModule:
                 @staticmethod
+                def load_config():
+                    return {"repository": authorization["repositoryFullName"]}
+
+                @staticmethod
+                def mint(_config, permissions):
+                    self.assertEqual(permissions, {"contents": "read"})
+                    return "ghs_reconcile_only", "2099-01-01T00:00:00Z", {
+                        "contents": "read",
+                        "metadata": "read",
+                    }
+
+                @staticmethod
                 def revoke_value(_token):
                     return None
 
             with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                    patch.object(broker, "verify_github_repository") as verify_repository, \
                     patch.object(broker, "read_remote_ref", return_value="f" * 40), \
                     patch.object(broker, "paperclip_request", return_value={}) as request, \
                     patch.object(broker, "run_worker") as worker:
                 broker.reconcile_pending(connection)
             worker.assert_not_called()
+            verify_repository.assert_called_once()
             self.assertTrue(
                 any(
                     call.args[0] == "POST"
@@ -361,6 +373,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 "prepared",
                 "token_minted",
                 {},
+                token_expires_at="2000-01-01T00:00:00Z",
             )
 
             class FakeModule:
@@ -404,6 +417,17 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 ).fetchone()["terminal_posted"],
                 1,
             )
+            connection.close()
+
+    def test_broker_database_has_no_token_storage_column_or_token_artifact(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(leases)").fetchall()
+            }
+            self.assertNotIn("token_path", columns)
+            self.assertFalse((broker.STATE_DIR / "tokens").exists())
             connection.close()
 
     def test_uncertain_token_mint_holds_until_expiry_without_releasing_allocation(self):

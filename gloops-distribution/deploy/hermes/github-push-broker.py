@@ -225,7 +225,6 @@ def connect_database() -> sqlite3.Connection:
           prepared_posted INTEGER NOT NULL DEFAULT 0,
           terminal_receipt_json TEXT,
           terminal_posted INTEGER NOT NULL DEFAULT 0,
-          token_path TEXT,
           mint_started_at TEXT,
           mint_safe_after TEXT,
           token_expires_at TEXT,
@@ -714,7 +713,6 @@ def transition(
             "prepared_posted",
             "terminal_receipt_json",
             "terminal_posted",
-            "token_path",
             "mint_started_at",
             "mint_safe_after",
             "token_expires_at",
@@ -979,15 +977,12 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
         config = module.load_config()
         record_mint_intent(connection, lease["nonce"])
         token, expires_at, _permissions = module.mint(config, {"contents": "write"})
-        token_path = STATE_DIR / "tokens" / lease["nonce"]
-        durable_write(token_path, f"{token}\n", 0o600)
         transition(
             connection,
             lease["nonce"],
             "prepared",
             "token_minted",
             {"tokenFingerprint": hashlib.sha256(token.encode()).hexdigest()},
-            token_path=str(token_path),
             token_expires_at=expires_at,
         )
         try:
@@ -1060,10 +1055,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
                 "brokerReceiptDigest": receipt["brokerReceiptDigest"],
             }
         finally:
-            try:
-                module.revoke_value(token)
-            finally:
-                durable_unlink(token_path)
+            module.revoke_value(token)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -1082,14 +1074,7 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
             except BrokerError:
                 continue
         if row["state"] == "prepared":
-            deterministic_token_path = STATE_DIR / "tokens" / row["nonce"]
-            if deterministic_token_path.exists():
-                token = deterministic_token_path.read_text().strip()
-                try:
-                    module.revoke_value(token)
-                finally:
-                    durable_unlink(deterministic_token_path)
-            elif (
+            if (
                 row["mint_safe_after"]
                 and parse_timestamp(row["mint_safe_after"]) > datetime.now(timezone.utc)
             ):
@@ -1097,24 +1082,24 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
             receipt = terminal_receipt(prepared, "bounded_failure", ZERO_OID, ZERO_OID)
             finalize(connection, row["nonce"], "prepared", receipt)
             continue
-        token_path = Path(row["token_path"]) if row["token_path"] else None
-        token = token_path.read_text().strip() if token_path and token_path.exists() else None
         if row["state"] == "token_minted":
-            if token:
-                try:
-                    module.revoke_value(token)
-                finally:
-                    durable_unlink(token_path)
+            recovery_after = row["token_expires_at"] or row["mint_safe_after"]
+            if not recovery_after:
+                raise BrokerError("token-minted lease has no conservative expiry envelope")
+            if parse_timestamp(recovery_after) > datetime.now(timezone.utc):
+                continue
             receipt = terminal_receipt(prepared, "bounded_failure", ZERO_OID, ZERO_OID)
             finalize(connection, row["nonce"], "token_minted", receipt)
             continue
-        reconciliation_token = token
-        minted_for_reconciliation = False
-        if not reconciliation_token:
-            config = module.load_config()
-            reconciliation_token, _expires, _permissions = module.mint(config, {"contents": "write"})
-            minted_for_reconciliation = True
+        recovery_after = row["token_expires_at"]
+        if not recovery_after:
+            raise BrokerError("in-flight lease has no conservative token expiry envelope")
+        if parse_timestamp(recovery_after) > datetime.now(timezone.utc):
+            continue
+        config = module.load_config()
+        reconciliation_token, _expires, _permissions = module.mint(config, {"contents": "read"})
         try:
+            verify_github_repository(module, config, reconciliation_token, authorization)
             if row["state"] == "in_flight":
                 transition(
                     connection,
@@ -1135,12 +1120,7 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
             receipt = terminal_receipt(prepared, state_value, ZERO_OID, remote)
             finalize(connection, row["nonce"], "reconciling", receipt)
         finally:
-            if token or minted_for_reconciliation:
-                try:
-                    module.revoke_value(reconciliation_token)
-                finally:
-                    if token_path:
-                        durable_unlink(token_path)
+            module.revoke_value(reconciliation_token)
 
     for row in connection.execute(
         "SELECT * FROM leases WHERE terminal_receipt_json IS NOT NULL AND terminal_posted = 0"
@@ -1170,8 +1150,17 @@ def reconciliation_delay(connection: sqlite3.Connection) -> float | None:
         return 15.0
     safe_after_rows = connection.execute(
         """
-        SELECT mint_safe_after FROM leases
-        WHERE state = 'prepared' AND mint_safe_after IS NOT NULL
+        SELECT
+          CASE
+            WHEN state = 'prepared' THEN mint_safe_after
+            ELSE token_expires_at
+          END AS retry_after
+        FROM leases
+        WHERE state IN ('prepared', 'token_minted', 'in_flight', 'reconciling')
+          AND CASE
+            WHEN state = 'prepared' THEN mint_safe_after
+            ELSE token_expires_at
+          END IS NOT NULL
         """
     ).fetchall()
     if not safe_after_rows:
@@ -1180,7 +1169,7 @@ def reconciliation_delay(connection: sqlite3.Connection) -> float | None:
     return max(
         0.1,
         min(
-            (parse_timestamp(row["mint_safe_after"]) - now).total_seconds()
+            (parse_timestamp(row["retry_after"]) - now).total_seconds()
             for row in safe_after_rows
         ),
     )
