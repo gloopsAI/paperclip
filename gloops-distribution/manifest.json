@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.20",
+    "version": "2026.719.0-gloops.21",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:ad6096051abe123bc275a11d7904bc53d6c8cb812411b49c142066c00aaab972"
+    "digest": "sha256:c6d6856b0d875f7f824a40b1e1d087af4bf286b957ec0eecef79e7c11a35e39f"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.20.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.21.json"
   },
   "patches": [
     {
@@ -352,6 +352,17 @@
       "integratedCommits": ["23f2f9ebfe31d394593f102fe1b6dffc752ece54"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host supervisor provides equivalent bounded restart-rate reconciliation immediately before checked control-plane recovery restarts and manual dark shutdown tolerates unloaded-unit cleanup only behind the complete authoritative dark verifier."
+    },
+    {
+      "id": "healthy-unit-reset-failed-recovery-tolerance",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "0282940a824eb61b80c6ad54856b4586ac0bbba1",
+      "sourceHead": "1014a43fac8d83c0481a70ac900d328915841f46",
+      "patchDiffSha256": "87f99ede9b2fcdea174d503b9030eb5a43a6b04d40fc94f6d635f06a55488236",
+      "integratedCommits": ["2d189c87dd4766a99b53095a215274b979458c68"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected host supervisor equivalently treats reset-failed as best-effort cleanup while preserving checked failure semantics for the actual Paperclip restart during interrupted-commissioning recovery."
     }
   ],
   "releasePolicy": {
