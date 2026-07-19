@@ -24,7 +24,7 @@
     "proxyMaxConnections": 4
   },
   "runtime": {
-    "image": "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    "image": "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca",
     "persistentPaths": [],
     "repositoryMounts": [],
     "githubCredentials": false,

@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.22",
+    "version": "2026.719.0-gloops.23",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:8a3a1220ef978e066f1f380eba7565ee6884c34ded06c73a4b090effe3bef895"
+    "digest": "sha256:4be4a409d7ab18ba96bbd6c575f2213eaf4f8089c0c836cc9d573cd91eec721a"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.22.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.23.json"
   },
   "patches": [
     {
@@ -374,6 +374,17 @@
       "integratedCommits": ["3a15c109b3d6e05d0aeb0396a97fa21c91159021"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host supervisor provides an equivalent root-locked commissioning transition that admits only a structurally valid barrier-enabled rollback journal bound to the exact approval digest while all orphaned, malformed, wrong-phase, or mismatched journals remain fail-closed."
+    },
+    {
+      "id": "authoritative-hermes-route-and-usage-receipts",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "6133539cb752819ffdd69ea0f0aa02e31954cbec",
+      "sourceHead": "175bcda2c35b6ae9b0f1a9a1ad0e945a0184e4e2",
+      "patchDiffSha256": "7a45a62bd6f29e9eda2e635f98a3026e6764e6264569e3d9bc03d19c0500b31a",
+      "integratedCommits": ["433c91de12837d2b6ea8d0dec2bc556be32f4435"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected provider runtime emits equivalent fail-closed, domain-separated route and usage evidence over the exact request bytes, provider attempts, terminal event, and final status, with the locked source and immutable derivative image no longer required."
     }
   ],
   "releasePolicy": {

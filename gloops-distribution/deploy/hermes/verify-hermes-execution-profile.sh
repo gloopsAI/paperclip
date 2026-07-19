@@ -20,7 +20,7 @@ readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
 readonly TIRITH_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'
-readonly HERMES_IMAGE='sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d'
+readonly HERMES_IMAGE='sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca'
 readonly COMMAND_SECURITY_VERIFIER='/usr/local/lib/paperclip-gloops/verify-hermes-command-security-image.sh'
 failed=0
 
@@ -80,7 +80,7 @@ fi
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
-  'sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d' \
+  'sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca' \
   - /config.yaml <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -128,11 +128,11 @@ if jq -e '
   .network.apiPort == 8642 and
   .network.apiAuthentication == "bearer-key-required" and
   .network.publishedPorts == [] and
-  .runtime.image == "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d" and
+  .runtime.image == "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca" and
   .runtime.imageAcquisition == "root-only-content-addressed-archive" and
   .runtime.imageArchive == {
-    "path": "/opt/paperclip/release-artifacts/hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst",
-    "sha256": "58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3"
+    "path": "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
+    "sha256": "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"
   } and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
@@ -146,10 +146,11 @@ if jq -e '
     "failureMode": "closed"
   } and
   .runtime.imageCorrection == {
-    "baseImage": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
-    "scope": "tirith-circuit-breaker-obeys-fail-closed",
+    "baseImage": "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    "scope": "authoritative-route-and-usage-receipts",
     "buildNetwork": "none",
-    "behavioralVerification": "three-scanner-failures-then-block"
+    "sourceLock": "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
+    "behavioralVerification": "63-contract-tests-plus-exact-runtime-projection"
   } and
   .runtime.backgroundExecution == {
     "cronProvider": "disabled",

@@ -33,11 +33,11 @@
     "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
   },
   "runtime": {
-    "image": "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    "image": "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca",
     "imageAcquisition": "root-only-content-addressed-archive",
     "imageArchive": {
-      "path": "/opt/paperclip/release-artifacts/hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst",
-      "sha256": "58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3"
+      "path": "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
+      "sha256": "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"
     },
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
@@ -53,10 +53,11 @@
       "failureMode": "closed"
     },
     "imageCorrection": {
-      "baseImage": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
-      "scope": "tirith-circuit-breaker-obeys-fail-closed",
+      "baseImage": "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+      "scope": "authoritative-route-and-usage-receipts",
       "buildNetwork": "none",
-      "behavioralVerification": "three-scanner-failures-then-block"
+      "sourceLock": "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
+      "behavioralVerification": "63-contract-tests-plus-exact-runtime-projection"
     },
     "backgroundExecution": {
       "cronProvider": "disabled",
