@@ -14,8 +14,11 @@ import {
   heartbeatRuns,
   heartbeatRunSettlements,
   issues,
+  projects,
+  projectWorkspaces,
   providerIoTerminalEvidence,
   providerRequestEvidence,
+  repositoryMutationReceipts,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -49,8 +52,11 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
     await db.delete(providerIoTerminalEvidence);
     await db.delete(providerRequestEvidence);
     await db.delete(agentRuntimeState);
+    await db.delete(repositoryMutationReceipts);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -62,6 +68,8 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
   async function seed() {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
     const issueId = randomUUID();
     const heartbeatRunId = randomUUID();
     await db.insert(companies).values({
@@ -81,9 +89,28 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Atomic settlement calibration",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Calibration repository",
+      sourceType: "git",
+      repoUrl: "https://github.com/gloopsAI/gloops-paperclip-plugin.git",
+      repoRef: "main",
+      defaultRef: "main",
+      isPrimary: true,
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
+      projectId,
+      projectWorkspaceId,
       title: "Settle one provider run",
       status: "in_progress",
       priority: "high",
@@ -97,7 +124,14 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
       startedAt: new Date(),
       contextSnapshot: { issueId },
     });
-    const identity = { companyId, agentId, issueId, heartbeatRunId };
+    const identity = {
+      companyId,
+      agentId,
+      projectId,
+      projectWorkspaceId,
+      issueId,
+      heartbeatRunId,
+    };
     await providerRequestEvidenceService(db).acknowledgePreparedRequest(identity, {
       schemaVersion: "gloops.provider-request-prepared.v1",
       destinationClass: "hermes_gateway",
@@ -108,6 +142,47 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
       requestPreparedAt: new Date().toISOString(),
     });
     return identity;
+  }
+
+  async function recordTerminalMutation(
+    identity: Awaited<ReturnType<typeof seed>>,
+    disposition: "reconciled_success" | "bounded_failure" | "conflict",
+  ) {
+    const expectedOldOid = "0".repeat(40);
+    const expectedNewOid = "b".repeat(40);
+    const remoteNewOid = disposition === "reconciled_success"
+      ? expectedNewOid
+      : disposition === "bounded_failure"
+      ? expectedOldOid
+      : "c".repeat(40);
+    const brokerReceiptDigest = `sha256:${"8".repeat(64)}`;
+    await db.insert(repositoryMutationReceipts).values({
+      schemaVersion: "gloops.repository-mutation-receipt.v1",
+      ...identity,
+      repositoryId: "1297008772",
+      repositoryFullName: "gloopsAI/gloops-paperclip-plugin",
+      defaultBranch: "main",
+      branchRef: `refs/heads/paperclip/${identity.heartbeatRunId}/calibration`,
+      mutationClass: "create_one_branch_ref",
+      rootAuthorizationDigest: `sha256:${"a".repeat(64)}`,
+      leaseDigest: `sha256:${"b".repeat(64)}`,
+      nonce: "c".repeat(64),
+      expectedOldOid,
+      expectedNewOid,
+      state: disposition,
+      brokerReceiptDigest,
+      remoteOldOid: expectedOldOid,
+      remoteNewOid,
+      receipt: { testFixture: true, disposition },
+      preparedAt: new Date(),
+      terminalAt: new Date(),
+    });
+    return {
+      disposition,
+      brokerReceiptDigest,
+      remoteOldOid: expectedOldOid,
+      remoteNewOid,
+    } as const;
   }
 
   function receipt() {
@@ -254,20 +329,16 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
 
   it("commits complete broker reconciliation facts when mutation is authorized", async () => {
     const identity = await seed();
+    const mutation = await recordTerminalMutation(identity, "reconciled_success");
     const result = await heartbeatRunSettlementService(db).settle({
       ...input(identity),
-      mutation: {
-        disposition: "reconciled_success",
-        brokerReceiptDigest: `sha256:${"8".repeat(64)}`,
-        remoteOldOid: "9".repeat(40),
-        remoteNewOid: "b".repeat(40),
-      },
+      mutation,
     });
 
     expect(result.settlement).toMatchObject({
       mutationDisposition: "reconciled_success",
       brokerReceiptDigest: `sha256:${"8".repeat(64)}`,
-      remoteOldOid: "9".repeat(40),
+      remoteOldOid: "0".repeat(40),
       remoteNewOid: "b".repeat(40),
     });
   });
@@ -277,6 +348,7 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
     async (disposition) => {
       const identity = await seed();
       const failed = input(identity);
+      const mutation = await recordTerminalMutation(identity, disposition);
       const result = await heartbeatRunSettlementService(db).settle({
         ...failed,
         terminalStatus: "failed",
@@ -284,12 +356,7 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
           ...failed.runPatch,
           exitCode: 1,
         },
-        mutation: {
-          disposition,
-          brokerReceiptDigest: `sha256:${"8".repeat(64)}`,
-          remoteOldOid: "0".repeat(40),
-          remoteNewOid: disposition === "conflict" ? "c".repeat(40) : "0".repeat(40),
-        },
+        mutation,
       });
 
       expect(result.settlement).toMatchObject({
@@ -303,14 +370,10 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
     "rejects successful run settlement with a %s repository mutation",
     async (disposition) => {
       const identity = await seed();
+      const mutation = await recordTerminalMutation(identity, disposition);
       await expect(heartbeatRunSettlementService(db).settle({
         ...input(identity),
-        mutation: {
-          disposition,
-          brokerReceiptDigest: `sha256:${"8".repeat(64)}`,
-          remoteOldOid: "0".repeat(40),
-          remoteNewOid: "0".repeat(40),
-        },
+        mutation,
       })).rejects.toBeInstanceOf(HeartbeatRunSettlementConflictError);
     },
   );

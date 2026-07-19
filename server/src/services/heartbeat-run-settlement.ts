@@ -15,6 +15,7 @@ import {
 } from "./provider-io-terminal-evidence.js";
 import type { PreparedProviderRequestIdentity } from "./provider-request-evidence.js";
 import { budgetService } from "./budgets.js";
+import { repositoryMutationReceiptService } from "./repository-mutation-receipts.js";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -189,6 +190,13 @@ export function heartbeatRunSettlementService(
         ) {
           throw new HeartbeatRunSettlementConflictError(
             `Heartbeat run identity does not match atomic settlement ${input.identity.heartbeatRunId}`,
+          );
+        }
+        const mutation = await repositoryMutationReceiptService(tx as unknown as Db)
+          .getForSettlement(input.identity.heartbeatRunId);
+        if (!isDeepStrictEqual(mutation, input.mutation)) {
+          throw new HeartbeatRunSettlementConflictError(
+            `Repository mutation authority changed before atomic settlement for run ${run.id}`,
           );
         }
 

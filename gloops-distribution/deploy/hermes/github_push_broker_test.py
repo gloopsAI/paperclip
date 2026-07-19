@@ -202,6 +202,19 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 broker.verify_peer(Mock())
         inspect.assert_not_called()
 
+    def test_socket_peer_command_requires_exact_installed_client_argv(self):
+        broker.verify_peer_command(
+            "/usr/bin/node",
+            b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0",
+        )
+        for command in (
+            b"node\0-e\0malicious()\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0",
+            b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0--run-id\0spoof\0",
+            b"node\0/tmp/github-push-tool.bundle.cjs\0client\0",
+        ):
+            with self.assertRaisesRegex(broker.BrokerError, "installed GitHub push client"):
+                broker.verify_peer_command("/usr/bin/node", command)
+
     def test_recovery_after_in_flight_only_reconciles_and_never_runs_worker(self):
         run_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
         authorization = self.authorization(run_id)

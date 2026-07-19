@@ -382,6 +382,18 @@ def read_peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", raw)
 
 
+def verify_peer_command(executable: str, command_bytes: bytes) -> None:
+    command = [entry for entry in command_bytes.split(b"\0") if entry]
+    if (
+        not executable.endswith("/node")
+        or len(command) != 3
+        or Path(os.fsdecode(command[0])).name != "node"
+        or command[1] != b"/opt/data/bin/github-push-tool.bundle.cjs"
+        or command[2] != b"client"
+    ):
+        raise BrokerError("socket peer command is not the installed GitHub push client")
+
+
 def verify_peer(connection: socket.socket) -> None:
     if TEST_MODE:
         return
@@ -406,13 +418,10 @@ def verify_peer(connection: socket.socket) -> None:
     init_cgroup = Path(f"/proc/{init_pid_text}/cgroup").read_text()
     if peer_cgroup != init_cgroup or "docker" not in peer_cgroup:
         raise BrokerError("socket peer is outside the exact Hermes container cgroup")
-    executable = os.readlink(f"/proc/{pid}/exe")
-    if not executable.endswith("/node"):
-        raise BrokerError("socket peer executable is not the pinned Node runtime")
-    command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    expected_script = b"/opt/data/bin/github-push-tool.bundle.cjs"
-    if expected_script not in command or b"client" not in command:
-        raise BrokerError("socket peer command is not the installed GitHub push client")
+    verify_peer_command(
+        os.readlink(f"/proc/{pid}/exe"),
+        Path(f"/proc/{pid}/cmdline").read_bytes(),
+    )
     peer_tool = Path(f"/proc/{pid}/root/opt/data/bin/github-push-tool.bundle.cjs")
     metadata = peer_tool.stat()
     if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o555:

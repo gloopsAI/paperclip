@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   heartbeatRuns,
@@ -322,49 +322,58 @@ export function repositoryMutationReceiptService(db: Db) {
 
     recordPrepared: async (input: RepositoryMutationPreparedReceipt) => {
       validatePrepared(input);
-      const context = await repositoryMutationReceiptService(db).getContext(input.heartbeatRunId);
-      if (
-        !context
-        || context.companyId !== input.companyId
-        || context.agentId !== input.agentId
-        || context.issueId !== input.issueId
-        || context.projectId !== input.projectId
-        || context.projectWorkspaceId !== input.projectWorkspaceId
-        || context.repositoryFullName !== input.repositoryFullName
-        || context.configuredDefaultBranch !== input.defaultBranch
-        || context.issueStatus !== "in_progress"
-        || !["queued", "running"].includes(context.runStatus)
-      ) {
-        throw new RepositoryMutationReceiptConflictError(
-          "Prepared repository mutation receipt conflicts with current Paperclip work facts",
+      return db.transaction(async (tx) => {
+        // This is the same row lock used by atomic terminal settlement. It
+        // makes "no repository authority" and "prepared authority" mutually
+        // exclusive decisions for a run.
+        await tx.execute(
+          sql`select id from heartbeat_runs where id = ${input.heartbeatRunId} for update`,
         );
-      }
-      const existing = await db
-        .select()
-        .from(repositoryMutationReceipts)
-        .where(eq(repositoryMutationReceipts.heartbeatRunId, input.heartbeatRunId))
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
+        const service = repositoryMutationReceiptService(tx as unknown as Db);
+        const context = await service.getContext(input.heartbeatRunId);
         if (
-          existing.state === "prepared"
-          && isDeepStrictEqual(preparedProjection(existing.receipt as RepositoryMutationPreparedReceipt), preparedProjection(input))
+          !context
+          || context.companyId !== input.companyId
+          || context.agentId !== input.agentId
+          || context.issueId !== input.issueId
+          || context.projectId !== input.projectId
+          || context.projectWorkspaceId !== input.projectWorkspaceId
+          || context.repositoryFullName !== input.repositoryFullName
+          || context.configuredDefaultBranch !== input.defaultBranch
+          || context.issueStatus !== "in_progress"
+          || !["queued", "running"].includes(context.runStatus)
         ) {
-          return existing;
+          throw new RepositoryMutationReceiptConflictError(
+            "Prepared repository mutation receipt conflicts with current Paperclip work facts",
+          );
         }
-        throw new RepositoryMutationReceiptConflictError(
-          "Repository mutation allocation already exists with conflicting facts",
-        );
-      }
-      return db
-        .insert(repositoryMutationReceipts)
-        .values({
-          ...preparedProjection(input),
-          state: "prepared",
-          receipt: input,
-          preparedAt: new Date(input.preparedAt),
-        })
-        .returning()
-        .then((rows) => rows[0]!);
+        const existing = await tx
+          .select()
+          .from(repositoryMutationReceipts)
+          .where(eq(repositoryMutationReceipts.heartbeatRunId, input.heartbeatRunId))
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          if (
+            existing.state === "prepared"
+            && isDeepStrictEqual(preparedProjection(existing.receipt as RepositoryMutationPreparedReceipt), preparedProjection(input))
+          ) {
+            return existing;
+          }
+          throw new RepositoryMutationReceiptConflictError(
+            "Repository mutation allocation already exists with conflicting facts",
+          );
+        }
+        return tx
+          .insert(repositoryMutationReceipts)
+          .values({
+            ...preparedProjection(input),
+            state: "prepared",
+            receipt: input,
+            preparedAt: new Date(input.preparedAt),
+          })
+          .returning()
+          .then((rows) => rows[0]!);
+      });
     },
 
     recordTerminal: async (input: RepositoryMutationTerminalReceipt) => {

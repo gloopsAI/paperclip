@@ -97,8 +97,9 @@ live only under `/run/paperclip-github-broker`.
 
 The root authorization is a single-use, exact-fact receipt. It names one
 Paperclip heartbeat run, company, issue, workspace, repository, mutation class,
-branch ref, expected old object id, expected new object id, source tree digest,
-and expiry. The accepted mutation class is `calibration_branch_create`; the
+branch ref, expected old object id, and expiry. The broker-issued lease adds the
+content-addressed expected new object id and exact bundle manifest. The
+accepted mutation class is `create_one_branch_ref`; the
 branch must be `refs/heads/paperclip/<run-id>/calibration`, and the expected old
 object id must be zero. The broker independently retrieves current Paperclip
 facts before accepting the request and the GitHub App installation before
