@@ -8,12 +8,14 @@
     "archiveSha256": "a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96"
   },
   "runtimeBaseImage": {
-    "reference": "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
-    "sourceCommitCertified": false
+    "reference": "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    "wholeImageSourceCommitCertified": false,
+    "overlayTouchedFilesSourceCommitCertified": true,
+    "certificationMethod": "exact upstream archive digest plus every runtime-touched file preimage"
   },
   "overlay": {
     "patch": "hermes-agent-9de9c25-route-receipt.patch",
-    "patchSha256": "d85603c1aaf3ea7b38584127cdce6efa1cdf10a7c1d068692dd14d4ab7176363",
+    "patchSha256": "b81ae468334b94b165cf25d6e0c19363a7bf42f12e25883cae0cfe2838a497af",
     "owner": "GLoops Platform",
     "distributionRepositoryVisibility": "public",
     "retirementCondition": "Remove only after the selected upstream Hermes release provides an equivalent fail-closed /v1/runs terminal route receipt with exact received-request byte evidence, actual executed provider/model/fallback facts, explicit usage presence, domain-separated semantic digest equality across SSE and final status, and the GLoops offline negative matrix passes against that upstream implementation."
@@ -33,7 +35,7 @@
     },
     "gateway/run_evidence.py": {
       "preimage": "absent",
-      "postimageSha256": "2ce4996d7165eeb0e54c9513e7309ee621e9e0acba72f6c85559020ab5999fc7"
+      "postimageSha256": "4f6a7b6f7518e6948f5f5248340f5a6880e4334de0e1066b7f9e81897cda5a21"
     },
     "tests/agent/test_usage_pricing.py": {
       "preimageSha256": "62795f7927b065742b10987632b99b50cba03feb84a7886a4d9f3bde640328de",
@@ -45,7 +47,7 @@
     },
     "tests/gateway/test_run_evidence.py": {
       "preimage": "absent",
-      "postimageSha256": "8cb5340fc7275cb7fd53874b8152ee79603b78d61360e82f520d6246a15dcab8"
+      "postimageSha256": "ca874de27010a7f156aad64a94ee04388f466082c5f7795e8b0221c8ba67f172"
     },
     "tests/run_agent/test_run_evidence_capture.py": {
       "preimage": "absent",

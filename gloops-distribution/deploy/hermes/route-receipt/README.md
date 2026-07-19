@@ -77,6 +77,14 @@ observers. They also bypass request and execution middleware. A route outside
 the Ollama Cloud subscription boundary is rejected before attempt publication
 or provider invocation; an accepted attempt is recorded immediately before the
 provider call; and a response without an authoritative model fails closed.
-The receipt records `rawPayloadDisposition=not_retained`; prompts and raw
-provider response bodies are not copied into middleware, callbacks, dumps, or
-this evidence surface.
+Prompts and raw provider response bodies are not copied into middleware,
+callbacks, dumps, or this evidence surface. Hermes does not place
+`rawPayloadDisposition` inside its semantic projection: Paperclip records
+`rawPayloadDisposition=not_retained` only after its independent response
+hashers and parsers have finalized.
+
+The derivative-image build downloads the exact locked upstream archive by
+commit and checksum, then applies the runtime subset only when every touched
+file matches its locked upstream preimage. This certifies the overlay's source
+boundary without claiming whole-image source provenance for the pre-existing
+Hermes base image.

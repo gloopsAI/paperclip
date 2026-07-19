@@ -1,5 +1,5 @@
---- a/agent/conversation_loop.py
-+++ b/agent/conversation_loop.py
+--- agent/conversation_loop.py
++++ agent/conversation_loop.py
 @@ -65,7 +65,8 @@ from agent.retry_utils import (
      zai_coding_overload_retry_ceiling,
  )
@@ -286,8 +286,8 @@
                      _assistant_tool_calls = (
                          getattr(assistant_message, "tool_calls", None) or []
                      )
---- a/agent/usage_pricing.py
-+++ b/agent/usage_pricing.py
+--- agent/usage_pricing.py
++++ agent/usage_pricing.py
 @@ -596,6 +596,10 @@ def resolve_billing_route(
  
      if provider_name == "openai-codex":
@@ -299,8 +299,8 @@
      if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
          return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
      if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
---- a/gateway/platforms/api_server.py
-+++ b/gateway/platforms/api_server.py
+--- gateway/platforms/api_server.py
++++ gateway/platforms/api_server.py
 @@ -60,6 +60,7 @@ from gateway.platforms.base import (
      is_network_accessible,
      validate_media_delivery_path,
@@ -530,9 +530,345 @@
                      })
                  except Exception:
                      pass
+--- tests/agent/test_usage_pricing.py
++++ tests/agent/test_usage_pricing.py
+@@ -145,6 +145,30 @@ def test_estimate_usage_cost_marks_subscription_routes_included():
+     assert float(result.amount_usd) == 0.0
+ 
+ 
++def test_estimate_usage_cost_marks_exact_ollama_cloud_route_included():
++    result = estimate_usage_cost(
++        "qwen3-coder",
++        CanonicalUsage(input_tokens=1000, output_tokens=500),
++        provider="ollama-cloud",
++        base_url="https://ollama.com/v1",
++    )
++
++    assert result.status == "included"
++    assert float(result.amount_usd) == 0.0
++
++
++def test_ollama_provider_label_cannot_mark_a_different_endpoint_included():
++    result = estimate_usage_cost(
++        "qwen3-coder",
++        CanonicalUsage(input_tokens=1000, output_tokens=500),
++        provider="ollama-cloud",
++        base_url="https://api.openai.com/v1",
++    )
++
++    assert result.status == "unknown"
++    assert result.amount_usd is None
++
++
+ def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):
+     monkeypatch.setattr(
+         "agent.usage_pricing.fetch_model_metadata",
+--- tests/gateway/test_api_server_runs.py
++++ tests/gateway/test_api_server_runs.py
+@@ -9,7 +9,10 @@ Covers:
+ """
+ 
+ import asyncio
++import hashlib
++import json
+ import threading
++from types import SimpleNamespace
+ from unittest.mock import MagicMock, patch
+ 
+ import pytest
+@@ -19,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
+ from gateway.config import PlatformConfig
+ from gateway.platforms.api_server import (
+     APIServerAdapter,
++    _read_strict_json_object,
+     cors_middleware,
+     security_headers_middleware,
+ )
+@@ -84,6 +88,55 @@ def _make_slow_agent(**kwargs):
+     return mock_agent, ready, interrupted
+ 
+ 
++def _make_completed_agent(
++    output: str = "done",
++    *,
++    input_tokens: int = 10,
++    output_tokens: int = 5,
++) -> MagicMock:
++    mock_agent = MagicMock()
++
++    def _run(user_message=None, conversation_history=None, task_id=None):
++        evidence = mock_agent._gloops_run_evidence
++        route = {
++            "provider": "ollama-cloud",
++            "model": "qwen3-coder",
++            "transport_class": "openai_chat_completions",
++            "billing_class": "subscription_included",
++        }
++        evidence.record_provider_attempt(**route)
++        evidence.record_provider_response(
++            response=SimpleNamespace(
++                model="qwen3-coder",
++                usage=SimpleNamespace(
++                    prompt_tokens=input_tokens,
++                    completion_tokens=output_tokens,
++                    prompt_tokens_details=SimpleNamespace(cached_tokens=0),
++                ),
++            ),
++            tool_call_count=0,
++            **route,
++        )
++        return {"final_response": output}
++
++    mock_agent.run_conversation.side_effect = _run
++    mock_agent.session_prompt_tokens = input_tokens
++    mock_agent.session_completion_tokens = output_tokens
++    mock_agent.session_total_tokens = input_tokens + output_tokens
++    return mock_agent
++
++
++class _ChunkedRequestBody:
++    def __init__(self, chunks):
++        self._chunks = list(chunks)
++        self.content_length = sum(len(chunk) for chunk in self._chunks)
++        self.content = self
++        self._read_bytes = None
++
++    async def read(self, _size):
++        return self._chunks.pop(0) if self._chunks else b""
++
++
+ @pytest.fixture
+ def adapter():
+     return _make_adapter()
+@@ -105,11 +158,7 @@ class TestStartRun:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 10
+-                mock_agent.session_completion_tokens = 5
+-                mock_agent.session_total_tokens = 15
++                mock_agent = _make_completed_agent()
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post("/v1/runs", json={"input": "hello"})
+@@ -136,6 +185,61 @@ class TestStartRun:
+             )
+         assert resp.status == 400
+ 
++    @pytest.mark.asyncio
++    async def test_start_invalid_utf8_and_duplicate_keys_return_400_before_allocation(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            invalid_utf8 = await cli.post(
++                "/v1/runs",
++                data=b'{"input":"\\xff"}'.replace(b"\\xff", b"\xff"),
++                headers={"Content-Type": "application/json"},
++            )
++            duplicate = await cli.post(
++                "/v1/runs",
++                data=b'{"input":"first","nested":{"key":1,"key":2}}',
++                headers={"Content-Type": "application/json"},
++            )
++            nonfinite = await cli.post(
++                "/v1/runs",
++                data=b'{"input":"first","value":NaN}',
++                headers={"Content-Type": "application/json"},
++            )
++
++        assert invalid_utf8.status == 400
++        assert duplicate.status == 400
++        assert nonfinite.status == 400
++        assert adapter._run_streams == {}
++        assert adapter._run_statuses == {}
++
++    @pytest.mark.asyncio
++    async def test_strict_reader_hashes_stream_bytes_without_aiohttp_body_cache(self):
++        chunks = [b'{ "input":', b' "hello"', b" }"]
++        request = _ChunkedRequestBody(chunks)
++
++        body, byte_length, digest = await _read_strict_json_object(request)
++
++        raw = b"".join(chunks)
++        assert body == {"input": "hello"}
++        assert byte_length == len(raw)
++        assert digest == hashlib.sha256(raw).hexdigest()
++        assert request._read_bytes is None
++
++    @pytest.mark.asyncio
++    async def test_start_rejects_compressed_entity_before_reading_it(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            response = await cli.post(
++                "/v1/runs",
++                data=b"not actually gzip",
++                headers={
++                    "Content-Type": "application/json",
++                    "Content-Encoding": "gzip",
++                },
++            )
++
++        assert response.status == 415
++        assert adapter._run_streams == {}
++
+     @pytest.mark.asyncio
+     async def test_start_missing_input_returns_400(self, adapter):
+         app = _create_runs_app(adapter)
+@@ -176,11 +280,7 @@ class TestStartRun:
+         app = _create_runs_app(auth_adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(auth_adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
++                mock_agent = _make_completed_agent("ok", input_tokens=0, output_tokens=0)
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post(
+@@ -202,11 +302,7 @@ class TestRunStatus:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 4
+-                mock_agent.session_completion_tokens = 2
+-                mock_agent.session_total_tokens = 6
++                mock_agent = _make_completed_agent(input_tokens=4, output_tokens=2)
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post("/v1/runs", json={"input": "hello"})
+@@ -231,11 +327,7 @@ class TestRunStatus:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
++                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post(
+@@ -270,6 +362,54 @@ class TestRunStatus:
+             resp = await cli.get("/v1/runs/run_any")
+         assert resp.status == 401
+ 
++    @pytest.mark.asyncio
++    async def test_status_receipt_hashes_exact_received_entity_bytes(self, adapter):
++        app = _create_runs_app(adapter)
++        raw_body = b'{ "input": "hello", "model": "configured-alias" }'
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent", return_value=_make_completed_agent()):
++                response = await cli.post(
++                    "/v1/runs",
++                    data=raw_body,
++                    headers={"Content-Type": "application/json"},
++                )
++                run_id = (await response.json())["run_id"]
++                for _ in range(20):
++                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
++                    if status["status"] in {"completed", "failed"}:
++                        break
++                    await asyncio.sleep(0.05)
++
++        assert status["status"] == "completed"
++        evidence = status["terminalEvidence"]
++        assert evidence["requestByteLength"] == len(raw_body)
++        assert evidence["requestSha256"] == hashlib.sha256(raw_body).hexdigest()
++        assert evidence["resolvedModel"] == "qwen3-coder"
++        assert evidence["resolvedModel"] != "configured-alias"
++
++    @pytest.mark.asyncio
++    async def test_nominal_success_without_provider_evidence_fails_closed(self, adapter):
++        app = _create_runs_app(adapter)
++        mock_agent = MagicMock()
++        mock_agent.run_conversation.return_value = {"final_response": "not evidence"}
++        mock_agent.session_prompt_tokens = 1
++        mock_agent.session_completion_tokens = 1
++        mock_agent.session_total_tokens = 2
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent", return_value=mock_agent):
++                response = await cli.post("/v1/runs", json={"input": "hello"})
++                run_id = (await response.json())["run_id"]
++                for _ in range(20):
++                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
++                    if status["status"] in {"completed", "failed"}:
++                        break
++                    await asyncio.sleep(0.05)
++
++        assert status["status"] == "failed"
++        assert status["terminalEvidence"]["terminalStatus"] == "failed"
++        assert status["terminalEvidence"]["inputUsage"]["present"] is False
++        assert "lacks authoritative evidence" in status["error"]
++
+ 
+ # ---------------------------------------------------------------------------
+ # GET /v1/runs/{run_id}/events — SSE event stream
+@@ -283,11 +423,7 @@ class TestRunEvents:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "Hello!"}
+-                mock_agent.session_prompt_tokens = 10
+-                mock_agent.session_completion_tokens = 5
+-                mock_agent.session_total_tokens = 15
++                mock_agent = _make_completed_agent("Hello!")
+                 mock_create.return_value = mock_agent
+ 
+                 # Start run
+@@ -304,6 +440,17 @@ class TestRunEvents:
+                 # Should contain run.completed
+                 assert "run.completed" in body
+                 assert "Hello!" in body
++                terminal_event = next(
++                    json.loads(line.removeprefix("data: "))
++                    for line in body.splitlines()
++                    if line.startswith("data: ") and '"event": "run.completed"' in line
++                )
++                final_status = await (await cli.get(f"/v1/runs/{run_id}")).json()
++                assert terminal_event["terminalEvidence"] == final_status["terminalEvidence"]
++                assert (
++                    terminal_event["terminalEvidenceDigest"]
++                    == final_status["terminalEvidenceDigest"]
++                )
+ 
+ 
+ 
+@@ -312,11 +459,7 @@ class TestRunEvents:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
++                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post("/v1/runs", json={"input": "hello"})
+@@ -510,11 +653,7 @@ class TestStopRun:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
++                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
+                 mock_create.return_value = mock_agent
+ 
+                 # Start and wait for completion
 --- /dev/null
-+++ b/gateway/run_evidence.py
-@@ -0,0 +1,414 @@
++++ gateway/run_evidence.py
+@@ -0,0 +1,413 @@
 +"""Fail-closed terminal route evidence for the structured ``/v1/runs`` API.
 +
 +This module deliberately has no provider SDK dependencies.  It observes the
@@ -938,7 +1274,6 @@
 +                "turnTotal": self._turn_total,
 +                "toolCallTotal": self._tool_call_total,
 +                "terminalStatus": status,
-+                "rawPayloadDisposition": "not_retained",
 +            }
 +            terminal = {
 +                "terminalEvidence": projection,
@@ -947,345 +1282,9 @@
 +            self._terminal = copy.deepcopy(terminal)
 +            self._frozen = True
 +            return copy.deepcopy(terminal)
---- a/tests/agent/test_usage_pricing.py
-+++ b/tests/agent/test_usage_pricing.py
-@@ -145,6 +145,30 @@ def test_estimate_usage_cost_marks_subscription_routes_included():
-     assert float(result.amount_usd) == 0.0
- 
- 
-+def test_estimate_usage_cost_marks_exact_ollama_cloud_route_included():
-+    result = estimate_usage_cost(
-+        "qwen3-coder",
-+        CanonicalUsage(input_tokens=1000, output_tokens=500),
-+        provider="ollama-cloud",
-+        base_url="https://ollama.com/v1",
-+    )
-+
-+    assert result.status == "included"
-+    assert float(result.amount_usd) == 0.0
-+
-+
-+def test_ollama_provider_label_cannot_mark_a_different_endpoint_included():
-+    result = estimate_usage_cost(
-+        "qwen3-coder",
-+        CanonicalUsage(input_tokens=1000, output_tokens=500),
-+        provider="ollama-cloud",
-+        base_url="https://api.openai.com/v1",
-+    )
-+
-+    assert result.status == "unknown"
-+    assert result.amount_usd is None
-+
-+
- def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):
-     monkeypatch.setattr(
-         "agent.usage_pricing.fetch_model_metadata",
---- a/tests/gateway/test_api_server_runs.py
-+++ b/tests/gateway/test_api_server_runs.py
-@@ -9,7 +9,10 @@ Covers:
- """
- 
- import asyncio
-+import hashlib
-+import json
- import threading
-+from types import SimpleNamespace
- from unittest.mock import MagicMock, patch
- 
- import pytest
-@@ -19,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
- from gateway.config import PlatformConfig
- from gateway.platforms.api_server import (
-     APIServerAdapter,
-+    _read_strict_json_object,
-     cors_middleware,
-     security_headers_middleware,
- )
-@@ -84,6 +88,55 @@ def _make_slow_agent(**kwargs):
-     return mock_agent, ready, interrupted
- 
- 
-+def _make_completed_agent(
-+    output: str = "done",
-+    *,
-+    input_tokens: int = 10,
-+    output_tokens: int = 5,
-+) -> MagicMock:
-+    mock_agent = MagicMock()
-+
-+    def _run(user_message=None, conversation_history=None, task_id=None):
-+        evidence = mock_agent._gloops_run_evidence
-+        route = {
-+            "provider": "ollama-cloud",
-+            "model": "qwen3-coder",
-+            "transport_class": "openai_chat_completions",
-+            "billing_class": "subscription_included",
-+        }
-+        evidence.record_provider_attempt(**route)
-+        evidence.record_provider_response(
-+            response=SimpleNamespace(
-+                model="qwen3-coder",
-+                usage=SimpleNamespace(
-+                    prompt_tokens=input_tokens,
-+                    completion_tokens=output_tokens,
-+                    prompt_tokens_details=SimpleNamespace(cached_tokens=0),
-+                ),
-+            ),
-+            tool_call_count=0,
-+            **route,
-+        )
-+        return {"final_response": output}
-+
-+    mock_agent.run_conversation.side_effect = _run
-+    mock_agent.session_prompt_tokens = input_tokens
-+    mock_agent.session_completion_tokens = output_tokens
-+    mock_agent.session_total_tokens = input_tokens + output_tokens
-+    return mock_agent
-+
-+
-+class _ChunkedRequestBody:
-+    def __init__(self, chunks):
-+        self._chunks = list(chunks)
-+        self.content_length = sum(len(chunk) for chunk in self._chunks)
-+        self.content = self
-+        self._read_bytes = None
-+
-+    async def read(self, _size):
-+        return self._chunks.pop(0) if self._chunks else b""
-+
-+
- @pytest.fixture
- def adapter():
-     return _make_adapter()
-@@ -105,11 +158,7 @@ class TestStartRun:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 10
--                mock_agent.session_completion_tokens = 5
--                mock_agent.session_total_tokens = 15
-+                mock_agent = _make_completed_agent()
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -136,6 +185,61 @@ class TestStartRun:
-             )
-         assert resp.status == 400
- 
-+    @pytest.mark.asyncio
-+    async def test_start_invalid_utf8_and_duplicate_keys_return_400_before_allocation(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            invalid_utf8 = await cli.post(
-+                "/v1/runs",
-+                data=b'{"input":"\\xff"}'.replace(b"\\xff", b"\xff"),
-+                headers={"Content-Type": "application/json"},
-+            )
-+            duplicate = await cli.post(
-+                "/v1/runs",
-+                data=b'{"input":"first","nested":{"key":1,"key":2}}',
-+                headers={"Content-Type": "application/json"},
-+            )
-+            nonfinite = await cli.post(
-+                "/v1/runs",
-+                data=b'{"input":"first","value":NaN}',
-+                headers={"Content-Type": "application/json"},
-+            )
-+
-+        assert invalid_utf8.status == 400
-+        assert duplicate.status == 400
-+        assert nonfinite.status == 400
-+        assert adapter._run_streams == {}
-+        assert adapter._run_statuses == {}
-+
-+    @pytest.mark.asyncio
-+    async def test_strict_reader_hashes_stream_bytes_without_aiohttp_body_cache(self):
-+        chunks = [b'{ "input":', b' "hello"', b" }"]
-+        request = _ChunkedRequestBody(chunks)
-+
-+        body, byte_length, digest = await _read_strict_json_object(request)
-+
-+        raw = b"".join(chunks)
-+        assert body == {"input": "hello"}
-+        assert byte_length == len(raw)
-+        assert digest == hashlib.sha256(raw).hexdigest()
-+        assert request._read_bytes is None
-+
-+    @pytest.mark.asyncio
-+    async def test_start_rejects_compressed_entity_before_reading_it(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            response = await cli.post(
-+                "/v1/runs",
-+                data=b"not actually gzip",
-+                headers={
-+                    "Content-Type": "application/json",
-+                    "Content-Encoding": "gzip",
-+                },
-+            )
-+
-+        assert response.status == 415
-+        assert adapter._run_streams == {}
-+
-     @pytest.mark.asyncio
-     async def test_start_missing_input_returns_400(self, adapter):
-         app = _create_runs_app(adapter)
-@@ -176,11 +280,7 @@ class TestStartRun:
-         app = _create_runs_app(auth_adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(auth_adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "ok"}
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
-+                mock_agent = _make_completed_agent("ok", input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post(
-@@ -202,11 +302,7 @@ class TestRunStatus:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 4
--                mock_agent.session_completion_tokens = 2
--                mock_agent.session_total_tokens = 6
-+                mock_agent = _make_completed_agent(input_tokens=4, output_tokens=2)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -231,11 +327,7 @@ class TestRunStatus:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
-+                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post(
-@@ -270,6 +362,54 @@ class TestRunStatus:
-             resp = await cli.get("/v1/runs/run_any")
-         assert resp.status == 401
- 
-+    @pytest.mark.asyncio
-+    async def test_status_receipt_hashes_exact_received_entity_bytes(self, adapter):
-+        app = _create_runs_app(adapter)
-+        raw_body = b'{ "input": "hello", "model": "configured-alias" }'
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch.object(adapter, "_create_agent", return_value=_make_completed_agent()):
-+                response = await cli.post(
-+                    "/v1/runs",
-+                    data=raw_body,
-+                    headers={"Content-Type": "application/json"},
-+                )
-+                run_id = (await response.json())["run_id"]
-+                for _ in range(20):
-+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-+                    if status["status"] in {"completed", "failed"}:
-+                        break
-+                    await asyncio.sleep(0.05)
-+
-+        assert status["status"] == "completed"
-+        evidence = status["terminalEvidence"]
-+        assert evidence["requestByteLength"] == len(raw_body)
-+        assert evidence["requestSha256"] == hashlib.sha256(raw_body).hexdigest()
-+        assert evidence["resolvedModel"] == "qwen3-coder"
-+        assert evidence["resolvedModel"] != "configured-alias"
-+
-+    @pytest.mark.asyncio
-+    async def test_nominal_success_without_provider_evidence_fails_closed(self, adapter):
-+        app = _create_runs_app(adapter)
-+        mock_agent = MagicMock()
-+        mock_agent.run_conversation.return_value = {"final_response": "not evidence"}
-+        mock_agent.session_prompt_tokens = 1
-+        mock_agent.session_completion_tokens = 1
-+        mock_agent.session_total_tokens = 2
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
-+                response = await cli.post("/v1/runs", json={"input": "hello"})
-+                run_id = (await response.json())["run_id"]
-+                for _ in range(20):
-+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-+                    if status["status"] in {"completed", "failed"}:
-+                        break
-+                    await asyncio.sleep(0.05)
-+
-+        assert status["status"] == "failed"
-+        assert status["terminalEvidence"]["terminalStatus"] == "failed"
-+        assert status["terminalEvidence"]["inputUsage"]["present"] is False
-+        assert "lacks authoritative evidence" in status["error"]
-+
- 
- # ---------------------------------------------------------------------------
- # GET /v1/runs/{run_id}/events — SSE event stream
-@@ -283,11 +423,7 @@ class TestRunEvents:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "Hello!"}
--                mock_agent.session_prompt_tokens = 10
--                mock_agent.session_completion_tokens = 5
--                mock_agent.session_total_tokens = 15
-+                mock_agent = _make_completed_agent("Hello!")
-                 mock_create.return_value = mock_agent
- 
-                 # Start run
-@@ -304,6 +440,17 @@ class TestRunEvents:
-                 # Should contain run.completed
-                 assert "run.completed" in body
-                 assert "Hello!" in body
-+                terminal_event = next(
-+                    json.loads(line.removeprefix("data: "))
-+                    for line in body.splitlines()
-+                    if line.startswith("data: ") and '"event": "run.completed"' in line
-+                )
-+                final_status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-+                assert terminal_event["terminalEvidence"] == final_status["terminalEvidence"]
-+                assert (
-+                    terminal_event["terminalEvidenceDigest"]
-+                    == final_status["terminalEvidenceDigest"]
-+                )
- 
- 
- 
-@@ -312,11 +459,7 @@ class TestRunEvents:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
-+                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -510,11 +653,7 @@ class TestStopRun:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
-+                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 # Start and wait for completion
 --- /dev/null
-+++ b/tests/gateway/test_run_evidence.py
-@@ -0,0 +1,214 @@
++++ tests/gateway/test_run_evidence.py
+@@ -0,0 +1,231 @@
 +from types import SimpleNamespace
 +
 +import pytest
@@ -1399,6 +1398,24 @@
 +    assert evidence["inputUsage"] == {"present": True, "value": 20}
 +    assert evidence["outputUsage"] == {"present": True, "value": 7}
 +    assert evidence["cachedUsage"] == {"present": True, "value": 2}
++    assert set(evidence) == {
++        "schemaVersion",
++        "hermesRunId",
++        "requestByteLength",
++        "requestSha256",
++        "resolvedProvider",
++        "resolvedModel",
++        "transportClass",
++        "billingClass",
++        "fallbackPath",
++        "inputUsage",
++        "outputUsage",
++        "cachedUsage",
++        "usageSource",
++        "turnTotal",
++        "toolCallTotal",
++        "terminalStatus",
++    }
 +    assert terminal["terminalEvidenceDigest"] == terminal_evidence_digest(evidence)
 +
 +
@@ -1477,7 +1494,6 @@
 +    terminal = acc.finalize("failed")
 +    assert terminal["terminalEvidence"]["inputUsage"] == {"present": False, "value": 0}
 +    assert terminal["terminalEvidence"]["terminalStatus"] == "failed"
-+    assert terminal["terminalEvidence"]["rawPayloadDisposition"] == "not_retained"
 +    with pytest.raises(EvidenceFrozenError):
 +        acc.record_provider_attempt(
 +            provider="ollama-cloud",
@@ -1501,7 +1517,7 @@
 +        with pytest.raises(EvidenceError):
 +            canonical_projection_bytes(projection)
 --- /dev/null
-+++ b/tests/run_agent/test_run_evidence_capture.py
++++ tests/run_agent/test_run_evidence_capture.py
 @@ -0,0 +1,171 @@
 +from types import SimpleNamespace
 +

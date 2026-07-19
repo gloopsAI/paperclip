@@ -527,6 +527,19 @@ if (
   fail("Hermes route-receipt upstream source identity drifted");
 }
 if (
+  JSON.stringify(hermesRouteReceiptLock.runtimeBaseImage) !==
+  JSON.stringify({
+    reference:
+      "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    wholeImageSourceCommitCertified: false,
+    overlayTouchedFilesSourceCommitCertified: true,
+    certificationMethod:
+      "exact upstream archive digest plus every runtime-touched file preimage",
+  })
+) {
+  fail("Hermes route-receipt runtime source-certification boundary drifted");
+}
+if (
   hermesRouteReceiptLock.overlay?.patch !==
     "hermes-agent-9de9c25-route-receipt.patch" ||
   !sha256Hex.test(hermesRouteReceiptLock.overlay?.patchSha256 ?? "") ||
@@ -534,6 +547,9 @@ if (
     hermesRouteReceiptLock.overlay.patchSha256
 ) {
   fail("Hermes route-receipt patch digest or name is inconsistent");
+}
+if (hermesRouteReceiptPatch.includes("rawPayloadDisposition")) {
+  fail("Hermes semantic projection must not claim Paperclip raw-payload disposal");
 }
 if (
   JSON.stringify(Object.keys(hermesRouteReceiptLock.files ?? {}).sort()) !==
@@ -814,8 +830,8 @@ if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }
-if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false$/m.test(runtimeEnv)) {
-  fail("release distribution must clear the release-pin activation interlock");
+if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true$/m.test(runtimeEnv)) {
+  fail("runtime-changing source must keep the release-pin activation interlock engaged");
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
@@ -1015,12 +1031,15 @@ if (
   fail("controlled-swarm wrapper must not mask recovery-unit fencing");
 }
 for (const [surface, content, required] of [
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d"],
   ["Hermes derivative patch", patchHermesCommandSecurity, 'if cfg["tirith_fail_open"]:'],
   ["Hermes derivative patch", patchHermesCommandSecurity, '"action": "block"'],
   ["Hermes startup update patch", patchHermesStartupUpdateCheck, "def prefetch_update_check():"],
   ["Hermes startup update patch", patchHermesStartupUpdateCheck, "return None"],
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "patch-hermes-startup-update-check.py"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "ADD --checksum=sha256:a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--mode runtime"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--source-archive /tmp/hermes-source.tar.gz"],
+  ["Hermes derivative builder", buildHermesExecutionImage, "hermes-agent-gloops:route-receipt-v3"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
@@ -2069,14 +2088,14 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
   }
 }
-if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
-  fail("dark verification still requires the source-only release-pin interlock");
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false")) {
+  fail("dark verification bypasses the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",

@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly BASE_IMAGE='hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78'
-readonly TAG='hermes-agent-gloops:bounded-runtime-v2'
+readonly BASE_IMAGE='hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d'
+readonly TAG='hermes-agent-gloops:route-receipt-v3'
 readonly SOURCE_DATE_EPOCH='1783473071'
 
 [[ "${EUID}" -eq 0 ]] || {
