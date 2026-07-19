@@ -104,6 +104,11 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Immutable, reconciled evidence from a provider-backed Hermes execution.
+   * Core persists this before treating the adapter result as terminal.
+   */
+  providerIoTerminalEvidence?: AdapterProviderIoTerminalEvidence | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
@@ -151,6 +156,59 @@ export interface AdapterProviderRequestPreparedAcknowledgement {
   evidenceId: string;
   requestSha256: string;
   acknowledgedAt: string;
+}
+
+export interface AdapterHermesTerminalEvidenceProjection {
+  schemaVersion: "gloops.hermes-terminal-evidence.v1";
+  hermesRunId: string;
+  requestByteLength: number;
+  requestSha256: string;
+  resolvedProvider: string;
+  resolvedModel: string;
+  transportClass: string;
+  billingClass: string;
+  fallbackPath: Array<{
+    provider: string;
+    model: string;
+    transportClass: string;
+    billingClass: string;
+  }>;
+  inputUsage: { present: boolean; value: number };
+  outputUsage: { present: boolean; value: number };
+  cachedUsage: { present: boolean; value: number };
+  usageSource: string;
+  turnTotal: number;
+  toolCallTotal: number;
+  terminalStatus: "completed" | "failed" | "cancelled";
+}
+
+export interface AdapterProviderIoTerminalEvidence {
+  schemaVersion: "gloops.provider-io-terminal.v1";
+  preparedRequest: {
+    requestByteLength: number;
+    requestSha256: string;
+  };
+  hermesRunId: string;
+  createResponse: {
+    rawByteLength: number;
+    rawSha256: string;
+    canonicalSha256: string;
+  };
+  eventStream: {
+    rawByteLength: number;
+    rawSha256: string;
+    canonicalEventSequenceSha256: string;
+    eventCount: number;
+  };
+  finalStatusResponse: {
+    rawByteLength: number;
+    rawSha256: string;
+    canonicalSha256: string;
+  };
+  terminalEvidence: AdapterHermesTerminalEvidenceProjection;
+  terminalEvidenceDigest: string;
+  rawPayloadDisposition: "not_retained";
+  reconciledAt: string;
 }
 
 export interface AdapterExecutionContext {

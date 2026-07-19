@@ -1,6 +1,7 @@
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterProviderIoTerminalEvidence,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import { execFile } from "node:child_process";
@@ -33,6 +34,12 @@ import {
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
+import {
+  EventStreamEvidenceAccumulator,
+  parseJsonEntityBytes,
+  reconcileProviderIoEvidence,
+  type ParsedJsonEntity,
+} from "./provider-evidence.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -426,6 +433,31 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   return body;
 }
 
+async function fetchJsonEntity(
+  input: RequestInfo | URL,
+  init: RequestInit,
+): Promise<{ response: Response; entity: ParsedJsonEntity }> {
+  let response: Response;
+  try {
+    response = await fetch(input, init);
+  } catch (err) {
+    const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
+    fetchErr.code = "hermes_gateway_connect_failed";
+    throw fetchErr;
+  }
+  const entity = parseJsonEntityBytes(new Uint8Array(await response.arrayBuffer()));
+  if (!response.ok) {
+    const classified = classifyHttpError(response.status);
+    const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
+    err.status = response.status;
+    err.code = classified.code;
+    err.retryNotBefore = response.headers.get("retry-after");
+    err.body = entity.value;
+    throw err;
+  }
+  return { response, entity };
+}
+
 async function fetchJsonBeforeDeadline(
   input: RequestInfo | URL,
   init: RequestInit,
@@ -705,6 +737,7 @@ async function consumeEvents(input: {
   state: ExecutionState;
   signal: AbortSignal;
   reconnectMs: number;
+  evidence: EventStreamEvidenceAccumulator;
   redactText?: TextRedactor;
 }): Promise<void> {
   while (!input.signal.aborted && !input.state.terminal) {
@@ -730,20 +763,24 @@ async function consumeEvents(input: {
       while (!input.signal.aborted && !input.state.terminal) {
         const { value, done } = await reader.read();
         if (done) {
+          buffer += decoder.decode();
           if (buffer.trim().length > 0) {
             const parsed = parseSseFramesForTest(`${buffer}\n\n`);
             buffer = parsed.rest;
             for (const frame of parsed.frames) {
+              input.evidence.recordEvent(frame.event, parseJsonData(frame.data));
               await handleEvent(input.ctx, input.state, frame, input.redactText);
               if (input.state.terminal) break;
             }
           }
           break;
         }
+        input.evidence.recordRawChunk(value);
         buffer += decoder.decode(value, { stream: true });
         const parsed = parseSseFramesForTest(buffer);
         buffer = parsed.rest;
         for (const frame of parsed.frames) {
+          input.evidence.recordEvent(frame.event, parseJsonData(frame.data));
           await handleEvent(input.ctx, input.state, frame, input.redactText);
           if (input.state.terminal) break;
         }
@@ -1031,17 +1068,24 @@ async function fetchFinalStatus(input: {
   headers: Record<string, string>;
   runId: string;
   deadlineAt: number;
-}): Promise<Record<string, unknown> | null> {
+}): Promise<ParsedJsonEntity | null> {
   while (Date.now() < input.deadlineAt) {
     try {
-      const status = await fetchJsonBeforeDeadline(
-        apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`),
-        { method: "GET", headers: input.headers },
-        input.deadlineAt,
-      );
-      const record = asRecord(status);
-      const normalized = extractStatus(status);
-      if (normalized && TERMINAL_STATUSES.has(normalized)) return record;
+      const remainingMs = input.deadlineAt - Date.now();
+      if (remainingMs <= 0) return null;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), remainingMs);
+      let entity: ParsedJsonEntity;
+      try {
+        ({ entity } = await fetchJsonEntity(
+          apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`),
+          { method: "GET", headers: input.headers, signal: controller.signal },
+        ));
+      } finally {
+        clearTimeout(timer);
+      }
+      const normalized = extractStatus(entity.value);
+      if (normalized && TERMINAL_STATUSES.has(normalized)) return entity;
     } catch {
       return null;
     }
@@ -1197,6 +1241,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
   const serializedBody = JSON.stringify(body);
   const requestSha256 = `sha256:${createHash("sha256").update(serializedBody, "utf8").digest("hex")}`;
+  const preparedRequest = {
+    requestByteLength: Buffer.byteLength(serializedBody, "utf8"),
+    requestSha256,
+  };
   if (!ctx.onProviderRequestPrepared) {
     return deterministicRefusal({
       errorCode: "provider_evidence.pre_dispatch_ack_unavailable",
@@ -1210,8 +1258,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       schemaVersion: "gloops.provider-request-prepared.v1" as const,
       destinationClass: "hermes_gateway" as const,
       requestSchemaVersion: "hermes.run.create.v1" as const,
-      requestByteLength: Buffer.byteLength(serializedBody, "utf8"),
-      requestSha256,
+      ...preparedRequest,
       idempotencyKey: ctx.runId,
       requestPreparedAt: new Date().toISOString(),
     };
@@ -1251,13 +1298,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;
+  let createResponse!: ParsedJsonEntity;
   try {
-    const created = await fetchJson(createRunUrl, {
+    const created = await fetchJsonEntity(createRunUrl, {
       method: "POST",
       headers: runHeaders,
       body: serializedBody,
     });
-    runId = extractRunId(created);
+    createResponse = created.entity;
+    runId = extractRunId(createResponse.value);
     if (!runId) {
       return {
         exitCode: 1,
@@ -1266,7 +1315,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         providerInvocationAttempted: true,
         errorCode: "hermes_gateway_protocol_error",
         errorMessage: "Hermes /v1/runs response did not include run_id.",
-        errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
+        errorMeta: { response: redactForLog(createResponse.value, [], 0, redactText) as Record<string, unknown> },
       };
     }
   } catch (err) {
@@ -1277,16 +1326,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
-  void consumeEvents({
+  const eventEvidence = new EventStreamEvidenceAccumulator();
+  const eventTask = consumeEvents({
     ctx,
     baseUrl,
     headers: eventHeaders,
     state,
     signal: controller.signal,
     reconnectMs,
+    evidence: eventEvidence,
     redactText,
   }).catch(() => undefined);
-  void pollStatus({
+  const pollTask = pollStatus({
     ctx,
     baseUrl,
     headers: eventHeaders,
@@ -1305,6 +1356,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
   controller.abort();
+  await Promise.race([
+    Promise.allSettled([eventTask, pollTask]),
+    new Promise((resolve) => setTimeout(resolve, 50)),
+  ]);
+  const eventStream = eventEvidence.finalize();
 
   if (outcome !== "timeout" && outcome.eventName === "execution.budget_exceeded") {
     await stopRun({
@@ -1331,11 +1387,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "hermes_gateway",
       resultJson: {
         run_id: runId,
-        status: extractStatus(finalStatus) ?? "timeout",
+        status: extractStatus(finalStatus?.value) ?? "timeout",
         last_event: state.lastEventName,
-        final_status: redactForLog(finalStatus, [], 0, redactText),
+        final_status: redactForLog(finalStatus?.value, [], 0, redactText),
         provider_invocation: { attempted: true },
-        execution_route: executionRoute(extractModel(finalStatus), routeFacts),
+        execution_route: executionRoute(extractModel(finalStatus?.value), routeFacts),
         ...(workspaceVerification ? { workspace: workspaceVerification } : {}),
       },
       sessionParams: {
@@ -1346,13 +1402,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const needsFinalReconciliation = !parseUsage(outcome.payload) || !extractModel(outcome.payload);
+  if (outcome.eventName?.startsWith("execution.")) {
+    return mapFinalResultForTest({
+      terminal: outcome,
+      outputChunks: state.outputChunks,
+      sessionKey,
+      strategy,
+      turnCount: state.turnCount,
+      toolCallCount: state.toolCallCount,
+      redactText,
+      routeFacts,
+    });
+  }
+
   const reconciliationDeadline = Date.now() + Math.min(STOP_GRACE_MS, 2_000);
-  const finalStatus = needsFinalReconciliation
-    ? await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineAt: reconciliationDeadline })
-    : null;
+  const finalStatus = await fetchFinalStatus({
+    baseUrl,
+    headers: eventHeaders,
+    runId,
+    deadlineAt: reconciliationDeadline,
+  });
+  let providerIoTerminalEvidence: AdapterProviderIoTerminalEvidence;
+  try {
+    if (!outcome.payload || !finalStatus) {
+      throw new Error("Hermes terminal SSE event or final status response is missing");
+    }
+    providerIoTerminalEvidence = reconcileProviderIoEvidence({
+      preparedRequest,
+      hermesRunId: runId,
+      createResponse,
+      eventStream,
+      terminalEvent: outcome.payload,
+      finalStatusResponse: finalStatus,
+    });
+  } catch (error) {
+    return {
+      ...errorResult(error, redactText, true, routeFacts),
+      errorCode: "provider_evidence.terminal_reconciliation_failed",
+      errorMessage: `Hermes terminal provider evidence reconciliation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      sessionParams: { hermesRunId: runId, strategy },
+      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+    };
+  }
   const result = mapFinalResultForTest({
-    terminal: mergeTerminalPayload(outcome, finalStatus),
+    terminal: mergeTerminalPayload(outcome, finalStatus.value),
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
@@ -1361,10 +1456,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     redactText,
     routeFacts,
   });
+  const terminalEvidence = providerIoTerminalEvidence.terminalEvidence;
+  result.provider = terminalEvidence.resolvedProvider;
+  result.model = terminalEvidence.resolvedModel;
+  result.billingType = terminalEvidence.billingClass === "subscription_included"
+    ? "subscription_included"
+    : "unknown";
+  result.usage = {
+    inputTokens: terminalEvidence.inputUsage.value,
+    outputTokens: terminalEvidence.outputUsage.value,
+    ...(terminalEvidence.cachedUsage.value > 0
+      ? { cachedInputTokens: terminalEvidence.cachedUsage.value }
+      : {}),
+  };
+  result.usageBasis = "per_run";
+  result.providerIoTerminalEvidence = providerIoTerminalEvidence;
   result.resultJson = {
     ...parseObject(result.resultJson),
+    execution_route: {
+      provider_id: terminalEvidence.resolvedProvider,
+      model_id: terminalEvidence.resolvedModel,
+      transport: terminalEvidence.transportClass,
+      path_id: terminalEvidence.resolvedProvider,
+      runner: "hermes_gateway",
+      subscription_class: terminalEvidence.billingClass,
+      fallback_occurred: terminalEvidence.fallbackPath.length > 1,
+      ...(routeFacts.routingReason !== undefined ? { routing_reason: routeFacts.routingReason } : {}),
+      ...(routeFacts.executionProfile !== undefined ? { execution_profile: routeFacts.executionProfile } : {}),
+    },
     ...(workspaceVerification ? { workspace: workspaceVerification } : {}),
-    ...(finalStatus ? { final_status_reconciled: true } : {}),
+    final_status_reconciled: true,
   };
   return result;
 }

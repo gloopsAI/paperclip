@@ -7,6 +7,7 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  providerIoTerminalEvidence,
   providerRequestEvidence,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -42,10 +43,61 @@ const adapterExecute = vi.hoisted(() => vi.fn(async (ctx: {
     signal: null,
     timedOut: false,
     errorMessage: null,
+    providerInvocationAttempted: true,
     summary: "Prepared evidence integration test.",
     provider: "ollama",
     model: "test-model",
     usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2 },
+    providerIoTerminalEvidence: {
+      schemaVersion: "gloops.provider-io-terminal.v1" as const,
+      preparedRequest: {
+        requestByteLength: 23,
+        requestSha256: `sha256:${"c".repeat(64)}`,
+      },
+      hermesRunId: "hermes-run-1",
+      createResponse: {
+        rawByteLength: 21,
+        rawSha256: `sha256:${"1".repeat(64)}`,
+        canonicalSha256: `sha256:${"2".repeat(64)}`,
+      },
+      eventStream: {
+        rawByteLength: 200,
+        rawSha256: `sha256:${"3".repeat(64)}`,
+        canonicalEventSequenceSha256: `sha256:${"4".repeat(64)}`,
+        eventCount: 1,
+      },
+      finalStatusResponse: {
+        rawByteLength: 180,
+        rawSha256: `sha256:${"5".repeat(64)}`,
+        canonicalSha256: `sha256:${"6".repeat(64)}`,
+      },
+      terminalEvidence: {
+        schemaVersion: "gloops.hermes-terminal-evidence.v1" as const,
+        hermesRunId: "hermes-run-1",
+        requestByteLength: 23,
+        requestSha256: "c".repeat(64),
+        resolvedProvider: "ollama-cloud",
+        resolvedModel: "test-model",
+        transportClass: "openai_chat_completions",
+        billingClass: "subscription_included",
+        fallbackPath: [{
+          provider: "ollama-cloud",
+          model: "test-model",
+          transportClass: "openai_chat_completions",
+          billingClass: "subscription_included",
+        }],
+        inputUsage: { present: true, value: 10 },
+        outputUsage: { present: true, value: 2 },
+        cachedUsage: { present: true, value: 0 },
+        usageSource: "provider_response_aggregate",
+        turnTotal: 1,
+        toolCallTotal: 0,
+        terminalStatus: "completed" as const,
+      },
+      terminalEvidenceDigest: `sha256:${"7".repeat(64)}`,
+      rawPayloadDisposition: "not_retained" as const,
+      reconciledAt: new Date().toISOString(),
+    },
   };
 }));
 
@@ -166,6 +218,20 @@ describeEmbeddedPostgres("heartbeat prepared provider evidence integration", () 
       idempotencyKey: run!.id,
     });
     expect(adapterExecute).toHaveBeenCalled();
+    const terminalRows = await db
+      .select()
+      .from(providerIoTerminalEvidence)
+      .where(eq(providerIoTerminalEvidence.heartbeatRunId, run!.id));
+    expect(terminalRows).toHaveLength(1);
+    expect(terminalRows[0]).toMatchObject({
+      companyId,
+      agentId,
+      heartbeatRunId: run!.id,
+      issueId,
+      hermesRunId: "hermes-run-1",
+      terminalEvidenceDigest: `sha256:${"7".repeat(64)}`,
+      rawPayloadDisposition: "not_retained",
+    });
 
     await heartbeat.cancelInvocationsForAgents([agentId], "test teardown");
     const runIds = await db

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { canonicalJsonBytes } from "./provider-evidence.js";
 import { testEnvironment } from "./test.js";
 import { buildBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
 import { createHash } from "node:crypto";
@@ -77,6 +78,96 @@ function sseStream(text: string): ReadableStream<Uint8Array> {
   });
 }
 
+function terminalEnvelope(input: {
+  runId: string;
+  requestBody: string;
+  payload: Record<string, unknown>;
+}) {
+  const usage = typeof input.payload.usage === "object" && input.payload.usage !== null
+    ? input.payload.usage as Record<string, unknown>
+    : {};
+  const status = typeof input.payload.status === "string"
+    ? input.payload.status
+    : "completed";
+  const model = typeof input.payload.model === "string"
+    ? input.payload.model
+    : "qwen3-coder";
+  const projection = {
+    schemaVersion: "gloops.hermes-terminal-evidence.v1",
+    hermesRunId: input.runId,
+    requestByteLength: Buffer.byteLength(input.requestBody, "utf8"),
+    requestSha256: createHash("sha256").update(input.requestBody, "utf8").digest("hex"),
+    resolvedProvider: "ollama-cloud",
+    resolvedModel: model,
+    transportClass: "openai_chat_completions",
+    billingClass: "subscription_included",
+    fallbackPath: [{
+      provider: "ollama-cloud",
+      model,
+      transportClass: "openai_chat_completions",
+      billingClass: "subscription_included",
+    }],
+    inputUsage: { present: true, value: Number(usage.input_tokens ?? 0) },
+    outputUsage: { present: true, value: Number(usage.output_tokens ?? 0) },
+    cachedUsage: { present: true, value: Number(usage.cached_input_tokens ?? 0) },
+    usageSource: "provider_response_aggregate",
+    turnTotal: 1,
+    toolCallTotal: 0,
+    terminalStatus: status === "canceled" ? "cancelled" : status,
+  };
+  const terminalEvidenceDigest = createHash("sha256")
+    .update(Buffer.from("gloops.hermes-terminal-evidence.v1\0", "utf8"))
+    .update(canonicalJsonBytes(projection))
+    .digest("hex");
+  return { terminalEvidence: projection, terminalEvidenceDigest };
+}
+
+function stubEvidencedFetch(
+  fetchMock: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+): void {
+  let requestBody = "";
+  let runId = "";
+  let frozenEnvelope: ReturnType<typeof terminalEnvelope> | null = null;
+  const wrapped = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await fetchMock(input, init) as Response;
+    if (!(response instanceof Response) || !response.ok) return response;
+    const url = String(input);
+    if (url.endsWith("/v1/runs") && init?.method === "POST") {
+      requestBody = String(init.body ?? "");
+      const created = JSON.parse(await response.clone().text()) as Record<string, unknown>;
+      runId = String(created.run_id ?? created.runId ?? created.id ?? "");
+      return response;
+    }
+    if (!runId || url.endsWith("/stop")) return response;
+    if (url.endsWith("/events")) {
+      const text = await response.text();
+      const evidenced = text.split("\n").map((line) => {
+        if (!line.startsWith("data: ")) return line;
+        const payload = JSON.parse(line.slice("data: ".length)) as Record<string, unknown>;
+        const status = typeof payload.status === "string" ? payload.status : null;
+        if (!status || !["completed", "failed", "cancelled", "canceled"].includes(status)) return line;
+        frozenEnvelope = terminalEnvelope({ runId, requestBody, payload });
+        return `data: ${JSON.stringify({ ...payload, run_id: runId, ...frozenEnvelope })}`;
+      }).join("\n");
+      return new Response(sseStream(evidenced), {
+        status: response.status,
+        headers: response.headers,
+      });
+    }
+    const payload = JSON.parse(await response.text()) as Record<string, unknown>;
+    const status = typeof payload.status === "string" ? payload.status : null;
+    if (!status || !["completed", "failed", "cancelled", "canceled"].includes(status)) {
+      return new Response(JSON.stringify(payload), { status: response.status, headers: response.headers });
+    }
+    const envelope = frozenEnvelope ?? terminalEnvelope({ runId, requestBody, payload });
+    return new Response(JSON.stringify({ ...payload, run_id: runId, ...envelope }), {
+      status: response.status,
+      headers: response.headers,
+    });
+  });
+  vi.stubGlobal("fetch", wrapped);
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -134,7 +225,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
     ctx.onProviderRequestPrepared = vi.fn(async (evidence) => {
       order.push("ack");
@@ -161,7 +252,7 @@ describe("execute", () => {
 
   it("does not dispatch when durable prepared-request acknowledgement fails", async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
     ctx.onProviderRequestPrepared = vi.fn(async () => {
       throw new Error("database unavailable");
@@ -179,7 +270,7 @@ describe("execute", () => {
 
   it("does not dispatch when the durable prepared-request boundary is unavailable", async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
     delete ctx.onProviderRequestPrepared;
 
@@ -200,7 +291,7 @@ describe("execute", () => {
       if (url.endsWith("/events")) return new Response(sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"), { status: 200 });
       return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
     ctx.context.paperclipTaskMarkdown = "LEGACY TASK MUST NOT APPEAR";
     ctx.context.paperclipExecutionContext = buildBoundExecutionContext(compactPacket());
@@ -228,7 +319,7 @@ describe("execute", () => {
 
   it("refuses invalid binding and oversized bound prompts before fetch", async () => {
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const invalid = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
     invalid.context.paperclipExecutionContext = { schemaVersion: "paperclip.execution-context-binding.v1" };
     const invalidResult = await execute(invalid);
@@ -262,7 +353,7 @@ describe("execute", () => {
     { extraArgs: ["--provider", "xai"] },
   ])("refuses Grok/xAI API routing configuration before fetch: %j", async (routeConfig) => {
     const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
       apiKey: "secret-key",
@@ -289,7 +380,7 @@ describe("execute", () => {
       if (url.endsWith("/stop")) return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
       return new Response(JSON.stringify({ status: "running" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
     ctx.executionBudget = {
       schemaVersion: "paperclip.provider-invocation-budget.v1",
@@ -334,7 +425,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
     ctx.executionBudget = {
       schemaVersion: "paperclip.provider-invocation-budget.v1",
@@ -379,7 +470,7 @@ describe("execute", () => {
       if (url.endsWith("/stop")) return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
       return new Response(JSON.stringify({ status: "running" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 });
     ctx.executionBudget = {
       schemaVersion: "paperclip.provider-invocation-budget.v1",
@@ -401,7 +492,7 @@ describe("execute", () => {
 
   it("rejects remote plain HTTP unless the unsafe dev escape hatch is enabled", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ run_id: "unexpected" }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://192.168.1.25:8642",
@@ -436,7 +527,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
@@ -463,12 +554,15 @@ describe("execute", () => {
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
-  it("reconciles usage and route from final status when the terminal event is sparse", async () => {
+  it("reconciles matching terminal event and final-status usage", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-reconcile" }), { status: 200 });
       if (url.endsWith("/events")) {
-        return new Response(sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"), { status: 200 });
+        return new Response(
+          sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\",\"model\":\"ollama/qwen3-coder\",\"usage\":{\"input_tokens\":17,\"output_tokens\":5}}\n\n"),
+          { status: 200 },
+        );
       }
       return new Response(JSON.stringify({
         status: "completed",
@@ -477,7 +571,7 @@ describe("execute", () => {
         usage: { input_tokens: 17, output_tokens: 5 },
       }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
@@ -498,11 +592,11 @@ describe("execute", () => {
     expect(result.resultJson).toMatchObject({
       final_status_reconciled: true,
       execution_route: {
-        provider_id: "ollama",
-        transport: "api",
+        provider_id: "ollama-cloud",
+        transport: "openai_chat_completions",
         path_id: "ollama-cloud",
         runner: "hermes_gateway",
-        subscription_class: "ollama-max",
+        subscription_class: "subscription_included",
         routing_reason: "controlled-swarm-quality-pilot",
         fallback_occurred: false,
         execution_profile: "execution-only",
@@ -530,7 +624,7 @@ describe("execute", () => {
         );
       });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const startedAt = Date.now();
     const result = await execute(makeCtx({
@@ -540,11 +634,10 @@ describe("execute", () => {
 
     expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect(result).toMatchObject({
-      exitCode: 0,
+      exitCode: 1,
       providerInvocationAttempted: true,
+      errorCode: "provider_evidence.terminal_reconciliation_failed",
     });
-    expect(result.usage).toBeUndefined();
-    expect(result.resultJson).not.toMatchObject({ final_status_reconciled: true });
   }, 5_000);
 
   it("refuses a stale or dirty declared workspace before provider dispatch", async () => {
@@ -559,7 +652,7 @@ describe("execute", () => {
       const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
       const head = stdout.trim();
       const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
+      stubEvidencedFetch(fetchMock);
 
       const stale = makeCtx({
         apiBaseUrl: "http://127.0.0.1:8642",
@@ -633,7 +726,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:9119",
@@ -678,7 +771,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:9119/chat",
@@ -729,7 +822,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(ctx);
     const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
@@ -777,7 +870,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(ctx);
     const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
@@ -810,7 +903,7 @@ describe("execute", () => {
         session_id: "session-polled",
       }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
@@ -819,8 +912,8 @@ describe("execute", () => {
       pollIntervalMs: 250,
     }));
 
-    expect(result.exitCode).toBe(0);
-    expect(result.summary).toBe("polled done");
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_evidence.terminal_reconciliation_failed");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/run-hermes-1"))).toBe(true);
   });
 
@@ -838,7 +931,7 @@ describe("execute", () => {
         output: "unverifiable polling result",
       }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
       apiKey: "secret-key",
@@ -943,7 +1036,7 @@ describe("execute", () => {
       }
       return new Response(JSON.stringify({ status: "running" }), { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await execute(makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
@@ -960,7 +1053,7 @@ describe("execute", () => {
 describe("testEnvironment", () => {
   it("fails remote plain HTTP before probing health", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await testEnvironment({
       companyId: "company-1",
@@ -985,7 +1078,7 @@ describe("testEnvironment", () => {
 
   it("allows remote plain HTTP only with the unsafe dev escape hatch", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await testEnvironment({
       companyId: "company-1",
@@ -1066,7 +1159,7 @@ describe("testEnvironment", () => {
 
   it("tests a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await testEnvironment({
       companyId: "company-1",
@@ -1096,7 +1189,7 @@ describe("testEnvironment", () => {
 
   it("tests a Hermes dashboard chat URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubEvidencedFetch(fetchMock);
 
     const result = await testEnvironment({
       companyId: "company-1",
