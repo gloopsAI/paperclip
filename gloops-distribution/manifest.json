@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.718.0-gloops.19",
+    "version": "2026.719.0-gloops.20",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:b054c14950ce9f8f038177b8ad3f451123bd65c8cf9ac1f0b21073ac2e42fbf9"
+    "digest": "sha256:ad6096051abe123bc275a11d7904bc53d6c8cb812411b49c142066c00aaab972"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.718.0-gloops.19.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.20.json"
   },
   "patches": [
     {
@@ -341,6 +341,17 @@
       "integratedCommits": ["68950a9c3f3abba7e5f6f296533faa2754ebbc93"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the successor campaign has terminated and the selected runtime provides equivalent collision-resistant, non-renewable campaign identity, immutable expired-predecessor proof, explicit campaign binding at every deadman verification call, and stale-work admission exclusion."
+    },
+    {
+      "id": "bounded-recovery-restart-limit-reconciliation",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "c2c4c50bedf4090b0142440df05d04e7c7ec0536",
+      "sourceHead": "989f0e3d419830d41f37dac4fb879b6843ade705",
+      "patchDiffSha256": "1cecd1d0c216877d2bed2dc10b5b2e688e4ffdee803335af4dd4d6aa2452ad92",
+      "integratedCommits": ["23f2f9ebfe31d394593f102fe1b6dffc752ece54"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected host supervisor provides equivalent bounded restart-rate reconciliation immediately before checked control-plane recovery restarts and manual dark shutdown tolerates unloaded-unit cleanup only behind the complete authoritative dark verifier."
     }
   ],
   "releasePolicy": {
