@@ -1248,10 +1248,25 @@ def verify_commissioned_state(
         platform,
         enforce_root_ownership=enforce_root_ownership,
     )
+    transition_journal: dict[str, object] | None = None
     if paths.rollback_journal.exists():
-        raise CommissioningError(
-            "commissioning rollback journal remains unresolved",
-        )
+        transition_journal = commissioner._read_rollback_journal_value()
+        commissioner._read_rollback_journal()
+        if transition_journal["phase"] != "barrier_enabled":
+            raise CommissioningError(
+                "commissioning rollback journal remains unresolved",
+            )
+        paths.lock.parent.mkdir(parents=True, exist_ok=True)
+        with paths.lock.open("a+", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                raise CommissioningError(
+                    "commissioning rollback journal is not owned by an active transaction",
+                )
     commissioner._require_protected_file(
         paths.receipt,
         "commissioning receipt",
@@ -1260,6 +1275,13 @@ def verify_commissioned_state(
     approved_image = paths.image.read_text(encoding="utf-8").strip()
     receipt = json.loads(paths.receipt.read_text(encoding="utf-8"))
     validate_commissioning_receipt(receipt, approved_image)
+    if (
+        transition_journal is not None
+        and receipt["approvalSha256"] != transition_journal["approvalSha256"]
+    ):
+        raise CommissioningError(
+            "commissioning transition journal and receipt approval differ",
+        )
     if not live:
         return
     commissioner._require_protected_file(paths.token, "operator board token")
