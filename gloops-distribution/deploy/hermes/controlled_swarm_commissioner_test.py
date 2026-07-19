@@ -203,10 +203,15 @@ class FakePlatform:
 
 class CommissionerTest(unittest.TestCase):
     @mock.patch.object(MODULE.subprocess, "run")
-    def test_host_restart_clears_systemd_failed_state_before_restart(
+    def test_host_restart_best_effort_clears_failed_state_before_checked_restart(
         self,
         run: mock.Mock,
     ) -> None:
+        run.side_effect = [
+            MODULE.subprocess.CompletedProcess([], 1),
+            MODULE.subprocess.CompletedProcess([], 0),
+        ]
+
         MODULE.HostPlatform(MODULE.CommissioningPaths()).restart_paperclip()
 
         self.assertEqual(
@@ -224,8 +229,9 @@ class CommissionerTest(unittest.TestCase):
                 ],
             ],
         )
-        self.assertTrue(
-            all(call.kwargs == {"check": True} for call in run.call_args_list),
+        self.assertEqual(
+            [call.kwargs for call in run.call_args_list],
+            [{"check": False}, {"check": True}],
         )
 
     def test_default_epoch_path_is_derived_from_successor_identity(self) -> None:
