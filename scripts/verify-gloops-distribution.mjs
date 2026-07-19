@@ -290,6 +290,27 @@ const hermesStartupEgressRootCausePath = new URL(
   "../gloops-distribution/security/hermes-startup-egress-root-cause-2026-07-16.json",
   import.meta.url,
 );
+const hermesRouteReceiptDir = new URL(
+  "../gloops-distribution/deploy/hermes/route-receipt/",
+  import.meta.url,
+);
+const hermesRouteReceiptLockPath = new URL(
+  "hermes-source-lock.json",
+  hermesRouteReceiptDir,
+);
+const hermesRouteReceiptPatchPath = new URL(
+  "hermes-agent-9de9c25-route-receipt.patch",
+  hermesRouteReceiptDir,
+);
+const hermesRouteReceiptApplicatorPath = new URL(
+  "apply-hermes-route-receipt.py",
+  hermesRouteReceiptDir,
+);
+const hermesRouteReceiptApplicatorTestPath = new URL(
+  "apply_hermes_route_receipt_test.py",
+  hermesRouteReceiptDir,
+);
+const hermesRouteReceiptReadmePath = new URL("README.md", hermesRouteReceiptDir);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
@@ -332,6 +353,30 @@ const rehearseZeroWorkExecutable = rehearseZeroWork
 const rollback = readFileSync(rollbackPath, "utf8");
 const backupDark = readFileSync(backupDarkPath, "utf8");
 const verifyRollbackDark = readFileSync(verifyRollbackDarkPath, "utf8");
+const hermesRouteReceiptLock = JSON.parse(
+  readFileSync(hermesRouteReceiptLockPath, "utf8"),
+);
+const hermesRouteReceiptPatch = readFileSync(hermesRouteReceiptPatchPath);
+const hermesRouteReceiptApplicator = readFileSync(
+  hermesRouteReceiptApplicatorPath,
+  "utf8",
+);
+const hermesRouteReceiptReadme = readFileSync(
+  hermesRouteReceiptReadmePath,
+  "utf8",
+);
+try {
+  execFileSync("python3", [hermesRouteReceiptApplicatorTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(
+    `Hermes route-receipt applicator tests failed: ${
+      error instanceof Error ? error.message : error
+    }`,
+  );
+}
 try {
   execFileSync("python3", [patchHermesStartupUpdateCheckTestPath.pathname], {
     stdio: "inherit",
@@ -453,6 +498,104 @@ function git(...args) {
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+const sha256Hex = /^[0-9a-f]{64}$/u;
+const expectedHermesRouteReceiptFiles = [
+  "agent/conversation_loop.py",
+  "agent/usage_pricing.py",
+  "gateway/platforms/api_server.py",
+  "gateway/run_evidence.py",
+  "tests/agent/test_usage_pricing.py",
+  "tests/gateway/test_api_server_runs.py",
+  "tests/gateway/test_run_evidence.py",
+  "tests/run_agent/test_run_evidence_capture.py",
+];
+if (hermesRouteReceiptLock.schemaVersion !== 1) {
+  fail("Hermes route-receipt source lock schemaVersion must be 1");
+}
+if (
+  JSON.stringify(hermesRouteReceiptLock.upstream) !==
+  JSON.stringify({
+    repository: "https://github.com/NousResearch/hermes-agent.git",
+    commit: "9de9c25f620ff7f1ce0fd5457d596052d5159596",
+    tree: "1624297419fab639f57302244f6bb28b161bd014",
+    archiveSha256:
+      "a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96",
+  })
+) {
+  fail("Hermes route-receipt upstream source identity drifted");
+}
+if (
+  JSON.stringify(hermesRouteReceiptLock.runtimeBaseImage) !==
+  JSON.stringify({
+    reference:
+      "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    wholeImageSourceCommitCertified: false,
+    overlayTouchedFilesSourceCommitCertified: true,
+    certificationMethod:
+      "exact upstream archive digest plus every runtime-touched file preimage",
+  })
+) {
+  fail("Hermes route-receipt runtime source-certification boundary drifted");
+}
+if (
+  hermesRouteReceiptLock.overlay?.patch !==
+    "hermes-agent-9de9c25-route-receipt.patch" ||
+  !sha256Hex.test(hermesRouteReceiptLock.overlay?.patchSha256 ?? "") ||
+  createHash("sha256").update(hermesRouteReceiptPatch).digest("hex") !==
+    hermesRouteReceiptLock.overlay.patchSha256
+) {
+  fail("Hermes route-receipt patch digest or name is inconsistent");
+}
+if (hermesRouteReceiptPatch.includes("rawPayloadDisposition")) {
+  fail("Hermes semantic projection must not claim Paperclip raw-payload disposal");
+}
+if (
+  JSON.stringify(Object.keys(hermesRouteReceiptLock.files ?? {}).sort()) !==
+  JSON.stringify([...expectedHermesRouteReceiptFiles].sort())
+) {
+  fail("Hermes route-receipt touched-file inventory drifted");
+}
+for (const [relativePath, facts] of Object.entries(
+  hermesRouteReceiptLock.files ?? {},
+)) {
+  if (!sha256Hex.test(facts.postimageSha256 ?? "")) {
+    fail(`Hermes route-receipt ${relativePath} lacks a postimage digest`);
+  }
+  const preimageIsValid =
+    facts.preimage === "absent"
+      ? facts.preimageSha256 === undefined
+      : sha256Hex.test(facts.preimageSha256 ?? "");
+  if (!preimageIsValid) {
+    fail(`Hermes route-receipt ${relativePath} has an invalid preimage`);
+  }
+}
+for (const required of [
+  "verify_upstream_identity",
+  "--source-archive",
+  "archiveSha256",
+  "JOURNAL_SCHEMA",
+  "recover_transaction",
+  "fsync_directory",
+  "patch/source-lock file inventories differ",
+  "symlink targets are not allowed",
+  "exact hunk mismatch",
+  "rendered postimage digest mismatch",
+]) {
+  if (!hermesRouteReceiptApplicator.includes(required)) {
+    fail(`Hermes route-receipt applicator lacks guard: ${required}`);
+  }
+}
+for (const required of [
+  "downstream GLoops Gate 2.25 overlay",
+  "Ollama Cloud subscription route",
+  "one crash-recoverable transaction",
+  "rawPayloadDisposition=not_retained",
+]) {
+  if (!hermesRouteReceiptReadme.includes(required)) {
+    fail(`Hermes route-receipt README lacks contract: ${required}`);
+  }
 }
 
 function verifyHermesReferenceReceipt(summaryResult) {
@@ -687,8 +830,8 @@ if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }
-if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false$/m.test(runtimeEnv)) {
-  fail("release distribution must clear the release-pin activation interlock");
+if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true$/m.test(runtimeEnv)) {
+  fail("runtime-changing source must keep the release-pin activation interlock engaged");
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
@@ -888,12 +1031,15 @@ if (
   fail("controlled-swarm wrapper must not mask recovery-unit fencing");
 }
 for (const [surface, content, required] of [
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d"],
   ["Hermes derivative patch", patchHermesCommandSecurity, 'if cfg["tirith_fail_open"]:'],
   ["Hermes derivative patch", patchHermesCommandSecurity, '"action": "block"'],
   ["Hermes startup update patch", patchHermesStartupUpdateCheck, "def prefetch_update_check():"],
   ["Hermes startup update patch", patchHermesStartupUpdateCheck, "return None"],
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "patch-hermes-startup-update-check.py"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "ADD --checksum=sha256:a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--mode runtime"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--source-archive /tmp/hermes-source.tar.gz"],
+  ["Hermes derivative builder", buildHermesExecutionImage, "hermes-agent-gloops:route-receipt-v3"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
@@ -1942,14 +2088,14 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
   }
 }
-if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
-  fail("dark verification still requires the source-only release-pin interlock");
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false")) {
+  fail("dark verification bypasses the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",

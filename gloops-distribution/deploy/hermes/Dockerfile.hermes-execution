@@ -1,11 +1,14 @@
-FROM hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78
+FROM hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d
 
 ARG SOURCE_DATE_EPOCH
-COPY patch-hermes-command-security.py /tmp/patch-hermes-command-security.py
-COPY patch-hermes-startup-update-check.py /tmp/patch-hermes-startup-update-check.py
-RUN SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" python /tmp/patch-hermes-command-security.py \
-  && SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" python /tmp/patch-hermes-startup-update-check.py \
-  && rm -f /tmp/patch-hermes-command-security.py \
-  && rm -f /tmp/patch-hermes-startup-update-check.py \
+COPY route-receipt /tmp/route-receipt
+ADD --checksum=sha256:a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96 \
+  https://github.com/NousResearch/hermes-agent/archive/9de9c25f620ff7f1ce0fd5457d596052d5159596.tar.gz \
+  /tmp/hermes-source.tar.gz
+RUN python /tmp/route-receipt/apply-hermes-route-receipt.py \
+    --root /opt/hermes \
+    --mode runtime \
+    --source-archive /tmp/hermes-source.tar.gz \
+  && rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz \
   && rm -f /opt/hermes/hermes_cli/__pycache__/banner*.pyc \
   && rm -f /opt/hermes/tools/__pycache__/tirith_security*.pyc

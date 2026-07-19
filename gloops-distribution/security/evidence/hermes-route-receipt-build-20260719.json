@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "gloops.hermes-route-receipt-build.v1",
+  "status": "passed",
+  "recordedAt": "2026-07-19T06:55:35Z",
+  "source": {
+    "implementationCommit": "48cd4bcddb3385ebf8043b0ce710b22b35614367",
+    "implementationTree": "d5d3e7c7f7c13b9e3d3fd2972a9ef38cbf1bbf0f",
+    "correctionPatchSha256": "44f1cfe7211799bda4c977dfcf516ebc5eeba5baa9cfd32b8428d112f0fc3e41",
+    "upstreamHermesCommit": "9de9c25f620ff7f1ce0fd5457d596052d5159596",
+    "upstreamArchiveSha256": "a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96"
+  },
+  "image": {
+    "reference": "hermes-agent-gloops:route-receipt-v3",
+    "id": "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca",
+    "base": "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    "os": "linux",
+    "architecture": "amd64"
+  },
+  "verification": {
+    "applicatorTests": {
+      "passed": 7,
+      "failed": 0
+    },
+    "hermesContractTests": {
+      "passed": 63,
+      "failed": 0
+    },
+    "distributionVerifier": "passed",
+    "runtimeSecurityVerifier": "passed",
+    "runtimeSemanticProjectionExact": true,
+    "runtimeFileSha256": {
+      "agent/conversation_loop.py": "ddd6f8a141019e77da3355928eee9a268353d5a524c2dae42d71e31275a529fb",
+      "agent/usage_pricing.py": "43f31d7bfd989041b7c5031e3b3c2dd8e712ead8991229d34936613d63bfacfc",
+      "gateway/platforms/api_server.py": "c967b20dff682ce69aa81ca76af8a68dd2700156d1e88b09cf4614fda41cddc4",
+      "gateway/run_evidence.py": "4f6a7b6f7518e6948f5f5248340f5a6880e4334de0e1066b7f9e81897cda5a21"
+    }
+  },
+  "boundaries": {
+    "providerInvoked": false,
+    "paperclipActivated": false,
+    "campaignArmed": false,
+    "githubMutationPerformed": false,
+    "platformReturnedDark": true,
+    "releasePinInterlockEngaged": true
+  }
+}
