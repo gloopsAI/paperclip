@@ -15,6 +15,16 @@ class HistoryError(RuntimeError):
     pass
 
 
+LEGACY_RECEIPT_SCHEMA = "gloops.github-app-credential-receipt.v1"
+BROKER_RECEIPT_SCHEMA = "gloops.github-app-credential-receipt.v2"
+BROKER_RECEIPT_MODE = "github-push-broker"
+BROKER_TRANSITION_DISTRIBUTIONS = {
+    "1448302af034fa272141da549e25260f7650fc5a": (
+        "c3e3c602c7e7ef0c0b3fad384c1e5852aa7ab1a83e7f94488c551885294433a6"
+    ),
+}
+
+
 def digest(record: dict[str, object]) -> str:
     payload = dict(record)
     payload.pop("receiptDigest", None)
@@ -48,12 +58,48 @@ def verify_chain(records: list[dict[str, object]], identity: str) -> None:
         prior = str(record["receiptDigest"])
 
 
+def credential_roles(record: dict[str, object]) -> tuple[str, ...]:
+    schema = record.get("schemaVersion")
+    if schema == LEGACY_RECEIPT_SCHEMA:
+        if "mode" in record or "transitionFrom" in record:
+            raise HistoryError("legacy credential record declares broker transition fields")
+        return ("hermes", "projector")
+    if schema == BROKER_RECEIPT_SCHEMA:
+        if record.get("mode") != BROKER_RECEIPT_MODE or "hermes" in record:
+            raise HistoryError("broker credential mode or role boundary is malformed")
+        transition = record.get("transitionFrom")
+        if transition is not None:
+            if not isinstance(transition, dict) or set(transition) != {
+                "schemaVersion",
+                "receiptFileSha256",
+                "priorDistributionCommit",
+                "priorSourceArchiveSha256",
+                "reconciledAt",
+            }:
+                raise HistoryError("broker credential transition fields are malformed")
+            if (
+                transition.get("schemaVersion") != LEGACY_RECEIPT_SCHEMA
+                or not isinstance(transition.get("receiptFileSha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", str(transition["receiptFileSha256"])) is None
+                or not isinstance(transition.get("priorDistributionCommit"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", str(transition["priorDistributionCommit"])) is None
+                or not isinstance(transition.get("priorSourceArchiveSha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", str(transition["priorSourceArchiveSha256"])) is None
+                or BROKER_TRANSITION_DISTRIBUTIONS.get(
+                    str(transition["priorDistributionCommit"])
+                )
+                != transition["priorSourceArchiveSha256"]
+                or not isinstance(transition.get("reconciledAt"), str)
+            ):
+                raise HistoryError("broker credential transition evidence is malformed")
+        return ("projector",)
+    raise HistoryError("credential schema is malformed")
+
+
 def verify_credentials(records: list[dict[str, object]]) -> None:
     verify_chain(records, "lifecycleId")
     for record in records:
-        if record.get("schemaVersion") != "gloops.github-app-credential-receipt.v1":
-            raise HistoryError("credential schema is malformed")
-        for role in ("hermes", "projector"):
+        for role in credential_roles(record):
             entry = record.get(role)
             if not isinstance(entry, dict):
                 raise HistoryError(f"credential role is missing: {role}")
@@ -157,7 +203,7 @@ def verify_bundle(credential_path: Path, stop_path: Path, expiry_path: Path, cur
         verify_expirations(expirations)
     expirations_by_digest = {record["receiptDigest"]: record for record in expirations}
     for credential in credentials:
-        for role in ("hermes", "projector"):
+        for role in credential_roles(credential):
             entry = credential[role]
             if not isinstance(entry.get("expiredAt"), str):
                 continue
