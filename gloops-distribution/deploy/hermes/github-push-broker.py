@@ -179,6 +179,19 @@ def fsync_database() -> None:
         os.close(directory)
 
 
+def create_worker_area() -> Path:
+    work_root = RUNTIME_DIR / "work"
+    work_root.mkdir(parents=True, exist_ok=True, mode=0o711)
+    os.chmod(work_root, 0o711)
+    if not TEST_MODE:
+        os.chown(work_root, 0, 0)
+    work_dir = work_root / secrets.token_hex(24)
+    work_dir.mkdir(mode=0o711)
+    if not TEST_MODE:
+        os.chown(work_dir, 0, 0)
+    return work_dir
+
+
 def connect_database() -> sqlite3.Connection:
     STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(STATE_DIR, 0o700)
@@ -818,7 +831,13 @@ def sealed_token_fd(token: str) -> int:
     return fd
 
 
-def run_worker(nonce: str, request_path: Path, gitdir: Path, token: str) -> None:
+def run_worker(
+    nonce: str,
+    request_path: Path,
+    pack_path: Path,
+    gitdir: Path,
+    token: str,
+) -> None:
     token_fd = sealed_token_fd(token)
     unit = f"paperclip-github-push-worker-{nonce[:16]}"
     command = [
@@ -846,6 +865,8 @@ def run_worker(nonce: str, request_path: Path, gitdir: Path, token: str) -> None
         "--property=MemoryMax=512M",
         "--property=TasksMax=64",
         "--property=RuntimeMaxSec=180",
+        f"--property=ReadOnlyPaths={request_path}",
+        f"--property=ReadOnlyPaths={pack_path}",
         f"--property=ReadWritePaths={gitdir}",
         f"--property=LoadCredential=github-token:/proc/{os.getpid()}/fd/{token_fd}",
         "/usr/bin/node",
@@ -943,8 +964,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
     )
     compare_work_facts(authorization, context)
 
-    work_dir = STATE_DIR / "work" / secrets.token_hex(24)
-    work_dir.mkdir(parents=True, mode=0o711)
+    work_dir = create_worker_area()
     try:
         manifest, pack_path = read_bundle(request, work_dir)
         lease, lease_digest, prepared = create_lease(
@@ -993,7 +1013,8 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
                 "gitdir": str(gitdir),
             }
             request_path = work_dir / "worker-request.json"
-            durable_write(request_path, f"{canonical_json(worker_request)}\n", 0o444)
+            durable_write(request_path, f"{canonical_json(worker_request)}\n", 0o400)
+            os.chown(request_path, WORKER_UID, WORKER_GID)
             os.chown(pack_path, WORKER_UID, WORKER_GID)
             os.chmod(pack_path, 0o400)
             transition(
@@ -1009,7 +1030,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             )
             worker_error: BrokerError | None = None
             try:
-                run_worker(lease["nonce"], request_path, gitdir, token)
+                run_worker(lease["nonce"], request_path, pack_path, gitdir, token)
             except BrokerError as error:
                 worker_error = error
             transition(

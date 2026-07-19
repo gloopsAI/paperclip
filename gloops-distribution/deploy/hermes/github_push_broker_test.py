@@ -41,6 +41,9 @@ class GitHubPushBrokerTests(unittest.TestCase):
             DATABASE=state / "broker.sqlite3",
             COMMAND_LOCK=state / "command.lock",
             EXPECTED_HERMES_UID=os.getuid(),
+            WORKER_UID=os.getuid(),
+            WORKER_GID=os.getgid(),
+            TEST_MODE=True,
         )
 
     @staticmethod
@@ -214,6 +217,58 @@ class GitHubPushBrokerTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(broker.BrokerError, "installed GitHub push client"):
                 broker.verify_peer_command("/usr/bin/node", command)
+
+    def test_worker_area_is_ephemeral_traversable_and_not_broker_state(self):
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            broker.RUNTIME_DIR.mkdir(mode=0o755)
+            broker.STATE_DIR.mkdir(mode=0o700)
+            work_dir = broker.create_worker_area()
+
+            self.assertEqual(work_dir.parent, broker.RUNTIME_DIR / "work")
+            self.assertNotEqual(broker.STATE_DIR, work_dir.parents[1])
+            self.assertEqual(work_dir.stat().st_mode & 0o777, 0o711)
+            self.assertEqual(work_dir.parent.stat().st_mode & 0o777, 0o711)
+
+            request_path = work_dir / "worker-request.json"
+            pack_path = work_dir / "input.pack"
+            request_path.write_text("{}\n")
+            pack_path.write_text("pack\n")
+            os.chmod(request_path, 0o400)
+            os.chmod(pack_path, 0o400)
+            os.chown(request_path, broker.WORKER_UID, broker.WORKER_GID)
+            os.chown(pack_path, broker.WORKER_UID, broker.WORKER_GID)
+            self.assertEqual(request_path.stat().st_mode & 0o777, 0o400)
+            self.assertEqual(pack_path.stat().st_mode & 0o777, 0o400)
+
+    def test_worker_unit_binds_only_read_only_inputs_and_writable_object_area(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request_path = root / "worker-request.json"
+            pack_path = root / "input.pack"
+            gitdir = root / "repo.git"
+            request_path.write_text(json.dumps({"expectedNewOid": "a" * 40}))
+            pack_path.write_bytes(b"pack")
+            gitdir.mkdir()
+            token_fd = os.open(root / "token", os.O_CREAT | os.O_RDWR, 0o600)
+            completed = Mock(
+                returncode=0,
+                stdout=json.dumps({"ok": True, "expectedNewOid": "a" * 40}) + "\n",
+                stderr="",
+            )
+            with patch.object(broker, "sealed_token_fd", return_value=token_fd), \
+                    patch.object(broker.subprocess, "run", return_value=completed) as run:
+                broker.run_worker(
+                    "b" * 32,
+                    request_path,
+                    pack_path,
+                    gitdir,
+                    "ghs_ephemeral",
+                )
+            command = run.call_args.args[0]
+            self.assertIn(f"--property=ReadOnlyPaths={request_path}", command)
+            self.assertIn(f"--property=ReadOnlyPaths={pack_path}", command)
+            self.assertIn(f"--property=ReadWritePaths={gitdir}", command)
+            self.assertIn("--property=User=paperclip-git-worker", command)
 
     def test_recovery_after_in_flight_only_reconciles_and_never_runs_worker(self):
         run_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
