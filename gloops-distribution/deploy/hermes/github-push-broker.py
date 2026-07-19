@@ -302,6 +302,24 @@ def verify_journal(connection: sqlite3.Connection) -> None:
         previous = expected
 
 
+def assert_quiescent(connection: sqlite3.Connection) -> None:
+    verify_journal(connection)
+    pending = connection.execute(
+        """
+        SELECT nonce, state
+        FROM leases
+        WHERE prepared_posted = 0
+           OR (terminal_receipt_json IS NOT NULL AND terminal_posted = 0)
+           OR state IN ('prepared', 'token_minted', 'in_flight', 'reconciling')
+        LIMIT 1
+        """
+    ).fetchone()
+    if pending:
+        raise BrokerError(
+            "GitHub push broker has unresolved durable work and is not quiescent"
+        )
+
+
 def load_authorization() -> tuple[dict[str, Any], str]:
     authorization = exact_keys(
         json.loads(read_root_secret(AUTHORIZATION, "GitHub push authorization")),
@@ -1337,8 +1355,15 @@ def serve() -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"serve", "reconcile", "verify-journal"}:
-        raise BrokerError("usage: github-push-broker.py serve|reconcile|verify-journal")
+    if len(sys.argv) != 2 or sys.argv[1] not in {
+        "serve",
+        "reconcile",
+        "verify-journal",
+        "assert-quiescent",
+    }:
+        raise BrokerError(
+            "usage: github-push-broker.py serve|reconcile|verify-journal|assert-quiescent"
+        )
     connection = connect_database()
     lock_fd = os.open(COMMAND_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -1349,8 +1374,10 @@ def main() -> int:
             serve()
         elif sys.argv[1] == "reconcile":
             reconcile_pending(connection)
-        else:
+        elif sys.argv[1] == "verify-journal":
             verify_journal(connection)
+        else:
+            assert_quiescent(connection)
     finally:
         try:
             connection.close()
