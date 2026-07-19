@@ -458,6 +458,10 @@ const responses = {
     description: "Internal server error",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  serviceUnavailable: {
+    description: "Service unavailable",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
   tooManyRequests: {
     description: "Too many requests",
     content: { "application/json": { schema: ErrorSchema } },
@@ -3302,6 +3306,56 @@ registry.registerPath({
   summary: "Get a heartbeat run",
   request: { params: z.object({ runId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/repository-mutation-context",
+  tags: ["runs"],
+  summary: "Get the root broker repository-mutation context for a heartbeat run",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    503: r.serviceUnavailable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/repository-mutation-receipts/prepared",
+  tags: ["runs"],
+  summary: "Record a prepared repository-mutation receipt from the root broker",
+  request: {
+    params: z.object({ runId: z.string() }),
+    body: jsonBody(z.record(z.unknown())),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    503: r.serviceUnavailable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/repository-mutation-receipts/terminal",
+  tags: ["runs"],
+  summary: "Record a terminal repository-mutation receipt from the root broker",
+  request: {
+    params: z.object({ runId: z.string() }),
+    body: jsonBody(z.record(z.unknown())),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    503: r.serviceUnavailable,
+  },
 });
 
 registry.registerPath({
