@@ -781,6 +781,43 @@ def append_credential_history(archived: dict[str, object]) -> dict[str, object]:
         os.close(lock_fd)
 
 
+def validate_stop_history(records: list[dict[str, object]]) -> None:
+    prior: str | None = None
+    attempts: set[str] = set()
+    for sequence, record in enumerate(records, 1):
+        if record.get("sequence") != sequence or record.get("previousReceiptDigest") != prior:
+            raise CredentialError("Hermes stop history sequence or hash chain is malformed")
+        if record.get("receiptDigest") != history_digest(record):
+            raise CredentialError("Hermes stop history digest is malformed")
+        attempt = record.get("attemptId")
+        if not isinstance(attempt, str) or not attempt or attempt in attempts:
+            raise CredentialError("Hermes stop history attempt identity is malformed")
+        if record.get("schemaVersion") != "gloops.hermes-stop-receipt.v1":
+            raise CredentialError("Hermes stop history schema is malformed")
+        status = record.get("status")
+        if status == "succeeded":
+            if not (
+                record.get("containerPresent") is True
+                and record.get("plannedStopAccepted") is True
+                and record.get("gatewayState") == "stopped"
+                and record.get("containerStopped") is True
+                and record.get("error") is None
+            ):
+                raise CredentialError("successful Hermes stop lacks graceful terminal evidence")
+        elif status == "failed":
+            if record.get("containerStopped") is not True or not isinstance(record.get("error"), str):
+                raise CredentialError("failed Hermes stop lacks forced-dark evidence")
+        elif status == "not-present":
+            if record.get("containerPresent") is not False:
+                raise CredentialError("not-present Hermes stop receipt is contradictory")
+        else:
+            raise CredentialError("Hermes stop history status is malformed")
+        if not isinstance(record.get("completedAt"), str):
+            raise CredentialError("Hermes stop history completion time is malformed")
+        attempts.add(attempt)
+        prior = str(record["receiptDigest"])
+
+
 def archive_completed_receipt() -> None:
     if not RECEIPT.exists():
         return
@@ -891,6 +928,9 @@ def reconcile_broker_projector_lifecycle(
     if not STOP_HISTORY.exists():
         raise CredentialError("reconciled credential lifecycle has no stop history")
     stop_records = [json.loads(line) for line in STOP_HISTORY.read_text().splitlines()]
+    if not all(isinstance(record, dict) for record in stop_records):
+        raise CredentialError("Hermes stop history is malformed")
+    validate_stop_history(stop_records)
     matching_stops = [
         record
         for record in stop_records
@@ -898,12 +938,11 @@ def reconcile_broker_projector_lifecycle(
     ]
     if (
         len(matching_stops) != 1
-        or matching_stops[0].get("schemaVersion") != "gloops.hermes-stop-receipt.v1"
-        or matching_stops[0].get("status") not in {"succeeded", "failed", "not-present"}
+        or matching_stops[0].get("status") != "succeeded"
     ):
-        raise CredentialError("reconciled credential lifecycle has no unique terminal stop receipt")
+        raise CredentialError("reconciled credential lifecycle has no unique successful stop receipt")
 
-    reconciled_at = timestamp()
+    reconciled_at = str(matching_stops[0]["completedAt"])
     archived = {
         **receipt,
         "schemaVersion": BROKER_RECEIPT_SCHEMA,

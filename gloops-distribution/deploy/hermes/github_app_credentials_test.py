@@ -474,8 +474,18 @@ class BrokerLifecycleTests(unittest.TestCase):
                 "schemaVersion": "gloops.hermes-stop-receipt.v1",
                 "attemptId": "1147a863-86e3-4fa0-8f5c-4962fe07e34c",
                 "lifecycleId": lifecycle_id,
+                "requestedAt": "2026-07-19T20:06:12Z",
+                "containerPresent": True,
+                "plannedStopAccepted": True,
+                "gatewayState": "stopped",
+                "containerStopped": True,
                 "status": "succeeded",
+                "error": None,
+                "completedAt": "2026-07-19T20:06:13Z",
+                "sequence": 1,
+                "previousReceiptDigest": None,
             }
+            stop["receiptDigest"] = broker.history_digest(stop)
             broker.STOP_HISTORY.write_text(broker.json.dumps(stop) + "\n")
 
             broker.reconcile_broker_projector_lifecycle(
@@ -508,6 +518,143 @@ class BrokerLifecycleTests(unittest.TestCase):
                 current["transitionFrom"]["priorSourceArchiveSha256"],
                 prior_archive,
             )
+            self.assertEqual(
+                current["transitionFrom"]["reconciledAt"],
+                stop["completedAt"],
+            )
+
+    def test_stranded_projector_reconciliation_recovers_after_current_write_failure(self):
+        config = {
+            "appId": 1,
+            "installationId": 2,
+            "repositoryId": 3,
+            "repository": "gloopsAI/gloops-paperclip-plugin",
+        }
+        lifecycle_id = "c2b79bad-9908-40cf-a937-77e30580140e"
+        prior_commit = next(iter(broker.BROKER_TRANSITION_DISTRIBUTIONS))
+        prior_archive = broker.BROKER_TRANSITION_DISTRIBUTIONS[prior_commit]
+        receipt = {
+            **broker.receipt_base(config, "hermes"),
+            "lifecycleId": lifecycle_id,
+            "startedAt": "2026-07-19T20:06:06Z",
+            "projector": {
+                "mintedAt": "2026-07-19T20:06:06Z",
+                "expiresAt": "2026-07-19T21:06:06Z",
+                "permissions": broker.READ_RECEIPT_PERMISSIONS,
+                "revokedAt": "2026-07-19T20:06:13Z",
+                "expiredAt": None,
+                "tokenFingerprint": "a" * 64,
+            },
+        }
+        stop = {
+            "schemaVersion": "gloops.hermes-stop-receipt.v1",
+            "attemptId": "1147a863-86e3-4fa0-8f5c-4962fe07e34c",
+            "lifecycleId": lifecycle_id,
+            "requestedAt": "2026-07-19T20:06:12Z",
+            "containerPresent": True,
+            "plannedStopAccepted": True,
+            "gatewayState": "stopped",
+            "containerStopped": True,
+            "status": "succeeded",
+            "error": None,
+            "completedAt": "2026-07-19T20:06:13Z",
+            "sequence": 1,
+            "previousReceiptDigest": None,
+        }
+        stop["receiptDigest"] = broker.history_digest(stop)
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.RECEIPT.parent.mkdir(parents=True)
+            broker.RECEIPT.write_text(broker.json.dumps(receipt, sort_keys=True) + "\n")
+            receipt_file_sha256 = broker.hashlib.sha256(broker.RECEIPT.read_bytes()).hexdigest()
+            broker.STOP_HISTORY.write_text(broker.json.dumps(stop) + "\n")
+
+            with patch.object(
+                broker,
+                "atomic_write",
+                side_effect=OSError("injected current receipt write failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected"):
+                    broker.reconcile_broker_projector_lifecycle(
+                        config,
+                        lifecycle_id,
+                        receipt_file_sha256,
+                        prior_commit,
+                        prior_archive,
+                    )
+
+            broker.reconcile_broker_projector_lifecycle(
+                config,
+                lifecycle_id,
+                receipt_file_sha256,
+                prior_commit,
+                prior_archive,
+            )
+
+            history = [broker.json.loads(line) for line in broker.HISTORY.read_text().splitlines()]
+            current = broker.json.loads(broker.RECEIPT.read_text())
+            self.assertEqual(len(history), 1)
+            self.assertEqual(current, history[-1])
+            self.assertEqual(
+                current["transitionFrom"]["reconciledAt"],
+                stop["completedAt"],
+            )
+
+    def test_stranded_projector_reconciliation_refuses_malformed_stop_history(self):
+        config = {
+            "appId": 1,
+            "installationId": 2,
+            "repositoryId": 3,
+            "repository": "gloopsAI/gloops-paperclip-plugin",
+        }
+        lifecycle_id = "c2b79bad-9908-40cf-a937-77e30580140e"
+        prior_commit = next(iter(broker.BROKER_TRANSITION_DISTRIBUTIONS))
+        prior_archive = broker.BROKER_TRANSITION_DISTRIBUTIONS[prior_commit]
+        receipt = {
+            **broker.receipt_base(config, "hermes"),
+            "lifecycleId": lifecycle_id,
+            "startedAt": "2026-07-19T20:06:06Z",
+            "projector": {
+                "mintedAt": "2026-07-19T20:06:06Z",
+                "expiresAt": "2026-07-19T21:06:06Z",
+                "permissions": broker.READ_RECEIPT_PERMISSIONS,
+                "revokedAt": "2026-07-19T20:06:13Z",
+                "expiredAt": None,
+                "tokenFingerprint": "a" * 64,
+            },
+        }
+        stop = {
+            "schemaVersion": "gloops.hermes-stop-receipt.v1",
+            "attemptId": "1147a863-86e3-4fa0-8f5c-4962fe07e34c",
+            "lifecycleId": lifecycle_id,
+            "requestedAt": "2026-07-19T20:06:12Z",
+            "containerPresent": True,
+            "plannedStopAccepted": True,
+            "gatewayState": "stopped",
+            "containerStopped": True,
+            "status": "succeeded",
+            "error": None,
+            "completedAt": "2026-07-19T20:06:13Z",
+            "sequence": 1,
+            "previousReceiptDigest": None,
+            "receiptDigest": "f" * 64,
+        }
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.RECEIPT.parent.mkdir(parents=True)
+            broker.RECEIPT.write_text(broker.json.dumps(receipt, sort_keys=True) + "\n")
+            receipt_file_sha256 = broker.hashlib.sha256(broker.RECEIPT.read_bytes()).hexdigest()
+            broker.STOP_HISTORY.write_text(broker.json.dumps(stop) + "\n")
+
+            with self.assertRaisesRegex(broker.CredentialError, "digest"):
+                broker.reconcile_broker_projector_lifecycle(
+                    config,
+                    lifecycle_id,
+                    receipt_file_sha256,
+                    prior_commit,
+                    prior_archive,
+                )
+            self.assertFalse(broker.HISTORY.exists())
 
     def test_stranded_projector_reconciliation_refuses_unapproved_distribution(self):
         config = {
