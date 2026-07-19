@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.26",
+    "version": "2026.719.0-gloops.27",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:f90cba2a746dac8da1e0aaf28e5525117183684af24eb7a1239f23af60ca22db"
+    "digest": "sha256:3222a49849cf17c1f0a17b981369ffb59b029b6442bb726e9bf9910e1e879083"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.26.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.27.json"
   },
   "patches": [
     {
@@ -418,6 +418,17 @@
       "integratedCommits": ["15213ed6139cbf8b481528a0f8aefecbb5ac221e"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected control plane provides an equivalent single transaction for terminal run state, provider evidence, normalized usage, cost, durable budget hard stop, accounting continuation, and repository-mutation disposition, with rollback to non-terminal state and conflicting replay rejection."
+    },
+    {
+      "id": "one-run-root-owned-github-push-broker",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "61e818f07f312146c4b01a58f1dab3060030818c",
+      "sourceHead": "be175c0bbfcbc419181857ead64ee38a76429303",
+      "patchDiffSha256": "f1124101b8775c0a764e8cae5c1cfa412644550c5d2613515d6c1b8831ed1875",
+      "integratedCommits": ["b7dda2871dc373dd6083291fd3c94d21fd97cc52"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected runtime provides an equivalent root-owned, run-bound, repository-bound, branch-bound, expiring one-push broker with credential-free preflight, immutable regular-file-only Git closure validation, memory-only write credentials, no Hermes GitHub token, uncertain-write reconciliation without replay, and terminal receipt settlement."
     }
   ],
   "releasePolicy": {
