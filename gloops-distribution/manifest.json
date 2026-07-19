@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.718.0-gloops.18",
+    "version": "2026.718.0-gloops.19",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:5cfcc6ad73406d764a78f9259293281dde4bad3bb3949469e99739a78f761a64"
+    "digest": "sha256:b054c14950ce9f8f038177b8ad3f451123bd65c8cf9ac1f0b21073ac2e42fbf9"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.718.0-gloops.18.json"
+    "vex": "gloops-distribution/security/vex-2026.718.0-gloops.19.json"
   },
   "patches": [
     {
@@ -330,6 +330,17 @@
       "integratedCommits": ["b4cb86d99f3edaf179470890521e6f5428817647"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host runtime provides equivalent exact-installed-topology SIGKILL recovery proof for every durable commissioning phase, binds canonical and systemd-loaded recovery-unit properties plus credential lifecycle history, restores both execution barriers false after each phase, and emits an independently accepted content-addressed receipt."
+    },
+    {
+      "id": "fresh-repair-cell-campaign-epoch",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "762c1793ddbad042acb71b2d77b8ea9368020ab2",
+      "sourceHead": "54ca481a0ad92bb65dac61deaa3fd73be3b35654",
+      "patchDiffSha256": "dc5d4544b1c9c5790c57822c67527daa8b49f12ce1c0ca50f0e5180a7c89c656",
+      "integratedCommits": ["68950a9c3f3abba7e5f6f296533faa2754ebbc93"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the successor campaign has terminated and the selected runtime provides equivalent collision-resistant, non-renewable campaign identity, immutable expired-predecessor proof, explicit campaign binding at every deadman verification call, and stale-work admission exclusion."
     }
   ],
   "releasePolicy": {
