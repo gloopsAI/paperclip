@@ -4,6 +4,7 @@ import type {
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import {
   asNumber,
@@ -1194,6 +1195,45 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
   }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
+  const serializedBody = JSON.stringify(body);
+  const requestSha256 = `sha256:${createHash("sha256").update(serializedBody, "utf8").digest("hex")}`;
+  if (!ctx.onProviderRequestPrepared) {
+    return deterministicRefusal({
+      errorCode: "provider_evidence.pre_dispatch_ack_unavailable",
+      errorMessage: "Hermes gateway dispatch requires durable prepared-request acknowledgement.",
+      model: nonEmpty(parseObject(body).model),
+      routeFacts,
+    });
+  }
+  try {
+    const prepared = {
+      schemaVersion: "gloops.provider-request-prepared.v1" as const,
+      destinationClass: "hermes_gateway" as const,
+      requestSchemaVersion: "hermes.run.create.v1" as const,
+      requestByteLength: Buffer.byteLength(serializedBody, "utf8"),
+      requestSha256,
+      idempotencyKey: ctx.runId,
+      requestPreparedAt: new Date().toISOString(),
+    };
+    const ack = await ctx.onProviderRequestPrepared(prepared);
+    if (
+      ack.schemaVersion !== "gloops.provider-request-prepared-ack.v1"
+      || !ack.evidenceId
+      || ack.requestSha256 !== prepared.requestSha256
+      || !Number.isFinite(Date.parse(ack.acknowledgedAt))
+    ) {
+      throw new Error("Prepared-request acknowledgement did not match the serialized request");
+    }
+  } catch (error) {
+    return deterministicRefusal({
+      errorCode: "provider_evidence.pre_dispatch_ack_failed",
+      errorMessage: `Hermes gateway prepared-request acknowledgement failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      model: nonEmpty(parseObject(body).model),
+      routeFacts,
+    });
+  }
 
   await ctx.onMeta?.({
     adapterType: ADAPTER_TYPE,
@@ -1215,7 +1255,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
-      body: JSON.stringify(body),
+      body: serializedBody,
     });
     runId = extractRunId(created);
     if (!runId) {

@@ -59,6 +59,12 @@ function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
     },
     onLog: vi.fn(async () => undefined),
     onMeta: vi.fn(async () => undefined),
+    onProviderRequestPrepared: vi.fn(async (evidence) => ({
+      schemaVersion: "gloops.provider-request-prepared-ack.v1" as const,
+      evidenceId: "evidence-1",
+      requestSha256: evidence.requestSha256,
+      acknowledgedAt: new Date().toISOString(),
+    })),
   };
 }
 
@@ -110,6 +116,83 @@ describe("parseSseFramesForTest", () => {
 });
 
 describe("execute", () => {
+  it("persists the exact serialized request before dispatching the same bytes", async () => {
+    const order: string[] = [];
+    let preparedBody: string | null = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        order.push("fetch");
+        preparedBody = String(init?.body);
+        return new Response(JSON.stringify({ run_id: "prepared-1" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.onProviderRequestPrepared = vi.fn(async (evidence) => {
+      order.push("ack");
+      return {
+        schemaVersion: "gloops.provider-request-prepared-ack.v1" as const,
+        evidenceId: "evidence-exact",
+        requestSha256: evidence.requestSha256,
+        acknowledgedAt: new Date().toISOString(),
+      };
+    });
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(order).toEqual(["ack", "fetch"]);
+    const evidence = vi.mocked(ctx.onProviderRequestPrepared!).mock.calls[0]?.[0];
+    expect(preparedBody).not.toBeNull();
+    expect(evidence?.requestByteLength).toBe(Buffer.byteLength(preparedBody!, "utf8"));
+    expect(evidence?.requestSha256).toBe(
+      `sha256:${createHash("sha256").update(preparedBody!, "utf8").digest("hex")}`,
+    );
+    expect(evidence?.idempotencyKey).toBe(ctx.runId);
+  });
+
+  it("does not dispatch when durable prepared-request acknowledgement fails", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.onProviderRequestPrepared = vi.fn(async () => {
+      throw new Error("database unavailable");
+    });
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "provider_evidence.pre_dispatch_ack_failed",
+      providerInvocationAttempted: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch when the durable prepared-request boundary is unavailable", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    delete ctx.onProviderRequestPrepared;
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "provider_evidence.pre_dispatch_ack_unavailable",
+      providerInvocationAttempted: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("uses the bound compact packet as the sole work body with a fresh session and budget", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

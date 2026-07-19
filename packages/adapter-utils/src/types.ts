@@ -136,6 +136,23 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+export interface AdapterProviderRequestPreparedEvidence {
+  schemaVersion: "gloops.provider-request-prepared.v1";
+  destinationClass: "hermes_gateway";
+  requestSchemaVersion: "hermes.run.create.v1";
+  requestByteLength: number;
+  requestSha256: string;
+  idempotencyKey: string;
+  requestPreparedAt: string;
+}
+
+export interface AdapterProviderRequestPreparedAcknowledgement {
+  schemaVersion: "gloops.provider-request-prepared-ack.v1";
+  evidenceId: string;
+  requestSha256: string;
+  acknowledgedAt: string;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -155,6 +172,14 @@ export interface AdapterExecutionContext {
   };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  /**
+   * Durably acknowledges the exact serialized provider request before the
+   * adapter may dispatch it. A rejection or invalid acknowledgement is a
+   * fail-closed pre-dispatch outcome.
+   */
+  onProviderRequestPrepared?: (
+    evidence: AdapterProviderRequestPreparedEvidence,
+  ) => Promise<AdapterProviderRequestPreparedAcknowledgement>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
