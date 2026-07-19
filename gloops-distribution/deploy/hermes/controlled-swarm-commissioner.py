@@ -553,6 +553,10 @@ class HostPlatform:
 
     def restart_paperclip(self) -> None:
         subprocess.run(
+            ["systemctl", "reset-failed", "paperclip-gloops.service"],
+            check=True,
+        )
+        subprocess.run(
             ["systemctl", "restart", "paperclip-gloops.service"],
             check=True,
         )

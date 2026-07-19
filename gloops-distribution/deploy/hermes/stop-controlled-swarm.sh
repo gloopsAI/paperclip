@@ -29,11 +29,14 @@ systemctl mask \
   paperclip-hermes-execution.service \
   paperclip-campaign-deadman.service \
   paperclip-controlled-swarm-commissioning-recovery.service
-systemctl reset-failed \
+for unit in \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
   paperclip-campaign-deadman.service \
   paperclip-controlled-swarm-commissioning-recovery.service
+do
+  systemctl reset-failed "${unit}" 2>/dev/null || true
+done
 "${LIB_DIR}/set-controlled-swarm-commissioning.py" false
 "${LIB_DIR}/verify-dark.sh"
 

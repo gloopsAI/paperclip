@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("controlled-swarm-commissioner.py")
@@ -201,6 +202,32 @@ class FakePlatform:
 
 
 class CommissionerTest(unittest.TestCase):
+    @mock.patch.object(MODULE.subprocess, "run")
+    def test_host_restart_clears_systemd_failed_state_before_restart(
+        self,
+        run: mock.Mock,
+    ) -> None:
+        MODULE.HostPlatform(MODULE.CommissioningPaths()).restart_paperclip()
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                [
+                    "systemctl",
+                    "reset-failed",
+                    "paperclip-gloops.service",
+                ],
+                [
+                    "systemctl",
+                    "restart",
+                    "paperclip-gloops.service",
+                ],
+            ],
+        )
+        self.assertTrue(
+            all(call.kwargs == {"check": True} for call in run.call_args_list),
+        )
+
     def test_default_epoch_path_is_derived_from_successor_identity(self) -> None:
         self.assertEqual(
             MODULE.CommissioningPaths().epoch,
@@ -750,6 +777,13 @@ class CommissionerTest(unittest.TestCase):
         self.assertIn("--recover-interrupted", unit)
         self.assertNotIn("set-controlled-swarm-commissioning.py\" false", wrapper)
         self.assertIn("systemctl start --wait", wrapper)
+        stop = SCRIPT.with_name("stop-controlled-swarm.sh").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn(
+            'systemctl reset-failed "${unit}" 2>/dev/null || true',
+            stop,
+        )
 
     def test_restart_failure_rolls_back_false_and_removes_receipt(self) -> None:
         platform = FakePlatform(fail_first_restart=True)
