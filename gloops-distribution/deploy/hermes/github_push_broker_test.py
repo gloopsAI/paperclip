@@ -288,6 +288,69 @@ class GitHubPushBrokerTests(unittest.TestCase):
             )
             connection.close()
 
+    def test_recovery_persists_terminal_state_while_paperclip_is_unavailable(self):
+        run_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        authorization = self.authorization(run_id)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            lease, _, prepared = broker.create_lease(
+                connection, authorization, authorization_digest, "e" * 40
+            )
+            broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+            broker.transition(
+                connection,
+                lease["nonce"],
+                "prepared",
+                "token_minted",
+                {},
+            )
+
+            class FakeModule:
+                pass
+
+            with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                    patch.object(
+                        broker,
+                        "paperclip_request",
+                        side_effect=broker.BrokerError("Paperclip unavailable"),
+                    ):
+                broker.reconcile_pending(connection)
+
+            row = connection.execute(
+                """
+                SELECT state, terminal_receipt_json, terminal_posted
+                FROM leases WHERE nonce = ?
+                """,
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "bounded_failure")
+            self.assertIsNotNone(row["terminal_receipt_json"])
+            self.assertEqual(row["terminal_posted"], 0)
+            self.assertIsNone(
+                broker.completed_response(
+                    connection,
+                    {
+                        "heartbeatRunId": run_id,
+                        "expectedNewOid": "e" * 40,
+                    },
+                )
+            )
+            self.assertEqual(broker.reconciliation_delay(connection), 15.0)
+            with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                    patch.object(broker, "paperclip_request", return_value={}):
+                broker.reconcile_pending(connection)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT terminal_posted FROM leases WHERE nonce = ?",
+                    (lease["nonce"],),
+                ).fetchone()["terminal_posted"],
+                1,
+            )
+            connection.close()
+
     def test_uncertain_token_mint_holds_until_expiry_without_releasing_allocation(self):
         run_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
         authorization = self.authorization(run_id)

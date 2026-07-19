@@ -908,11 +908,19 @@ def finalize(
         remote_old_oid=receipt["remoteOldOid"],
         remote_new_oid=receipt["remoteNewOid"],
     )
-    paperclip_request(
-        "POST",
-        f"/heartbeat-runs/{receipt['heartbeatRunId']}/repository-mutation-receipts/terminal",
-        receipt,
-    )
+    try:
+        paperclip_request(
+            "POST",
+            f"/heartbeat-runs/{receipt['heartbeatRunId']}/repository-mutation-receipts/terminal",
+            receipt,
+        )
+    except BrokerError:
+        # The local terminal transition is authoritative and durable. Paperclip
+        # starts after this broker during activation, so an unavailable control
+        # plane must not prevent the broker from binding its socket. The
+        # reconciliation loop retries this exact immutable receipt and leaves
+        # terminal_posted false until Paperclip acknowledges it.
+        return
     mark_posted(connection, nonce, "terminal_posted")
 
 
