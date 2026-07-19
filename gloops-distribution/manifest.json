@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.27",
+    "version": "2026.719.0-gloops.28",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:3222a49849cf17c1f0a17b981369ffb59b029b6442bb726e9bf9910e1e879083"
+    "digest": "sha256:252b3d99d4053ec28c848225a24e097bf0503c910331e63e6650d9fc68a05e33"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.27.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.28.json"
   },
   "patches": [
     {
@@ -429,6 +429,17 @@
       "integratedCommits": ["b7dda2871dc373dd6083291fd3c94d21fd97cc52"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides an equivalent root-owned, run-bound, repository-bound, branch-bound, expiring one-push broker with credential-free preflight, immutable regular-file-only Git closure validation, memory-only write credentials, no Hermes GitHub token, uncertain-write reconciliation without replay, and terminal receipt settlement."
+    },
+    {
+      "id": "zero-work-github-broker-topology-proof",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "91fa2a22400a799ecc33c91e361ea6ea3b947bd9",
+      "sourceHead": "7e69d9643e9ad550636c4a4f248ad761b10c9739",
+      "patchDiffSha256": "6379826051f82bf035dc5d32126734a022c0d41a3dc6f5ad5720d86c10087d19",
+      "integratedCommits": ["209e3c22c942342642e0aa41c90301105b892c2f"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the installed zero-work proof equivalently includes every required root-owned runtime dependency, refuses unresolved broker recovery before startup, locks and counts repository-mutation receipts across the closed interval, and restores the complete authoritative dark topology on every exit."
     }
   ],
   "releasePolicy": {
