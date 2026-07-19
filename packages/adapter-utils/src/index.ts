@@ -8,6 +8,8 @@ export type {
   AdapterInvocationMeta,
   AdapterProviderRequestPreparedAcknowledgement,
   AdapterProviderRequestPreparedEvidence,
+  AdapterHermesTerminalEvidenceProjection,
+  AdapterProviderIoTerminalEvidence,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

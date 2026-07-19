@@ -150,6 +150,7 @@ import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { providerRequestEvidenceService } from "./provider-request-evidence.js";
+import { providerIoTerminalEvidenceService } from "./provider-io-terminal-evidence.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
@@ -5171,6 +5172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const providerRequestEvidence = providerRequestEvidenceService(db);
+  const providerIoTerminalEvidence = providerIoTerminalEvidenceService(db);
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -13666,6 +13668,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           authToken: authToken ?? undefined,
         });
+        if (
+          agent.adapterType === "hermes_gateway"
+          && adapterResult.providerInvocationAttempted !== false
+          && adapterResult.exitCode === 0
+          && !adapterResult.providerIoTerminalEvidence
+        ) {
+          throw new Error("Hermes adapter returned success without reconciled terminal provider evidence");
+        }
+        if (adapterResult.providerIoTerminalEvidence) {
+          await providerIoTerminalEvidence.persistReconciledEvidence(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              heartbeatRunId: run.id,
+              issueId,
+            },
+            adapterResult.providerIoTerminalEvidence,
+          );
+        }
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
