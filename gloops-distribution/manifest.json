@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.23",
+    "version": "2026.719.0-gloops.24",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:4be4a409d7ab18ba96bbd6c575f2213eaf4f8089c0c836cc9d573cd91eec721a"
+    "digest": "sha256:68dc6ad4788d3927a13d2af6929c3ef114a23ed04bec3d660ba3d19a167ad65d"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.23.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.24.json"
   },
   "patches": [
     {
@@ -385,6 +385,17 @@
       "integratedCommits": ["433c91de12837d2b6ea8d0dec2bc556be32f4435"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected provider runtime emits equivalent fail-closed, domain-separated route and usage evidence over the exact request bytes, provider attempts, terminal event, and final status, with the locked source and immutable derivative image no longer required."
+    },
+    {
+      "id": "prepared-provider-request-evidence",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "8a264199c65a6c1e86e2000b25405c3098062b58",
+      "sourceHead": "84b871f898db80526405e9e0be0fdf5c1054aaa8",
+      "patchDiffSha256": "d9ee7fe1e3b546143f089529a5f6f64188e05bedbbf5da1775656988374355a8",
+      "integratedCommits": ["f06426802d1ebe3e3694361287379a1dfe79f481"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected provider runtime durably acknowledges the exact serialized request bytes, SHA-256 digest, identity tuple, and idempotency key before any provider invocation, with contradictory replay rejected without mutation."
     }
   ],
   "releasePolicy": {
