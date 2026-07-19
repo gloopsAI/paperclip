@@ -19,19 +19,24 @@ flock -n 9 || {
 rm -f \
   "${CONFIG_DIR}/ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
+  "${CONFIG_DIR}/github-push-authorization.json" \
+  "${CONFIG_DIR}/github-push-authorization.sha256" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_COMMISSIONING_APPROVED"
 "${LIB_DIR}/campaign-deadman-stop.sh" operator_requested_stop
 systemctl stop paperclip-campaign-deadman.service
 systemctl stop paperclip-controlled-swarm-commissioning-recovery.service
+systemctl stop paperclip-github-push-broker.service
 systemctl mask \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
+  paperclip-github-push-broker.service \
   paperclip-campaign-deadman.service \
   paperclip-controlled-swarm-commissioning-recovery.service
 for unit in \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
+  paperclip-github-push-broker.service \
   paperclip-campaign-deadman.service \
   paperclip-controlled-swarm-commissioning-recovery.service
 do

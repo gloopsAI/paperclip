@@ -24,7 +24,7 @@ main() {
 
 refuse_unresolved_commissioning "${COMMISSIONING_ROLLBACK_JOURNAL}"
 
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing cold backup while ${unit} is active" >&2
     exit 1

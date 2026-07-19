@@ -153,6 +153,22 @@ else
     echo "the Hermes handshake sidecar must be inactive during general execution" >&2
     exit 1
   }
+  systemctl is-active --quiet paperclip-github-push-broker.service || {
+    echo "the root-owned GitHub push broker must be active before Hermes execution" >&2
+    exit 1
+  }
+  [[ -S /run/paperclip-github-broker/broker.sock ]] || {
+    echo "the root-owned GitHub push broker socket is unavailable" >&2
+    exit 1
+  }
+  for forbidden_legacy_projection in \
+    /var/lib/paperclip-gloops/credential-runtime/hermes-github-token \
+    /opt/paperclip/hermes-execution-profile/gh/hosts.yml; do
+    [[ ! -e "${forbidden_legacy_projection}" ]] || {
+      echo "legacy Hermes GitHub write authority remains projected: ${forbidden_legacy_projection}" >&2
+      exit 1
+    }
+  done
   /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --live
   systemctl is-active --quiet paperclip-hermes-execution.service || {
     echo "the Hermes execution-only sidecar must be active before Paperclip" >&2

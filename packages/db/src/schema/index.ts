@@ -91,6 +91,7 @@ export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decision
 export { providerRequestEvidence } from "./provider_request_evidence.js";
 export { providerIoTerminalEvidence } from "./provider_io_terminal_evidence.js";
 export { heartbeatRunSettlements } from "./heartbeat_run_settlements.js";
+export { repositoryMutationReceipts } from "./repository_mutation_receipts.js";
 export { costEvents } from "./cost_events.js";
 export { financeEvents } from "./finance_events.js";
 export { approvals } from "./approvals.js";

@@ -154,6 +154,7 @@ import {
   heartbeatRunSettlementService,
   type HeartbeatRunSettlementHooks,
 } from "./heartbeat-run-settlement.js";
+import { repositoryMutationReceiptService } from "./repository-mutation-receipts.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
@@ -5180,6 +5181,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     db,
     options.heartbeatRunSettlementHooks,
   );
+  const repositoryMutationReceipts = repositoryMutationReceiptService(db);
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -13966,6 +13968,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let atomicSettlement: Awaited<ReturnType<typeof heartbeatRunSettlements.settle>> | null = null;
       if (adapterResult.providerIoTerminalEvidence) {
         try {
+          const repositoryMutation = await repositoryMutationReceipts.getForSettlement(run.id);
           atomicSettlement = await heartbeatRunSettlements.settle({
             identity: {
               companyId: agent.companyId,
@@ -13992,7 +13995,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ),
               ),
             },
-            mutation: { disposition: "not_authorized" },
+            mutation: repositoryMutation,
           });
         } catch (settlementError) {
           const settlementMessage = settlementError instanceof Error

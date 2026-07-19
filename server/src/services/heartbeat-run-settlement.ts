@@ -25,7 +25,7 @@ export type HeartbeatRunMutationSettlement =
       disposition: "not_authorized";
     }
   | {
-      disposition: "reconciled_success";
+      disposition: "reconciled_success" | "bounded_failure" | "conflict";
       brokerReceiptDigest: string;
       remoteOldOid: string;
       remoteNewOid: string;
@@ -156,6 +156,15 @@ export function heartbeatRunSettlementService(
     settle: async (input: AtomicHeartbeatRunSettlementInput) => {
       if (!TERMINAL_STATUSES.has(input.terminalStatus)) {
         throw new HeartbeatRunSettlementConflictError("Atomic settlement requires a terminal run status");
+      }
+      if (
+        input.terminalStatus === "succeeded"
+        && input.mutation.disposition !== "not_authorized"
+        && input.mutation.disposition !== "reconciled_success"
+      ) {
+        throw new HeartbeatRunSettlementConflictError(
+          "A successful run cannot settle with a failed or conflicting repository mutation",
+        );
       }
       if (!Number.isSafeInteger(input.accounting.costCents) || input.accounting.costCents < 0) {
         throw new HeartbeatRunSettlementConflictError("Atomic settlement cost must be non-negative integer cents");
@@ -370,15 +379,15 @@ export function heartbeatRunSettlementService(
             accountingContinuation,
             mutationDisposition: input.mutation.disposition,
             brokerReceiptDigest:
-              input.mutation.disposition === "reconciled_success"
+              input.mutation.disposition !== "not_authorized"
                 ? input.mutation.brokerReceiptDigest
                 : null,
             remoteOldOid:
-              input.mutation.disposition === "reconciled_success"
+              input.mutation.disposition !== "not_authorized"
                 ? input.mutation.remoteOldOid
                 : null,
             remoteNewOid:
-              input.mutation.disposition === "reconciled_success"
+              input.mutation.disposition !== "not_authorized"
                 ? input.mutation.remoteNewOid
                 : null,
             settledAt,

@@ -272,6 +272,49 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
     });
   });
 
+  it.each(["bounded_failure", "conflict"] as const)(
+    "allows a failed run to atomically retain a %s broker disposition",
+    async (disposition) => {
+      const identity = await seed();
+      const failed = input(identity);
+      const result = await heartbeatRunSettlementService(db).settle({
+        ...failed,
+        terminalStatus: "failed",
+        runPatch: {
+          ...failed.runPatch,
+          exitCode: 1,
+        },
+        mutation: {
+          disposition,
+          brokerReceiptDigest: `sha256:${"8".repeat(64)}`,
+          remoteOldOid: "0".repeat(40),
+          remoteNewOid: disposition === "conflict" ? "c".repeat(40) : "0".repeat(40),
+        },
+      });
+
+      expect(result.settlement).toMatchObject({
+        terminalStatus: "failed",
+        mutationDisposition: disposition,
+      });
+    },
+  );
+
+  it.each(["bounded_failure", "conflict"] as const)(
+    "rejects successful run settlement with a %s repository mutation",
+    async (disposition) => {
+      const identity = await seed();
+      await expect(heartbeatRunSettlementService(db).settle({
+        ...input(identity),
+        mutation: {
+          disposition,
+          brokerReceiptDigest: `sha256:${"8".repeat(64)}`,
+          remoteOldOid: "0".repeat(40),
+          remoteNewOid: "0".repeat(40),
+        },
+      })).rejects.toBeInstanceOf(HeartbeatRunSettlementConflictError);
+    },
+  );
+
   it("commits a budget hard-stop pause in the same transaction as cost settlement", async () => {
     const identity = await seed();
     await db.insert(budgetPolicies).values({

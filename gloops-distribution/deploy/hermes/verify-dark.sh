@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   check_inactive "${unit}"
 done
 
@@ -111,6 +111,40 @@ if [[ "$(systemctl is-enabled paperclip-hermes-execution.service 2>/dev/null || 
   echo "PASS paperclip-hermes-execution.service is masked"
 else
   echo "FAIL paperclip-hermes-execution.service is not masked" >&2
+  failed=1
+fi
+
+if [[ "$(systemctl is-enabled paperclip-github-push-broker.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-github-push-broker.service is masked"
+else
+  echo "FAIL paperclip-github-push-broker.service is not masked" >&2
+  failed=1
+fi
+
+if [[ ! -S /run/paperclip-github-broker/broker.sock ]] \
+  && [[ ! -e /etc/paperclip-gloops/github-push-authorization.json ]] \
+  && [[ ! -e /etc/paperclip-gloops/github-push-authorization.sha256 ]]; then
+  echo "PASS GitHub push socket and replayable root authorization are absent while dark"
+else
+  echo "FAIL GitHub push socket or root authorization remains while dark" >&2
+  failed=1
+fi
+
+for installed_broker_control in \
+  /usr/local/lib/paperclip-gloops/github-push-broker.py \
+  /usr/local/lib/paperclip-gloops/tools/github-push-tool.bundle.cjs; do
+  if [[ "$(stat -c '%a:%U:%G' "${installed_broker_control}" 2>/dev/null || true)" == '555:root:root' ]]; then
+    echo "PASS installed GitHub push control is immutable: ${installed_broker_control}"
+  else
+    echo "FAIL installed GitHub push control is missing or mutable: ${installed_broker_control}" >&2
+    failed=1
+  fi
+done
+if [[ "$(stat -c '%a:%U:%G' /etc/paperclip-gloops/github-broker-receipt-token 2>/dev/null || true)" == '640:root:paperclip' ]] \
+  && grep -Eq '^pcp_broker_[0-9a-f]{64}$' /etc/paperclip-gloops/github-broker-receipt-token; then
+  echo "PASS broker-to-Paperclip receipt credential is root-controlled"
+else
+  echo "FAIL broker-to-Paperclip receipt credential is absent or unsafe" >&2
   failed=1
 fi
 
@@ -446,12 +480,24 @@ for required in \
   '--log-opt max-size=10m' \
   '--log-opt max-file=3' \
   '--mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly' \
+  '--mount type=bind,src=/etc/paperclip-gloops/github-broker-receipt-token,dst=/run/secrets/paperclip-github-broker-receipt-token,readonly' \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace,readonly'; do
   if ! grep -Fq -- "${required}" "${unit_file}"; then
     echo "FAIL missing resource/security bound: ${required}" >&2
     failed=1
   fi
 done
+hermes_unit_file='/usr/local/lib/systemd/system/paperclip-hermes-execution.service'
+if grep -Fq -- '--mount type=bind,src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker' "${hermes_unit_file}" \
+  && ! grep -Fq -- 'github-app-credentials.py refresh-hermes' "${hermes_unit_file}" \
+  && ! grep -Fq -- 'github-app-credentials.py revoke-hermes' "${hermes_unit_file}" \
+  && ! grep -Fq -- 'dst=/opt/data/.config/gh' "${hermes_unit_file}" \
+  && ! grep -Fq -- 'dst=/opt/data/.gitconfig' "${hermes_unit_file}"; then
+  echo "PASS Hermes receives only the unprivileged GitHub broker socket client"
+else
+  echo "FAIL legacy Hermes GitHub credential/config projection remains installed" >&2
+  failed=1
+fi
 if [[ "${failed}" -eq 0 ]]; then
   echo "PASS resource and container-security bounds are installed"
 fi

@@ -9,7 +9,7 @@ This directory installs the GLoops-owned Paperclip image on Hermes without activ
 - Tailnet-only HTTPS 8443 is configured through Tailscale Serve without Funnel. While dark it returns an unavailable-backend response because no Paperclip container or loopback HTTP listener exists.
 - Grok/xAI API credentials are neither configured nor mounted. Any later Grok execution must use the separately governed Grok CLI path.
 - The bounded-pilot sidecar receives only the Ollama Cloud credential and declares no fallback provider. Codex remains available outside this isolated profile but cannot be selected or automatically reached by the pilot.
-- GitHub publication uses the repository-installed `GLoops Autonomous Delivery` GitHub App. Its private key stays root-only on the host. Hermes and Paperclip independently mint, own, refresh, and revoke their own one-hour installation tokens so either service can restart without invalidating the other. Both tokens are restricted to the private `gloopsAI/gloops-paperclip-plugin` repository; the Paperclip read token is rotated only into the exact company secret declared by the trusted projector's persisted `githubTokenSecretRef` binding. Tokens are revoked and removed during shutdown. No Zach user credential or GitHub organization seat is mounted into either runtime.
+- GitHub reads use Paperclip's root-projected, repository-scoped installation token. GitHub writes use a separate root-owned one-run/one-push broker. Hermes receives neither a GitHub token nor the GitHub App key: its uid-10000 client submits one content-addressed commit closure over a peer-authenticated Unix socket, and a uid-10001 sandboxed worker receives a sealed, short-lived installation credential only after the broker binds live Paperclip run, issue, workspace, repository, branch, and authorization facts. The exact allowed ref is `refs/heads/paperclip/<run-id>/calibration`; force, deletion, multi-ref, default-branch, pull-request, and second-push mutations are denied. Root reconciles uncertain outcomes against GitHub and posts prepared plus terminal receipts back to Paperclip for atomic settlement. No Zach user credential or GitHub organization seat is mounted into either runtime.
 - Installed Paperclip plugin packages are mounted read-only. Provider credentials are never mounted. The Hermes execution workspace alone is mounted read-only so Paperclip can independently observe Git HEAD and dirtiness; all other Hermes state remains inaccessible.
 - Hermes container initialization resets the writable workspace owner. The sidecar start barrier therefore waits for authenticated health, restores only the Paperclip observer group on the workspace root, and proves uid:gid `995:985` can read the exact plugin pilot repository before Paperclip activation can pass preflight.
 - Paperclip has its own bounded post-start barrier. `systemctl start paperclip-gloops.service` does not succeed until Docker health and the host loopback health boundary both pass, so an activator cannot race container creation when issuing the one authorized wake.
@@ -85,6 +85,40 @@ sudo ./install-dark.sh
 The installation succeeds only if `verify-dark.sh` proves that the service is masked, the activation marker is absent, no container or listener exists, and related services/timers remain inactive.
 
 Release `2026.719.0-gloops.26` Paperclip image `sha256:f90cba2a746dac8da1e0aaf28e5525117183684af24eb7a1239f23af60ca22db` was built from merge `15213ed6139cbf8b481528a0f8aefecbb5ac221e`, passed workflow `29690682527` attempt 2, and has GitHub build-provenance attestation `36044954`; mutable tag `sha-15213ed` is a discovery aid only. Its Hermes execution image remains `sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca`, retained in the root-only archive whose SHA-256 is `3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2`. This release atomically settles terminal run state, exact provider evidence, normalized usage, cost, durable budget hard stops, accounting continuation, and the explicit repository-mutation disposition; any member failure leaves the run non-terminal and conflicting replay is rejected. It retains prepared request acknowledgement, authoritative Hermes route-and-usage receipts, terminal evidence reconciliation, and the certified execution, repository, credential, WIP, historical-isolation, recovery, inert activation, exact-topology rehearsal, successor campaign identity, and fail-dark boundaries. It is a bounded dark-install candidate and does not itself authorize Paperclip work, agent unpause, provider execution, GitHub mutation, recurring autonomy, or MTE.
+
+## One-run GitHub write broker
+
+The broker is installed and masked with the rest of the controlled swarm. The
+activation script starts it before either Paperclip or Hermes, and every stop,
+deadman, rollback, and dark-install path stops and masks it. Its durable
+allocation and hash-chained journal live under
+`/var/lib/paperclip-gloops/github-push-broker`; ingress packs and the Unix socket
+live only under `/run/paperclip-github-broker`.
+
+The root authorization is a single-use, exact-fact receipt. It names one
+Paperclip heartbeat run, company, issue, workspace, repository, mutation class,
+branch ref, expected old object id, expected new object id, source tree digest,
+and expiry. The accepted mutation class is `calibration_branch_create`; the
+branch must be `refs/heads/paperclip/<run-id>/calibration`, and the expected old
+object id must be zero. The broker independently retrieves current Paperclip
+facts before accepting the request and the GitHub App installation before
+minting a credential. A durable allocation prevents another authorization or
+run from claiming the same branch.
+
+The client packs exactly the new commit and its reachable closure without
+retaining ingress. The worker indexes that pack into an isolated bare
+repository, proves that its object set is exactly the manifest set and that the
+declared commit resolves, then makes one exact isomorphic-git push. A network
+exception does not imply failure: root queries the remote ref after the token
+expires or is safely revocable and records exactly one terminal disposition:
+`reconciled_success`, `bounded_failure`, or `conflict`. Paperclip consumes that
+terminal receipt in the same atomic settlement transaction as provider
+evidence, budget, cost, and run state.
+
+This broker is not a general GitHub shell, credential vending endpoint, PR
+creator, branch updater, or merge path. Expanding its mutation class, repository,
+ref namespace, or invocation count is a new authority decision and requires a
+separate accepted release.
 
 ## Rollback evidence
 

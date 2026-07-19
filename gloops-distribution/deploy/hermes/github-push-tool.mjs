@@ -1,0 +1,287 @@
+import fs from "node:fs";
+import http from "isomorphic-git/http/node";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { createHash, randomBytes } from "node:crypto";
+import * as git from "isomorphic-git";
+
+const ZERO_OID = "0".repeat(40);
+const OID_PATTERN = /^[0-9a-f]{40}$/;
+const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MAX_OBJECTS = 100_000;
+const MAX_PACK_BYTES = 64 * 1024 * 1024;
+const DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
+const DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function sha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  if (typeof value === "number" && (!Number.isSafeInteger(value) || value < 0)) {
+    fail("canonical receipt contains an unsupported number");
+  }
+  return JSON.stringify(value);
+}
+
+function exactKeys(value, expected, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${label} must be an object`);
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+    fail(`${label} keys do not match the accepted schema`);
+  }
+}
+
+function parseArgs(argv) {
+  const args = new Map();
+  for (let index = 0; index < argv.length; index += 2) {
+    const key = argv[index];
+    const value = argv[index + 1];
+    if (!key?.startsWith("--") || value === undefined) fail("arguments must be --key value pairs");
+    if (args.has(key)) fail(`duplicate argument: ${key}`);
+    args.set(key, value);
+  }
+  return args;
+}
+
+async function collectTreeObjects(gitdir, treeOid, output) {
+  if (output.has(treeOid)) return;
+  output.add(treeOid);
+  if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+  const { tree } = await git.readTree({ fs, gitdir, oid: treeOid });
+  for (const entry of tree) {
+    if (!OID_PATTERN.test(entry.oid)) fail("tree contains a malformed object id");
+    output.add(entry.oid);
+    if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    if (entry.type === "tree") await collectTreeObjects(gitdir, entry.oid, output);
+    if (entry.type !== "tree" && entry.type !== "blob") fail("tree contains an unsupported object type");
+  }
+}
+
+async function collectCommitClosure(gitdir, commitOid) {
+  const objects = new Set();
+  const pending = [commitOid];
+  while (pending.length > 0) {
+    const oid = pending.pop();
+    if (objects.has(oid)) continue;
+    if (!OID_PATTERN.test(oid)) fail("commit closure contains a malformed object id");
+    objects.add(oid);
+    if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    const { commit } = await git.readCommit({ fs, gitdir, oid });
+    await collectTreeObjects(gitdir, commit.tree, objects);
+    for (const parent of commit.parent) pending.push(parent);
+  }
+  return [...objects].sort();
+}
+
+function writeExclusive(filepath, bytes) {
+  const fd = fs.openSync(filepath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+  try {
+    fs.writeFileSync(fd, bytes);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+async function requestBroker(socketPath, request) {
+  const payload = `${canonicalJson(request)}\n`;
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ path: socketPath });
+    let output = "";
+    socket.setEncoding("utf8");
+    socket.setTimeout(180_000);
+    socket.on("connect", () => socket.end(payload));
+    socket.on("data", (chunk) => {
+      output += chunk;
+      if (output.length > 128 * 1024) socket.destroy(new Error("broker response exceeds limit"));
+    });
+    socket.on("timeout", () => socket.destroy(new Error("broker response timed out")));
+    socket.on("error", reject);
+    socket.on("close", () => {
+      try {
+        const response = JSON.parse(output);
+        resolve(response);
+      } catch (error) {
+        reject(new Error(`broker returned malformed JSON: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    });
+  });
+}
+
+async function clientCommand(args) {
+  const runId = args.get("--run-id") ?? process.env.PAPERCLIP_RUN_ID ?? "";
+  const repoDir = path.resolve(args.get("--repo-dir") ?? process.cwd());
+  const socketPath = args.get("--socket") ?? DEFAULT_SOCKET;
+  const ingress = args.get("--ingress") ?? DEFAULT_INGRESS;
+  if (!RUN_ID_PATTERN.test(runId)) fail("a canonical Paperclip run id is required");
+  const repoStat = fs.lstatSync(repoDir);
+  if (!repoStat.isDirectory() || repoStat.isSymbolicLink()) fail("repository path must be a real directory");
+  const gitdir = path.join(repoDir, ".git");
+  const gitdirStat = fs.lstatSync(gitdir);
+  if (!gitdirStat.isDirectory() || gitdirStat.isSymbolicLink()) {
+    fail("repository does not contain a real .git directory");
+  }
+  const newOid = await git.resolveRef({ fs, gitdir, ref: "HEAD" });
+  if (!OID_PATTERN.test(newOid)) fail("repository HEAD is not a SHA-1 commit");
+  await git.readCommit({ fs, gitdir, oid: newOid });
+  const objectOids = await collectCommitClosure(gitdir, newOid);
+  const { packfile } = await git.packObjects({ fs, gitdir, oids: objectOids, write: false });
+  if (!(packfile instanceof Uint8Array) || packfile.byteLength <= 0 || packfile.byteLength > MAX_PACK_BYTES) {
+    fail("commit pack is empty or exceeds the byte ceiling");
+  }
+  const ingressReal = fs.realpathSync(ingress);
+  const ingressStat = fs.statSync(ingressReal);
+  if (!ingressStat.isDirectory()) fail("broker ingress is unavailable");
+  const suffix = randomBytes(16).toString("hex");
+  const stem = `${runId}-${suffix}`;
+  const packName = `${stem}.pack`;
+  const manifestName = `${stem}.json`;
+  const packPath = path.join(ingressReal, packName);
+  const manifestPath = path.join(ingressReal, manifestName);
+  writeExclusive(packPath, packfile);
+  const manifest = {
+    schemaVersion: "gloops.github-push-bundle.v1",
+    heartbeatRunId: runId,
+    expectedNewOid: newOid,
+    objectCount: objectOids.length,
+    objectOids,
+    packBytes: packfile.byteLength,
+    packName,
+    packSha256: sha256(packfile),
+  };
+  writeExclusive(manifestPath, `${canonicalJson(manifest)}\n`);
+  try {
+    const response = await requestBroker(socketPath, {
+      schemaVersion: "gloops.github-push-client-request.v1",
+      heartbeatRunId: runId,
+      expectedNewOid: newOid,
+      manifestName,
+    });
+    if (!response || response.ok !== true) {
+      fail(typeof response?.error === "string" ? response.error : "broker rejected the mutation");
+    }
+    process.stdout.write(`${canonicalJson(response)}\n`);
+  } finally {
+    for (const filepath of [manifestPath, packPath]) {
+      try {
+        fs.unlinkSync(filepath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
+}
+
+async function workerCommand(args) {
+  const requestPath = path.resolve(args.get("--request") ?? "");
+  const tokenPath = process.env.CREDENTIALS_DIRECTORY
+    ? path.join(process.env.CREDENTIALS_DIRECTORY, "github-token")
+    : "";
+  if (!requestPath || !tokenPath) fail("worker request or credential boundary is unavailable");
+  const request = JSON.parse(fs.readFileSync(requestPath, "utf8"));
+  exactKeys(request, [
+    "defaultBranch",
+    "expectedNewOid",
+    "expectedOldOid",
+    "gitdir",
+    "objectOids",
+    "packPath",
+    "remoteRef",
+    "repositoryFullName",
+    "schemaVersion",
+  ], "worker request");
+  const branchRunId = /^refs\/heads\/paperclip\/([^/]+)\/calibration$/.exec(
+    request.remoteRef,
+  )?.[1];
+  if (
+    request.schemaVersion !== "gloops.github-push-worker-request.v1"
+    || !OID_PATTERN.test(request.expectedNewOid)
+    || request.expectedOldOid !== ZERO_OID
+    || !branchRunId
+    || !RUN_ID_PATTERN.test(branchRunId)
+    || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repositoryFullName)
+    || !Array.isArray(request.objectOids)
+    || request.objectOids.length === 0
+    || request.objectOids.length > MAX_OBJECTS
+    || new Set(request.objectOids).size !== request.objectOids.length
+    || request.objectOids.some((oid) => !OID_PATTERN.test(oid))
+  ) {
+    fail("worker request violates the accepted push contract");
+  }
+  const token = fs.readFileSync(tokenPath, "utf8").trim();
+  if (!/^ghs_[A-Za-z0-9_]+$/.test(token)) fail("worker credential is malformed");
+  const gitdir = path.resolve(request.gitdir);
+  const packPath = path.resolve(request.packPath);
+  fs.mkdirSync(path.join(gitdir, "objects", "pack"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(gitdir, "refs", "heads"), { recursive: true, mode: 0o700 });
+  const localPack = path.join(gitdir, "objects", "pack", "pack-input.pack");
+  fs.copyFileSync(packPath, localPack, fs.constants.COPYFILE_EXCL);
+  const { oids } = await git.indexPack({ fs, gitdir, filepath: "objects/pack/pack-input.pack" });
+  const indexed = [...oids].sort();
+  const declared = [...new Set(request.objectOids)].sort();
+  if (indexed.length !== declared.length || indexed.some((oid, index) => oid !== declared[index])) {
+    fail("pack objects differ from the declared content-addressed bundle");
+  }
+  const reachable = await collectCommitClosure(gitdir, request.expectedNewOid);
+  if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
+    fail("pack contains extra objects or does not close over the expected commit");
+  }
+  await git.writeRef({
+    fs,
+    gitdir,
+    ref: "refs/heads/paperclip-source",
+    value: request.expectedNewOid,
+    force: false,
+  });
+  const url = `https://github.com/${request.repositoryFullName}.git`;
+  let prePushObserved = false;
+  const result = await git.push({
+    fs,
+    http,
+    dir: path.dirname(gitdir),
+    gitdir,
+    url,
+    ref: "refs/heads/paperclip-source",
+    remoteRef: request.remoteRef,
+    force: false,
+    delete: false,
+    onAuth: () => ({ username: "x-access-token", password: token }),
+    onPrePush: ({ url: observedUrl, localRef, remoteRef }) => {
+      prePushObserved = true;
+      return (
+        observedUrl === url
+        && localRef.ref === "refs/heads/paperclip-source"
+        && localRef.oid === request.expectedNewOid
+        && remoteRef.ref === request.remoteRef
+        && remoteRef.oid === request.expectedOldOid
+      );
+    },
+  });
+  if (!prePushObserved || result.ok !== true) fail("Git protocol worker did not confirm the exact one-ref push");
+  process.stdout.write(`${canonicalJson({ ok: true, expectedNewOid: request.expectedNewOid })}\n`);
+}
+
+async function main() {
+  const [command, ...rest] = process.argv.slice(2);
+  const args = parseArgs(rest);
+  if (command === "client") return clientCommand(args);
+  if (command === "worker") return workerCommand(args);
+  fail("usage: github-push-tool client|worker --key value");
+}
+
+main().catch((error) => {
+  process.stderr.write(`github-push-tool: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});

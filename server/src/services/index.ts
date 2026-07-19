@@ -83,6 +83,10 @@ export {
   type HeartbeatRunSettlementStep,
 } from "./heartbeat-run-settlement.js";
 export {
+  repositoryMutationReceiptService,
+  RepositoryMutationReceiptConflictError,
+} from "./repository-mutation-receipts.js";
+export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
 } from "./productivity-review.js";
