@@ -39,6 +39,29 @@ def credential(lifecycle="life", legacy=False):
     return value
 
 
+def broker_credential(lifecycle="broker-life", transitioned=False):
+    value = {
+        "schemaVersion": "gloops.github-app-credential-receipt.v2",
+        "mode": "github-push-broker",
+        "lifecycleId": lifecycle,
+        "projector": {
+            "revokedAt": "2026-07-19T20:06:13Z",
+            "tokenFingerprint": "b" * 64,
+        },
+    }
+    if transitioned:
+        value["transitionFrom"] = {
+            "schemaVersion": "gloops.github-app-credential-receipt.v1",
+            "receiptFileSha256": "c" * 64,
+            "priorDistributionCommit": "1448302af034fa272141da549e25260f7650fc5a",
+            "priorSourceArchiveSha256": (
+                "c3e3c602c7e7ef0c0b3fad384c1e5852aa7ab1a83e7f94488c551885294433a6"
+            ),
+            "reconciledAt": "2026-07-19T21:00:00Z",
+        }
+    return value
+
+
 def stop(lifecycle="life", attempt="attempt"):
     return {
         "schemaVersion": "gloops.hermes-stop-receipt.v1",
@@ -66,6 +89,41 @@ class LifecycleHistoryTests(unittest.TestCase):
             self.write(stop_path, chain([stop()]))
             current_path.write_text(json.dumps(credentials[-1]))
             self.assertEqual(verify.verify_bundle(credential_path, stop_path, expiry_path, current_path), "correlated")
+
+    def test_native_broker_history_requires_only_terminal_projector(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path, stop_path, expiry_path, current_path = self.paths(Path(directory))
+            credentials = chain([broker_credential()])
+            self.write(credential_path, credentials)
+            self.write(stop_path, chain([stop("broker-life")]))
+            current_path.write_text(json.dumps(credentials[-1]))
+            self.assertEqual(
+                verify.verify_bundle(credential_path, stop_path, expiry_path, current_path),
+                "correlated",
+            )
+
+    def test_transitioned_broker_history_preserves_explicit_v1_origin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credential_path, stop_path, expiry_path, current_path = self.paths(Path(directory))
+            credentials = chain([broker_credential(transitioned=True)])
+            self.write(credential_path, credentials)
+            self.write(stop_path, chain([stop("broker-life")]))
+            current_path.write_text(json.dumps(credentials[-1]))
+            self.assertEqual(
+                verify.verify_bundle(credential_path, stop_path, expiry_path, current_path),
+                "correlated",
+            )
+
+            credentials[0]["transitionFrom"]["receiptFileSha256"] = "not-a-digest"
+            credentials = chain([{
+                key: value
+                for key, value in credentials[0].items()
+                if key not in {"sequence", "previousReceiptDigest", "receiptDigest"}
+            }])
+            self.write(credential_path, credentials)
+            current_path.write_text(json.dumps(credentials[-1]))
+            with self.assertRaisesRegex(verify.HistoryError, "transition evidence"):
+                verify.verify_bundle(credential_path, stop_path, expiry_path, current_path)
 
     def test_missing_durable_current_receipt_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:

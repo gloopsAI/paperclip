@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Mint, project, verify, and revoke bounded GitHub App installation tokens.
 
-The App private key never leaves the root-owned host boundary. Hermes receives
-one repository-scoped write token through its read-only gh config mount. The
-Paperclip trusted projector receives a separately minted read-only token through
-Paperclip's encrypted secret store. No token is printed or placed in argv.
+The App private key never leaves the root-owned host boundary. Broker-mode
+Hermes receives no GitHub credential. The Paperclip trusted projector receives
+one repository-scoped read-only token through Paperclip's encrypted secret
+store. Legacy dual-role receipt history remains verifiable but cannot be
+silently mixed into a broker-mode lifecycle. No token is printed or placed in
+argv.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import subprocess
@@ -36,6 +39,7 @@ HERMES_HOSTS = Path("/opt/paperclip/hermes-execution-profile/gh/hosts.yml")
 RECEIPT = RUNTIME / "credential-receipt.json"
 HISTORY = Path("/var/lib/paperclip-gloops/credential-history.jsonl")
 HISTORY_LOCK = Path("/var/lib/paperclip-gloops/credential-history.lock")
+STOP_HISTORY = Path("/var/lib/paperclip-gloops/hermes-stop-history.jsonl")
 COMMAND_LOCK = RUNTIME / "credential-lifecycle.lock"
 MINT_INTENTS = RUNTIME / "mint-intents.json"
 MIGRATION_BASELINE = RUNTIME / "migration-baseline.json"
@@ -43,6 +47,14 @@ EXPIRY_HISTORY = Path("/var/lib/paperclip-gloops/credential-expiry-history.jsonl
 EXPIRY_HISTORY_LOCK = Path("/var/lib/paperclip-gloops/credential-expiry-history.lock")
 API_BASE = "https://api.github.com"
 MAX_TOKEN_LIFETIME_SECONDS = 3900
+LEGACY_RECEIPT_SCHEMA = "gloops.github-app-credential-receipt.v1"
+BROKER_RECEIPT_SCHEMA = "gloops.github-app-credential-receipt.v2"
+BROKER_RECEIPT_MODE = "github-push-broker"
+BROKER_TRANSITION_DISTRIBUTIONS = {
+    "1448302af034fa272141da549e25260f7650fc5a": (
+        "c3e3c602c7e7ef0c0b3fad384c1e5852aa7ab1a83e7f94488c551885294433a6"
+    ),
+}
 
 WRITE_PERMISSIONS = {
     "checks": "read",
@@ -58,6 +70,7 @@ READ_PERMISSIONS = {
     "pull_requests": "read",
     "statuses": "read",
 }
+READ_RECEIPT_PERMISSIONS = {**READ_PERMISSIONS, "metadata": "read"}
 
 
 class CredentialError(RuntimeError):
@@ -254,14 +267,17 @@ def read_root_secret(path: Path, label: str) -> str:
     return value
 
 
-def receipt_base(config: dict[str, object]) -> dict[str, object]:
-    return {
-        "schemaVersion": "gloops.github-app-credential-receipt.v1",
+def receipt_base(config: dict[str, object], role: str = "projector") -> dict[str, object]:
+    base = {
+        "schemaVersion": BROKER_RECEIPT_SCHEMA if role == "projector" else LEGACY_RECEIPT_SCHEMA,
         "appId": config["appId"],
         "installationId": config["installationId"],
         "repositoryId": config["repositoryId"],
         "repository": config["repository"],
     }
+    if role == "projector":
+        base["mode"] = BROKER_RECEIPT_MODE
+    return base
 
 
 def timestamp() -> str:
@@ -663,17 +679,30 @@ def migrate_persistent_state() -> None:
         atomic_write(RECEIPT, json.dumps(records[-1], sort_keys=True) + "\n", 0o600)
 
 
+def role_is_terminal(receipt: dict[str, object], role: str) -> bool:
+    entry = receipt.get(role)
+    return bool(
+        isinstance(entry, dict)
+        and (
+            isinstance(entry.get("revokedAt"), str)
+            or isinstance(entry.get("expiredAt"), str)
+        )
+    )
+
+
 def receipt_complete(receipt: object) -> bool:
     if not isinstance(receipt, dict):
         return False
-    for role in ("hermes", "projector"):
-        entry = receipt.get(role)
-        if not isinstance(entry, dict) or not (
-            isinstance(entry.get("revokedAt"), str)
-            or isinstance(entry.get("expiredAt"), str)
-        ):
-            return False
-    return True
+    schema = receipt.get("schemaVersion")
+    if schema == LEGACY_RECEIPT_SCHEMA:
+        return all(role_is_terminal(receipt, role) for role in ("hermes", "projector"))
+    if schema == BROKER_RECEIPT_SCHEMA:
+        return (
+            receipt.get("mode") == BROKER_RECEIPT_MODE
+            and "hermes" not in receipt
+            and role_is_terminal(receipt, "projector")
+        )
+    return False
 
 
 def history_digest(record: dict[str, object]) -> str:
@@ -777,6 +806,121 @@ def archive_completed_receipt() -> None:
     atomic_write(RECEIPT, json.dumps(receipt, sort_keys=True) + "\n", 0o600)
 
 
+def sha256_hex(value: str) -> bool:
+    return re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def reconcile_broker_projector_lifecycle(
+    config: dict[str, object],
+    lifecycle_id: str,
+    receipt_file_sha256: str,
+    prior_distribution_commit: str,
+    prior_source_archive_sha256: str,
+) -> None:
+    try:
+        UUID(lifecycle_id)
+    except ValueError as error:
+        raise CredentialError("reconciled credential lifecycle identity is malformed") from error
+    if not sha256_hex(receipt_file_sha256):
+        raise CredentialError("reconciled credential receipt file digest is malformed")
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", prior_distribution_commit) is None
+        or not sha256_hex(prior_source_archive_sha256)
+        or BROKER_TRANSITION_DISTRIBUTIONS.get(prior_distribution_commit)
+        != prior_source_archive_sha256
+    ):
+        raise CredentialError("reconciled broker distribution identity is not approved")
+    if not RECEIPT.exists():
+        raise CredentialError("reconciled credential receipt is missing")
+
+    receipt_bytes = RECEIPT.read_bytes()
+    receipt = json.loads(receipt_bytes)
+    if not isinstance(receipt, dict) or receipt.get("lifecycleId") != lifecycle_id:
+        raise CredentialError("reconciled credential lifecycle does not match the current receipt")
+    transition = receipt.get("transitionFrom")
+    if receipt.get("schemaVersion") == BROKER_RECEIPT_SCHEMA:
+        expected_transition = {
+            "schemaVersion": LEGACY_RECEIPT_SCHEMA,
+            "receiptFileSha256": receipt_file_sha256,
+            "priorDistributionCommit": prior_distribution_commit,
+            "priorSourceArchiveSha256": prior_source_archive_sha256,
+            "reconciledAt": transition.get("reconciledAt") if isinstance(transition, dict) else None,
+        }
+        if (
+            receipt.get("mode") != BROKER_RECEIPT_MODE
+            or transition != expected_transition
+            or not isinstance(expected_transition["reconciledAt"], str)
+            or not receipt_complete(receipt)
+        ):
+            raise CredentialError("reconciled credential receipt changed after transition")
+        records = [json.loads(line) for line in HISTORY.read_text().splitlines()] if HISTORY.exists() else []
+        validate_history(records)
+        if not records or records[-1] != receipt:
+            raise CredentialError("reconciled credential receipt is not the exact history tail")
+        return
+
+    expected_base = receipt_base(config, "hermes")
+    expected_receipt_keys = {*expected_base, "lifecycleId", "startedAt", "projector"}
+    if (
+        receipt.get("schemaVersion") != LEGACY_RECEIPT_SCHEMA
+        or set(receipt) != expected_receipt_keys
+        or any(receipt.get(key) != value for key, value in expected_base.items())
+        or "hermes" in receipt
+        or not role_is_terminal(receipt, "projector")
+        or hashlib.sha256(receipt_bytes).hexdigest() != receipt_file_sha256
+    ):
+        raise CredentialError("legacy broker credential receipt is not eligible for transition")
+    projector = receipt.get("projector")
+    if (
+        not isinstance(projector, dict)
+        or set(projector) != {
+            "mintedAt",
+            "expiresAt",
+            "permissions",
+            "revokedAt",
+            "expiredAt",
+            "tokenFingerprint",
+        }
+        or projector.get("permissions") != READ_RECEIPT_PERMISSIONS
+        or not isinstance(projector.get("mintedAt"), str)
+        or not isinstance(projector.get("expiresAt"), str)
+        or not isinstance(projector.get("tokenFingerprint"), str)
+        or not sha256_hex(str(projector["tokenFingerprint"]))
+    ):
+        raise CredentialError("legacy broker projector evidence is malformed")
+    if not STOP_HISTORY.exists():
+        raise CredentialError("reconciled credential lifecycle has no stop history")
+    stop_records = [json.loads(line) for line in STOP_HISTORY.read_text().splitlines()]
+    matching_stops = [
+        record
+        for record in stop_records
+        if isinstance(record, dict) and record.get("lifecycleId") == lifecycle_id
+    ]
+    if (
+        len(matching_stops) != 1
+        or matching_stops[0].get("schemaVersion") != "gloops.hermes-stop-receipt.v1"
+        or matching_stops[0].get("status") not in {"succeeded", "failed", "not-present"}
+    ):
+        raise CredentialError("reconciled credential lifecycle has no unique terminal stop receipt")
+
+    reconciled_at = timestamp()
+    archived = {
+        **receipt,
+        "schemaVersion": BROKER_RECEIPT_SCHEMA,
+        "mode": BROKER_RECEIPT_MODE,
+        "transitionFrom": {
+            "schemaVersion": LEGACY_RECEIPT_SCHEMA,
+            "receiptFileSha256": receipt_file_sha256,
+            "priorDistributionCommit": prior_distribution_commit,
+            "priorSourceArchiveSha256": prior_source_archive_sha256,
+            "reconciledAt": reconciled_at,
+        },
+        "completedAt": reconciled_at,
+    }
+    record = append_credential_history(archived)
+    atomic_write(RECEIPT, json.dumps(record, sort_keys=True) + "\n", 0o600)
+
+
 def record_mint(
     config: dict[str, object],
     role: str,
@@ -784,7 +928,7 @@ def record_mint(
     expires_at: str,
     permissions: dict[str, str],
 ) -> None:
-    expected = receipt_base(config)
+    expected = receipt_base(config, role)
     receipt = expected.copy()
     if RECEIPT.exists():
         existing = json.loads(RECEIPT.read_text())
@@ -1025,10 +1169,6 @@ def command_refresh_projector(config: dict[str, object]) -> None:
     refresh_role(config, "projector")
 
 
-def command_refresh_hermes(config: dict[str, object]) -> None:
-    refresh_role(config, "hermes")
-
-
 def command_rotate_projector(config: dict[str, object]) -> None:
     token = PROJECTOR_TOKEN.read_text().strip()
     if not token.startswith("ghs_"):
@@ -1074,12 +1214,29 @@ def command_reconcile_expired_intents(_config: dict[str, object]) -> None:
     reconcile_expired_mint_intents()
 
 
+def command_reconcile_broker_projector(
+    config: dict[str, object],
+    lifecycle_id: str,
+    receipt_file_sha256: str,
+    prior_distribution_commit: str,
+    prior_source_archive_sha256: str,
+) -> None:
+    reconcile_broker_projector_lifecycle(
+        config,
+        lifecycle_id,
+        receipt_file_sha256,
+        prior_distribution_commit,
+        prior_source_archive_sha256,
+    )
+
+
 def main() -> int:
     if os.geteuid() != 0:
         raise CredentialError("run as root")
-    if len(sys.argv) != 2 or sys.argv[1] not in {
+    if len(sys.argv) == 6 and sys.argv[1] == "reconcile-broker-projector-lifecycle":
+        command = sys.argv[1]
+    elif len(sys.argv) == 2 and sys.argv[1] in {
         "refresh-projector",
-        "refresh-hermes",
         "rotate-projector",
         "clear-projector",
         "revoke-projector",
@@ -1087,7 +1244,17 @@ def main() -> int:
         "migrate-persistent-state",
         "reconcile-expired-mint-intents",
     }:
-        raise CredentialError("usage: github-app-credentials.py refresh-projector|refresh-hermes|rotate-projector|clear-projector|revoke-projector|revoke-hermes|migrate-persistent-state|reconcile-expired-mint-intents")
+        command = sys.argv[1]
+    else:
+        raise CredentialError(
+            "usage: github-app-credentials.py "
+            "refresh-projector|rotate-projector|clear-projector|"
+            "revoke-projector|revoke-hermes|migrate-persistent-state|"
+            "reconcile-expired-mint-intents|"
+            "reconcile-broker-projector-lifecycle "
+            "LIFECYCLE_ID RECEIPT_FILE_SHA256 PRIOR_DISTRIBUTION_COMMIT "
+            "PRIOR_SOURCE_ARCHIVE_SHA256"
+        )
     ensure_runtime()
     command_fd = os.open(COMMAND_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -1097,7 +1264,6 @@ def main() -> int:
         config = load_config()
         commands = {
             "refresh-projector": command_refresh_projector,
-            "refresh-hermes": command_refresh_hermes,
             "rotate-projector": command_rotate_projector,
             "clear-projector": command_clear_projector,
             "revoke-projector": command_revoke_projector,
@@ -1105,7 +1271,10 @@ def main() -> int:
             "migrate-persistent-state": command_migrate,
             "reconcile-expired-mint-intents": command_reconcile_expired_intents,
         }
-        commands[sys.argv[1]](config)
+        if command == "reconcile-broker-projector-lifecycle":
+            command_reconcile_broker_projector(config, *sys.argv[2:])
+        else:
+            commands[command](config)
     finally:
         fcntl.flock(command_fd, fcntl.LOCK_UN)
         os.close(command_fd)

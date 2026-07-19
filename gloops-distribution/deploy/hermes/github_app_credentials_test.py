@@ -33,6 +33,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             RECEIPT=root / "state/credential-runtime/credential-receipt.json",
             HISTORY=root / "state/credential-history.jsonl",
             HISTORY_LOCK=root / "state/credential-history.lock",
+            STOP_HISTORY=root / "state/hermes-stop-history.jsonl",
             COMMAND_LOCK=root / "state/credential-runtime/credential-lifecycle.lock",
             MINT_INTENTS=root / "state/credential-runtime/mint-intents.json",
             MIGRATION_BASELINE=root / "state/credential-runtime/migration-baseline.json",
@@ -242,13 +243,12 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertEqual(broker.HERMES_TOKEN.read_text(), minted[0] + "\n")
             self.assertTrue(broker.HERMES_HOSTS.exists())
 
-    def test_independent_refresh_commands_own_only_their_service_token(self):
+    def test_broker_refresh_command_owns_only_the_projector_token(self):
         with patch.object(broker, "refresh_role") as refresh_role:
-            broker.command_refresh_hermes({"appId": 1})
             broker.command_refresh_projector({"appId": 1})
         self.assertEqual(
             [call.args for call in refresh_role.call_args_list],
-            [({"appId": 1}, "hermes"), ({"appId": 1}, "projector")],
+            [({"appId": 1}, "projector")],
         )
 
     def test_successful_independent_refreshes_merge_a_non_secret_receipt(self):
@@ -259,15 +259,17 @@ class BrokerLifecycleTests(unittest.TestCase):
                 patch.object(broker, "mint", side_effect=[write, read]), \
                 patch.object(broker.os, "chown"):
             broker.refresh_role(config, "hermes")
-            broker.refresh_role(config, "projector")
+            with self.assertRaisesRegex(broker.CredentialError, "boundary has drifted"):
+                broker.refresh_role(config, "projector")
             receipt = broker.RECEIPT.read_text()
 
             self.assertEqual(broker.HERMES_TOKEN.read_text(), write[0] + "\n")
-            self.assertEqual(broker.PROJECTOR_TOKEN.read_text(), read[0] + "\n")
+            self.assertFalse(broker.PROJECTOR_TOKEN.exists())
             self.assertNotIn(write[0], receipt)
             self.assertNotIn(read[0], receipt)
             self.assertIn('"hermes"', receipt)
-            self.assertIn('"projector"', receipt)
+            self.assertNotIn('"projector"', receipt)
+            self.assertIn(broker.LEGACY_RECEIPT_SCHEMA, receipt)
             self.assertIn('"revokedAt": null', receipt)
             self.assertIn('"lifecycleId"', receipt)
             self.assertIn('"mintedAt"', receipt)
@@ -424,6 +426,104 @@ class BrokerLifecycleTests(unittest.TestCase):
             self.assertRegex(current["receiptDigest"], r"^[0-9a-f]{64}$")
             self.assertEqual(archived["sequence"], 1)
             self.assertIsNone(archived["previousReceiptDigest"])
+
+    def test_broker_projector_lifecycle_is_complete_without_a_hermes_role(self):
+        receipt = {
+            "schemaVersion": broker.BROKER_RECEIPT_SCHEMA,
+            "mode": broker.BROKER_RECEIPT_MODE,
+            "projector": {
+                "revokedAt": "2026-07-19T20:06:13Z",
+                "tokenFingerprint": "a" * 64,
+            },
+        }
+        self.assertTrue(broker.receipt_complete(receipt))
+        self.assertFalse(broker.receipt_complete({
+            **receipt,
+            "hermes": {"revokedAt": "2026-07-19T20:06:14Z"},
+        }))
+
+    def test_stranded_projector_receipt_reconciles_once_into_broker_history(self):
+        config = {
+            "appId": 1,
+            "installationId": 2,
+            "repositoryId": 3,
+            "repository": "gloopsAI/gloops-paperclip-plugin",
+        }
+        lifecycle_id = "c2b79bad-9908-40cf-a937-77e30580140e"
+        prior_commit = next(iter(broker.BROKER_TRANSITION_DISTRIBUTIONS))
+        prior_archive = broker.BROKER_TRANSITION_DISTRIBUTIONS[prior_commit]
+        receipt = {
+            **broker.receipt_base(config, "hermes"),
+            "lifecycleId": lifecycle_id,
+            "startedAt": "2026-07-19T20:06:06Z",
+            "projector": {
+                "mintedAt": "2026-07-19T20:06:06Z",
+                "expiresAt": "2026-07-19T21:06:06Z",
+                "permissions": broker.READ_RECEIPT_PERMISSIONS,
+                "revokedAt": "2026-07-19T20:06:13Z",
+                "expiredAt": None,
+                "tokenFingerprint": "a" * 64,
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
+                patch.object(broker.os, "chown"):
+            broker.RECEIPT.parent.mkdir(parents=True)
+            broker.RECEIPT.write_text(broker.json.dumps(receipt, sort_keys=True) + "\n")
+            receipt_file_sha256 = broker.hashlib.sha256(broker.RECEIPT.read_bytes()).hexdigest()
+            stop = {
+                "schemaVersion": "gloops.hermes-stop-receipt.v1",
+                "attemptId": "1147a863-86e3-4fa0-8f5c-4962fe07e34c",
+                "lifecycleId": lifecycle_id,
+                "status": "succeeded",
+            }
+            broker.STOP_HISTORY.write_text(broker.json.dumps(stop) + "\n")
+
+            broker.reconcile_broker_projector_lifecycle(
+                config,
+                lifecycle_id,
+                receipt_file_sha256,
+                prior_commit,
+                prior_archive,
+            )
+            broker.reconcile_broker_projector_lifecycle(
+                config,
+                lifecycle_id,
+                receipt_file_sha256,
+                prior_commit,
+                prior_archive,
+            )
+
+            history = [broker.json.loads(line) for line in broker.HISTORY.read_text().splitlines()]
+            current = broker.json.loads(broker.RECEIPT.read_text())
+            self.assertEqual(len(history), 1)
+            self.assertEqual(current, history[-1])
+            self.assertEqual(current["schemaVersion"], broker.BROKER_RECEIPT_SCHEMA)
+            self.assertEqual(current["mode"], broker.BROKER_RECEIPT_MODE)
+            self.assertNotIn("hermes", current)
+            self.assertEqual(
+                current["transitionFrom"]["receiptFileSha256"],
+                receipt_file_sha256,
+            )
+            self.assertEqual(
+                current["transitionFrom"]["priorSourceArchiveSha256"],
+                prior_archive,
+            )
+
+    def test_stranded_projector_reconciliation_refuses_unapproved_distribution(self):
+        config = {
+            "appId": 1,
+            "installationId": 2,
+            "repositoryId": 3,
+            "repository": "gloopsAI/gloops-paperclip-plugin",
+        }
+        with self.assertRaisesRegex(broker.CredentialError, "distribution identity"):
+            broker.reconcile_broker_projector_lifecycle(
+                config,
+                "c2b79bad-9908-40cf-a937-77e30580140e",
+                "a" * 64,
+                "b" * 40,
+                "c" * 64,
+            )
 
     def test_archived_lifecycle_cannot_be_mutated_under_its_existing_identity(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \

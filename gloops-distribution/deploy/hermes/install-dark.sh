@@ -197,6 +197,24 @@ systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.servi
 "${LIB_DIR}/github-app-credentials.py" reconcile-expired-mint-intents
 "${LIB_DIR}/github-app-credentials.py" revoke-hermes
 "${LIB_DIR}/github-app-credentials.py" revoke-projector
+reconciliation_values=(
+  "${PAPERCLIP_RECONCILE_CREDENTIAL_LIFECYCLE_ID:-}"
+  "${PAPERCLIP_RECONCILE_CREDENTIAL_RECEIPT_SHA256:-}"
+  "${PAPERCLIP_RECONCILE_PRIOR_DISTRIBUTION_COMMIT:-}"
+  "${PAPERCLIP_RECONCILE_PRIOR_SOURCE_ARCHIVE_SHA256:-}"
+)
+reconciliation_count=0
+for reconciliation_value in "${reconciliation_values[@]}"; do
+  [[ -n "${reconciliation_value}" ]] && ((reconciliation_count += 1))
+done
+if ((reconciliation_count != 0 && reconciliation_count != ${#reconciliation_values[@]})); then
+  echo "credential lifecycle reconciliation requires all four exact transition values" >&2
+  exit 1
+fi
+if ((reconciliation_count == ${#reconciliation_values[@]})); then
+  "${LIB_DIR}/github-app-credentials.py" reconcile-broker-projector-lifecycle \
+    "${reconciliation_values[@]}"
+fi
 
 "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 "${LIB_DIR}/prepare-hermes-handshake-profile.sh"

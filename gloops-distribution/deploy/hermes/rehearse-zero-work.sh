@@ -285,7 +285,10 @@ assert len(stops) == stop_before + 1, "expected one durable Hermes stop receipt"
 credential, stop = credentials[-1], stops[-1]
 assert credential["lifecycleId"] == stop["lifecycleId"], "lifecycle receipts do not correlate"
 assert credential.get("legacyReceipt") is not True, "new lifecycle was classified as legacy"
-assert all(isinstance(credential[role]["revokedAt"], str) for role in ("hermes", "projector"))
+assert credential.get("schemaVersion") == "gloops.github-app-credential-receipt.v2"
+assert credential.get("mode") == "github-push-broker"
+assert "hermes" not in credential, "broker-mode lifecycle retained a Hermes credential"
+assert isinstance(credential["projector"]["revokedAt"], str)
 assert stop["status"] == "succeeded"
 assert stop["plannedStopAccepted"] is True
 assert stop["gatewayState"] == "stopped"
