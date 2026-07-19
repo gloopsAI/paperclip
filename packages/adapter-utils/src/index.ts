@@ -6,6 +6,8 @@ export type {
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterProviderRequestPreparedAcknowledgement,
+  AdapterProviderRequestPreparedEvidence,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

@@ -149,6 +149,7 @@ import {
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
+import { providerRequestEvidenceService } from "./provider-request-evidence.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
@@ -5169,6 +5170,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const providerRequestEvidence = providerRequestEvidenceService(db);
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -13639,6 +13641,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : undefined,
           onLog,
           onMeta: onAdapterMeta,
+          onProviderRequestPrepared: async (evidence) =>
+            providerRequestEvidence.acknowledgePreparedRequest(
+              {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                heartbeatRunId: run.id,
+                issueId,
+              },
+              evidence,
+            ),
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
