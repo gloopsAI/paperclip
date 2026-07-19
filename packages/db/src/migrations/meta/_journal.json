@@ -1037,6 +1037,13 @@
       "when": 1784450000000,
       "tag": "0149_provider_io_terminal_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1784451200000,
+      "tag": "0150_heartbeat_run_atomic_settlements",
+      "breakpoints": true
     }
   ]
 }
