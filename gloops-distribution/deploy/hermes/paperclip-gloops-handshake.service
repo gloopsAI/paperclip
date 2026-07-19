@@ -14,7 +14,7 @@ StartLimitBurst=1
 [Service]
 Type=simple
 EnvironmentFile=/etc/paperclip-gloops/runtime.env
-Environment=PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:89ca6d68dd5047e07cdeca304cd888d8ad08e928e943c5852cb15473f45eaa3d
+Environment=PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:f90cba2a746dac8da1e0aaf28e5525117183684af24eb7a1239f23af60ca22db
 Environment=PAPERCLIP_CONTAINER=paperclip-gloops-handshake
 ExecStartPre=/usr/bin/test -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/bin/test ! -e /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE

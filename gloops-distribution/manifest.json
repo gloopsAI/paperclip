@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.25",
+    "version": "2026.719.0-gloops.26",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:89ca6d68dd5047e07cdeca304cd888d8ad08e928e943c5852cb15473f45eaa3d"
+    "digest": "sha256:f90cba2a746dac8da1e0aaf28e5525117183684af24eb7a1239f23af60ca22db"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.25.json"
+    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.26.json"
   },
   "patches": [
     {
@@ -407,6 +407,17 @@
       "integratedCommits": ["5ff58795928d240e49c98a6401da0086a4b5bfc9"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected provider runtime and control plane equivalently reconcile exact raw and canonical terminal evidence, resolved route/model, terminal status, and usage against the prepared request and run identities before successful settlement, with immutable idempotent persistence and contradictory replay rejection."
+    },
+    {
+      "id": "atomic-hermes-run-settlement",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "7535735138da09b8dbfa8100913efd7e27825141",
+      "sourceHead": "b9c10090132c74ff67ba4d1051386c847e4b5694",
+      "patchDiffSha256": "7a71e1df05d7c3d501f3db5861a96c0208332abf0aa63d9f77123df027858712",
+      "integratedCommits": ["15213ed6139cbf8b481528a0f8aefecbb5ac221e"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected control plane provides an equivalent single transaction for terminal run state, provider evidence, normalized usage, cost, durable budget hard stop, accounting continuation, and repository-mutation disposition, with rollback to non-terminal state and conflicting replay rejection."
     }
   ],
   "releasePolicy": {
