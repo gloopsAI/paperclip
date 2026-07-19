@@ -536,6 +536,114 @@ class CommissionerTest(unittest.TestCase):
                 enforce_root_ownership=False,
             )
 
+    def test_valid_barrier_transition_requires_active_transaction_lock(
+        self,
+    ) -> None:
+        approval_bytes = self.paths.approval.read_bytes()
+        self.commissioner(FakePlatform()).run()
+        self.paths.approval.write_bytes(approval_bytes)
+        self.paths.approval.chmod(0o600)
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in legacy_roster()
+            if agent["name"] in MODULE.ADMITTED
+        }
+        commissioner = self.commissioner(FakePlatform())
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+        for phase in (
+            "configs_applied",
+            "configs_verified",
+            "receipt_written",
+            "barrier_enabled",
+        ):
+            commissioner._advance_rollback_journal(phase)
+
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "not owned by an active transaction",
+        ):
+            MODULE.verify_commissioned_state(
+                self.paths,
+                FakePlatform([exact_roster()]),
+                live=False,
+                enforce_root_ownership=False,
+            )
+
+        with mock.patch.object(
+            MODULE.fcntl,
+            "flock",
+            side_effect=BlockingIOError,
+        ):
+            MODULE.verify_commissioned_state(
+                self.paths,
+                FakePlatform([exact_roster()]),
+                live=False,
+                enforce_root_ownership=False,
+            )
+
+    def test_transition_journal_rejects_wrong_phase_or_approval(self) -> None:
+        approval_bytes = self.paths.approval.read_bytes()
+        self.commissioner(FakePlatform()).run()
+        self.paths.approval.write_bytes(approval_bytes)
+        self.paths.approval.chmod(0o600)
+        prior_configs = {
+            agent["name"]: copy.deepcopy(agent["adapterConfig"])
+            for agent in legacy_roster()
+            if agent["name"] in MODULE.ADMITTED
+        }
+        commissioner = self.commissioner(FakePlatform())
+        commissioner._write_rollback_journal(
+            self.paths.approval,
+            prior_configs,
+        )
+
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "remains unresolved",
+        ):
+            MODULE.verify_commissioned_state(
+                self.paths,
+                FakePlatform([exact_roster()]),
+                live=False,
+                enforce_root_ownership=False,
+            )
+
+        for phase in (
+            "configs_applied",
+            "configs_verified",
+            "receipt_written",
+            "barrier_enabled",
+        ):
+            commissioner._advance_rollback_journal(phase)
+        journal = json.loads(
+            self.paths.rollback_journal.read_text(encoding="utf-8"),
+        )
+        journal["approvalSha256"] = "sha256:" + "0" * 64
+        self.paths.rollback_journal.write_text(
+            json.dumps(journal),
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.object(
+                MODULE.fcntl,
+                "flock",
+                side_effect=BlockingIOError,
+            ),
+            self.assertRaisesRegex(
+                MODULE.CommissioningError,
+                "journal and receipt approval differ",
+            ),
+        ):
+            MODULE.verify_commissioned_state(
+                self.paths,
+                FakePlatform([exact_roster()]),
+                live=False,
+                enforce_root_ownership=False,
+            )
+
     def test_interrupted_journal_recovers_exact_configs_and_consumes_approval(self) -> None:
         prior_roster = legacy_roster()
         prior_configs = {

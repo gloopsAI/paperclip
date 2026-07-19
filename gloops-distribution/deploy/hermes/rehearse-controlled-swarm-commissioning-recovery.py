@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as dt
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -1509,7 +1510,9 @@ def rehearse_installed_recovery_unit(module: Any) -> dict[str, object]:
                 elif durable_phase == "barrier_enabled":
                     platform.set_barrier(True)
                 elif durable_phase == "control_plane_restarted":
-                    platform.restart_paperclip()
+                    with paths.lock.open("a+", encoding="utf-8") as lock:
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        platform.restart_paperclip()
                 elif durable_phase == "live_verified":
                     platform.health()
                     if not platform.inspect_commissioned():
