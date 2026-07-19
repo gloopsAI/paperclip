@@ -4,8 +4,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
+  costEvents,
   createDb,
   heartbeatRuns,
+  heartbeatRunSettlements,
   issues,
   providerIoTerminalEvidence,
   providerRequestEvidence,
@@ -232,7 +234,48 @@ describeEmbeddedPostgres("heartbeat prepared provider evidence integration", () 
       terminalEvidenceDigest: `sha256:${"7".repeat(64)}`,
       rawPayloadDisposition: "not_retained",
     });
-
+    const settlements = await db
+      .select()
+      .from(heartbeatRunSettlements)
+      .where(eq(heartbeatRunSettlements.heartbeatRunId, run!.id));
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({
+      companyId,
+      agentId,
+      heartbeatRunId: run!.id,
+      terminalStatus: "succeeded",
+      normalizedUsage: {
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 2,
+      },
+      mutationDisposition: "not_authorized",
+      brokerReceiptDigest: null,
+      remoteOldOid: null,
+      remoteNewOid: null,
+      accountingContinuation: {
+        schemaVersion: "gloops.accounting-continuation.v1",
+        heartbeatRunId: run!.id,
+        totalInputTokens: 10,
+        totalCachedInputTokens: 0,
+        totalOutputTokens: 2,
+      },
+    });
+    const runCosts = await db
+      .select()
+      .from(costEvents)
+      .where(eq(costEvents.heartbeatRunId, run!.id));
+    expect(runCosts).toHaveLength(1);
+    expect(runCosts[0]).toMatchObject({
+      provider: "ollama-cloud",
+      biller: "ollama-cloud",
+      billingType: "subscription_included",
+      model: "test-model",
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 2,
+      costCents: 0,
+    });
     await heartbeat.cancelInvocationsForAgents([agentId], "test teardown");
     const runIds = await db
       .select({ id: heartbeatRuns.id })

@@ -150,7 +150,7 @@ import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { providerRequestEvidenceService } from "./provider-request-evidence.js";
-import { providerIoTerminalEvidenceService } from "./provider-io-terminal-evidence.js";
+import { heartbeatRunSettlementService } from "./heartbeat-run-settlement.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
@@ -5172,7 +5172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const providerRequestEvidence = providerRequestEvidenceService(db);
-  const providerIoTerminalEvidence = providerIoTerminalEvidenceService(db);
+  const heartbeatRunSettlements = heartbeatRunSettlementService(db);
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -7223,6 +7223,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return ensured;
   }
 
+  function publishRunStatusUpdate(updated: typeof heartbeatRuns.$inferSelect) {
+    if (isHeartbeatRunTerminalStatus(updated.status)) {
+      clearHeartbeatRunRuntimeStatus(updated.id);
+    }
+    publishLiveEvent({
+      companyId: updated.companyId,
+      type: "heartbeat.run.status",
+      payload: {
+        runId: updated.id,
+        agentId: updated.agentId,
+        status: updated.status,
+        invocationSource: updated.invocationSource,
+        triggerDetail: updated.triggerDetail,
+        error: updated.error ?? null,
+        errorCode: updated.errorCode ?? null,
+        startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+        finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+      },
+    });
+    publishRunLifecyclePluginEvent(updated);
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
@@ -7235,27 +7257,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .returning()
       .then((rows) => rows[0] ?? null);
 
-    if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
-      });
-      publishRunLifecyclePluginEvent(updated);
-    }
+    if (updated) publishRunStatusUpdate(updated);
 
     return updated;
   }
@@ -7273,25 +7275,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
-      });
-      publishRunLifecyclePluginEvent(updated);
+      publishRunStatusUpdate(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -13676,17 +13660,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ) {
           throw new Error("Hermes adapter returned success without reconciled terminal provider evidence");
         }
-        if (adapterResult.providerIoTerminalEvidence) {
-          await providerIoTerminalEvidence.persistReconciledEvidence(
-            {
-              companyId: agent.companyId,
-              agentId: agent.id,
-              heartbeatRunId: run.id,
-              issueId,
-            },
-            adapterResult.providerIoTerminalEvidence,
-          );
-        }
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -13965,7 +13938,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterResult.summary ?? null,
       );
 
-      const persistedRunWrite = await setRunStatusIfRunning(run.id, status, {
+      const terminalRunPatch = {
         finishedAt: new Date(),
         error: runErrorMessage,
         errorCode: runErrorCode,
@@ -13979,7 +13952,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
-      });
+      };
+      const atomicLedgerScope = adapterResult.providerIoTerminalEvidence
+        ? await resolveLedgerScopeForRun(db, agent.companyId, run)
+        : null;
+      const atomicSettlement = adapterResult.providerIoTerminalEvidence
+        ? await heartbeatRunSettlements.settle({
+            identity: {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              heartbeatRunId: run.id,
+              issueId,
+            },
+            terminalStatus: status,
+            runPatch: terminalRunPatch,
+            providerEvidence: adapterResult.providerIoTerminalEvidence,
+            accounting: {
+              adapterType: agent.adapterType,
+              sessionId: nextSessionState.legacySessionId,
+              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+              provider: adapterResult.providerIoTerminalEvidence.terminalEvidence.resolvedProvider,
+              biller: adapterResult.providerIoTerminalEvidence.terminalEvidence.resolvedProvider,
+              billingType: adapterResult.providerIoTerminalEvidence.terminalEvidence.billingClass,
+              model: adapterResult.providerIoTerminalEvidence.terminalEvidence.resolvedModel,
+              projectId: atomicLedgerScope?.projectId ?? null,
+              costCents: normalizeBilledCostCents(
+                adapterResult.costUsd,
+                normalizeLedgerBillingType(
+                  adapterResult.providerIoTerminalEvidence.terminalEvidence.billingClass,
+                ),
+              ),
+            },
+            mutation: { disposition: "not_authorized" },
+          })
+        : null;
+      if (atomicSettlement && !atomicSettlement.replayed) {
+        publishRunStatusUpdate(atomicSettlement.run);
+        await budgetService(db, budgetHooks)
+          .evaluateCostEvent(atomicSettlement.costEvent)
+          .catch((budgetError) => {
+            logger.error(
+              { err: budgetError, runId: run.id, costEventId: atomicSettlement.costEvent.id },
+              "atomic run settlement committed but budget policy evaluation failed",
+            );
+          });
+      }
+      const persistedRunWrite = atomicSettlement
+        ? {
+            run: atomicSettlement.run,
+            updated: !atomicSettlement.replayed,
+          }
+        : await setRunStatusIfRunning(run.id, status, terminalRunPatch);
       if (!persistedRunWrite.updated) {
         logger.info(
           {
@@ -14118,9 +14141,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
-          legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        if (!atomicSettlement) {
+          await updateRuntimeState(agent, finalizedRun, adapterResult, {
+            legacySessionId: nextSessionState.legacySessionId,
+          }, normalizedUsage);
+        }
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
