@@ -107,12 +107,15 @@ minting a credential. A durable allocation prevents another authorization or
 run from claiming the same branch.
 
 The client packs exactly the new commit and its reachable closure without
-retaining ingress. The worker indexes that pack into an isolated bare
-repository, proves that its object set is exactly the manifest set and that the
-declared commit resolves, then makes one exact isomorphic-git push. A network
-exception does not imply failure. The write token exists only in broker memory
-and the worker's sealed, RAM-backed systemd credential; it is never written to
-durable state. Normal completion revokes it. Crash recovery waits until its
+retaining ingress. Before token mint, a network-denied validation worker indexes
+the root-owned, read-only pack into a disposable bare repository; it proves that
+the object set is exactly the manifest set, that the declared commit resolves,
+and that every tree entry is a regular file, executable file, or directory
+(symlinks and gitlinks are rejected). A fresh push worker repeats those checks
+against the same immutable pack and then makes one exact isomorphic-git push.
+A network exception does not imply failure. The write token exists only in
+broker memory and the push worker's sealed, RAM-backed systemd credential; it
+is never written to durable state. Normal completion revokes it. Crash recovery waits until its
 recorded expiry, mints a separate repository-scoped `contents:read` token, and
 only queries the remote ref—never retries the push—before recording exactly one
 terminal disposition:

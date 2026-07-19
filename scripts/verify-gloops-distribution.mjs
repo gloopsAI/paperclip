@@ -1729,8 +1729,10 @@ for (const required of [
 }
 for (const required of [
   "SO_PEERCRED",
-  "paperclip-github-push-worker-",
+  "paperclip-github-push-{mode}-",
   "LoadCredential=github-token:",
+  "\"validate\"",
+  "RestrictAddressFamilies=AF_UNIX",
   "create_one_branch_ref",
   "reconciled_success",
   "bounded_failure",

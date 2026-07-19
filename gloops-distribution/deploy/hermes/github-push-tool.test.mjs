@@ -132,6 +132,48 @@ test("client rejects a symlinked repository before contacting the broker", async
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("worker rejects a committed symlink before making a request", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-symlink-"));
+  const repo = path.join(root, "repo");
+  const gitdir = path.join(root, "worker.git");
+  const pack = path.join(root, "input.pack");
+  const request = path.join(root, "request.json");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "target.txt"), "target\n");
+  fs.symlinkSync("target.txt", path.join(repo, "link.txt"));
+  git(repo, "add", "target.txt", "link.txt");
+  git(repo, "commit", "-m", "symlink must be rejected");
+  const head = git(repo, "rev-parse", "HEAD");
+  const objectOids = git(repo, "rev-list", "--objects", "--no-object-names", "HEAD")
+    .split("\n")
+    .filter(Boolean)
+    .sort();
+  const packed = spawnSync("git", ["pack-objects", "--stdout", "--revs"], {
+    cwd: repo,
+    input: `${head}\n`,
+  });
+  assert.equal(packed.status, 0, packed.stderr?.toString());
+  fs.writeFileSync(pack, packed.stdout);
+  fs.writeFileSync(request, JSON.stringify({
+    schemaVersion: "gloops.github-push-worker-request.v1",
+    repositoryFullName: "gloopsAI/gloops-paperclip-plugin",
+    defaultBranch: "main",
+    remoteRef: `refs/heads/paperclip/${runId}/calibration`,
+    expectedOldOid: "0".repeat(40),
+    expectedNewOid: head,
+    objectOids,
+    packPath: pack,
+    gitdir,
+  }));
+  const result = await runTool(["validate", "--request", request], root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unsupported object type or mode/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("worker rejects an overbroad ref before reading a credential or making a request", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-"));
   const request = path.join(root, "request.json");

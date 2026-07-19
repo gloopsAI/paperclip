@@ -233,12 +233,12 @@ class GitHubPushBrokerTests(unittest.TestCase):
             pack_path = work_dir / "input.pack"
             request_path.write_text("{}\n")
             pack_path.write_text("pack\n")
-            os.chmod(request_path, 0o400)
-            os.chmod(pack_path, 0o400)
-            os.chown(request_path, broker.WORKER_UID, broker.WORKER_GID)
-            os.chown(pack_path, broker.WORKER_UID, broker.WORKER_GID)
-            self.assertEqual(request_path.stat().st_mode & 0o777, 0o400)
-            self.assertEqual(pack_path.stat().st_mode & 0o777, 0o400)
+            os.chmod(request_path, 0o444)
+            os.chmod(pack_path, 0o444)
+            self.assertEqual(request_path.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(pack_path.stat().st_mode & 0o777, 0o444)
+            self.assertEqual(request_path.stat().st_uid, os.getuid())
+            self.assertEqual(pack_path.stat().st_uid, os.getuid())
 
     def test_worker_unit_binds_only_read_only_inputs_and_writable_object_area(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -269,6 +269,40 @@ class GitHubPushBrokerTests(unittest.TestCase):
             self.assertIn(f"--property=ReadOnlyPaths={pack_path}", command)
             self.assertIn(f"--property=ReadWritePaths={gitdir}", command)
             self.assertIn("--property=User=paperclip-git-worker", command)
+            self.assertIn("worker", command)
+            self.assertTrue(
+                any(value.startswith("--property=LoadCredential=github-token:") for value in command)
+            )
+
+    def test_validation_worker_has_no_credential_or_network_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            request_path = root / "worker-request.json"
+            pack_path = root / "input.pack"
+            gitdir = root / "repo.git"
+            request_path.write_text(json.dumps({"expectedNewOid": "a" * 40}))
+            pack_path.write_bytes(b"pack")
+            gitdir.mkdir()
+            completed = Mock(
+                returncode=0,
+                stdout=json.dumps({"ok": True, "expectedNewOid": "a" * 40}) + "\n",
+                stderr="",
+            )
+            with patch.object(broker, "sealed_token_fd") as seal, \
+                    patch.object(broker.subprocess, "run", return_value=completed) as run:
+                broker.run_worker(
+                    "c" * 32,
+                    request_path,
+                    pack_path,
+                    gitdir,
+                    None,
+                    "validate",
+                )
+            seal.assert_not_called()
+            command = run.call_args.args[0]
+            self.assertIn("--property=RestrictAddressFamilies=AF_UNIX", command)
+            self.assertFalse(any("LoadCredential" in value for value in command))
+            self.assertIn("validate", command)
 
     def test_recovery_after_in_flight_only_reconciles_and_never_runs_worker(self):
         run_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"

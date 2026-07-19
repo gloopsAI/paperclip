@@ -14,6 +14,8 @@ const MAX_OBJECTS = 100_000;
 const MAX_PACK_BYTES = 64 * 1024 * 1024;
 const DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 const DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
+const ACCEPTED_BLOB_MODES = new Set(["100644", "100755"]);
+const ACCEPTED_TREE_MODE = "040000";
 
 function fail(message) {
   throw new Error(message);
@@ -62,10 +64,16 @@ async function collectTreeObjects(gitdir, treeOid, output) {
   const { tree } = await git.readTree({ fs, gitdir, oid: treeOid });
   for (const entry of tree) {
     if (!OID_PATTERN.test(entry.oid)) fail("tree contains a malformed object id");
+    if (
+      (entry.type === "tree" && entry.mode !== ACCEPTED_TREE_MODE)
+      || (entry.type === "blob" && !ACCEPTED_BLOB_MODES.has(entry.mode))
+      || (entry.type !== "tree" && entry.type !== "blob")
+    ) {
+      fail("tree contains an unsupported object type or mode");
+    }
     output.add(entry.oid);
     if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
     if (entry.type === "tree") await collectTreeObjects(gitdir, entry.oid, output);
-    if (entry.type !== "tree" && entry.type !== "blob") fail("tree contains an unsupported object type");
   }
 }
 
@@ -184,12 +192,9 @@ async function clientCommand(args) {
   }
 }
 
-async function workerCommand(args) {
+async function importWorkerBundle(args) {
   const requestPath = path.resolve(args.get("--request") ?? "");
-  const tokenPath = process.env.CREDENTIALS_DIRECTORY
-    ? path.join(process.env.CREDENTIALS_DIRECTORY, "github-token")
-    : "";
-  if (!requestPath || !tokenPath) fail("worker request or credential boundary is unavailable");
+  if (!requestPath) fail("worker request boundary is unavailable");
   const request = JSON.parse(fs.readFileSync(requestPath, "utf8"));
   exactKeys(request, [
     "defaultBranch",
@@ -220,15 +225,18 @@ async function workerCommand(args) {
   ) {
     fail("worker request violates the accepted push contract");
   }
-  const token = fs.readFileSync(tokenPath, "utf8").trim();
-  if (!/^ghs_[A-Za-z0-9_]+$/.test(token)) fail("worker credential is malformed");
   const gitdir = path.resolve(request.gitdir);
   const packPath = path.resolve(request.packPath);
   fs.mkdirSync(path.join(gitdir, "objects", "pack"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(gitdir, "refs", "heads"), { recursive: true, mode: 0o700 });
   const localPack = path.join(gitdir, "objects", "pack", "pack-input.pack");
   fs.copyFileSync(packPath, localPack, fs.constants.COPYFILE_EXCL);
-  const { oids } = await git.indexPack({ fs, gitdir, filepath: "objects/pack/pack-input.pack" });
+  const { oids } = await git.indexPack({
+    fs,
+    dir: gitdir,
+    gitdir,
+    filepath: "objects/pack/pack-input.pack",
+  });
   const indexed = [...oids].sort();
   const declared = [...new Set(request.objectOids)].sort();
   if (indexed.length !== declared.length || indexed.some((oid, index) => oid !== declared[index])) {
@@ -238,6 +246,22 @@ async function workerCommand(args) {
   if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
     fail("pack contains extra objects or does not close over the expected commit");
   }
+  return { request, gitdir };
+}
+
+async function validateCommand(args) {
+  const { request } = await importWorkerBundle(args);
+  process.stdout.write(`${canonicalJson({ ok: true, expectedNewOid: request.expectedNewOid })}\n`);
+}
+
+async function workerCommand(args) {
+  const { request, gitdir } = await importWorkerBundle(args);
+  const tokenPath = process.env.CREDENTIALS_DIRECTORY
+    ? path.join(process.env.CREDENTIALS_DIRECTORY, "github-token")
+    : "";
+  if (!tokenPath) fail("worker credential boundary is unavailable");
+  const token = fs.readFileSync(tokenPath, "utf8").trim();
+  if (!/^ghs_[A-Za-z0-9_]+$/.test(token)) fail("worker credential is malformed");
   await git.writeRef({
     fs,
     gitdir,
@@ -277,8 +301,9 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
   if (command === "client") return clientCommand(args);
+  if (command === "validate") return validateCommand(args);
   if (command === "worker") return workerCommand(args);
-  fail("usage: github-push-tool client|worker --key value");
+  fail("usage: github-push-tool client|validate|worker --key value");
 }
 
 main().catch((error) => {

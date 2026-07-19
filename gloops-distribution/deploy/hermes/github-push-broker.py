@@ -834,10 +834,13 @@ def run_worker(
     request_path: Path,
     pack_path: Path,
     gitdir: Path,
-    token: str,
+    token: str | None,
+    mode: str = "worker",
 ) -> None:
-    token_fd = sealed_token_fd(token)
-    unit = f"paperclip-github-push-worker-{nonce[:16]}"
+    if mode not in {"validate", "worker"} or (mode == "worker") != (token is not None):
+        raise BrokerError("isolated worker mode and credential boundary conflict")
+    token_fd = sealed_token_fd(token) if token is not None else None
+    unit = f"paperclip-github-push-{mode}-{nonce[:16]}"
     command = [
         "/usr/bin/systemd-run",
         "--quiet",
@@ -857,7 +860,11 @@ def run_worker(
         "--property=ProtectControlGroups=yes",
         "--property=RestrictSUIDSGID=yes",
         "--property=LockPersonality=yes",
-        "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+        (
+            "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"
+            if mode == "worker"
+            else "--property=RestrictAddressFamilies=AF_UNIX"
+        ),
         "--property=CapabilityBoundingSet=",
         "--property=AmbientCapabilities=",
         "--property=MemoryMax=512M",
@@ -866,17 +873,25 @@ def run_worker(
         f"--property=ReadOnlyPaths={request_path}",
         f"--property=ReadOnlyPaths={pack_path}",
         f"--property=ReadWritePaths={gitdir}",
-        f"--property=LoadCredential=github-token:/proc/{os.getpid()}/fd/{token_fd}",
-        "/usr/bin/node",
-        str(TOOL),
-        "worker",
-        "--request",
-        str(request_path),
     ]
+    if token_fd is not None:
+        command.append(
+            f"--property=LoadCredential=github-token:/proc/{os.getpid()}/fd/{token_fd}"
+        )
+    command.extend(
+        [
+            "/usr/bin/node",
+            str(TOOL),
+            mode,
+            "--request",
+            str(request_path),
+        ]
+    )
     try:
         completed = subprocess.run(command, text=True, capture_output=True, timeout=210)
     finally:
-        os.close(token_fd)
+        if token_fd is not None:
+            os.close(token_fd)
     if completed.returncode != 0:
         detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "worker failed"
         raise BrokerError(f"isolated Git protocol worker failed: {detail[:500]}")
@@ -973,6 +988,46 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
         )
         post_prepared(connection, lease["nonce"], prepared)
 
+        os.chmod(pack_path, 0o444)
+        preflight_root = work_dir / "preflight"
+        preflight_gitdir = preflight_root / "repo.git"
+        preflight_root.mkdir(mode=0o711)
+        preflight_gitdir.mkdir(mode=0o700)
+        os.chown(preflight_root, WORKER_UID, WORKER_GID)
+        os.chown(preflight_gitdir, WORKER_UID, WORKER_GID)
+        preflight_request = {
+            "schemaVersion": "gloops.github-push-worker-request.v1",
+            "repositoryFullName": authorization["repositoryFullName"],
+            "defaultBranch": authorization["defaultBranch"],
+            "remoteRef": authorization["branchRef"],
+            "expectedOldOid": lease["expectedOldOid"],
+            "expectedNewOid": lease["expectedNewOid"],
+            "objectOids": manifest["objectOids"],
+            "packPath": str(pack_path),
+            "gitdir": str(preflight_gitdir),
+        }
+        preflight_request_path = work_dir / "preflight-request.json"
+        durable_write(
+            preflight_request_path,
+            f"{canonical_json(preflight_request)}\n",
+            0o444,
+        )
+        try:
+            run_worker(
+                lease["nonce"],
+                preflight_request_path,
+                pack_path,
+                preflight_gitdir,
+                None,
+                "validate",
+            )
+        except BrokerError:
+            receipt = terminal_receipt(prepared, "bounded_failure", ZERO_OID, ZERO_OID)
+            finalize(connection, lease["nonce"], "prepared", receipt)
+            raise
+        finally:
+            shutil.rmtree(preflight_root, ignore_errors=True)
+
         module = load_app_module()
         config = module.load_config()
         record_mint_intent(connection, lease["nonce"])
@@ -1008,10 +1063,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
                 "gitdir": str(gitdir),
             }
             request_path = work_dir / "worker-request.json"
-            durable_write(request_path, f"{canonical_json(worker_request)}\n", 0o400)
-            os.chown(request_path, WORKER_UID, WORKER_GID)
-            os.chown(pack_path, WORKER_UID, WORKER_GID)
-            os.chmod(pack_path, 0o400)
+            durable_write(request_path, f"{canonical_json(worker_request)}\n", 0o444)
             transition(
                 connection,
                 lease["nonce"],
@@ -1025,7 +1077,14 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             )
             worker_error: BrokerError | None = None
             try:
-                run_worker(lease["nonce"], request_path, pack_path, gitdir, token)
+                run_worker(
+                    lease["nonce"],
+                    request_path,
+                    pack_path,
+                    gitdir,
+                    token,
+                    "worker",
+                )
             except BrokerError as error:
                 worker_error = error
             transition(
