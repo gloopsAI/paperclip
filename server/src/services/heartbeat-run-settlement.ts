@@ -14,6 +14,7 @@ import {
   providerIoTerminalEvidenceService,
 } from "./provider-io-terminal-evidence.js";
 import type { PreparedProviderRequestIdentity } from "./provider-request-evidence.js";
+import { budgetService } from "./budgets.js";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -56,12 +57,17 @@ export type AtomicHeartbeatRunSettlementInput = {
   settledAt?: Date;
 };
 
-type SettlementStep =
+export type HeartbeatRunSettlementStep =
   | "provider_evidence"
   | "run"
   | "cost"
+  | "budget"
   | "accounting"
   | "settlement";
+
+export type HeartbeatRunSettlementHooks = {
+  afterStep?: (step: HeartbeatRunSettlementStep) => void | Promise<void>;
+};
 
 export class HeartbeatRunSettlementConflictError extends Error {
   constructor(message: string) {
@@ -144,7 +150,7 @@ function assertReplayMatches(
 
 export function heartbeatRunSettlementService(
   db: Db,
-  hooks: { afterStep?: (step: SettlementStep) => void | Promise<void> } = {},
+  hooks: HeartbeatRunSettlementHooks = {},
 ) {
   return {
     settle: async (input: AtomicHeartbeatRunSettlementInput) => {
@@ -258,6 +264,13 @@ export function heartbeatRunSettlementService(
           .returning()
           .then((rows) => rows[0]);
         await hooks.afterStep?.("cost");
+
+        // Budget hard-stop state is part of the durable settlement boundary.
+        // Process cancellation is retried by the outer heartbeat service after
+        // commit, but a cost event can never commit without the corresponding
+        // database pause/incident decision also succeeding.
+        await budgetService(tx as unknown as Db).evaluateCostEvent(costEvent);
+        await hooks.afterStep?.("budget");
 
         await tx
           .insert(agentRuntimeState)

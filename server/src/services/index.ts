@@ -79,6 +79,8 @@ export {
   HeartbeatRunSettlementConflictError,
   type AtomicHeartbeatRunSettlementInput,
   type HeartbeatRunMutationSettlement,
+  type HeartbeatRunSettlementHooks,
+  type HeartbeatRunSettlementStep,
 } from "./heartbeat-run-settlement.js";
 export {
   productivityReviewService,

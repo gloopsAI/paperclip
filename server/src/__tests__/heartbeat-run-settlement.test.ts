@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agentRuntimeState,
   agents,
+  approvals,
+  budgetIncidents,
+  budgetPolicies,
   companies,
   costEvents,
   createDb,
@@ -35,6 +40,10 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(budgetIncidents);
+    await db.delete(approvals);
+    await db.delete(budgetPolicies);
     await db.delete(heartbeatRunSettlements);
     await db.delete(costEvents);
     await db.delete(providerIoTerminalEvidence);
@@ -261,6 +270,45 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
       remoteOldOid: "9".repeat(40),
       remoteNewOid: "b".repeat(40),
     });
+  });
+
+  it("commits a budget hard-stop pause in the same transaction as cost settlement", async () => {
+    const identity = await seed();
+    await db.insert(budgetPolicies).values({
+      companyId: identity.companyId,
+      scopeType: "agent",
+      scopeId: identity.agentId,
+      metric: "billed_cents",
+      windowKind: "monthly",
+      amount: 1,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+    const settledInput = input(identity);
+    const result = await heartbeatRunSettlementService(db).settle({
+      ...settledInput,
+      accounting: {
+        ...settledInput.accounting,
+        billingType: "metered_api",
+        costCents: 1,
+      },
+    });
+
+    expect(result.settlement).toBeTruthy();
+    const agent = await db.select().from(agents)
+      .where(eq(agents.id, identity.agentId))
+      .then((rows) => rows[0]);
+    expect(agent).toMatchObject({
+      status: "paused",
+      pauseReason: "budget",
+    });
+    const incidents = await db.select().from(budgetIncidents)
+      .where(eq(budgetIncidents.companyId, identity.companyId));
+    expect(incidents.some((incident) =>
+      incident.thresholdType === "hard" && incident.status === "open"
+    )).toBe(true);
   });
 
   it("rolls back every settlement member when a later member fails", async () => {

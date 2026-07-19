@@ -285,4 +285,91 @@ describeEmbeddedPostgres("heartbeat prepared provider evidence integration", () 
       await heartbeat.waitForRunExecutionDrain(runId);
     }
   }, 10_000);
+
+  it("leaves a Hermes run non-terminal when atomic settlement rolls back", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Heartbeat Rollback Co",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "operator",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Hermes Rollback",
+      role: "engineer",
+      status: "active",
+      adapterType: "hermes_gateway",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Preserve atomic rollback",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "operator",
+    });
+
+    const settlementHook = vi.fn((step: string) => {
+      if (step === "cost") throw new Error("injected heartbeat settlement rollback");
+    });
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "true",
+        PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "1",
+        PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "0",
+        PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "1000",
+        PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "200",
+        PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "60000",
+        PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "1000",
+        PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "200",
+        PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "4",
+        PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "10",
+      },
+      heartbeatRunSettlementHooks: {
+        afterStep: settlementHook,
+      },
+    });
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "user",
+      reason: "provider_evidence_rollback_test",
+      payload: { issueId },
+      contextSnapshot: { issueId, skipIssueComment: true },
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+    });
+    expect(run).not.toBeNull();
+    const settlementDeadline = Date.now() + 8_000;
+    while (
+      Date.now() < settlementDeadline
+      && !settlementHook.mock.calls.some(([step]) => step === "cost")
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(settlementHook).toHaveBeenCalledWith("cost");
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    const persistedRun = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run!.id))
+      .then((rows) => rows[0]);
+    expect(persistedRun.status).toBe("running");
+    expect(await db.select().from(providerIoTerminalEvidence)
+      .where(eq(providerIoTerminalEvidence.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect(await db.select().from(costEvents)
+      .where(eq(costEvents.heartbeatRunId, run!.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRunSettlements)
+      .where(eq(heartbeatRunSettlements.heartbeatRunId, run!.id))).toHaveLength(0);
+
+    await heartbeat.cancelInvocationsForAgents([agentId], "test teardown");
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+  }, 10_000);
 });
