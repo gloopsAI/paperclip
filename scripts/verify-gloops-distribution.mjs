@@ -830,8 +830,8 @@ if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }
-if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true$/m.test(runtimeEnv)) {
-  fail("runtime-changing source must keep the release-pin activation interlock engaged");
+if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false$/m.test(runtimeEnv)) {
+  fail("release distribution must clear the release-pin activation interlock");
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
@@ -1050,10 +1050,11 @@ for (const [surface, content, required] of [
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property Type=exec"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property RuntimeMaxSec=2"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "result}\" == 'timeout'"],
-  ["Hermes image loader", loadHermesExecutionImage, "58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3"],
+  ["Hermes image loader", loadHermesExecutionImage, "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"],
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
-  ["cold rollback backup", backupDark, "hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst"],
+  ["dark installer", installDark, '"${SCRIPT_DIR}/route-receipt/hermes-source-lock.json" "${LIB_DIR}/route-receipt/hermes-source-lock.json"'],
+  ["cold rollback backup", backupDark, "hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
   ["cold rollback backup transaction guard", backupDark, "refuse_unresolved_commissioning"],
   ["cold rollback backup transaction journal", backupDark, "commissioning-rollback.json"],
@@ -1198,7 +1199,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d";
+  "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v1") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -1265,8 +1266,8 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addre
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
   JSON.stringify({
-    path: "/opt/paperclip/release-artifacts/hermes-execution-3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d.tar.zst",
-    sha256: "58e7325459157c8085052cfd4be322c00825111881a14f978124a667b42518d3",
+    path: "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
+    sha256: "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2",
   })
 ) {
   fail("Hermes execution image archive must be content-addressed and exact");
@@ -1288,10 +1289,11 @@ if (
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageCorrection) !==
   JSON.stringify({
-    baseImage: "hermes-agent@sha256:c58e0672b554d9a240bae881660a0294818f08f9523c9c512a1dadfdac6dae78",
-    scope: "tirith-circuit-breaker-obeys-fail-closed",
+    baseImage: "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    scope: "authoritative-route-and-usage-receipts",
     buildNetwork: "none",
-    behavioralVerification: "three-scanner-failures-then-block",
+    sourceLock: "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
+    behavioralVerification: "63-contract-tests-plus-exact-runtime-projection",
   })
 ) {
   fail("Hermes execution image correction must be narrow, offline, and behaviorally verified");
@@ -2088,14 +2090,14 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
   }
 }
-if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false")) {
-  fail("dark verification bypasses the source-only release-pin interlock");
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
+  fail("dark verification still requires the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",

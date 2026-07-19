@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:8a3a1220ef978e066f1f380eba7565ee6884c34ded06c73a4b090effe3bef895'
-readonly HERMES_IMAGE='sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:4be4a409d7ab18ba96bbd6c575f2213eaf4f8089c0c836cc9d573cd91eec721a'
+readonly HERMES_IMAGE='sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly APP_KEY="${CONFIG_DIR}/github-app/private-key.pem"
@@ -103,6 +103,9 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-hermes-handshake-egress-
 install -m 0755 -o root -g root "${SCRIPT_DIR}/rehearse-handshake-control-plane-firewall.sh" "${LIB_DIR}/rehearse-handshake-control-plane-firewall.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-command-security-image.sh" "${LIB_DIR}/verify-hermes-command-security-image.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/load-hermes-execution-image.sh" "${LIB_DIR}/load-hermes-execution-image.sh"
+rm -rf "${LIB_DIR}/route-receipt"
+install -d -m 0555 -o root -g root "${LIB_DIR}/route-receipt"
+install -m 0444 -o root -g root "${SCRIPT_DIR}/route-receipt/hermes-source-lock.json" "${LIB_DIR}/route-receipt/hermes-source-lock.json"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/provision-tirith.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"

@@ -12,7 +12,7 @@ StartLimitBurst=1
 
 [Service]
 Type=simple
-Environment=HERMES_HANDSHAKE_IMAGE=sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d
+Environment=HERMES_HANDSHAKE_IMAGE=sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-handshake-profile.sh --source
 ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-handshake
 ExecStartPre=/usr/bin/test ! -e /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED
