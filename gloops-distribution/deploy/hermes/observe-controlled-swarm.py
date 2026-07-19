@@ -16,6 +16,9 @@ UNITS = (
     "paperclip-hermes-execution.service",
     "paperclip-gloops.service",
 )
+CAMPAIGN_ID = (
+    "controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139"
+)
 
 
 def run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -35,8 +38,10 @@ def unit_state(unit: str) -> dict[str, str]:
 def main() -> int:
     if os.geteuid() != 0:
         raise SystemExit("controlled-swarm observation must run as root")
-    epoch_path = pathlib.Path(
-        "/var/lib/paperclip-gloops/campaign-deadman/controlled-swarm-20260717/epoch.json",
+    epoch_path = (
+        pathlib.Path("/var/lib/paperclip-gloops/campaign-deadman")
+        / CAMPAIGN_ID
+        / "epoch.json"
     )
     deadman = None
     socket_path = pathlib.Path("/run/paperclip-campaign/deadman.sock")
@@ -45,6 +50,8 @@ def main() -> int:
             "/usr/local/lib/paperclip-gloops/verify-campaign-deadman.py",
             "--wait-seconds",
             "1",
+            "--campaign-id",
+            CAMPAIGN_ID,
         )
         deadman = (
             {"verification": status.stdout.strip()}

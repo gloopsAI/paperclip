@@ -5,7 +5,8 @@ readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly STATE_DIR='/var/lib/paperclip-gloops/controlled-swarm'
 readonly APPROVAL="${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED"
-readonly EPOCH='/var/lib/paperclip-gloops/campaign-deadman/controlled-swarm-20260717/epoch.json'
+readonly CAMPAIGN_ID='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
+readonly EPOCH="/var/lib/paperclip-gloops/campaign-deadman/${CAMPAIGN_ID}/epoch.json"
 readonly LOCK='/run/lock/paperclip-controlled-swarm.lock'
 readonly DEADMAN='paperclip-campaign-deadman.service'
 readonly HERMES='paperclip-hermes-execution.service'
@@ -124,7 +125,7 @@ if (
     }
     or approval["schemaVersion"] != "gloops.controlled-swarm-activation-approval.v1"
     or approval["authorization"] != "activate_inert_control_plane"
-    or approval["campaignId"] != "controlled-swarm-20260717"
+    or approval["campaignId"] != "controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139"
     or approval["approvedImage"] != approved_image
     or approval["rehearsalReceipt"] != str(rehearsal_path)
     or approval["rehearsalReceiptSha256"] != rehearsal_digest
@@ -156,6 +157,7 @@ systemctl daemon-reload
 systemctl enable "${COMMISSIONING_RECOVERY}"
 systemctl start "${DEADMAN}"
 "${LIB_DIR}/verify-campaign-deadman.py" \
+  --campaign-id "${CAMPAIGN_ID}" \
   --wait-seconds 15 \
   --require-status unarmed
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
@@ -178,6 +180,7 @@ receipt_tmp="$(mktemp "${STATE_DIR}/activation.XXXXXX")"
 approval_sha256="sha256:$(sha256sum "${approval_in_progress}" | awk '{print $1}')"
 python3 - "${receipt_tmp}" "${rehearsal_receipt}" \
   "$("${LIB_DIR}/verify-campaign-deadman.py" \
+    --campaign-id "${CAMPAIGN_ID}" \
     --wait-seconds 5 \
     --require-status unarmed)" \
   "${approval_sha256}" <<'PY'

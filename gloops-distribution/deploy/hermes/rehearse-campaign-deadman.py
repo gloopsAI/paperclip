@@ -32,9 +32,15 @@ PRODUCTION_UNITS = (
 )
 TARGET = "paperclip-campaign-deadman-rehearsal-target.service"
 CAMPAIGN_ID = "controlled-swarm-deadman-rehearsal"
+PRODUCTION_CAMPAIGN_ID = (
+    "controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139"
+)
 SOURCE = pathlib.Path("/usr/local/lib/paperclip-gloops/campaign-deadman.py")
 STOP_ACTUATOR = pathlib.Path(
     "/usr/local/lib/paperclip-gloops/campaign-deadman-rehearsal-stop.sh",
+)
+PREDECESSOR_VERIFIER = pathlib.Path(
+    "/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py",
 )
 RUN_DIR = pathlib.Path("/run/paperclip-campaign-rehearsal")
 RECEIPT_DIR = pathlib.Path("/var/lib/paperclip-gloops/rehearsals")
@@ -82,6 +88,9 @@ def wait_for(predicate, *, seconds: float, message: str) -> None:
 
 
 def assert_dark() -> None:
+    if not PREDECESSOR_VERIFIER.is_file():
+        raise RuntimeError("predecessor campaign epoch verifier is unavailable")
+    run(str(PREDECESSOR_VERIFIER))
     for unit in PRODUCTION_UNITS:
         if run("systemctl", "is-active", "--quiet", unit, check=False).returncode == 0:
             raise RuntimeError(f"production unit is active: {unit}")
@@ -96,13 +105,17 @@ def assert_dark() -> None:
     ):
         if marker.exists() or marker.is_socket():
             raise RuntimeError(f"production activation surface exists: {marker}")
-    production_epoch = pathlib.Path(
-        "/var/lib/paperclip-gloops/campaign-deadman/controlled-swarm-20260717/epoch.json",
+    production_epoch = (
+        pathlib.Path("/var/lib/paperclip-gloops/campaign-deadman")
+        / PRODUCTION_CAMPAIGN_ID
+        / "epoch.json"
     )
     if production_epoch.exists():
         raise RuntimeError("production campaign epoch is already armed")
     if run("systemctl", "is-active", "--quiet", TARGET, check=False).returncode == 0:
         raise RuntimeError("campaign deadman rehearsal target is active")
+    if run("systemctl", "is-enabled", TARGET, check=False).stdout.strip() != "masked":
+        raise RuntimeError("campaign deadman rehearsal target is not masked")
     if RUN_DIR.exists():
         raise RuntimeError("campaign deadman rehearsal runtime state remains")
     if REHEARSAL_STATE_DIR.exists() and any(REHEARSAL_STATE_DIR.iterdir()):
@@ -125,10 +138,13 @@ def file_sha256(path: pathlib.Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--allow-source-path", type=pathlib.Path)
+    parser.add_argument("--allow-predecessor-verifier-path", type=pathlib.Path)
     args = parser.parse_args()
-    global SOURCE
+    global PREDECESSOR_VERIFIER, SOURCE
     if args.allow_source_path is not None:
         SOURCE = args.allow_source_path.resolve()
+    if args.allow_predecessor_verifier_path is not None:
+        PREDECESSOR_VERIFIER = args.allow_predecessor_verifier_path.resolve()
     if os.geteuid() != 0:
         raise SystemExit("deadman rehearsal must run as root")
     assert_dark()
@@ -145,6 +161,7 @@ def main() -> int:
     epoch_path = state_root / CAMPAIGN_ID / "epoch.json"
     started = time.monotonic()
     evidence: dict[str, Any] = {}
+    target_unmasked = False
 
     RECEIPT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chown(RECEIPT_DIR, 0, 0)
@@ -189,6 +206,9 @@ def main() -> int:
         thread = None
 
     try:
+        run("systemctl", "unmask", TARGET)
+        target_unmasked = True
+        run("systemctl", "daemon-reload")
         run(
             "systemd-run",
             "--unit",
@@ -316,11 +336,17 @@ def main() -> int:
         if server is not None:
             stop_server()
         run("systemctl", "stop", TARGET, check=False)
+        run("systemctl", "reset-failed", TARGET, check=False)
         socket_path.unlink(missing_ok=True)
         if epoch_path.exists():
             run("/usr/bin/chattr", "-i", str(epoch_path))
-        shutil.rmtree(state_root)
-        shutil.rmtree(RUN_DIR)
+        if state_root.exists():
+            shutil.rmtree(state_root)
+        if RUN_DIR.exists():
+            shutil.rmtree(RUN_DIR)
+        if target_unmasked:
+            run("systemctl", "mask", TARGET)
+            run("systemctl", "daemon-reload")
         assert_dark()
     evidence.update({
         "completedAt": dt.datetime.now(UTC).isoformat(

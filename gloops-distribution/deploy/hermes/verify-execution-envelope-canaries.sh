@@ -8,15 +8,15 @@ for expected_runtime_line in \
   'PAPERCLIP_MTE_ENABLED=false' \
   'HEARTBEAT_SCHEDULER_ENABLED=false' \
   'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' \
-  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' \
-  'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-20260717' \
+  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' \
+  'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' \
   'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' \
   'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' \
   'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' \
   'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' \
-  'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-17T04:55:56.000Z' \
+  'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-18T23:12:22.000Z' \
   'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' \
   'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2'; do
   grep -Fxq "${expected_runtime_line}" "${runtime_env}" || {
@@ -25,7 +25,26 @@ for expected_runtime_line in \
   }
 done
 deadman_unit="${repo_root}/gloops-distribution/deploy/hermes/paperclip-campaign-deadman.service"
-grep -Fq -- '--campaign-id controlled-swarm-20260717 --duration-seconds 86400' "${deadman_unit}"
+successor_campaign_id='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
+predecessor_campaign_id='controlled-swarm-20260717'
+grep -Fq -- '--campaign-id controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139 --duration-seconds 86400' "${deadman_unit}"
+grep -Fq 'ExecStartPre=/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py' "${deadman_unit}"
+for successor_bound_file in \
+  "${repo_root}/gloops-distribution/deploy/hermes/runtime.env" \
+  "${repo_root}/gloops-distribution/deploy/hermes/preflight.sh" \
+  "${repo_root}/gloops-distribution/deploy/hermes/rehearse-zero-work.sh" \
+  "${repo_root}/gloops-distribution/deploy/hermes/rehearse-campaign-deadman.py" \
+  "${repo_root}/gloops-distribution/deploy/hermes/activate-controlled-swarm.sh" \
+  "${repo_root}/gloops-distribution/deploy/hermes/controlled-swarm-commissioner.py" \
+  "${repo_root}/gloops-distribution/deploy/hermes/observe-controlled-swarm.py" \
+  "${repo_root}/gloops-distribution/deploy/hermes/verify-dark.sh"; do
+  grep -Fq "${successor_campaign_id}" "${successor_bound_file}"
+done
+predecessor_verifier="${repo_root}/gloops-distribution/deploy/hermes/verify-predecessor-campaign-epoch.py"
+grep -Fq "PREDECESSOR_CAMPAIGN_ID = \"${predecessor_campaign_id}\"" "${predecessor_verifier}"
+grep -Fq 'af8260a4c30f92c79a1c138e2951cbb40041ed58da40b86273a27881b2d07b0b' "${predecessor_verifier}"
+grep -Fq 'parser.add_argument("--campaign-id", required=True)' \
+  "${repo_root}/gloops-distribution/deploy/hermes/verify-campaign-deadman.py"
 grep -Fq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_LINUX_IMMUTABLE' "${deadman_unit}"
 for bound_unit in \
   "${repo_root}/gloops-distribution/deploy/hermes/paperclip-gloops.service" \
@@ -72,6 +91,7 @@ pnpm exec vitest run \
 python3 -m unittest \
   gloops-distribution/deploy/hermes/campaign_deadman_test.py \
   gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py \
+  gloops-distribution/deploy/hermes/verify_predecessor_campaign_epoch_test.py \
   gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
   gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py
 gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
@@ -102,6 +122,8 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/campaign-deadman.py \
     gloops-distribution/deploy/hermes/campaign_deadman_test.py \
     gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py \
+    gloops-distribution/deploy/hermes/verify-predecessor-campaign-epoch.py \
+    gloops-distribution/deploy/hermes/verify_predecessor_campaign_epoch_test.py \
     gloops-distribution/deploy/hermes/campaign-deadman-stop.sh \
     gloops-distribution/deploy/hermes/campaign-deadman-rehearsal-stop.sh \
     gloops-distribution/deploy/hermes/verify-campaign-deadman.py \
@@ -138,7 +160,7 @@ cat <<JSON
   "providersInvoked": false,
   "paperclipActivated": false,
   "installedImageVerified": false,
-  "activationInterlock": "immutable_release_pin_bound",
+  "activationInterlock": "release_pin_required",
   "mteActivated": false,
   "scenarios": {
     "millionTokenPromptRefusedBeforeDispatch": "passed",
@@ -157,6 +179,10 @@ cat <<JSON
     "deadmanDenialPreventsAdapterInvocation": "passed",
     "uncommissionedSwarmDeniesAdapterInvocation": "passed",
     "campaignEpochSurvivesRestartWithoutRenewal": "passed",
+    "predecessorEpochRemainsImmutableAndDistinct": "passed",
+    "successorCampaignIdentityIsFixedAndCollisionResistant": "passed",
+    "campaignVerificationRequiresExplicitIdentity": "passed",
+    "historicalIssueCutoffAdvancedForSuccessor": "passed",
     "campaignExpiryRejectsFurtherAdmission": "passed",
     "deadmanReadinessRaceIsBoundedAndFailClosed": "passed",
     "acceleratedHostDeadmanRehearsalIsInstalled": "passed",

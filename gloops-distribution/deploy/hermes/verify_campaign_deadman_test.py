@@ -1,4 +1,6 @@
 import pathlib
+import subprocess
+import sys
 import unittest
 
 from importlib.machinery import SourceFileLoader
@@ -22,6 +24,16 @@ class MutableMonotonic:
 
 
 class VerifyCampaignDeadmanTest(unittest.TestCase):
+    def test_campaign_id_is_required(self) -> None:
+        result = subprocess.run(
+            [sys.executable, MODULE.__file__],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--campaign-id", result.stderr)
+
     def test_waits_for_a_transient_transport_race(self) -> None:
         clock = MutableMonotonic()
         attempts = 0

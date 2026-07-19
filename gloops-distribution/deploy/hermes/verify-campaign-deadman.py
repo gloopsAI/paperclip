@@ -75,7 +75,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", type=pathlib.Path, default=pathlib.Path("/run/paperclip-campaign/deadman.sock"))
     parser.add_argument("--state-dir", type=pathlib.Path, default=pathlib.Path("/var/lib/paperclip-gloops/campaign-deadman"))
-    parser.add_argument("--campaign-id", default="controlled-swarm-20260717")
+    parser.add_argument("--campaign-id", required=True)
     parser.add_argument("--allow-non-root-for-test", action="store_true")
     parser.add_argument("--wait-seconds", type=float, default=0)
     parser.add_argument("--require-status", choices=("unarmed", "active"))
