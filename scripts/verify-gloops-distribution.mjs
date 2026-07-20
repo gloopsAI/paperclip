@@ -833,6 +833,9 @@ if (!gloopsStage) {
   if (!/apt-get install[^\n]+locales/.test(gloopsStage[1]) || !/locale-gen en_US\.UTF-8/.test(gloopsStage[1])) {
     fail("gloops-production must include the locale required by restored embedded Postgres clusters");
   }
+  if (!/apt-get install[^\n]+openssh-client/.test(gloopsStage[1])) {
+    fail("gloops-production must include the SSH client required by remote execution environments");
+  }
 }
 if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
   fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");
