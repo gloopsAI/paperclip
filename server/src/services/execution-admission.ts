@@ -410,11 +410,100 @@ export function evaluateExecutionReservationUsage(input: {
   inputTokens: number;
   outputTokens: number;
   wallMs: number;
+  turns?: number | null;
+  toolCalls?: number | null;
 }) {
   const exceeded = [
     input.inputTokens > input.reservation.maxInputTokens ? "input_tokens" : null,
     input.outputTokens > input.reservation.maxOutputTokens ? "output_tokens" : null,
     input.wallMs > input.reservation.maxWallMs ? "wall_ms" : null,
+    input.turns != null && input.turns > input.reservation.maxTurns ? "turns" : null,
+    input.toolCalls != null && input.toolCalls > input.reservation.maxToolCalls ? "tool_calls" : null,
   ].filter((value): value is string => Boolean(value));
   return { compliant: exceeded.length === 0, exceeded };
+}
+
+/**
+ * Resolve the componentwise-tightened policy for a task that carries an
+ * explicit executionPolicy.resourceBudget. Absent budgets keep the global
+ * defaults unchanged.
+ */
+export function resolveExecutionAdmissionPolicyForResourceBudget(
+  globalPolicy: ExecutionAdmissionPolicy,
+  resourceBudget?: IssueExecutionResourceBudget | null,
+): ExecutionAdmissionPolicy {
+  if (!globalPolicy.enabled) return globalPolicy;
+  if (resourceBudget == null) return globalPolicy;
+  return resolveEffectiveExecutionAdmissionPolicy(globalPolicy, resourceBudget);
+}
+
+const RESERVATION_EXCEEDED_DIMENSIONS = new Set([
+  "input_tokens",
+  "output_tokens",
+  "wall_ms",
+  "turns",
+  "tool_calls",
+  "usage_missing",
+]);
+
+/**
+ * Prefer adapter-reported exact exceeded dimensions over a generic
+ * usage_missing label so operator receipts keep turn/tool/wall truth.
+ */
+export function resolveReportedReservationExceeded(input: {
+  resultJson?: unknown;
+  errorCode?: string | null;
+  reservation?: ExecutionInvocationBudget | null;
+}): string[] {
+  const reported: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const normalized = value.trim().toLowerCase();
+    if (!RESERVATION_EXCEEDED_DIMENSIONS.has(normalized)) return;
+    if (!reported.includes(normalized)) reported.push(normalized);
+  };
+
+  let metrics: { turns?: number; toolCalls?: number } | null = null;
+  if (input.resultJson && typeof input.resultJson === "object" && !Array.isArray(input.resultJson)) {
+    const root = input.resultJson as Record<string, unknown>;
+    push(root.exceeded);
+    if (Array.isArray(root.exceeded)) {
+      for (const entry of root.exceeded) push(entry);
+    }
+    const reservation = root.executionReservation;
+    if (reservation && typeof reservation === "object" && !Array.isArray(reservation)) {
+      const exceeded = (reservation as Record<string, unknown>).exceeded;
+      push(exceeded);
+      if (Array.isArray(exceeded)) {
+        for (const entry of exceeded) push(entry);
+      }
+    }
+    const rawMetrics = root.execution_metrics;
+    if (rawMetrics && typeof rawMetrics === "object" && !Array.isArray(rawMetrics)) {
+      const record = rawMetrics as Record<string, unknown>;
+      const turns = typeof record.turns === "number" && Number.isFinite(record.turns)
+        ? Math.floor(record.turns)
+        : undefined;
+      const toolCalls = typeof record.tool_calls === "number" && Number.isFinite(record.tool_calls)
+        ? Math.floor(record.tool_calls)
+        : typeof record.toolCalls === "number" && Number.isFinite(record.toolCalls)
+          ? Math.floor(record.toolCalls)
+          : undefined;
+      metrics = { turns, toolCalls };
+    }
+  }
+
+  if (input.reservation && metrics) {
+    const fromMetrics = evaluateExecutionReservationUsage({
+      reservation: input.reservation,
+      inputTokens: 0,
+      outputTokens: 0,
+      wallMs: 0,
+      turns: metrics.turns ?? null,
+      toolCalls: metrics.toolCalls ?? null,
+    }).exceeded.filter((dimension) => dimension === "turns" || dimension === "tool_calls");
+    for (const dimension of fromMetrics) push(dimension);
+  }
+
+  return reported;
 }

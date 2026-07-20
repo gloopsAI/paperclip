@@ -1085,6 +1085,7 @@ export function mapFinalResultForTest(input: {
   const model = extractModel(payload);
   const turnCount = Math.max(0, Math.floor(input.turnCount ?? 0));
   const toolCallCount = Math.max(0, Math.floor(input.toolCallCount ?? 0));
+  const exceededDimension = nonEmpty((payload as Record<string, unknown>).exceeded);
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -1119,6 +1120,9 @@ export function mapFinalResultForTest(input: {
         tool_calls: toolCallCount,
         turns: turnCount,
       },
+      // Keep the exact exceeded dimension in the operator-visible receipt so a
+      // turn/tool stop is not collapsed into a generic missing-usage failure.
+      ...(exceededDimension ? { exceeded: exceededDimension } : {}),
       provider_invocation: { attempted: true },
       execution_route: executionRoute(model, input.routeFacts),
     },

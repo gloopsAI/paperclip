@@ -19,6 +19,7 @@ import {
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
+  type IssueExecutionResourceBudget,
   type ModelProfileKey,
   type RequestConfirmationResult,
   type RoutineRevisionSnapshotV1,
@@ -196,8 +197,11 @@ import {
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
+  resolveExecutionAdmissionPolicyForResourceBudget,
   resolveExecutionBudgetIdentity,
+  resolveReportedReservationExceeded,
   type ExecutionAdmissionEnvelope,
+  type ExecutionAdmissionPolicy,
   type ExecutionAdmissionReason,
   type PriorExecutionRun,
 } from "./execution-admission.js";
@@ -5115,17 +5119,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
   const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
-  const allowsAutomaticRecoveryForContext = (context: Record<string, unknown>) => {
+  async function resolveIssueResourceBudget(issueId: string | null): Promise<
+    IssueExecutionResourceBudget | null
+  > {
+    if (!issueId) return null;
+    const issue = await db
+      .select({ executionPolicy: issues.executionPolicy })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    return normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null)?.resourceBudget ?? null;
+  }
+
+  async function resolveEffectiveAdmissionPolicyForIssue(
+    issueId: string | null,
+  ): Promise<ExecutionAdmissionPolicy> {
+    if (!executionAdmissionPolicy.enabled) return executionAdmissionPolicy;
+    const resourceBudget = await resolveIssueResourceBudget(issueId);
+    return resolveExecutionAdmissionPolicyForResourceBudget(executionAdmissionPolicy, resourceBudget);
+  }
+
+  async function allowsAutomaticRecoveryForContext(context: Record<string, unknown>) {
     const bindingPresent = Object.prototype.hasOwnProperty.call(
       context,
       EXECUTION_ADMISSION_CONTEXT_KEY,
     );
+    const issueId = readNonEmptyString(context.issueId);
+    const policy = await resolveEffectiveAdmissionPolicyForIssue(issueId);
     return allowsAutomaticRecoveryCreation(
-      executionAdmissionPolicy,
+      policy,
       readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
       bindingPresent,
     );
-  };
+  }
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -7398,7 +7424,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
-    if (!allowsAutomaticRecoveryForContext(context)) {
+    if (!(await allowsAutomaticRecoveryForContext(context))) {
       await setRunStatus(run.id, run.status, {
         livenessReason: `${run.livenessReason ?? "Run ended without concrete progress"}; automatic continuation prohibited by execution-admission policy`,
       });
@@ -7805,7 +7831,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (decision.kind !== "enqueue" || !issue) return;
 
-    if (!allowsAutomaticRecoveryForContext(context)) {
+    if (!(await allowsAutomaticRecoveryForContext(context))) {
       await db
         .update(issues)
         .set({
@@ -8094,7 +8120,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string,
   ) {
     const sourceContext = parseObject(run.contextSnapshot);
-    if (!allowsAutomaticRecoveryForContext(sourceContext)) {
+    if (!(await allowsAutomaticRecoveryForContext(sourceContext))) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -8343,7 +8369,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     now: Date,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    if (!allowsAutomaticRecoveryForContext(contextSnapshot)) {
+    if (!(await allowsAutomaticRecoveryForContext(contextSnapshot))) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -8988,7 +9014,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryForContext(contextSnapshot);
+    const automaticRecoveryCreationAllowed = await allowsAutomaticRecoveryForContext(contextSnapshot);
     const boundExecutionContext = readBoundExecutionContext(contextSnapshot[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
     const requestedMaxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const maxAttempts = boundExecutionContext ? Math.min(1, requestedMaxAttempts) : requestedMaxAttempts;
@@ -10419,6 +10445,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : { kind: "lost_race" };
     }
 
+    // Task-class explicit resource budgets must reach the claim-time envelope
+    // so adapters receive the exact reserved dimensions. Absent budgets keep
+    // the global defaults unchanged.
+    const resolvedAdmissionPolicy = await resolveEffectiveAdmissionPolicyForIssue(issueId);
+    if (!resolvedAdmissionPolicy.enabled) {
+      throw new Error("execution admission policy became disabled after resource-budget resolution");
+    }
+    const effectiveAdmissionPolicy = resolvedAdmissionPolicy;
+
     return db.transaction(async (tx) => {
       const companyWipLimit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
       if (companyWipLimit !== null) {
@@ -10492,7 +10527,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId,
       });
       const decision = evaluateExecutionAdmission(
-        executionAdmissionPolicy,
+        effectiveAdmissionPolicy,
         priorRows.map((row) => priorExecutionRun(row, claimedAt)),
         {
           isRetry: Boolean(run.retryOfRunId),
@@ -10501,7 +10536,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const envelope = buildExecutionAdmissionEnvelope({
         identity,
-        policy: executionAdmissionPolicy,
+        policy: effectiveAdmissionPolicy,
         decision,
         evaluatedAt: claimedAt,
       });
@@ -13849,20 +13884,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let accountedUsage = normalizedUsage;
       const effectiveProviderInvocationAttempted =
         adapterResult.providerInvocationAttempted ?? adapterInvocationAttempted;
+      const adapterResultJson = parseObject(adapterResult.resultJson);
+      const executionMetrics = parseObject(adapterResultJson.execution_metrics);
+      const reportedTurns = Number.isFinite(Number(executionMetrics.turns))
+        ? Math.max(0, Math.floor(Number(executionMetrics.turns)))
+        : null;
+      const reportedToolCalls = Number.isFinite(Number(
+        executionMetrics.tool_calls ?? executionMetrics.toolCalls,
+      ))
+        ? Math.max(0, Math.floor(Number(executionMetrics.tool_calls ?? executionMetrics.toolCalls)))
+        : null;
+      const observedWallMs = run.startedAt
+        ? Math.max(0, Date.now() - new Date(run.startedAt).getTime())
+        : 0;
       const reservationUsage = invocationBudget && normalizedUsage
         ? evaluateExecutionReservationUsage({
             reservation: invocationBudget,
             inputTokens: normalizedUsage.inputTokens,
             outputTokens: normalizedUsage.outputTokens,
-            wallMs: run.startedAt ? Math.max(0, Date.now() - new Date(run.startedAt).getTime()) : 0,
+            wallMs: observedWallMs,
+            turns: reportedTurns,
+            toolCalls: reportedToolCalls,
           })
-        : null;
+        : invocationBudget && (reportedTurns != null || reportedToolCalls != null)
+          ? evaluateExecutionReservationUsage({
+              reservation: invocationBudget,
+              inputTokens: 0,
+              outputTokens: 0,
+              wallMs: observedWallMs,
+              turns: reportedTurns,
+              toolCalls: reportedToolCalls,
+            })
+          : null;
+      const adapterReportedExceeded = resolveReportedReservationExceeded({
+        resultJson: adapterResult.resultJson,
+        errorCode: adapterResult.errorCode,
+        reservation: invocationBudget,
+      });
       if (invocationBudget && effectiveProviderInvocationAttempted && !normalizedUsage) {
         // Missing provider usage cannot be treated as zero. Charge the full
         // reservation to the task budget so a failed/malformed adapter cannot
         // reopen capacity on a later retry. Preserve an adapter's original
         // failure/timeout diagnosis; only a nominal success is reclassified as
-        // usage_missing.
+        // usage_missing. Keep exact exceeded dimensions when the adapter already
+        // named them (e.g. turns/tool_calls) so receipts stay operator-visible.
         accountedUsage = {
           inputTokens: invocationBudget.maxInputTokens,
           cachedInputTokens: 0,
@@ -13870,25 +13935,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
         const providerCompletedNominally = outcome === "succeeded";
         if (providerCompletedNominally) outcome = "failed";
+        const exceededDimensions = adapterReportedExceeded.length > 0
+          ? adapterReportedExceeded
+          : reservationUsage && !reservationUsage.compliant
+            ? reservationUsage.exceeded
+            : ["usage_missing"];
         adapterResult = {
           ...adapterResult,
           ...(providerCompletedNominally
             ? {
-                errorCode: "execution_admission.usage_missing",
-                errorMessage: "Provider completed without usage needed to reconcile its execution reservation",
+                errorCode: exceededDimensions.includes("usage_missing")
+                  ? "execution_admission.usage_missing"
+                  : "execution_admission.reservation_exceeded",
+                errorMessage: exceededDimensions.includes("usage_missing")
+                  ? "Provider completed without usage needed to reconcile its execution reservation"
+                  : `Provider usage exceeded its reserved execution envelope (${exceededDimensions.join(", ")})`,
                 clearSession: true,
               }
             : {}),
           resultJson: {
-            ...parseObject(adapterResult.resultJson),
+            ...adapterResultJson,
             provider_invocation: { attempted: true },
             executionReservation: {
               compliant: false,
-              exceeded: ["usage_missing"],
+              exceeded: exceededDimensions,
               reservation: invocationBudget,
               enforcementMode: executionBudgetMode,
               accounting: "reservation_fallback",
               originalOutcomePreserved: !providerCompletedNominally,
+              ...(reportedTurns != null || reportedToolCalls != null
+                ? {
+                    observed: {
+                      ...(reportedTurns != null ? { turns: reportedTurns } : {}),
+                      ...(reportedToolCalls != null ? { toolCalls: reportedToolCalls } : {}),
+                      wallMs: observedWallMs,
+                    },
+                  }
+                : { observed: { wallMs: observedWallMs } }),
             },
           },
         };
@@ -13909,12 +13992,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           errorMessage: `Provider usage exceeded its reserved execution envelope (${reservationUsage.exceeded.join(", ")})`,
           clearSession: true,
           resultJson: {
-            ...parseObject(adapterResult.resultJson),
+            ...adapterResultJson,
             executionReservation: {
               compliant: false,
               exceeded: reservationUsage.exceeded,
               reservation: invocationBudget,
               enforcementMode: executionBudgetMode,
+              observed: {
+                ...(normalizedUsage
+                  ? {
+                      inputTokens: normalizedUsage.inputTokens,
+                      outputTokens: normalizedUsage.outputTokens,
+                    }
+                  : {}),
+                ...(reportedTurns != null ? { turns: reportedTurns } : {}),
+                ...(reportedToolCalls != null ? { toolCalls: reportedToolCalls } : {}),
+                wallMs: observedWallMs,
+              },
             },
           },
         };
@@ -13967,8 +14061,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "timed_out"
               : "failed";
 
+      const terminalExceeded =
+        reservationUsage && !reservationUsage.compliant
+          ? reservationUsage.exceeded
+          : effectiveProviderInvocationAttempted && !normalizedUsage
+            ? (adapterReportedExceeded.length > 0
+              ? adapterReportedExceeded
+              : ["usage_missing"])
+            : [];
       const usageJson =
-        accountedUsage || adapterResult.costUsd != null
+        accountedUsage || adapterResult.costUsd != null || reportedTurns != null || reportedToolCalls != null
           ? ({
               ...(accountedUsage ?? {}),
               ...(rawUsage ? {
@@ -13998,12 +14100,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              // Terminal usage truth: surface exact turn/tool/wall observations
+              // alongside token totals so operator receipts stay attributable.
+              ...(reportedTurns != null ? { turns: reportedTurns } : {}),
+              ...(reportedToolCalls != null ? { toolCalls: reportedToolCalls } : {}),
+              ...(effectiveProviderInvocationAttempted || invocationBudget
+                ? { wallMs: observedWallMs }
+                : {}),
               ...(invocationBudget ? {
                 executionReservation: {
                   ...invocationBudget,
                   enforcementMode: executionBudgetMode,
-                  compliant: reservationUsage?.compliant ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? false : null),
-                  exceeded: reservationUsage?.exceeded ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? ["usage_missing"] : []),
+                  compliant: reservationUsage?.compliant
+                    ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? false : null),
+                  exceeded: terminalExceeded,
+                  ...(reportedTurns != null || reportedToolCalls != null || observedWallMs > 0
+                    ? {
+                        observed: {
+                          ...(reportedTurns != null ? { turns: reportedTurns } : {}),
+                          ...(reportedToolCalls != null ? { toolCalls: reportedToolCalls } : {}),
+                          wallMs: observedWallMs,
+                        },
+                      }
+                    : {}),
                 },
               } : {}),
             } as Record<string, unknown>)
@@ -14765,7 +14884,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
-      const automaticRecoveryCreationAllowed = allowsAutomaticRecoveryForContext(
+      const automaticRecoveryCreationAllowed = await allowsAutomaticRecoveryForContext(
         parseObject(run.contextSnapshot),
       );
       if (

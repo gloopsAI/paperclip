@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  stripMonitorFromExecutionPolicy,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -95,6 +100,34 @@ describe("normalizeIssueExecutionPolicy", () => {
       mode: "normal",
       commentRequired: false,
       stages: [],
+    });
+  });
+
+  it("preserves a resource-budget-only policy and keeps it when stripping a monitor", () => {
+    const resourceBudget = {
+      maxRunsPerTask: 1,
+      maxRetriesPerTask: 0,
+      maxInputTokensPerTask: 80_000,
+      maxOutputTokensPerTask: 12_000,
+      maxWallMsPerTask: 900_000,
+      maxInputTokensPerInvocation: 40_000,
+      maxOutputTokensPerInvocation: 8_000,
+      maxTurnsPerInvocation: 30,
+      maxToolCallsPerInvocation: 120,
+    };
+    const normalized = normalizeIssueExecutionPolicy({
+      stages: [],
+      resourceBudget,
+      monitor: {
+        nextCheckAt: "2026-07-20T19:00:00.000Z",
+        notes: "Remove this monitor without dropping the execution envelope.",
+      },
+    });
+
+    expect(normalized?.resourceBudget).toEqual(resourceBudget);
+    expect(stripMonitorFromExecutionPolicy(normalized)).toMatchObject({
+      stages: [],
+      resourceBudget,
     });
   });
 
