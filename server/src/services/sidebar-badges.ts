@@ -1,10 +1,9 @@
-import { and, desc, eq, inArray, not } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
-import type { SidebarBadges } from "@paperclipai/shared";
+import { approvals } from "@paperclipai/db";
+import type { AttentionFeed, SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
-const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
 
 function normalizeTimestamp(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -27,11 +26,33 @@ export function sidebarBadgeService(db: Db) {
     get: async (
       companyId: string,
       extra?: {
+        attentionFeed?: AttentionFeed;
         dismissals?: ReadonlyMap<string, number>;
         joinRequests?: Array<{ id: string; updatedAt: Date | string | null; createdAt: Date | string }>;
-        unreadTouchedIssues?: number;
       },
     ): Promise<SidebarBadges> => {
+      if (extra?.attentionFeed) {
+        const feedJoinRequests = extra.attentionFeed.countsBySourceKind.join_request ?? 0;
+        const visibleJoinRequests = extra.joinRequests
+          ? extra.joinRequests.filter((row) =>
+            !isDismissed(
+              extra.dismissals ?? new Map(),
+              `join:${row.id}`,
+              row.updatedAt ?? row.createdAt,
+            )
+          ).length
+          : feedJoinRequests;
+        const approvals = extra.attentionFeed.countsBySourceKind.approval ?? 0;
+        const failedRuns = extra.attentionFeed.countsBySourceKind.failed_run ?? 0;
+
+        return {
+          inbox: extra.attentionFeed.totalCount - feedJoinRequests + visibleJoinRequests,
+          approvals,
+          failedRuns,
+          joinRequests: visibleJoinRequests,
+        };
+      }
+
       const actionableApprovals = await db
         .select({ id: approvals.id, updatedAt: approvals.updatedAt })
         .from(approvals)
@@ -45,28 +66,6 @@ export function sidebarBadgeService(db: Db) {
           rows.filter((row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)).length
         );
 
-      const latestRunByAgent = await db
-        .selectDistinctOn([heartbeatRuns.agentId], {
-          id: heartbeatRuns.id,
-          runStatus: heartbeatRuns.status,
-          createdAt: heartbeatRuns.createdAt,
-        })
-        .from(heartbeatRuns)
-        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            eq(agents.companyId, companyId),
-            not(eq(agents.status, "terminated")),
-          ),
-        )
-        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
-
-      const failedRuns = latestRunByAgent.filter((row) =>
-        FAILED_HEARTBEAT_STATUSES.includes(row.runStatus)
-        && !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
-      ).length;
-
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>
         !isDismissed(
           extra?.dismissals ?? new Map(),
@@ -74,11 +73,10 @@ export function sidebarBadgeService(db: Db) {
           row.updatedAt ?? row.createdAt,
         )
       ).length;
-      const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
+        inbox: actionableApprovals + joinRequests,
         approvals: actionableApprovals,
-        failedRuns,
+        failedRuns: 0,
         joinRequests,
       };
     },

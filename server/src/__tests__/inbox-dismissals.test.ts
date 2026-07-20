@@ -259,7 +259,62 @@ describeEmbeddedPostgres("inbox dismissals", () => {
         createdAt: new Date("2026-03-11T01:00:00.000Z"),
         updatedAt: new Date("2026-03-11T01:00:00.000Z"),
       }],
-      unreadTouchedIssues: 1,
+    });
+
+    expect(badges).toEqual({
+      inbox: 1,
+      approvals: 1,
+      failedRuns: 0,
+      joinRequests: 0,
+    });
+  });
+
+  it("derives the action badge from typed attention rows and permission-filtered joins", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const joinRequestId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await dismissalsSvc.dismiss(companyId, userId, `join:${joinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
+
+    const dismissedAtByKey = new Map(
+      (await dismissalsSvc.list(companyId, userId)).map((dismissal) => [
+        dismissal.itemKey,
+        new Date(dismissal.dismissedAt).getTime(),
+      ]),
+    );
+
+    const badges = await badgesSvc.get(companyId, {
+      dismissals: dismissedAtByKey,
+      joinRequests: [{
+        id: joinRequestId,
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      }],
+      attentionFeed: {
+        companyId,
+        generatedAt: "2026-03-11T03:00:00.000Z",
+        totalCount: 4,
+        countsBySourceKind: {
+          approval: 1,
+          issue_thread_interaction: 1,
+          join_request: 1,
+          recovery_action: 0,
+          productivity_review: 0,
+          blocker_attention: 0,
+          review: 0,
+          failed_run: 1,
+          budget_alert: 0,
+          agent_error_alert: 0,
+        },
+        items: [],
+      },
     });
 
     expect(badges).toEqual({
