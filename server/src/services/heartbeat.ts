@@ -204,6 +204,8 @@ import {
 import {
   PAPERCLIP_EXECUTION_CONTEXT_KEY,
   PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  buildBoundExecutionContext,
+  buildCanonicalContinuationPacket,
   buildExecutionRetryReceipt,
   evaluateExecutionTruthTransition,
   readBoundExecutionContext,
@@ -5642,6 +5644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workMode: issues.workMode,
         priority: issues.priority,
         projectId: issues.projectId,
+        goalId: issues.goalId,
         projectWorkspaceId: issues.projectWorkspaceId,
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -12084,6 +12087,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workMode: issueContext.workMode,
           description: issueContext.description,
           projectId: issueContext.projectId,
+          goalId: issueContext.goalId,
+          parentId: issueContext.parentId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
@@ -13033,6 +13038,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
+    }
+    if (
+      issueRef &&
+      (context[PAPERCLIP_EXECUTION_CONTEXT_KEY] === null ||
+        context[PAPERCLIP_EXECUTION_CONTEXT_KEY] === undefined)
+    ) {
+      const packet = buildCanonicalContinuationPacket({
+        issue: {
+          id: issueRef.id,
+          identifier: issueRef.identifier,
+          title: issueRef.title,
+          status: issueRef.status,
+          priority: issueRef.priority,
+          workMode: issueRef.workMode,
+          projectId: executionWorkspace.projectId ?? issueRef.projectId,
+          goalId: issueRef.goalId,
+          parentId: issueRef.parentId,
+        },
+        ancestors: issueAncestors,
+        repoRef: {
+          repoUrl: executionWorkspace.repoUrl,
+          repoRef: executionWorkspace.repoRef,
+          cwd: executionWorkspace.cwd,
+          workspaceId: executionWorkspace.workspaceId,
+        },
+        authority: {
+          companyId: agent.companyId,
+          assigneeAgentId: issueContext?.assigneeAgentId ?? null,
+          responsibleUserId: responsibleUserId ?? issueContext?.responsibleUserId ?? null,
+          runId: run.id,
+        },
+        verification: {
+          exactHeadSha: executionWorkspace.baseRefSha ?? executionWorkspace.repoRef,
+          cursor: "verify exact head, run focused checks, and record terminal disposition before completion",
+        },
+        continuation: {
+          summary: safeContinuationSummary?.body ?? null,
+          next: readNonEmptyString(context.wakeReason) ?? "issue wake",
+        },
+        executionBudget: parseObject(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
+      });
+      context[PAPERCLIP_EXECUTION_CONTEXT_KEY] = buildBoundExecutionContext(packet);
+      if (agent.adapterType === "hermes_local" || agent.adapterType === "hermes_gateway") {
+        context.forceFreshSession = true;
+      }
     }
     const runtimeSessionFallback = taskKey || resetTaskSession
       ? null

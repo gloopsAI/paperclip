@@ -33,6 +33,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { PAPERCLIP_EXECUTION_CONTEXT_KEY, readBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
@@ -164,6 +165,149 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
+  });
+
+  it("automatically binds a canonical compact packet for issue wakes without a manual packet", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const repoRef = await runGit(repoRoot, ["rev-parse", "HEAD"]);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const agentId = randomUUID();
+    const parentIssueId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Compact Packet Project",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: repoRoot,
+      repoUrl: "https://github.com/gloopsAI/paperclip.git",
+      repoRef,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Parent compact task packet program",
+      status: "blocked",
+      workMode: "standard",
+      priority: "critical",
+      responsibleUserId: "responsible-user",
+      identifier: "GLO-1049",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      parentId: parentIssueId,
+      title: "Implement automatic compact packet",
+      description: "LEGACY TASK MARKDOWN BODY SHOULD NOT BE COPIED INTO THE PACKET",
+      status: "in_progress",
+      workMode: "standard",
+      priority: "critical",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      identifier: "GLO-1074",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        providerInvocationAttempted: false,
+        summary: "Compact packet binding test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    const adapterInput = adapterExecute.mock.calls[0]?.[0] as {
+      context: Record<string, unknown>;
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+    };
+    const binding = readBoundExecutionContext(adapterInput.context[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
+    expect(binding).toBeTruthy();
+    expect(adapterInput.runtime.sessionId).toBeNull();
+    expect(adapterInput.runtime.sessionParams).toBeNull();
+    expect(binding?.serializedBytes).toBeLessThanOrEqual(16_000);
+    expect(binding?.packet.work).toMatchObject({ id: "GLO-1074", issueId, title: "Implement automatic compact packet" });
+    expect(binding?.packet.scope).toMatchObject({
+      issueId,
+      parentId: parentIssueId,
+      ancestors: [expect.objectContaining({ identifier: "GLO-1049" })],
+    });
+    expect(binding?.packet.repoRef).toMatchObject({
+      repoUrl: "https://github.com/gloopsAI/paperclip.git",
+      repoRef,
+      exactHeadSha: repoRef,
+      workspaceId: projectWorkspaceId,
+    });
+    const serialized = JSON.stringify(binding?.packet);
+    expect(serialized).not.toContain("paperclipTaskMarkdown");
+    expect(serialized).not.toContain("paperclipSessionHandoffMarkdown");
+    expect(serialized).not.toContain("resumedSessionTranscript");
+    expect(serialized).not.toContain("LEGACY TASK MARKDOWN BODY");
   });
 
   async function seedAcceptedPlanClaim(args: {

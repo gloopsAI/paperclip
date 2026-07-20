@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertPromptFitsInvocationBudget,
   buildBoundExecutionContext,
+  buildCanonicalContinuationPacket,
   buildExecutionRetryReceipt,
   evaluateExecutionTruthTransition,
   hasProhibitedGrokApiConfiguration,
@@ -78,6 +79,106 @@ describe("execution envelope", () => {
     expect(readBoundExecutionContext(binding)).toEqual(binding);
     expect(renderBoundExecutionContext(binding)).toContain(binding.digest);
     expect(readBoundExecutionContext({ ...binding, approximateTokens: binding.approximateTokens + 1 })).toBeNull();
+  });
+
+  it("builds a deterministic canonical compact packet without legacy bodies", () => {
+    const built = buildCanonicalContinuationPacket({
+      issue: {
+        id: "issue-1",
+        identifier: "GLO-1074",
+        title: "Implement compact packets",
+        status: "in_progress",
+        priority: "critical",
+        workMode: "standard",
+        projectId: "project-1",
+        goalId: "goal-1",
+        parentId: "issue-parent",
+      },
+      ancestors: [
+        { id: "issue-parent", identifier: "GLO-1049", title: "Parent", status: "blocked", priority: "critical" },
+      ],
+      repoRef: {
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "a".repeat(40),
+        cwd: "/opt/data/workspace/paperclip",
+        workspaceId: "workspace-1",
+      },
+      authority: {
+        companyId: "company-1",
+        assigneeAgentId: "agent-1",
+        responsibleUserId: "user-1",
+        runId: "run-1",
+      },
+      verification: {
+        cursor: "run focused tests",
+      },
+      continuation: {
+        summary: [
+          "bounded continuation",
+          "resumedSessionTranscript should remain only prose here, not a legacy field",
+        ].join("\n"),
+        next: "continue",
+      },
+      executionBudget: {
+        maxInputTokens: 4000,
+        maxOutputTokens: 1000,
+      },
+    });
+    const rebuilt = buildCanonicalContinuationPacket({
+      issue: {
+        id: "issue-1",
+        identifier: "GLO-1074",
+        title: "Implement compact packets",
+        status: "in_progress",
+        priority: "critical",
+        workMode: "standard",
+        projectId: "project-1",
+        goalId: "goal-1",
+        parentId: "issue-parent",
+      },
+      ancestors: [
+        { id: "issue-parent", identifier: "GLO-1049", title: "Parent", status: "blocked", priority: "critical" },
+      ],
+      repoRef: {
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "a".repeat(40),
+        cwd: "/opt/data/workspace/paperclip",
+        workspaceId: "workspace-1",
+      },
+      authority: {
+        companyId: "company-1",
+        assigneeAgentId: "agent-1",
+        responsibleUserId: "user-1",
+        runId: "run-1",
+      },
+      verification: {
+        cursor: "run focused tests",
+      },
+      continuation: {
+        summary: [
+          "bounded continuation",
+          "resumedSessionTranscript should remain only prose here, not a legacy field",
+        ].join("\n"),
+        next: "continue",
+      },
+      executionBudget: {
+        maxInputTokens: 4000,
+        maxOutputTokens: 1000,
+      },
+    });
+    const binding = buildBoundExecutionContext(built);
+    const serialized = serialize(built);
+    expect(built).toEqual(rebuilt);
+    expect(binding.serializedBytes).toBeLessThanOrEqual(16_000);
+    expect(binding.approximateTokens).toBe(Math.ceil(binding.serializedBytes / 4));
+    expect(serialized).toContain("GLO-1074");
+    expect(serialized).toContain("GLO-1049");
+    expect(serialized).toContain("workspace-1");
+    expect(serialized).toContain("run focused tests");
+    expect(serialized).not.toContain("paperclipTaskMarkdown");
+    expect(serialized).not.toContain("paperclipSessionHandoffMarkdown");
+    expect(serialized).not.toContain("rawMemory");
+    expect((built.repoRef as Record<string, unknown>).exactHeadSha).toBe("a".repeat(40));
   });
 
   it("refuses oversized input before provider dispatch", () => {

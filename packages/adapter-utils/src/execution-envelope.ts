@@ -31,6 +31,49 @@ export type BoundExecutionContext = {
   excludedLegacyContext: string[];
 };
 
+export type CanonicalContinuationPacketInput = {
+  issue: {
+    id: string;
+    identifier?: string | null;
+    title: string;
+    status?: string | null;
+    priority?: string | null;
+    workMode?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    parentId?: string | null;
+  };
+  ancestors?: Array<{
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: string | null;
+  }>;
+  repoRef: {
+    repoUrl?: string | null;
+    repoRef?: string | null;
+    cwd?: string | null;
+    workspaceId?: string | null;
+  };
+  authority: {
+    companyId: string;
+    assigneeAgentId?: string | null;
+    responsibleUserId?: string | null;
+    runId?: string | null;
+  };
+  verification?: {
+    exactHeadSha?: string | null;
+    cursor?: string | null;
+    checks?: string[];
+  };
+  continuation?: {
+    summary?: string | null;
+    next?: string | null;
+  };
+  executionBudget?: unknown;
+};
+
 export type ExecutionTruthTransition = "ready" | "completed" | "retry" | "reroute" | "escalate";
 export type ExecutionTruthGateDecision = {
   allowed: boolean;
@@ -74,6 +117,113 @@ function positiveInteger(value: unknown): value is number {
 function packetBody(packet: Record<string, unknown>) {
   const { digest: _digest, metrics: _metrics, ...body } = packet;
   return body;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function compactRecord(value: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== null && entry !== undefined));
+}
+
+function boundedString(value: string | null | undefined, maxBytes: number) {
+  const text = readString(value);
+  if (!text) return null;
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let output = "";
+  for (const char of text) {
+    const next = output + char;
+    if (Buffer.byteLength(next, "utf8") > maxBytes - 48) break;
+    output = next;
+  }
+  return `${output}\n[truncated to ${maxBytes} bytes]`;
+}
+
+function digestPacketBody(body: Record<string, unknown>) {
+  let serializedBytes = 1;
+  let candidate: Record<string, unknown> = {};
+  for (let index = 0; index < 16; index += 1) {
+    candidate = {
+      ...body,
+      digest: digest(body),
+      metrics: {
+        serializedBytes,
+        approximateTokens: Math.ceil(serializedBytes / 4),
+      },
+    };
+    const nextSerializedBytes = Buffer.byteLength(canonicalSerialize(candidate), "utf8");
+    if (nextSerializedBytes === serializedBytes) break;
+    serializedBytes = nextSerializedBytes;
+  }
+  candidate = {
+    ...body,
+    digest: digest(body),
+    metrics: {
+      serializedBytes,
+      approximateTokens: Math.ceil(serializedBytes / 4),
+    },
+  };
+  return candidate;
+}
+
+export function buildCanonicalContinuationPacket(input: CanonicalContinuationPacketInput) {
+  const issueLabel = readString(input.issue.identifier) ?? input.issue.id;
+  const exactHeadSha = readString(input.verification?.exactHeadSha) ??
+    (readString(input.repoRef.repoRef)?.match(SHA) ? readString(input.repoRef.repoRef) : null);
+  const body = compactRecord({
+    schemaVersion: CONTINUATION_PACKET_SCHEMA,
+    work: compactRecord({
+      id: issueLabel,
+      issueId: input.issue.id,
+      identifier: readString(input.issue.identifier),
+      title: input.issue.title,
+      status: readString(input.issue.status),
+      priority: readString(input.issue.priority),
+      workMode: readString(input.issue.workMode),
+    }),
+    scope: compactRecord({
+      companyId: input.authority.companyId,
+      issueId: input.issue.id,
+      projectId: readString(input.issue.projectId),
+      goalId: readString(input.issue.goalId),
+      parentId: readString(input.issue.parentId),
+      ancestors: (input.ancestors ?? []).slice(0, 8).map((ancestor) => compactRecord({
+        id: ancestor.id,
+        identifier: readString(ancestor.identifier),
+        title: readString(ancestor.title),
+        status: readString(ancestor.status),
+        priority: readString(ancestor.priority),
+      })),
+    }),
+    repoRef: compactRecord({
+      repoUrl: readString(input.repoRef.repoUrl),
+      repoRef: readString(input.repoRef.repoRef),
+      exactHeadSha,
+      cwd: readString(input.repoRef.cwd),
+      workspaceId: readString(input.repoRef.workspaceId),
+    }),
+    authority: compactRecord({
+      companyId: input.authority.companyId,
+      assigneeAgentId: readString(input.authority.assigneeAgentId),
+      responsibleUserId: readString(input.authority.responsibleUserId),
+      runId: readString(input.authority.runId),
+      source: "paperclip-control-plane",
+    }),
+    verification: compactRecord({
+      exactHeadSha,
+      cursor: readString(input.verification?.cursor) ?? "run focused verification and record results before terminal disposition",
+      checks: (input.verification?.checks ?? []).filter((entry) => readString(entry)).slice(0, 8),
+    }),
+    continuation: compactRecord({
+      summary: boundedString(input.continuation?.summary, 6_000),
+      next: boundedString(input.continuation?.next, 1_000) ?? "continue from the issue objective and verification cursor",
+    }),
+    executionBudget: isRecord(input.executionBudget) ? input.executionBudget : null,
+  });
+  const packet = digestPacketBody(body);
+  const bound = buildBoundExecutionContext(packet);
+  return bound.packet;
 }
 
 export function readBoundExecutionContext(value: unknown): BoundExecutionContext | null {
