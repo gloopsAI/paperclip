@@ -1107,6 +1107,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      workspaceExclude: input.workspaceExclude,
       assets: input.assets,
       onProgress: input.onProgress,
     });

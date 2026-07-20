@@ -25,25 +25,14 @@ import {
   type RuntimeStatusSink,
 } from "./runtime-progress.js";
 import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
+import {
+  WORKSPACE_HEAVY_DIR_EXCLUDES,
+  mergeWorkspaceArchiveExcludes,
+} from "./workspace-archive-excludes.js";
 
 const execFile = promisify(execFileCallback);
-const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
-  "node_modules",
-  "vendor",
-  "dist",
-  "build",
-  "out",
-  "coverage",
-  ".next",
-  ".turbo",
-  ".cache",
-] as const;
-const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.flatMap((entry) => [
-  entry,
-  `${entry}/*`,
-  `*/${entry}`,
-  `*/${entry}/*`,
-]);
+// Re-export names kept as local aliases so historical call sites / comments stay readable.
+const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = WORKSPACE_HEAVY_DIR_EXCLUDES;
 
 export interface SandboxRemoteExecutionSpec {
   transport: "sandbox";
@@ -352,7 +341,7 @@ async function emitRuntimeStatus(
 }
 
 function mergeExcludes(...groups: Array<string[] | undefined>): string[] {
-  return [...new Set(groups.flatMap((group) => group ?? []))];
+  return mergeWorkspaceArchiveExcludes(...groups);
 }
 
 function preserveFindArgs(entries: string[]): string {

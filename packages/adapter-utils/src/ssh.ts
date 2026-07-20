@@ -15,6 +15,7 @@ import {
   type RuntimeProgressPhase,
   type RuntimeProgressSink,
 } from "./runtime-progress.js";
+import { buildManagedWorkspaceArchiveExclude } from "./workspace-archive-excludes.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -1493,6 +1494,11 @@ export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
+  /**
+   * Additional workspace exclude patterns (caller-supplied skill homes,
+   * gitignored paths, etc.). Heavy dependency/build caches are always merged in.
+   */
+  exclude?: string[];
   onProgress?: RuntimeProgressSink;
 }): Promise<{ gitBacked: boolean }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
@@ -1510,7 +1516,10 @@ export async function prepareWorkspaceForSshExecution(input: {
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: buildManagedWorkspaceArchiveExclude({
+        gitBacked: true,
+        workspaceExclude: input.exclude,
+      }),
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1531,7 +1540,10 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime"],
+    exclude: buildManagedWorkspaceArchiveExclude({
+      gitBacked: false,
+      workspaceExclude: input.exclude,
+    }),
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
@@ -1544,6 +1556,12 @@ export async function restoreWorkspaceFromSshExecution(input: {
   remoteDir?: string;
   baselineSnapshot?: DirectorySnapshot;
   restoreGitHistory?: boolean;
+  /**
+   * Additional workspace exclude patterns for the no-baseline restore path.
+   * Heavy dependency/build caches are always merged in. When `baselineSnapshot`
+   * is provided, its `exclude` list is authoritative (already composed by caller).
+   */
+  exclude?: string[];
   onProgress?: RuntimeProgressSink;
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
@@ -1610,7 +1628,10 @@ export async function restoreWorkspaceFromSshExecution(input: {
       spec: input.spec,
       remoteDir,
       localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: buildManagedWorkspaceArchiveExclude({
+        gitBacked: true,
+        workspaceExclude: input.exclude,
+      }),
       preserveLocalEntries: [".git"],
       onProgress: input.onProgress,
       progressLabel: "workspace",
@@ -1622,7 +1643,10 @@ export async function restoreWorkspaceFromSshExecution(input: {
     spec: input.spec,
     remoteDir,
     localDir: input.localDir,
-    exclude: [".paperclip-runtime"],
+    exclude: buildManagedWorkspaceArchiveExclude({
+      gitBacked: false,
+      workspaceExclude: input.exclude,
+    }),
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
