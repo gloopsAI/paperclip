@@ -285,6 +285,9 @@ describe("buildInput", () => {
     expect(input).toContain("- Repository URL: https://github.com/owner/repo");
     expect(input).toContain("- Ref: 124edb9b13cdfb7d2c697547e4e5c07bfc432180");
     expect(input).toContain("Do the thing");
+    expect(input).toContain("- Run ID: pc-run-1");
+    expect(input).toContain(
+      "node /opt/data/bin/github-push-tool.bundle.cjs client --run-id pc-run-1");
   });
 
   it("includes assigned execution workspace section in bound prompt", () => {
@@ -298,7 +301,10 @@ describe("buildInput", () => {
     const input = buildInput(ctx, "http://paperclip.example/api");
     expect(input).toContain("Assigned execution workspace:");
     expect(input).toContain("Bound continuation packet");
-    expect(input).not.toContain("Paperclip runtime identity");
+    expect(input).toContain("Paperclip runtime identity");
+    expect(input).toContain("- Run ID: pc-run-1");
+    expect(input).toContain(
+      "node /opt/data/bin/github-push-tool.bundle.cjs client --run-id pc-run-1");
   });
 });
 

@@ -412,21 +412,33 @@ def read_peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", raw)
 
 
-def verify_peer_command(executable: str, command_bytes: bytes) -> None:
+def verify_peer_command(executable: str, command_bytes: bytes) -> str | None:
     command = [entry for entry in command_bytes.split(b"\0") if entry]
-    if (
-        not executable.endswith("/node")
-        or len(command) != 3
-        or Path(os.fsdecode(command[0])).name != "node"
-        or command[1] != b"/opt/data/bin/github-push-tool.bundle.cjs"
-        or command[2] != b"client"
-    ):
+    prefix_valid = (
+        executable.endswith("/node")
+        and len(command) >= 3
+        and Path(os.fsdecode(command[0])).name == "node"
+        and command[1] == b"/opt/data/bin/github-push-tool.bundle.cjs"
+        and command[2] == b"client"
+    )
+    if not prefix_valid:
         raise BrokerError("socket peer command is not the installed GitHub push client")
+    if len(command) == 3:
+        return None
+    if len(command) != 5 or command[3] != b"--run-id":
+        raise BrokerError("socket peer command is not the installed GitHub push client")
+    try:
+        explicit_run_id = command[4].decode("ascii")
+    except UnicodeDecodeError as error:
+        raise BrokerError("socket peer command has an invalid Paperclip run id") from error
+    if not RUN_ID_PATTERN.fullmatch(explicit_run_id):
+        raise BrokerError("socket peer command has an invalid Paperclip run id")
+    return explicit_run_id
 
 
-def verify_peer(connection: socket.socket) -> None:
+def verify_peer(connection: socket.socket) -> str | None:
     if TEST_MODE:
-        return
+        return None
     pid, uid, _gid = read_peer_credentials(connection)
     if uid != EXPECTED_HERMES_UID:
         raise BrokerError("socket peer is not the fixed Hermes identity")
@@ -448,7 +460,7 @@ def verify_peer(connection: socket.socket) -> None:
     init_cgroup = Path(f"/proc/{init_pid_text}/cgroup").read_text()
     if peer_cgroup != init_cgroup or "docker" not in peer_cgroup:
         raise BrokerError("socket peer is outside the exact Hermes container cgroup")
-    verify_peer_command(
+    explicit_run_id = verify_peer_command(
         os.readlink(f"/proc/{pid}/exe"),
         Path(f"/proc/{pid}/cmdline").read_bytes(),
     )
@@ -458,6 +470,7 @@ def verify_peer(connection: socket.socket) -> None:
         raise BrokerError("installed GitHub push client is not root-owned and immutable")
     if hashlib.sha256(peer_tool.read_bytes()).digest() != hashlib.sha256(TOOL.read_bytes()).digest():
         raise BrokerError("socket peer GitHub push client digest has drifted")
+    return explicit_run_id
 
 
 def read_request(connection: socket.socket) -> dict[str, Any]:
@@ -478,6 +491,13 @@ def read_request(connection: socket.socket) -> dict[str, Any]:
         {"schemaVersion", "heartbeatRunId", "expectedNewOid", "manifestName"},
         "socket request",
     )
+
+
+def verify_peer_request_run_id(peer_run_id: str | None, request: dict[str, Any]) -> None:
+    if peer_run_id is not None and peer_run_id != request["heartbeatRunId"]:
+        raise BrokerError(
+            "socket peer command Paperclip run id conflicts with the bounded request"
+        )
 
 
 def read_bundle(request: dict[str, Any], work_dir: Path) -> tuple[dict[str, Any], Path]:
@@ -1291,8 +1311,9 @@ def handle_connection(connection: sqlite3.Connection, client: socket.socket) -> 
     response: dict[str, Any]
     request: dict[str, Any] | None = None
     try:
-        verify_peer(client)
+        peer_run_id = verify_peer(client)
         request = read_request(client)
+        verify_peer_request_run_id(peer_run_id, request)
         response = process_request(connection, request)
     except Exception as error:
         for attempt in range(3):

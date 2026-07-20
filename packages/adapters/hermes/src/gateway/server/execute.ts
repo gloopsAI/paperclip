@@ -364,6 +364,23 @@ function buildHeaders(input: {
   };
 }
 
+function renderGatewayRuntimeIdentity(
+  ctx: AdapterExecutionContext,
+  paperclipApiUrl: string | null,
+  issueWorkMode: string | null,
+): string {
+  return [
+    "Paperclip runtime identity:",
+    `- Agent ID: ${ctx.agent.id}`,
+    `- Company ID: ${ctx.agent.companyId}`,
+    `- Run ID: ${ctx.runId}`,
+    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
+    ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
+    "- Hermes Gateway tool shells do not inherit PAPERCLIP_RUN_ID.",
+    `- If /opt/data/bin/github-push-tool.bundle.cjs is available, invoke it as: node /opt/data/bin/github-push-tool.bundle.cjs client --run-id ${ctx.runId}`,
+  ].join("\n");
+}
+
 export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
   const rawBinding = ctx.context[PAPERCLIP_EXECUTION_CONTEXT_KEY];
   const binding = readBoundExecutionContext(rawBinding);
@@ -373,9 +390,12 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
     throw error;
   }
   if (binding) {
+    const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
     const workspaceSection = renderAssignedExecutionWorkspace(ctx);
     return [
       `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
+      "",
+      renderGatewayRuntimeIdentity(ctx, paperclipApiUrl, issueWorkMode),
       "",
       "Execution contract:",
       "- Continue only the bound work packet below.",
@@ -396,12 +416,7 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
   const lines = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
-    "Paperclip runtime identity:",
-    `- Agent ID: ${ctx.agent.id}`,
-    `- Company ID: ${ctx.agent.companyId}`,
-    `- Run ID: ${ctx.runId}`,
-    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
-    ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
+    renderGatewayRuntimeIdentity(ctx, paperclipApiUrl, issueWorkMode),
     "",
     "Execution contract:",
     "- Take concrete action in this run when the task is actionable.",
