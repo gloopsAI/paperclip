@@ -40,11 +40,33 @@ export type ExecutionAdmissionUsage = {
   wallMs: number;
 };
 
+/**
+ * Snapshot of the effective task policy admitted for a budget epoch.
+ * Stored on the envelope so retries and continuations can rehydrate the exact
+ * ceilings without re-reading live env or issue edits.
+ */
+export type ExecutionAdmissionPolicyLimits = {
+  maxRunsPerTask: number;
+  maxRetriesPerTask: number;
+  maxInputTokensPerTask: number;
+  maxOutputTokensPerTask: number;
+  maxWallMsPerTask: number;
+  maxInputTokensPerInvocation: number;
+  maxOutputTokensPerInvocation: number;
+  maxTurnsPerInvocation: number;
+  maxToolCallsPerInvocation: number;
+};
+
 export type ExecutionAdmissionEnvelope = {
   schemaVersion: typeof EXECUTION_ADMISSION_SCHEMA_VERSION;
   budgetId: string;
   epoch: string;
   policyDigest: string;
+  /**
+   * Exact effective policy admitted for this budget epoch. Optional only for
+   * legacy envelopes written before policy snapshots; new envelopes always set it.
+   */
+  policy?: ExecutionAdmissionPolicyLimits;
   attempt: number;
   decision: "allowed" | "denied";
   reason: ExecutionAdmissionReason | null;
@@ -172,6 +194,71 @@ function validateLimitNumber(name: string, value: unknown): number {
   return Math.floor(value);
 }
 
+export function executionAdmissionPolicyLimits(
+  policy: Extract<ExecutionAdmissionPolicy, { enabled: true }>,
+): ExecutionAdmissionPolicyLimits {
+  return {
+    maxRunsPerTask: policy.maxRunsPerTask,
+    maxRetriesPerTask: policy.maxRetriesPerTask,
+    maxInputTokensPerTask: policy.maxInputTokensPerTask,
+    maxOutputTokensPerTask: policy.maxOutputTokensPerTask,
+    maxWallMsPerTask: policy.maxWallMsPerTask,
+    maxInputTokensPerInvocation: policy.maxInputTokensPerInvocation,
+    maxOutputTokensPerInvocation: policy.maxOutputTokensPerInvocation,
+    maxTurnsPerInvocation: policy.maxTurnsPerInvocation,
+    maxToolCallsPerInvocation: policy.maxToolCallsPerInvocation,
+  };
+}
+
+function digestPolicyLimits(values: ExecutionAdmissionPolicyLimits): string {
+  return createHash("sha256").update(JSON.stringify(values)).digest("hex");
+}
+
+/**
+ * Rehydrate an enabled policy from a stored limits snapshot. Validates every
+ * field and recomputes the digest so a forged snapshot cannot silently raise
+ * ceilings.
+ */
+export function rehydrateExecutionAdmissionPolicy(
+  limits: ExecutionAdmissionPolicyLimits,
+  expectedDigest?: string,
+): Extract<ExecutionAdmissionPolicy, { enabled: true }> {
+  const values: ExecutionAdmissionPolicyLimits = {
+    maxRunsPerTask: validateLimitNumber("maxRunsPerTask", limits.maxRunsPerTask),
+    maxRetriesPerTask: validateLimitNumber("maxRetriesPerTask", limits.maxRetriesPerTask),
+    maxInputTokensPerTask: validateLimitNumber("maxInputTokensPerTask", limits.maxInputTokensPerTask),
+    maxOutputTokensPerTask: validateLimitNumber("maxOutputTokensPerTask", limits.maxOutputTokensPerTask),
+    maxWallMsPerTask: validateLimitNumber("maxWallMsPerTask", limits.maxWallMsPerTask),
+    maxInputTokensPerInvocation: validateLimitNumber(
+      "maxInputTokensPerInvocation",
+      limits.maxInputTokensPerInvocation,
+    ),
+    maxOutputTokensPerInvocation: validateLimitNumber(
+      "maxOutputTokensPerInvocation",
+      limits.maxOutputTokensPerInvocation,
+    ),
+    maxTurnsPerInvocation: validateLimitNumber("maxTurnsPerInvocation", limits.maxTurnsPerInvocation),
+    maxToolCallsPerInvocation: validateLimitNumber(
+      "maxToolCallsPerInvocation",
+      limits.maxToolCallsPerInvocation,
+    ),
+  };
+  if (values.maxRetriesPerTask >= values.maxRunsPerTask) {
+    throw new Error("Execution admission maxRetriesPerTask must be lower than maxRunsPerTask");
+  }
+  if (values.maxInputTokensPerInvocation > values.maxInputTokensPerTask) {
+    throw new Error("Execution admission maxInputTokensPerInvocation must not exceed the task input-token limit");
+  }
+  if (values.maxOutputTokensPerInvocation > values.maxOutputTokensPerTask) {
+    throw new Error("Execution admission maxOutputTokensPerInvocation must not exceed the task output-token limit");
+  }
+  const digest = digestPolicyLimits(values);
+  if (expectedDigest !== undefined && expectedDigest !== digest) {
+    throw new Error("Execution admission policy snapshot does not match policyDigest");
+  }
+  return { enabled: true, ...values, digest };
+}
+
 export function resolveEffectiveExecutionAdmissionPolicy(
   globalPolicy: Extract<ExecutionAdmissionPolicy, { enabled: true }>,
   requestBudget?: IssueExecutionResourceBudget | null,
@@ -231,10 +318,135 @@ export function resolveEffectiveExecutionAdmissionPolicy(
   return {
     enabled: true,
     ...values,
-    digest: createHash("sha256").update(JSON.stringify(values)).digest("hex"),
+    digest: digestPolicyLimits(values),
   };
 }
 
+/**
+ * Fold issue and ancestor resource budgets so each can only tighten the global
+ * caps. Budgets are applied root-to-leaf: each step uses the original global
+ * policy as the env baseline and the previously resolved policy as the
+ * inherited authority ceiling.
+ */
+export function resolveExecutionAdmissionPolicyForResourceBudgetChain(
+  globalPolicy: ExecutionAdmissionPolicy,
+  budgets: Array<IssueExecutionResourceBudget | null | undefined>,
+  parentPolicy?: Extract<ExecutionAdmissionPolicy, { enabled: true }> | null,
+): ExecutionAdmissionPolicy {
+  if (!globalPolicy.enabled) return globalPolicy;
+  let inheritedStructuralLimits: Pick<
+    Extract<ExecutionAdmissionPolicy, { enabled: true }>,
+    "maxTurnsPerInvocation" | "maxToolCallsPerInvocation"
+  > | null = parentPolicy
+    ? {
+      maxTurnsPerInvocation: parentPolicy.maxTurnsPerInvocation,
+      maxToolCallsPerInvocation: parentPolicy.maxToolCallsPerInvocation,
+    }
+    : null;
+  let inherited = parentPolicy
+    ? {
+      ...parentPolicy,
+      maxTurnsPerInvocation: inheritedStructuralLimits?.maxTurnsPerInvocation ?? Number.MAX_SAFE_INTEGER,
+      maxToolCallsPerInvocation: inheritedStructuralLimits?.maxToolCallsPerInvocation ?? Number.MAX_SAFE_INTEGER,
+    }
+    : null;
+  let effective: Extract<ExecutionAdmissionPolicy, { enabled: true }> = inherited
+    ? resolveEffectiveExecutionAdmissionPolicy(globalPolicy, null, inherited)
+    : globalPolicy;
+  for (const budget of budgets) {
+    if (budget == null) continue;
+    const authority = inherited
+      ? {
+        ...inherited,
+        maxTurnsPerInvocation: inheritedStructuralLimits?.maxTurnsPerInvocation ?? Number.MAX_SAFE_INTEGER,
+        maxToolCallsPerInvocation: inheritedStructuralLimits?.maxToolCallsPerInvocation ?? Number.MAX_SAFE_INTEGER,
+      }
+      : null;
+    effective = resolveEffectiveExecutionAdmissionPolicy(globalPolicy, budget, authority);
+    inheritedStructuralLimits = {
+      maxTurnsPerInvocation: budget.maxTurnsPerInvocation === undefined
+        ? inheritedStructuralLimits?.maxTurnsPerInvocation ?? Number.MAX_SAFE_INTEGER
+        : effective.maxTurnsPerInvocation,
+      maxToolCallsPerInvocation: budget.maxToolCallsPerInvocation === undefined
+        ? inheritedStructuralLimits?.maxToolCallsPerInvocation ?? Number.MAX_SAFE_INTEGER
+        : effective.maxToolCallsPerInvocation,
+    };
+    inherited = effective;
+  }
+  return effective;
+}
+
+/**
+ * Once an epoch has an admitted (allowed) envelope, its effective policy is
+ * immutable. Live resolution may only be used for the first admission of an
+ * epoch, or when a legacy envelope lacks a policy snapshot and the live
+ * digest still matches.
+ */
+export function resolveEpochBoundExecutionAdmissionPolicy(
+  livePolicy: Extract<ExecutionAdmissionPolicy, { enabled: true }>,
+  lockedEnvelope: ExecutionAdmissionEnvelope | null | undefined,
+): Extract<ExecutionAdmissionPolicy, { enabled: true }> {
+  if (!lockedEnvelope || lockedEnvelope.decision !== "allowed") {
+    return livePolicy;
+  }
+  if (lockedEnvelope.policy) {
+    return rehydrateExecutionAdmissionPolicy(lockedEnvelope.policy, lockedEnvelope.policyDigest);
+  }
+  if (livePolicy.digest === lockedEnvelope.policyDigest) {
+    return livePolicy;
+  }
+  throw new Error(
+    "Execution admission epoch policy is locked and cannot be rehydrated after policy drift",
+  );
+}
+
+/**
+ * Prefer the earliest admitted envelope for a budget epoch so retries and
+ * continuations pin the first effective policy rather than a later rewrite.
+ */
+export function selectEpochLockingAdmissionEnvelope(
+  candidates: Array<ExecutionAdmissionEnvelope | null | undefined>,
+): ExecutionAdmissionEnvelope | null {
+  let selected: ExecutionAdmissionEnvelope | null = null;
+  for (const candidate of candidates) {
+    if (!candidate || candidate.decision !== "allowed") continue;
+    if (!selected) {
+      selected = candidate;
+      continue;
+    }
+    const selectedAt = Date.parse(selected.evaluatedAt);
+    const candidateAt = Date.parse(candidate.evaluatedAt);
+    if (
+      Number.isFinite(candidateAt) &&
+      (!Number.isFinite(selectedAt) || candidateAt < selectedAt ||
+        (candidateAt === selectedAt && candidate.attempt < selected.attempt))
+    ) {
+      selected = candidate;
+    }
+  }
+  return selected;
+}
+
+
+function readExecutionAdmissionPolicyLimits(value: unknown): ExecutionAdmissionPolicyLimits | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ExecutionAdmissionPolicyLimits>;
+  try {
+    return executionAdmissionPolicyLimits(rehydrateExecutionAdmissionPolicy({
+      maxRunsPerTask: candidate.maxRunsPerTask as number,
+      maxRetriesPerTask: candidate.maxRetriesPerTask as number,
+      maxInputTokensPerTask: candidate.maxInputTokensPerTask as number,
+      maxOutputTokensPerTask: candidate.maxOutputTokensPerTask as number,
+      maxWallMsPerTask: candidate.maxWallMsPerTask as number,
+      maxInputTokensPerInvocation: candidate.maxInputTokensPerInvocation as number,
+      maxOutputTokensPerInvocation: candidate.maxOutputTokensPerInvocation as number,
+      maxTurnsPerInvocation: candidate.maxTurnsPerInvocation as number,
+      maxToolCallsPerInvocation: candidate.maxToolCallsPerInvocation as number,
+    }));
+  } catch {
+    return null;
+  }
+}
 
 export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissionEnvelope | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -267,6 +479,13 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
       reservation.maxToolCalls, reservation.maxWallMs]
       .every((item) => typeof item === "number" && Number.isSafeInteger(item) && item > 0)
   );
+  const hasPolicyField = Object.prototype.hasOwnProperty.call(candidate, "policy");
+  const policy = hasPolicyField ? readExecutionAdmissionPolicyLimits(candidate.policy) : undefined;
+  const validPolicy = !hasPolicyField || (
+    policy != null &&
+    typeof candidate.policyDigest === "string" &&
+    digestPolicyLimits(policy) === candidate.policyDigest
+  );
   if (
     candidate.schemaVersion !== EXECUTION_ADMISSION_SCHEMA_VERSION ||
     typeof candidate.budgetId !== "string" || candidate.budgetId.length > 256 ||
@@ -277,11 +496,16 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     !validReason ||
     !validObserved ||
     !validReservation ||
+    !validPolicy ||
     typeof candidate.evaluatedAt !== "string" || !Number.isFinite(Date.parse(candidate.evaluatedAt))
   ) {
     return null;
   }
-  return candidate as ExecutionAdmissionEnvelope;
+  const envelope = candidate as ExecutionAdmissionEnvelope;
+  if (policy) {
+    return { ...envelope, policy };
+  }
+  return envelope;
 }
 
 /**
@@ -411,6 +635,7 @@ export function buildExecutionAdmissionEnvelope(input: {
     budgetId: input.identity.budgetId,
     epoch: input.identity.epoch,
     policyDigest: input.policy.digest,
+    policy: executionAdmissionPolicyLimits(input.policy),
     attempt,
     decision: input.decision.allowed ? "allowed" : "denied",
     reason: input.decision.reason,
@@ -452,10 +677,13 @@ export function evaluateExecutionReservationUsage(input: {
 export function resolveExecutionAdmissionPolicyForResourceBudget(
   globalPolicy: ExecutionAdmissionPolicy,
   resourceBudget?: IssueExecutionResourceBudget | null,
+  parentPolicy?: Extract<ExecutionAdmissionPolicy, { enabled: true }> | null,
 ): ExecutionAdmissionPolicy {
-  if (!globalPolicy.enabled) return globalPolicy;
-  if (resourceBudget == null) return globalPolicy;
-  return resolveEffectiveExecutionAdmissionPolicy(globalPolicy, resourceBudget);
+  return resolveExecutionAdmissionPolicyForResourceBudgetChain(
+    globalPolicy,
+    resourceBudget == null ? [] : [resourceBudget],
+    parentPolicy,
+  );
 }
 
 const RESERVATION_EXCEEDED_DIMENSIONS = new Set([

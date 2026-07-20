@@ -197,9 +197,11 @@ import {
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
-  resolveExecutionAdmissionPolicyForResourceBudget,
+  resolveEpochBoundExecutionAdmissionPolicy,
+  resolveExecutionAdmissionPolicyForResourceBudgetChain,
   resolveExecutionBudgetIdentity,
   resolveReportedReservationExceeded,
+  selectEpochLockingAdmissionEnvelope,
   type ExecutionAdmissionEnvelope,
   type ExecutionAdmissionPolicy,
   type ExecutionAdmissionReason,
@@ -5119,24 +5121,54 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
   const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
-  async function resolveIssueResourceBudget(issueId: string | null): Promise<
-    IssueExecutionResourceBudget | null
+  /**
+   * Collect resource budgets from the issue and its ancestors, root-to-leaf.
+   * Each budget can only tighten global/admission caps via claim-time resolution.
+   */
+  async function resolveIssueAndAncestorResourceBudgets(issueId: string | null): Promise<
+    IssueExecutionResourceBudget[]
   > {
-    if (!issueId) return null;
-    const issue = await db
-      .select({ executionPolicy: issues.executionPolicy })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
-    return normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null)?.resourceBudget ?? null;
+    if (!issueId) return [];
+    const chain: Array<{ id: string; parentId: string | null; budget: IssueExecutionResourceBudget | null }> = [];
+    let currentId: string | null = issueId;
+    const seen = new Set<string>();
+    // Bound the walk so a corrupt cycle cannot hang claim-time admission.
+    for (let depth = 0; depth < 32 && currentId; depth += 1) {
+      if (seen.has(currentId)) break;
+      seen.add(currentId);
+      const row: {
+        id: string;
+        parentId: string | null;
+        executionPolicy: unknown;
+      } | null = await db
+        .select({
+          id: issues.id,
+          parentId: issues.parentId,
+          executionPolicy: issues.executionPolicy,
+        })
+        .from(issues)
+        .where(eq(issues.id, currentId))
+        .then((rows) => rows[0] ?? null);
+      if (!row) break;
+      chain.push({
+        id: row.id,
+        parentId: row.parentId,
+        budget: normalizeIssueExecutionPolicy(row.executionPolicy ?? null)?.resourceBudget ?? null,
+      });
+      currentId = row.parentId;
+    }
+    // Root-to-leaf so parent ceilings apply before child requests.
+    return chain.reverse().map((entry) => entry.budget).filter(
+      (budget): budget is IssueExecutionResourceBudget => budget != null,
+    );
   }
 
   async function resolveEffectiveAdmissionPolicyForIssue(
     issueId: string | null,
   ): Promise<ExecutionAdmissionPolicy> {
     if (!executionAdmissionPolicy.enabled) return executionAdmissionPolicy;
-    const resourceBudget = await resolveIssueResourceBudget(issueId);
-    return resolveExecutionAdmissionPolicyForResourceBudget(executionAdmissionPolicy, resourceBudget);
+    const budgets = await resolveIssueAndAncestorResourceBudgets(issueId);
+    return resolveExecutionAdmissionPolicyForResourceBudgetChain(executionAdmissionPolicy, budgets);
   }
 
   async function allowsAutomaticRecoveryForContext(context: Record<string, unknown>) {
@@ -5145,10 +5177,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       EXECUTION_ADMISSION_CONTEXT_KEY,
     );
     const issueId = readNonEmptyString(context.issueId);
-    const policy = await resolveEffectiveAdmissionPolicyForIssue(issueId);
+    const envelope = readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]);
+    const livePolicy = await resolveEffectiveAdmissionPolicyForIssue(issueId);
+    let policy: ExecutionAdmissionPolicy = livePolicy;
+    if (livePolicy.enabled && envelope) {
+      try {
+        policy = resolveEpochBoundExecutionAdmissionPolicy(livePolicy, envelope);
+      } catch {
+        // Epoch lock failed (legacy drift without snapshot): deny recovery.
+        return false;
+      }
+    }
     return allowsAutomaticRecoveryCreation(
       policy,
-      readExecutionAdmissionEnvelope(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
+      envelope,
       bindingPresent,
     );
   }
@@ -10445,14 +10487,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : { kind: "lost_race" };
     }
 
-    // Task-class explicit resource budgets must reach the claim-time envelope
-    // so adapters receive the exact reserved dimensions. Absent budgets keep
-    // the global defaults unchanged.
+    // Task-class explicit resource budgets (issue + ancestors) must reach the
+    // claim-time envelope so adapters receive the exact reserved dimensions.
+    // Absent budgets keep the global defaults unchanged. The first admitted
+    // effective policy for a budget epoch is locked below and cannot be widened
+    // by retries, continuations, config reloads, or issue edits.
     const resolvedAdmissionPolicy = await resolveEffectiveAdmissionPolicyForIssue(issueId);
     if (!resolvedAdmissionPolicy.enabled) {
       throw new Error("execution admission policy became disabled after resource-budget resolution");
     }
-    const effectiveAdmissionPolicy = resolvedAdmissionPolicy;
+    const liveAdmissionPolicy = resolvedAdmissionPolicy;
 
     return db.transaction(async (tx) => {
       const companyWipLimit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
@@ -10520,6 +10564,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priorBudgetCondition,
         ))
         .orderBy(asc(heartbeatRuns.createdAt));
+      const lockingEnvelope = selectEpochLockingAdmissionEnvelope([
+        parentEnvelope && parentEnvelope.budgetId === identity.budgetId
+          ? parentEnvelope
+          : null,
+        ...priorRows.map((row) =>
+          readExecutionAdmissionEnvelope(
+            parseObject(row.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
+          ),
+        ),
+      ]);
+      let effectiveAdmissionPolicy: Extract<ExecutionAdmissionPolicy, { enabled: true }>;
+      try {
+        effectiveAdmissionPolicy = resolveEpochBoundExecutionAdmissionPolicy(
+          liveAdmissionPolicy,
+          lockingEnvelope,
+        );
+      } catch (error) {
+        const reason = error instanceof Error
+          ? error.message
+          : "Execution admission epoch policy lock failed";
+        const denied = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: claimedAt,
+            updatedAt: claimedAt,
+            error: reason,
+            errorCode: "execution_admission.policy_locked",
+            resultJson: {
+              ...parseObject(run.resultJson),
+              stopReason: "execution_admission.policy_locked",
+              timeoutFired: false,
+            },
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return denied
+          ? {
+            kind: "denied" as const,
+            run: denied,
+            errorCode: "execution_admission.policy_locked",
+            reason,
+            envelope: null,
+          }
+          : { kind: "lost_race" as const };
+      }
       const authorizedIndependentStage = await isAuthorizedIndependentExecutionStage({
         tx,
         run,
