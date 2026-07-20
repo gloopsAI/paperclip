@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { buildInput, execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { canonicalJsonBytes } from "./provider-evidence.js";
 import { testEnvironment } from "./test.js";
 import { buildBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
@@ -173,28 +173,93 @@ afterEach(() => {
 });
 
 describe("resolveSessionKey", () => {
-  it("derives issue-scoped session keys by default", () => {
-    expect(
-      resolveSessionKey({
-        strategy: "issue",
-        companyId: "company-1",
-        agentId: "agent-1",
-        runId: "run-1",
-        issueId: "issue-1",
-      }),
-    ).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+  function resolveKey(ctx: AdapterExecutionContext, strategy: "issue" | "agent" | "run" | "none") {
+    return resolveSessionKey(ctx, strategy);
+  }
+
+  it("derives deterministic issue-scoped session keys", () => {
+    const ctx = makeCtx({
+      model: "qwen3-coder",
+      instructions: "Do the thing.",
+      routingReason: "quality",
+      executionProfile: "execution-only",
+      subscriptionClass: "ollama-max",
+      payloadTemplate: { model: "qwen3-coder", instructions: "Do the thing." },
+    });
+    ctx.context.paperclipWorkspace = {
+      cwd: "/workspace/paperclip",
+      repoUrl: "https://github.com/owner/repo",
+      ref: "124edb9b13cdfb7d2c697547e4e5c07bfc432180",
+    };
+    const key = resolveKey(ctx, "issue");
+    expect(key).toMatch(/^v1:[A-Za-z0-9_-]{43}$/);
+    expect(key!.length).toBeLessThanOrEqual(64);
+    expect(resolveKey(ctx, "issue")).toBe(key);
+  });
+
+  it("invalidates the key when any scoped input changes", () => {
+    const base = makeCtx({
+      model: "qwen3-coder",
+      instructions: "Do the thing.",
+      routingReason: "quality",
+      executionProfile: "execution-only",
+      subscriptionClass: "ollama-max",
+      payloadTemplate: { model: "qwen3-coder", instructions: "Do the thing." },
+    });
+    base.context.paperclipWorkspace = {
+      cwd: "/workspace/paperclip",
+      repoUrl: "https://github.com/owner/repo",
+      ref: "124edb9b13cdfb7d2c697547e4e5c07bfc432180",
+    };
+    const baseKey = resolveKey(base, "issue");
+    const variants: AdapterExecutionContext[] = [
+      { ...base, context: { ...base.context, issueId: "issue-2" } },
+      { ...base, agent: { ...base.agent, id: "agent-2" } },
+      { ...base, context: { ...base.context, paperclipWorkspace: (base.context.paperclipWorkspace as { cwd?: string; repoUrl?: string; ref?: string }).repoUrl ?
+          { ...(base.context.paperclipWorkspace as object as { cwd?: string; repoUrl?: string; ref?: string }), repoUrl: "https://github.com/other/repo" } :
+          base.context.paperclipWorkspace } },
+      { ...base, context: { ...base.context, paperclipWorkspace: { ...(base.context.paperclipWorkspace as object as { cwd?: string; repoUrl?: string; ref?: string }), ref: "other-ref" } } },
+      { ...base, config: { ...base.config, model: "other-model" } },
+      { ...base, config: { ...base.config, routingReason: "other-reason" } },
+      { ...base, config: { ...base.config, executionProfile: "other-profile" } },
+      { ...base, config: { ...base.config, instructions: "Different instructions." } },
+    ];
+    for (const variant of variants) {
+      expect(resolveKey(variant, "issue")).not.toBe(baseKey);
+    }
+  });
+
+  it("does not expose raw identifiers or secrets in the opaque key", () => {
+    const ctx = makeCtx({
+      model: "qwen3-coder",
+      instructions: "Do the thing.",
+    });
+    ctx.context.paperclipWorkspace = { repoUrl: "https://github.com/owner/repo", repoRef: "abc123" };
+    const key = resolveKey(ctx, "issue")!;
+    const sensitive = [ctx.agent.companyId, ctx.agent.id, ctx.runId, ctx.context.issueId, "https://github.com/owner/repo", "abc123", "Do the thing."];
+    for (const value of sensitive) {
+      expect(key).not.toContain(value);
+    }
+  });
+
+  it("scopes to agent identity for agent strategy", () => {
+    const ctx = makeCtx({});
+    const key1 = resolveKey(ctx, "agent");
+    const ctx2 = { ...ctx, context: { ...ctx.context, issueId: "issue-2" } };
+    expect(resolveKey(ctx2 as AdapterExecutionContext, "agent")).toBe(key1);
+    const ctx3 = { ...ctx, agent: { ...ctx.agent, id: "agent-2" } };
+    expect(resolveKey(ctx3 as AdapterExecutionContext, "agent")).not.toBe(key1);
+  });
+
+  it("scopes to run identity for run strategy", () => {
+    const ctx = makeCtx({});
+    const key1 = resolveKey(ctx, "run");
+    const ctx2 = { ...ctx, runId: "run-2" };
+    expect(resolveKey(ctx2 as AdapterExecutionContext, "run")).not.toBe(key1);
   });
 
   it("omits the session key for none strategy", () => {
-    expect(
-      resolveSessionKey({
-        strategy: "none",
-        companyId: "company-1",
-        agentId: "agent-1",
-        runId: "run-1",
-        issueId: "issue-1",
-      }),
-    ).toBeNull();
+    expect(resolveKey(makeCtx({}), "none")).toBeNull();
   });
 });
 
@@ -203,6 +268,37 @@ describe("parseSseFramesForTest", () => {
     const parsed = parseSseFramesForTest("event: message.delta\ndata: {\"delta\":\"hi\"}\n\n:data\ndata: later");
     expect(parsed.frames).toEqual([{ event: "message.delta", data: "{\"delta\":\"hi\"}" }]);
     expect(parsed.rest).toBe(":data\ndata: later");
+  });
+});
+
+describe("buildInput", () => {
+  it("includes assigned execution workspace section in legacy prompt", () => {
+    const ctx = makeCtx({});
+    ctx.context.paperclipWorkspace = {
+      cwd: "/workspace/paperclip",
+      repoUrl: "https://github.com/owner/repo",
+      ref: "124edb9b13cdfb7d2c697547e4e5c07bfc432180",
+    };
+    const input = buildInput(ctx, "http://paperclip.example/api");
+    expect(input).toContain("Assigned execution workspace:");
+    expect(input).toContain("- CWD: /workspace/paperclip");
+    expect(input).toContain("- Repository URL: https://github.com/owner/repo");
+    expect(input).toContain("- Ref: 124edb9b13cdfb7d2c697547e4e5c07bfc432180");
+    expect(input).toContain("Do the thing");
+  });
+
+  it("includes assigned execution workspace section in bound prompt", () => {
+    const ctx = makeCtx({});
+    ctx.context.paperclipExecutionContext = buildBoundExecutionContext(compactPacket());
+    ctx.context.paperclipWorkspace = {
+      cwd: "/workspace/paperclip",
+      repoUrl: "https://github.com/owner/repo",
+      ref: "124edb9b13cdfb7d2c697547e4e5c07bfc432180",
+    };
+    const input = buildInput(ctx, "http://paperclip.example/api");
+    expect(input).toContain("Assigned execution workspace:");
+    expect(input).toContain("Bound continuation packet");
+    expect(input).not.toContain("Paperclip runtime identity");
   });
 });
 
@@ -547,11 +643,11 @@ describe("execute", () => {
       Authorization: "Bearer secret-key",
       "Content-Type": "application/json",
       "Idempotency-Key": "pc-run-1",
-      "X-Hermes-Session-Key": "paperclip:company:company-1:agent:agent-1:issue:issue-1",
+      "X-Hermes-Session-Key": expect.stringMatching(/^v1:[A-Za-z0-9_-]{43}$/),
     });
     const body = JSON.parse(String(init.body));
     expect(body.input).toContain("Do the thing");
-    expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(body.session_id).toMatch(/^v1:[A-Za-z0-9_-]{43}$/);
   });
 
   it("reconciles matching terminal event and final-status usage", async () => {
@@ -835,7 +931,9 @@ describe("execute", () => {
     expect(result.summary).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
     expect(result.resultJson?.output).toBe(result.summary);
     expect(logText).toContain("Bearer [redacted]");
-    expect(logText).toContain("X-Hermes-Session-Key: [redacted]");
+    const sessionKey = resolveSessionKey(ctx, "issue");
+    expect(logText).not.toContain(sessionKey);
+    expect(logText).toMatch(/X-Hermes-Session-Key[^\n]*\[redacted/);
     expect(logText).not.toContain("secret-key");
     expect(logText).not.toContain("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
@@ -884,7 +982,9 @@ describe("execute", () => {
       hermesRunId: "run-hermes-1",
       strategy: "agent",
     });
-    expect(logText).toContain("[redacted-session-key]");
+    const agentRequestSessionKey = resolveSessionKey(ctx, "agent");
+    expect(logText).not.toContain(agentRequestSessionKey);
+    expect(logText).toMatch(/X-Hermes-Session-Key[^\n]*\[redacted/);
     expect(logText).not.toContain(agentSessionKey);
   });
 
