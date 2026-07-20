@@ -278,6 +278,63 @@ function readRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+const GOVERNED_LIFECYCLE_MARKER_PREFIX = "PAPERCLIP_SWARM_V1:";
+const GOVERNED_LIFECYCLE_SHA = /^[0-9a-f]{40}$/;
+const GOVERNED_LIFECYCLE_ACTION_FIELDS = {
+  review_ready: ["action", "headSha", "summary"],
+  accepted: ["action", "headSha", "summary"],
+  changes_requested: ["action", "headSha", "summary"],
+  blocked: ["action", "reason"],
+  repair_proposal: ["action", "repository", "component", "title", "negativeTest", "summary"],
+} as const;
+
+function isBoundedLifecycleText(value: unknown, maxLength: number) {
+  return typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maxLength &&
+    !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value);
+}
+
+function hasExactFields(value: Record<string, unknown>, fields: readonly string[]) {
+  return Object.keys(value).sort().join("\0") === [...fields].sort().join("\0");
+}
+
+function isValidGovernedLifecycleMarker(value: unknown) {
+  const marker = readRecord(value);
+  const action = readString(marker.action);
+  if (!action || !(action in GOVERNED_LIFECYCLE_ACTION_FIELDS)) return false;
+  const fields = GOVERNED_LIFECYCLE_ACTION_FIELDS[
+    action as keyof typeof GOVERNED_LIFECYCLE_ACTION_FIELDS
+  ];
+  if (!hasExactFields(marker, fields)) return false;
+  if (action === "review_ready" || action === "accepted" || action === "changes_requested") {
+    return typeof marker.headSha === "string" &&
+      GOVERNED_LIFECYCLE_SHA.test(marker.headSha) &&
+      isBoundedLifecycleText(marker.summary, 180);
+  }
+  if (action === "blocked") return isBoundedLifecycleText(marker.reason, 240);
+  return isBoundedLifecycleText(marker.repository, 200) &&
+    isBoundedLifecycleText(marker.component, 200) &&
+    isBoundedLifecycleText(marker.title, 200) &&
+    isBoundedLifecycleText(marker.negativeTest, 500) &&
+    isBoundedLifecycleText(marker.summary, 500);
+}
+
+function hasValidFinalGovernedLifecycleReceipt(run: HeartbeatRunRow) {
+  const output = readRecord(run.resultJson).output;
+  if (typeof output !== "string" || output.length === 0 || output.length > 1_000_000) return false;
+  const occurrences = output.split(GOVERNED_LIFECYCLE_MARKER_PREFIX).length - 1;
+  if (occurrences !== 1) return false;
+  const finalLine = output.trimEnd().split(/\r?\n/).at(-1)?.trim() ?? "";
+  if (!finalLine.startsWith(GOVERNED_LIFECYCLE_MARKER_PREFIX)) return false;
+  const encoded = finalLine.slice(GOVERNED_LIFECYCLE_MARKER_PREFIX.length);
+  try {
+    return isValidGovernedLifecycleMarker(JSON.parse(encoded));
+  } catch {
+    return false;
+  }
+}
+
 function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -361,6 +418,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
+  if (hasValidFinalGovernedLifecycleReceipt(run)) {
+    return { kind: "skip", reason: "governed terminal lifecycle receipt owns the next action" };
+  }
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
   }
