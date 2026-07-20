@@ -100,6 +100,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
   });
 
   afterEach(() => {
+    delete process.env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS;
     mockAdapterState.supportsBudget = true;
     mockAdapterState.includeUsage = true;
     mockAdapterState.resultOverride = null;
@@ -239,6 +240,82 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
     expect(persisted?.status).toBe("failed");
     expect(persisted?.errorCode).toBe("execution_admission.adapter_budget_unsupported");
+  });
+
+  it("runs an explicitly allowlisted CLI adapter in reconciled mode", async () => {
+    process.env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS = "codex_local";
+    mockAdapterState.supportsBudget = false;
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
+      executionBudget: null,
+    }));
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.usageJson).toMatchObject({
+      executionReservation: {
+        enforcementMode: "reconciled",
+        compliant: true,
+        exceeded: [],
+      },
+    });
+  });
+
+  it("pessimistically settles missing usage from a reconciled CLI adapter", async () => {
+    process.env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS = "codex_local";
+    mockAdapterState.supportsBudget = false;
+    mockAdapterState.includeUsage = false;
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.errorCode).toBe("execution_admission.usage_missing");
+    expect(persisted?.usageJson).toMatchObject({
+      inputTokens: 30_000,
+      outputTokens: 5_000,
+      usageSource: "reservation_fallback",
+      executionReservation: {
+        enforcementMode: "reconciled",
+        compliant: false,
+        exceeded: ["usage_missing"],
+      },
+    });
+  });
+
+  it("fails a reconciled CLI adapter after reported reservation overage", async () => {
+    process.env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS = "codex_local";
+    mockAdapterState.supportsBudget = false;
+    mockAdapterState.resultOverride = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+      usage: { inputTokens: 30_001, cachedInputTokens: 0, outputTokens: 100 },
+    };
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.errorCode).toBe("execution_admission.reservation_exceeded");
+    expect(persisted?.usageJson).toMatchObject({
+      executionReservation: {
+        enforcementMode: "reconciled",
+        compliant: false,
+        exceeded: ["input_tokens"],
+      },
+    });
   });
 
   it("fails closed when a supported adapter completes without usage reconciliation", async () => {

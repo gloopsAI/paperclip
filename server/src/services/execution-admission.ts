@@ -64,6 +64,22 @@ export type PriorExecutionRun = {
 const POSITIVE_INTEGER = /^[1-9]\d*$/;
 const NON_NEGATIVE_INTEGER = /^(0|[1-9]\d*)$/;
 const RESET_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const RECONCILED_EXECUTION_ADAPTERS = new Set(["codex_local", "grok_local"]);
+
+export function parseReconciledExecutionAdapters(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): ReadonlySet<string> {
+  const raw = env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS?.trim();
+  if (!raw) return new Set();
+
+  const adapters = raw.split(",").map((value) => value.trim());
+  if (adapters.some((value) => !value || !RECONCILED_EXECUTION_ADAPTERS.has(value))) {
+    throw new Error(
+      "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS may contain only codex_local and grok_local",
+    );
+  }
+  return new Set(adapters);
+}
 
 function parseEnabled(value: string | undefined) {
   if (value === undefined || value.trim() === "" || value.toLowerCase() === "false") return false;

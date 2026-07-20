@@ -4,6 +4,7 @@ import {
   buildExecutionAdmissionEnvelope,
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
+  parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
   resolveEffectiveExecutionAdmissionPolicy,
   resolveExecutionBudgetIdentity,
@@ -36,6 +37,21 @@ describe("execution admission", () => {
     );
     expect(() => parseExecutionAdmissionPolicy({ ...enabledEnv, PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "3" }))
       .toThrow("must be lower");
+  });
+
+  it("parses only explicit CLI adapters for reconciled execution", () => {
+    expect([...parseReconciledExecutionAdapters({})]).toEqual([]);
+    expect([
+      ...parseReconciledExecutionAdapters({
+        PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS: " grok_local, codex_local ",
+      }),
+    ]).toEqual(["grok_local", "codex_local"]);
+    expect(() => parseReconciledExecutionAdapters({
+      PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS: "hermes_gateway",
+    })).toThrow("may contain only codex_local and grok_local");
+    expect(() => parseReconciledExecutionAdapters({
+      PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS: "grok_local,",
+    })).toThrow("may contain only codex_local and grok_local");
   });
 
   it("allows an initial run and bounded continuations, then denies further execution", () => {
