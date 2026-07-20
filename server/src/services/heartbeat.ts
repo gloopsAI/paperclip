@@ -2143,6 +2143,20 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export function runLifecycleContextCoordinates(contextSnapshot: unknown): {
+  issueId: string | null;
+  executionWorkspaceId: string | null;
+} {
+  const context =
+    typeof contextSnapshot === "object" && contextSnapshot !== null
+      ? (contextSnapshot as Record<string, unknown>)
+      : {};
+  return {
+    issueId: readNonEmptyString(context.issueId),
+    executionWorkspaceId: readNonEmptyString(context.executionWorkspaceId),
+  };
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -7309,6 +7323,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
+    const contextCoordinates = runLifecycleContextCoordinates(run.contextSnapshot);
     publishPluginDomainEvent({
       eventId: randomUUID(),
       eventType,
@@ -7326,9 +7341,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         triggerDetail: run.triggerDetail,
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
-        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
-          : null,
+        issueId: contextCoordinates.issueId,
+        executionWorkspaceId: contextCoordinates.executionWorkspaceId,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
       },
