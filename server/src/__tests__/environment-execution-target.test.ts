@@ -221,4 +221,48 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
     expect(target).not.toHaveProperty("paperclipApiUrl");
   });
+
+  it("resolves Grok CLI SSH targets instead of falling back to local execution", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "hermes.example.test",
+        port: 22,
+        username: "paperclip-executor",
+        remoteWorkspacePath: "/srv/paperclip/workspaces",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "hermes.example.test ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "grok_local",
+      environment: {
+        id: "env-hermes-1",
+        driver: "ssh",
+        config: {},
+      },
+      leaseId: "lease-grok-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "ssh",
+      environmentId: "env-hermes-1",
+      leaseId: "lease-grok-1",
+      remoteCwd: "/srv/paperclip/workspaces",
+      spec: {
+        host: "hermes.example.test",
+        port: 22,
+        username: "paperclip-executor",
+        remoteWorkspacePath: "/srv/paperclip/workspaces",
+      },
+    });
+  });
 });

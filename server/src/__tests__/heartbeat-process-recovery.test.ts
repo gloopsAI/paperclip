@@ -2155,7 +2155,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments?.[0]).toMatchObject({
       authorType: "system",
       createdByRunId: runId,
-      body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/3)",
+      body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/1)",
     });
 
     const interaction = await waitForValue(async () => {
@@ -2174,7 +2174,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "retrying",
         errorCode: "adapter_failed",
         attempt: 1,
-        maxAttempts: 3,
+        maxAttempts: 1,
         runId,
         retryRunId: retryRun?.id ?? null,
       },

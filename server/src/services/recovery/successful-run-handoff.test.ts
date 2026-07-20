@@ -96,6 +96,51 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("record an explicit continuation path");
   });
 
+  it("defers to one valid final governed lifecycle receipt", () => {
+    expect(decide({
+      run: {
+        ...run,
+        resultJson: {
+          output: [
+            "Implementation and focused tests completed.",
+            'PAPERCLIP_SWARM_V1:{"action":"review_ready","headSha":"0123456789abcdef0123456789abcdef01234567","summary":"Ready for exact-head review"}',
+          ].join("\n"),
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "governed terminal lifecycle receipt owns the next action",
+    });
+  });
+
+  it("does not let malformed, non-final, or ambiguous markers suppress recovery", () => {
+    const invalidOutputs = [
+      'PAPERCLIP_SWARM_V1:{"action":"review_ready","headSha":"not-a-sha","summary":"Invalid"}',
+      [
+        'PAPERCLIP_SWARM_V1:{"action":"blocked","reason":"Not final"}',
+        "Additional prose after the marker.",
+      ].join("\n"),
+      [
+        'PAPERCLIP_SWARM_V1:{"action":"blocked","reason":"First"}',
+        'PAPERCLIP_SWARM_V1:{"action":"blocked","reason":"Second"}',
+      ].join("\n"),
+      'PAPERCLIP_SWARM_V1:{"action":"blocked","reason":"Extra field","summary":"not allowed"}',
+      'Quoted example: PAPERCLIP_SWARM_V1:{"action":"blocked","reason":"Example only"}',
+    ];
+
+    for (const output of invalidOutputs) {
+      expect(decide({
+        run: { ...run, resultJson: { output } } as any,
+      }).kind).toBe("enqueue");
+    }
+  });
+
+  it("keeps normal recovery when terminal output is absent", () => {
+    expect(decide({ run: { ...run, resultJson: null } as any }).kind).toBe("enqueue");
+    expect(decide({ run: { ...run, resultJson: { summary: "No terminal output" } } as any }).kind)
+      .toBe("enqueue");
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",

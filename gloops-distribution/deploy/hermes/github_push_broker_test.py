@@ -222,17 +222,40 @@ class GitHubPushBrokerTests(unittest.TestCase):
         inspect.assert_not_called()
 
     def test_socket_peer_command_requires_exact_installed_client_argv(self):
-        broker.verify_peer_command(
+        self.assertIsNone(broker.verify_peer_command(
             "/usr/bin/node",
             b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0",
+        ))
+        run_id = "11111111-1111-4111-8111-111111111111"
+        self.assertEqual(
+            broker.verify_peer_command(
+                "/usr/bin/node",
+                (
+                    b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                    b"--run-id\0" + run_id.encode() + b"\0"
+                ),
+            ),
+            run_id,
         )
         for command in (
             b"node\0-e\0malicious()\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0",
             b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0--run-id\0spoof\0",
+            b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0--run-id\0",
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--run-id\0" + run_id.encode() + b"\0extra\0"
+            ),
             b"node\0/tmp/github-push-tool.bundle.cjs\0client\0",
         ):
-            with self.assertRaisesRegex(broker.BrokerError, "installed GitHub push client"):
+            with self.assertRaises(broker.BrokerError):
                 broker.verify_peer_command("/usr/bin/node", command)
+
+        broker.verify_peer_request_run_id(run_id, {"heartbeatRunId": run_id})
+        with self.assertRaisesRegex(broker.BrokerError, "conflicts with the bounded request"):
+            broker.verify_peer_request_run_id(
+                run_id,
+                {"heartbeatRunId": "22222222-2222-4222-8222-222222222222"},
+            )
 
     def test_worker_area_is_ephemeral_traversable_and_not_broker_state(self):
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):

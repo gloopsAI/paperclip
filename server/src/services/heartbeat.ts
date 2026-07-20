@@ -194,6 +194,7 @@ import {
   evaluateExecutionReservationUsage,
   executionInvocationBudgetFromEnvelope,
   parseExecutionAdmissionPolicy,
+  parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
   resolveExecutionBudgetIdentity,
   type ExecutionAdmissionEnvelope,
@@ -203,6 +204,8 @@ import {
 import {
   PAPERCLIP_EXECUTION_CONTEXT_KEY,
   PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  buildBoundExecutionContext,
+  buildCanonicalContinuationPacket,
   buildExecutionRetryReceipt,
   evaluateExecutionTruthTransition,
   readBoundExecutionContext,
@@ -5106,8 +5109,9 @@ export function resolveHeartbeatSchedulingSuppression(
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   // Constructed during server startup. Enabling the gate with incomplete
   // ceilings fails closed before this service can invoke any adapter.
-  const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
   const runtimeEnv = options.runtimeEnv ?? process.env;
+  const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
+  const reconciledExecutionAdapters = parseReconciledExecutionAdapters(runtimeEnv);
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
   const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
@@ -5640,6 +5644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workMode: issues.workMode,
         priority: issues.priority,
         projectId: issues.projectId,
+        goalId: issues.goalId,
         projectWorkspaceId: issues.projectWorkspaceId,
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -9030,7 +9035,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const workId = readNonEmptyString((boundExecutionContext.packet.work as Record<string, unknown> | undefined)?.id)
         ?? issueId
         ?? run.id;
-      if (!contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY] && retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+      if (!contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY]) {
         const routePathId = readNonEmptyString(parseObject(run.usageJson).provider) ?? agent.adapterType;
         contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY] = buildExecutionRetryReceipt({
           workId,
@@ -12082,6 +12087,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workMode: issueContext.workMode,
           description: issueContext.description,
           projectId: issueContext.projectId,
+          goalId: issueContext.goalId,
+          parentId: issueContext.parentId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
@@ -13032,6 +13039,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
+    if (
+      issueRef &&
+      (context[PAPERCLIP_EXECUTION_CONTEXT_KEY] === null ||
+        context[PAPERCLIP_EXECUTION_CONTEXT_KEY] === undefined)
+    ) {
+      const packet = buildCanonicalContinuationPacket({
+        issue: {
+          id: issueRef.id,
+          identifier: issueRef.identifier,
+          title: issueRef.title,
+          objective: issueRef.description,
+          status: issueRef.status,
+          priority: issueRef.priority,
+          workMode: issueRef.workMode,
+          projectId: executionWorkspace.projectId ?? issueRef.projectId,
+          goalId: issueRef.goalId,
+          parentId: issueRef.parentId,
+        },
+        ancestors: issueAncestors,
+        repoRef: {
+          repoUrl: executionWorkspace.repoUrl,
+          repoRef: executionWorkspace.repoRef,
+          cwd: executionWorkspace.cwd,
+          workspaceId: executionWorkspace.workspaceId,
+        },
+        authority: {
+          companyId: agent.companyId,
+          assigneeAgentId: issueContext?.assigneeAgentId ?? null,
+          responsibleUserId: responsibleUserId ?? issueContext?.responsibleUserId ?? null,
+          runId: run.id,
+        },
+        verification: {
+          exactHeadSha: executionWorkspace.baseRefSha ?? executionWorkspace.repoRef,
+          cursor: "verify exact head, run focused checks, and record terminal disposition before completion",
+        },
+        continuation: {
+          summary: safeContinuationSummary?.body ?? null,
+          next: readNonEmptyString(context.wakeReason) ?? "issue wake",
+        },
+        executionBudget: parseObject(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
+      });
+      context[PAPERCLIP_EXECUTION_CONTEXT_KEY] = buildBoundExecutionContext(packet);
+      if (agent.adapterType === "hermes_local" || agent.adapterType === "hermes_gateway") {
+        context.forceFreshSession = true;
+      }
+    }
     const runtimeSessionFallback = taskKey || resetTaskSession
       ? null
       : isCanonicalSessionIdForAdapter(agent.adapterType, runtime.sessionId)
@@ -13624,7 +13677,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
-      if (invocationBudget && adapter.supportsExecutionBudget !== true) {
+      const executionBudgetMode = invocationBudget
+        ? adapter.supportsExecutionBudget === true
+          ? "strict"
+          : reconciledExecutionAdapters.has(agent.adapterType)
+            ? "reconciled"
+            : "unsupported"
+        : null;
+      if (invocationBudget && executionBudgetMode === "unsupported") {
         adapterResult = {
           exitCode: 1,
           signal: null,
@@ -13642,7 +13702,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context,
-          executionBudget: invocationBudget,
+          executionBudget: executionBudgetMode === "strict" ? invocationBudget : null,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution
@@ -13826,6 +13886,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               compliant: false,
               exceeded: ["usage_missing"],
               reservation: invocationBudget,
+              enforcementMode: executionBudgetMode,
               accounting: "reservation_fallback",
               originalOutcomePreserved: !providerCompletedNominally,
             },
@@ -13849,7 +13910,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           clearSession: true,
           resultJson: {
             ...parseObject(adapterResult.resultJson),
-            executionReservation: { compliant: false, exceeded: reservationUsage.exceeded, reservation: invocationBudget },
+            executionReservation: {
+              compliant: false,
+              exceeded: reservationUsage.exceeded,
+              reservation: invocationBudget,
+              enforcementMode: executionBudgetMode,
+            },
           },
         };
         nextSessionState = resolveNextSessionState({
@@ -13935,6 +14001,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(invocationBudget ? {
                 executionReservation: {
                   ...invocationBudget,
+                  enforcementMode: executionBudgetMode,
                   compliant: reservationUsage?.compliant ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? false : null),
                   exceeded: reservationUsage?.exceeded ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? ["usage_missing"] : []),
                 },

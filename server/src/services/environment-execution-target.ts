@@ -39,7 +39,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "gemini_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
+      input.adapterType !== "cursor" &&
+      input.adapterType !== "grok_local"
     ) {
       return null;
     }
@@ -115,7 +116,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
       input.adapterType !== "gemini_local" &&
       input.adapterType !== "opencode_local" &&
       input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
+      input.adapterType !== "cursor" &&
+      input.adapterType !== "grok_local"
     ) ||
     input.environment.driver !== "ssh"
   ) {
