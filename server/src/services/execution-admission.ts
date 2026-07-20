@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { IssueExecutionResourceBudget } from "@paperclipai/shared";
 import type { ExecutionInvocationBudget } from "@paperclipai/adapter-utils";
 
 export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v2" as const;
@@ -125,6 +126,80 @@ export function parseExecutionAdmissionPolicy(
     digest: createHash("sha256").update(JSON.stringify(values)).digest("hex"),
   };
 }
+
+const LIMIT_FIELDS: Array<keyof IssueExecutionResourceBudget & keyof Extract<ExecutionAdmissionPolicy, { enabled: true }>> = [
+  "maxRunsPerTask",
+  "maxRetriesPerTask",
+  "maxInputTokensPerTask",
+  "maxOutputTokensPerTask",
+  "maxWallMsPerTask",
+  "maxInputTokensPerInvocation",
+  "maxOutputTokensPerInvocation",
+  "maxTurnsPerInvocation",
+  "maxToolCallsPerInvocation",
+];
+
+function validateLimitNumber(name: string, value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Execution admission ${name} must be a finite number`);
+  }
+  const minimum = name === "maxRetriesPerTask" ? 0 : 1;
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    const requirement = minimum === 0 ? "a non-negative" : "a positive";
+    throw new Error(`Execution admission ${name} must be ${requirement} safe integer`);
+  }
+  return Math.floor(value);
+}
+
+export function resolveEffectiveExecutionAdmissionPolicy(
+  globalPolicy: Extract<ExecutionAdmissionPolicy, { enabled: true }>,
+  requestBudget?: IssueExecutionResourceBudget | null,
+  parentPolicy?: Extract<ExecutionAdmissionPolicy, { enabled: true }> | null,
+): Extract<ExecutionAdmissionPolicy, { enabled: true }> {
+  const pick = (field: typeof LIMIT_FIELDS[number]) => {
+    const candidates: number[] = [
+      validateLimitNumber(field, globalPolicy[field]),
+    ];
+    if (requestBudget != null && requestBudget[field] !== undefined) {
+      candidates.push(validateLimitNumber(field, requestBudget[field]));
+    }
+    if (parentPolicy != null) {
+      candidates.push(validateLimitNumber(field, parentPolicy[field]));
+    }
+    return Math.min(...candidates);
+  };
+
+  const values = {
+    maxRunsPerTask: pick("maxRunsPerTask"),
+    maxRetriesPerTask: pick("maxRetriesPerTask"),
+    maxInputTokensPerTask: pick("maxInputTokensPerTask"),
+    maxOutputTokensPerTask: pick("maxOutputTokensPerTask"),
+    maxWallMsPerTask: pick("maxWallMsPerTask"),
+    maxInputTokensPerInvocation: pick("maxInputTokensPerInvocation"),
+    maxOutputTokensPerInvocation: pick("maxOutputTokensPerInvocation"),
+    maxTurnsPerInvocation: pick("maxTurnsPerInvocation"),
+    maxToolCallsPerInvocation: pick("maxToolCallsPerInvocation"),
+  };
+
+  if (values.maxRetriesPerTask >= values.maxRunsPerTask) {
+    values.maxRetriesPerTask = Math.max(0, values.maxRunsPerTask - 1);
+  }
+  values.maxInputTokensPerInvocation = Math.min(
+    values.maxInputTokensPerInvocation,
+    values.maxInputTokensPerTask,
+  );
+  values.maxOutputTokensPerInvocation = Math.min(
+    values.maxOutputTokensPerInvocation,
+    values.maxOutputTokensPerTask,
+  );
+
+  return {
+    enabled: true,
+    ...values,
+    digest: createHash("sha256").update(JSON.stringify(values)).digest("hex"),
+  };
+}
+
 
 export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissionEnvelope | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
