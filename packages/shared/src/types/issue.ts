@@ -613,6 +613,18 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface IssueExecutionResourceBudget {
+  maxRunsPerTask?: number;
+  maxRetriesPerTask?: number;
+  maxInputTokensPerTask?: number;
+  maxOutputTokensPerTask?: number;
+  maxWallMsPerTask?: number;
+  maxInputTokensPerInvocation?: number;
+  maxOutputTokensPerInvocation?: number;
+  maxTurnsPerInvocation?: number;
+  maxToolCallsPerInvocation?: number;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
@@ -620,6 +632,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  resourceBudget?: IssueExecutionResourceBudget;
 }
 
 export interface IssueExecutionMonitorState {

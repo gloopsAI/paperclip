@@ -197,6 +197,57 @@ export const issueExecutionMonitorPolicySchema = z.object({
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
+const issueExecutionResourceBudgetSchema = z
+  .object({
+    maxRunsPerTask: z.number().int().positive().safe().optional(),
+    maxRetriesPerTask: z.number().int().nonnegative().safe().optional(),
+    maxInputTokensPerTask: z.number().int().positive().safe().optional(),
+    maxOutputTokensPerTask: z.number().int().positive().safe().optional(),
+    maxWallMsPerTask: z.number().int().positive().safe().optional(),
+    maxInputTokensPerInvocation: z.number().int().positive().safe().optional(),
+    maxOutputTokensPerInvocation: z.number().int().positive().safe().optional(),
+    maxTurnsPerInvocation: z.number().int().positive().safe().optional(),
+    maxToolCallsPerInvocation: z.number().int().positive().safe().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.maxRunsPerTask != null &&
+      value.maxRetriesPerTask != null &&
+      value.maxRetriesPerTask >= value.maxRunsPerTask
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "maxRetriesPerTask must be less than maxRunsPerTask",
+        path: ["maxRetriesPerTask"],
+      });
+    }
+
+    if (
+      value.maxInputTokensPerTask != null &&
+      value.maxInputTokensPerInvocation != null &&
+      value.maxInputTokensPerInvocation > value.maxInputTokensPerTask
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "maxInputTokensPerInvocation cannot exceed maxInputTokensPerTask",
+        path: ["maxInputTokensPerInvocation"],
+      });
+    }
+
+    if (
+      value.maxOutputTokensPerTask != null &&
+      value.maxOutputTokensPerInvocation != null &&
+      value.maxOutputTokensPerInvocation > value.maxOutputTokensPerTask
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "maxOutputTokensPerInvocation cannot exceed maxOutputTokensPerTask",
+        path: ["maxOutputTokensPerInvocation"],
+      });
+    }
+  });
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
@@ -204,6 +255,7 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  resourceBudget: issueExecutionResourceBudgetSchema.optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({

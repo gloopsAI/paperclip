@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  issueExecutionPolicySchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -416,5 +417,120 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  it("accepts a valid resourceBudget and preserves defaults when it is absent", () => {
+    const withBudget = issueExecutionPolicySchema.parse({
+      mode: "normal",
+      commentRequired: true,
+      resourceBudget: {
+        maxRunsPerTask: 5,
+        maxRetriesPerTask: 2,
+        maxInputTokensPerTask: 100000,
+        maxOutputTokensPerTask: 50000,
+        maxWallMsPerTask: 300000,
+        maxInputTokensPerInvocation: 20000,
+        maxOutputTokensPerInvocation: 10000,
+        maxTurnsPerInvocation: 10,
+        maxToolCallsPerInvocation: 20,
+      },
+    });
+
+    expect(withBudget.resourceBudget).toEqual({
+      maxRunsPerTask: 5,
+      maxRetriesPerTask: 2,
+      maxInputTokensPerTask: 100000,
+      maxOutputTokensPerTask: 50000,
+      maxWallMsPerTask: 300000,
+      maxInputTokensPerInvocation: 20000,
+      maxOutputTokensPerInvocation: 10000,
+      maxTurnsPerInvocation: 10,
+      maxToolCallsPerInvocation: 20,
+    });
+    expect(withBudget.mode).toBe("normal");
+    expect(withBudget.stages).toEqual([]);
+
+    const withoutBudget = issueExecutionPolicySchema.parse({
+      mode: "normal",
+      commentRequired: true,
+    });
+
+    expect(withoutBudget.resourceBudget).toBeUndefined();
+    expect(withoutBudget.mode).toBe("normal");
+    expect(withoutBudget.stages).toEqual([]);
+  });
+
+  it("rejects resourceBudget retries that are not less than runs", () => {
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxRunsPerTask: 3, maxRetriesPerTask: 3 },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxRunsPerTask: 3, maxRetriesPerTask: 4 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects invocation token limits that exceed task token limits", () => {
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: {
+          maxInputTokensPerTask: 1000,
+          maxInputTokensPerInvocation: 1001,
+        },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: {
+          maxOutputTokensPerTask: 500,
+          maxOutputTokensPerInvocation: 501,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("allows partial valid tightening of resourceBudget", () => {
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxRetriesPerTask: 0 },
+      }).success,
+    ).toBe(true);
+
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxInputTokensPerTask: 1000, maxInputTokensPerInvocation: 1000 },
+      }).success,
+    ).toBe(true);
+
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxRunsPerTask: 3 },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects unknown resourceBudget keys and non-integer values", () => {
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxRunsPerTask: 5, extraField: true },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxToolCallsPerInvocation: 1.5 },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      issueExecutionPolicySchema.safeParse({
+        resourceBudget: { maxRetriesPerTask: -1 },
+      }).success,
+    ).toBe(false);
   });
 });
