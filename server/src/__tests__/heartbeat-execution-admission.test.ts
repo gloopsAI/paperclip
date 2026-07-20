@@ -265,6 +265,60 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("passes an issue resource budget through claim-time admission to the adapter", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Explicit coding envelope",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `BUD-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        resourceBudget: {
+          maxRunsPerTask: 1,
+          maxRetriesPerTask: 0,
+          maxTurnsPerInvocation: 4,
+          maxToolCallsPerInvocation: 12,
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
+      executionBudget: expect.objectContaining({
+        maxTurns: 4,
+        maxToolCalls: 12,
+      }),
+    }));
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.contextSnapshot).toMatchObject({
+      gloopsExecutionAdmission: {
+        reservation: {
+          maxTurns: 4,
+          maxToolCalls: 12,
+        },
+      },
+    });
+  });
+
   it("pessimistically settles missing usage from a reconciled CLI adapter", async () => {
     process.env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS = "codex_local";
     mockAdapterState.supportsBudget = false;

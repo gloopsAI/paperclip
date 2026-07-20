@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   allowsAutomaticRecoveryCreation,
   buildExecutionAdmissionEnvelope,
+  evaluateExecutionReservationUsage,
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
   resolveEffectiveExecutionAdmissionPolicy,
+  resolveExecutionAdmissionPolicyForResourceBudget,
   resolveExecutionBudgetIdentity,
+  resolveReportedReservationExceeded,
 } from "./execution-admission.js";
 
 const enabledEnv = {
@@ -282,6 +285,58 @@ describe("execution admission", () => {
     const global = policy();
     const resolved = resolveEffectiveExecutionAdmissionPolicy(global, null, null);
     expect(resolved).toEqual(global);
+  });
+
+  it("tightens the global policy from an explicit issue resource budget", () => {
+    const global = policy();
+    const resolved = resolveExecutionAdmissionPolicyForResourceBudget(global, {
+      maxRunsPerTask: 1,
+      maxRetriesPerTask: 0,
+      maxTurnsPerInvocation: 4,
+      maxToolCallsPerInvocation: 12,
+    });
+
+    expect(resolved).toMatchObject({
+      enabled: true,
+      maxRunsPerTask: 1,
+      maxRetriesPerTask: 0,
+      maxTurnsPerInvocation: 4,
+      maxToolCallsPerInvocation: 12,
+    });
+    expect(resolveExecutionAdmissionPolicyForResourceBudget(global, null)).toEqual(global);
+  });
+
+  it("preserves exact turn and tool-call overages in reservation receipts", () => {
+    const global = policy();
+    const envelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:budgeted:default", epoch: "default" },
+      policy: global,
+      decision: evaluateExecutionAdmission(global, []),
+      evaluatedAt: new Date("2026-07-20T18:00:00.000Z"),
+    });
+    if (!envelope.reservation) throw new Error("expected reservation");
+
+    expect(evaluateExecutionReservationUsage({
+      reservation: envelope.reservation,
+      inputTokens: 100,
+      outputTokens: 50,
+      wallMs: 1_000,
+      turns: envelope.reservation.maxTurns + 1,
+      toolCalls: envelope.reservation.maxToolCalls + 1,
+    })).toEqual({
+      compliant: false,
+      exceeded: ["turns", "tool_calls"],
+    });
+    expect(resolveReportedReservationExceeded({
+      reservation: envelope.reservation,
+      resultJson: {
+        exceeded: "turns",
+        execution_metrics: {
+          turns: envelope.reservation.maxTurns + 1,
+          tool_calls: envelope.reservation.maxToolCalls + 1,
+        },
+      },
+    })).toEqual(["turns", "tool_calls"]);
   });
 
 });

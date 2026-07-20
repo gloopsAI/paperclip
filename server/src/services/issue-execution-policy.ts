@@ -314,12 +314,24 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
+  const next: IssueExecutionPolicy = {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.reviewPreset ? { reviewPreset: policy.reviewPreset } : {}),
+    ...(policy.authorizationPolicy ? { authorizationPolicy: policy.authorizationPolicy } : {}),
+    ...(policy.resourceBudget ? { resourceBudget: policy.resourceBudget } : {}),
   };
+  if (
+    next.stages.length === 0 &&
+    !next.reviewPreset &&
+    !next.authorizationPolicy &&
+    !next.resourceBudget &&
+    next.commentRequired
+  ) {
+    return null;
+  }
+  return next;
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -389,12 +401,16 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  // Preserve validated resourceBudget byte-for-byte. Dropping it here is what
+  // prevented task-class coding envelopes from reaching admission/adapters.
+  const resourceBudget = parsed.data.resourceBudget;
 
   if (
     stages.length === 0 &&
     !monitor &&
     !reviewPreset &&
     !authorizationPolicy &&
+    !resourceBudget &&
     parsed.data.commentRequired
   ) {
     return null;
@@ -407,6 +423,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(resourceBudget ? { resourceBudget } : {}),
   };
 }
 

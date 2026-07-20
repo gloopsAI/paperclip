@@ -1367,4 +1367,29 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
   });
+
+  it("persists the exact provider-budget dimension in the terminal receipt", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-budget",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "Hermes run stopped after exceeding reserved turns",
+          error_code: "execution_admission.provider_budget_exceeded",
+          exceeded: "turns",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+      turnCount: 9,
+      toolCallCount: 12,
+    });
+
+    expect(result.resultJson).toMatchObject({
+      exceeded: "turns",
+      execution_metrics: { turns: 9, tool_calls: 12 },
+    });
+  });
 });
