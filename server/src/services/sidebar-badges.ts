@@ -45,7 +45,11 @@ export function sidebarBadgeService(db: Db) {
           ? extra.joinRequests.filter((row) =>
             !isDismissedByAnyKey(
               extra.dismissals ?? new Map(),
-              [`join:${row.id}`, `attention:join_request:${row.id}`],
+              [
+                `attention:join:${row.id}`,
+                `attention:join_request:${row.id}`,
+                `join:${row.id}`,
+              ],
               row.updatedAt ?? row.createdAt,
             )
           ).length
@@ -83,7 +87,11 @@ export function sidebarBadgeService(db: Db) {
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>
         !isDismissedByAnyKey(
           extra?.dismissals ?? new Map(),
-          [`join:${row.id}`, `attention:join_request:${row.id}`],
+          [
+            `attention:join:${row.id}`,
+            `attention:join_request:${row.id}`,
+            `join:${row.id}`,
+          ],
           row.updatedAt ?? row.createdAt,
         )
       ).length;

@@ -410,7 +410,7 @@ describe("inbox helpers", () => {
         id: "dismissal-1",
         companyId: "company-1",
         userId: "user-1",
-        itemKey: "attention:join_request:join-1",
+        itemKey: "attention:join:join-1",
         kind: "dismiss",
         dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
         snoozedUntil: null,

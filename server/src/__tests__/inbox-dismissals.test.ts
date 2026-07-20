@@ -247,7 +247,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
     await dismissalsSvc.dismiss(companyId, userId, `approval:${hiddenApprovalId}`, new Date("2026-03-11T02:00:00.000Z"));
     await dismissalsSvc.dismiss(companyId, userId, `approval:${resurfacedApprovalId}`, new Date("2026-03-11T02:00:00.000Z"));
-    await dismissalsSvc.dismiss(companyId, userId, `join:${hiddenJoinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
+    await dismissalsSvc.dismiss(companyId, userId, `attention:join:${hiddenJoinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
     await dismissalsSvc.dismiss(companyId, userId, `run:${hiddenRunId}`, new Date("2026-03-11T02:00:00.000Z"));
 
     const dismissedAtByKey = new Map(
@@ -286,7 +286,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await dismissalsSvc.dismiss(companyId, userId, `join:${joinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
+    await dismissalsSvc.dismiss(companyId, userId, `attention:join:${joinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
 
     const dismissedAtByKey = new Map(
       (await dismissalsSvc.list(companyId, userId)).map((dismissal) => [
@@ -465,7 +465,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     await dismissalsSvc.dismiss(
       companyId,
       userId,
-      `attention:join_request:${joinRequestId}`,
+      `attention:join:${joinRequestId}`,
       new Date("2026-03-11T02:00:00.000Z"),
     );
 

@@ -1262,7 +1262,11 @@ export function computeInboxBadgeData({
     (jr) =>
       !isInboxEntityDismissedByAnyKey(
         dismissedAtByKey,
-        [`join:${jr.id}`, `attention:join_request:${jr.id}`],
+        [
+          `attention:join:${jr.id}`,
+          `attention:join_request:${jr.id}`,
+          `join:${jr.id}`,
+        ],
         jr.updatedAt ?? jr.createdAt,
       ),
   ).length;
