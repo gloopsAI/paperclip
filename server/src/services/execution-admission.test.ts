@@ -7,10 +7,14 @@ import {
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
+  rehydrateExecutionAdmissionPolicy,
   resolveEffectiveExecutionAdmissionPolicy,
+  resolveEpochBoundExecutionAdmissionPolicy,
   resolveExecutionAdmissionPolicyForResourceBudget,
+  resolveExecutionAdmissionPolicyForResourceBudgetChain,
   resolveExecutionBudgetIdentity,
   resolveReportedReservationExceeded,
+  selectEpochLockingAdmissionEnvelope,
 } from "./execution-admission.js";
 
 const enabledEnv = {
@@ -304,6 +308,102 @@ describe("execution admission", () => {
       maxToolCallsPerInvocation: 12,
     });
     expect(resolveExecutionAdmissionPolicyForResourceBudget(global, null)).toEqual(global);
+  });
+
+  it("folds ancestor and issue resource budgets root-to-leaf without widening", () => {
+    const global = policy();
+    const ancestor = {
+      maxInputTokensPerTask: 500,
+      maxRetriesPerTask: 1,
+      maxTurnsPerInvocation: 12,
+    };
+    const child = {
+      maxInputTokensPerTask: 800,
+      maxRetriesPerTask: 0,
+      maxTurnsPerInvocation: 20,
+      maxToolCallsPerInvocation: 60,
+    };
+    const resolved = resolveExecutionAdmissionPolicyForResourceBudgetChain(global, [ancestor, child]);
+    expect(resolved).toMatchObject({
+      enabled: true,
+      maxInputTokensPerTask: 500,
+      maxRetriesPerTask: 0,
+      // Parent structural ceiling of 12 blocks the child's 20-turn request.
+      maxTurnsPerInvocation: 12,
+      maxToolCallsPerInvocation: 60,
+    });
+    // A lone child budget without ancestors may still pick a larger coding envelope.
+    expect(resolveExecutionAdmissionPolicyForResourceBudgetChain(global, [child])).toMatchObject({
+      maxInputTokensPerTask: 800,
+      maxTurnsPerInvocation: 20,
+      maxToolCallsPerInvocation: 60,
+    });
+  });
+
+  it("locks the first admitted effective policy for an epoch", () => {
+    const global = policy();
+    const admitted = resolveEffectiveExecutionAdmissionPolicy(global, {
+      maxInputTokensPerTask: 400,
+      maxRetriesPerTask: 0,
+      maxTurnsPerInvocation: 10,
+    }, null);
+    const envelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:locked:default", epoch: "default" },
+      policy: admitted,
+      decision: evaluateExecutionAdmission(admitted, []),
+      evaluatedAt: new Date("2026-07-20T21:00:00.000Z"),
+    });
+    expect(envelope.policy).toEqual({
+      maxRunsPerTask: admitted.maxRunsPerTask,
+      maxRetriesPerTask: admitted.maxRetriesPerTask,
+      maxInputTokensPerTask: admitted.maxInputTokensPerTask,
+      maxOutputTokensPerTask: admitted.maxOutputTokensPerTask,
+      maxWallMsPerTask: admitted.maxWallMsPerTask,
+      maxInputTokensPerInvocation: admitted.maxInputTokensPerInvocation,
+      maxOutputTokensPerInvocation: admitted.maxOutputTokensPerInvocation,
+      maxTurnsPerInvocation: admitted.maxTurnsPerInvocation,
+      maxToolCallsPerInvocation: admitted.maxToolCallsPerInvocation,
+    });
+    expect(readExecutionAdmissionEnvelope(envelope)?.policy).toEqual(envelope.policy);
+
+    const widenedLive = resolveEffectiveExecutionAdmissionPolicy(global, {
+      maxInputTokensPerTask: 900,
+      maxRetriesPerTask: 2,
+      maxTurnsPerInvocation: 20,
+    }, null);
+    const locked = resolveEpochBoundExecutionAdmissionPolicy(widenedLive, envelope);
+    expect(locked).toEqual(admitted);
+    expect(locked.digest).toBe(envelope.policyDigest);
+    expect(rehydrateExecutionAdmissionPolicy(envelope.policy!, envelope.policyDigest)).toEqual(admitted);
+
+    const later = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:locked:default", epoch: "default" },
+      policy: widenedLive,
+      decision: evaluateExecutionAdmission(widenedLive, [{ retryOfRunId: null }]),
+      evaluatedAt: new Date("2026-07-20T21:05:00.000Z"),
+    });
+    const selected = selectEpochLockingAdmissionEnvelope([later, envelope, null]);
+    expect(selected?.policyDigest).toBe(envelope.policyDigest);
+    expect(resolveEpochBoundExecutionAdmissionPolicy(widenedLive, selected)).toEqual(admitted);
+  });
+
+  it("fails closed when a legacy locked envelope drifts without a policy snapshot", () => {
+    const global = policy();
+    const admitted = resolveEffectiveExecutionAdmissionPolicy(global, {
+      maxInputTokensPerTask: 400,
+    }, null);
+    const envelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:legacy:default", epoch: "default" },
+      policy: admitted,
+      decision: evaluateExecutionAdmission(admitted, []),
+      evaluatedAt: new Date("2026-07-20T21:00:00.000Z"),
+    });
+    const { policy: _drop, ...legacy } = envelope;
+    expect(readExecutionAdmissionEnvelope(legacy)?.policy).toBeUndefined();
+    expect(resolveEpochBoundExecutionAdmissionPolicy(admitted, legacy as typeof envelope)).toEqual(admitted);
+    expect(() => resolveEpochBoundExecutionAdmissionPolicy(global, legacy as typeof envelope)).toThrow(
+      "cannot be rehydrated after policy drift",
+    );
   });
 
   it("uses an explicit larger coding envelope without widening spend ceilings", () => {
