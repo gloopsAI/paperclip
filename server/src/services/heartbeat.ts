@@ -194,6 +194,7 @@ import {
   evaluateExecutionReservationUsage,
   executionInvocationBudgetFromEnvelope,
   parseExecutionAdmissionPolicy,
+  parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
   resolveExecutionBudgetIdentity,
   type ExecutionAdmissionEnvelope,
@@ -5106,8 +5107,9 @@ export function resolveHeartbeatSchedulingSuppression(
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   // Constructed during server startup. Enabling the gate with incomplete
   // ceilings fails closed before this service can invoke any adapter.
-  const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
   const runtimeEnv = options.runtimeEnv ?? process.env;
+  const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
+  const reconciledExecutionAdapters = parseReconciledExecutionAdapters(runtimeEnv);
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
   const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
@@ -13624,7 +13626,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
-      if (invocationBudget && adapter.supportsExecutionBudget !== true) {
+      const executionBudgetMode = invocationBudget
+        ? adapter.supportsExecutionBudget === true
+          ? "strict"
+          : reconciledExecutionAdapters.has(agent.adapterType)
+            ? "reconciled"
+            : "unsupported"
+        : null;
+      if (invocationBudget && executionBudgetMode === "unsupported") {
         adapterResult = {
           exitCode: 1,
           signal: null,
@@ -13642,7 +13651,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context,
-          executionBudget: invocationBudget,
+          executionBudget: executionBudgetMode === "strict" ? invocationBudget : null,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution
@@ -13826,6 +13835,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               compliant: false,
               exceeded: ["usage_missing"],
               reservation: invocationBudget,
+              enforcementMode: executionBudgetMode,
               accounting: "reservation_fallback",
               originalOutcomePreserved: !providerCompletedNominally,
             },
@@ -13849,7 +13859,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           clearSession: true,
           resultJson: {
             ...parseObject(adapterResult.resultJson),
-            executionReservation: { compliant: false, exceeded: reservationUsage.exceeded, reservation: invocationBudget },
+            executionReservation: {
+              compliant: false,
+              exceeded: reservationUsage.exceeded,
+              reservation: invocationBudget,
+              enforcementMode: executionBudgetMode,
+            },
           },
         };
         nextSessionState = resolveNextSessionState({
@@ -13935,6 +13950,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(invocationBudget ? {
                 executionReservation: {
                   ...invocationBudget,
+                  enforcementMode: executionBudgetMode,
                   compliant: reservationUsage?.compliant ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? false : null),
                   exceeded: reservationUsage?.exceeded ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? ["usage_missing"] : []),
                 },
