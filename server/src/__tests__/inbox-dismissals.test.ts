@@ -11,6 +11,8 @@ import {
   heartbeatRuns,
   inboxDismissals,
   invites,
+  issueThreadInteractions,
+  issues,
   joinRequests,
 } from "@paperclipai/db";
 import {
@@ -19,6 +21,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
+import { sidebarBadgeRoutes } from "../routes/sidebar-badges.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
 
@@ -46,11 +49,13 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
   afterEach(async () => {
     await db.delete(inboxDismissals);
+    await db.delete(issueThreadInteractions);
     await db.delete(joinRequests);
     await db.delete(invites);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(approvals);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -242,7 +247,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
     await dismissalsSvc.dismiss(companyId, userId, `approval:${hiddenApprovalId}`, new Date("2026-03-11T02:00:00.000Z"));
     await dismissalsSvc.dismiss(companyId, userId, `approval:${resurfacedApprovalId}`, new Date("2026-03-11T02:00:00.000Z"));
-    await dismissalsSvc.dismiss(companyId, userId, `join:${hiddenJoinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
+    await dismissalsSvc.dismiss(companyId, userId, `attention:join:${hiddenJoinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
     await dismissalsSvc.dismiss(companyId, userId, `run:${hiddenRunId}`, new Date("2026-03-11T02:00:00.000Z"));
 
     const dismissedAtByKey = new Map(
@@ -259,13 +264,232 @@ describeEmbeddedPostgres("inbox dismissals", () => {
         createdAt: new Date("2026-03-11T01:00:00.000Z"),
         updatedAt: new Date("2026-03-11T01:00:00.000Z"),
       }],
-      unreadTouchedIssues: 1,
+    });
+
+    expect(badges).toEqual({
+      inbox: 1,
+      approvals: 1,
+      failedRuns: 0,
+      joinRequests: 0,
+    });
+  });
+
+  it("derives the action badge from typed attention rows and permission-filtered joins", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const joinRequestId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await dismissalsSvc.dismiss(companyId, userId, `attention:join:${joinRequestId}`, new Date("2026-03-11T02:00:00.000Z"));
+
+    const dismissedAtByKey = new Map(
+      (await dismissalsSvc.list(companyId, userId)).map((dismissal) => [
+        dismissal.itemKey,
+        new Date(dismissal.dismissedAt).getTime(),
+      ]),
+    );
+
+    const badges = await badgesSvc.get(companyId, {
+      dismissals: dismissedAtByKey,
+      joinRequests: [{
+        id: joinRequestId,
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      }],
+      attentionFeed: {
+        companyId,
+        generatedAt: "2026-03-11T03:00:00.000Z",
+        totalCount: 4,
+        countsBySourceKind: {
+          approval: 1,
+          issue_thread_interaction: 1,
+          join_request: 1,
+          recovery_action: 0,
+          productivity_review: 0,
+          blocker_attention: 0,
+          review: 0,
+          failed_run: 1,
+          budget_alert: 0,
+          agent_error_alert: 0,
+        },
+        items: [],
+      },
     });
 
     expect(badges).toEqual({
       inbox: 3,
       approvals: 1,
       failedRuns: 1,
+      joinRequests: 0,
+    });
+  });
+
+  it("serves only current typed board actions in the sidebar badge route", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Worker",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "PAP-1",
+      title: "Unread touched issue",
+      status: "todo",
+      priority: "medium",
+      assigneeUserId: userId,
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      title: "Superseded continuation",
+      payload: { version: 1, prompt: "Ship?" },
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "failed",
+      errorCode: "provider_quota",
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-03-11T02:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T02:00:00.000Z"),
+      finishedAt: new Date("2026-03-11T02:00:00.000Z"),
+    });
+    await db.insert(approvals).values({
+      id: randomUUID(),
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Reserved board action" },
+      createdAt: new Date("2026-03-11T03:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T03:00:00.000Z"),
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId,
+        companyIds: [companyId],
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", sidebarBadgeRoutes(db));
+    app.use(errorHandler);
+
+    const res = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+
+    expect(res.body).toEqual({
+      inbox: 1,
+      approvals: 1,
+      failedRuns: 0,
+      joinRequests: 0,
+    });
+  });
+
+  it("does not re-inflate attention-key dismissed joins when routed badges refresh", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+    const joinRequestId = randomUUID();
+    const inviteId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(approvals).values({
+      id: randomUUID(),
+      companyId,
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: { title: "Revise hire request" },
+      createdAt: new Date("2026-03-11T03:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T03:00:00.000Z"),
+    });
+    await db.insert(invites).values({
+      id: inviteId,
+      companyId,
+      inviteType: "company_join",
+      tokenHash: "hash-join-refresh",
+      allowedJoinTypes: "both",
+      expiresAt: new Date("2026-03-12T00:00:00.000Z"),
+    });
+    await db.insert(joinRequests).values({
+      id: joinRequestId,
+      inviteId,
+      companyId,
+      requestType: "human",
+      status: "pending_approval",
+      requestIp: "127.0.0.1",
+      createdAt: new Date("2026-03-11T01:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+    });
+    await dismissalsSvc.dismiss(
+      companyId,
+      userId,
+      `attention:join:${joinRequestId}`,
+      new Date("2026-03-11T02:00:00.000Z"),
+    );
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId,
+        companyIds: [companyId],
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", sidebarBadgeRoutes(db));
+    app.use(errorHandler);
+
+    const res = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+
+    expect(res.body).toEqual({
+      inbox: 1,
+      approvals: 1,
+      failedRuns: 0,
       joinRequests: 0,
     });
   });

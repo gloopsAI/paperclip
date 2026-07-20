@@ -307,6 +307,14 @@ export function isInboxEntityDismissed(
   return dismissedAt >= normalizeTimestamp(activityAt);
 }
 
+function isInboxEntityDismissedByAnyKey(
+  dismissedAtByKey: ReadonlyMap<string, number>,
+  itemKeys: readonly string[],
+  activityAt: string | Date | null | undefined,
+): boolean {
+  return itemKeys.some((itemKey) => isInboxEntityDismissed(dismissedAtByKey, itemKey, activityAt));
+}
+
 export function loadReadInboxItems(): Set<string> {
   try {
     const raw = localStorage.getItem(READ_ITEMS_KEY);
@@ -1226,7 +1234,6 @@ export function computeInboxBadgeData({
   approvals,
   joinRequests,
   dashboard,
-  heartbeatRuns,
   mineIssues,
   dismissedAlerts,
   dismissedAtByKey,
@@ -1235,7 +1242,6 @@ export function computeInboxBadgeData({
   approvals: Approval[];
   joinRequests: JoinRequest[];
   dashboard: DashboardSummary | undefined;
-  heartbeatRuns: HeartbeatRun[];
   mineIssues: Issue[];
   dismissedAlerts: Set<string>;
   dismissedAtByKey: ReadonlyMap<string, number>;
@@ -1245,13 +1251,24 @@ export function computeInboxBadgeData({
     (approval) =>
       isApprovalVisibleInMine(approval, currentUserId) &&
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
-      !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
+      !isInboxEntityDismissedByAnyKey(
+        dismissedAtByKey,
+        [`approval:${approval.id}`, `attention:approval:${approval.id}`],
+        approval.updatedAt,
+      ),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
-    (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
-  ).length;
+  const failedRuns = 0;
   const visibleJoinRequests = joinRequests.filter(
-    (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
+    (jr) =>
+      !isInboxEntityDismissedByAnyKey(
+        dismissedAtByKey,
+        [
+          `attention:join:${jr.id}`,
+          `attention:join_request:${jr.id}`,
+          `join:${jr.id}`,
+        ],
+        jr.updatedAt ?? jr.createdAt,
+      ),
   ).length;
   const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
@@ -1268,8 +1285,9 @@ export function computeInboxBadgeData({
   const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
 
   return {
-    // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    // The inbox badge reflects typed human actions, not touched/unread activity.
+    // Failed-run actions are server-authoritative through the attention feed.
+    inbox: actionableApprovals + visibleJoinRequests + failedRuns,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,

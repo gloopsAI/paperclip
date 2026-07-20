@@ -320,11 +320,6 @@ describe("inbox helpers", () => {
       ],
       joinRequests: [makeJoinRequest("join-1")],
       dashboard,
-      heartbeatRuns: [
-        makeRun("run-old", "failed", "2026-03-11T00:00:00.000Z"),
-        makeRun("run-latest", "timed_out", "2026-03-11T01:00:00.000Z"),
-        makeRun("run-other-agent", "failed", "2026-03-11T02:00:00.000Z", "agent-2"),
-      ],
       mineIssues: [makeIssue("1", true)],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map<string, number>(),
@@ -332,21 +327,20 @@ describe("inbox helpers", () => {
     });
 
     expect(result).toEqual({
-      inbox: 5,
+      inbox: 2,
       approvals: 1,
-      failedRuns: 2,
+      failedRuns: 0,
       joinRequests: 1,
       mineIssues: 1,
-      alerts: 1,
+      alerts: 2,
     });
   });
 
-  it("drops dismissed runs and alerts from the computed badge", () => {
+  it("keeps raw failed runs out of the computed action badge", () => {
     const result = computeInboxBadgeData({
       approvals: [],
       joinRequests: [],
       dashboard,
-      heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
       mineIssues: [],
       dismissedAlerts: new Set<string>(["alert:budget", "alert:agent-errors"]),
       dismissedAtByKey: new Map<string, number>([["run:run-1", new Date("2026-03-11T00:00:00.000Z").getTime()]]),
@@ -363,12 +357,11 @@ describe("inbox helpers", () => {
     });
   });
 
-  it("excludes read mine issues from the inbox badge count", () => {
+  it("excludes unread touched issues from the action badge count", () => {
     const result = computeInboxBadgeData({
       approvals: [],
       joinRequests: [],
       dashboard,
-      heartbeatRuns: [],
       mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map(),
@@ -376,7 +369,7 @@ describe("inbox helpers", () => {
     });
 
     expect(result.mineIssues).toBe(1);
-    expect(result.inbox).toBe(1);
+    expect(result.inbox).toBe(0);
     expect(result.alerts).toBe(2);
   });
 
@@ -409,6 +402,58 @@ describe("inbox helpers", () => {
         new Date("2026-03-11T01:30:00.000Z"),
       ),
     ).toBe(false);
+  });
+
+  it("uses attention dismissal keys for legacy badge helper inputs", () => {
+    const dismissedAtByKey = buildInboxDismissedAtByKey([
+      {
+        id: "dismissal-1",
+        companyId: "company-1",
+        userId: "user-1",
+        itemKey: "attention:join:join-1",
+        kind: "dismiss",
+        dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+        snoozedUntil: null,
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      },
+      {
+        id: "dismissal-2",
+        companyId: "company-1",
+        userId: "user-1",
+        itemKey: "attention:approval:approval-pending",
+        kind: "dismiss",
+        dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+        snoozedUntil: null,
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      },
+    ]);
+
+    const result = computeInboxBadgeData({
+      approvals: [
+        {
+          ...makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T00:30:00.000Z"),
+          requestedByUserId: "user-1",
+        },
+        {
+          ...makeApprovalWithTimestamps("approval-revision", "revision_requested", "2026-03-11T02:00:00.000Z"),
+          requestedByUserId: "user-1",
+        },
+      ],
+      joinRequests: [makeJoinRequest("join-1")],
+      dashboard,
+      mineIssues: [],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey,
+      currentUserId: "user-1",
+    });
+
+    expect(result).toMatchObject({
+      inbox: 1,
+      approvals: 1,
+      joinRequests: 0,
+    });
   });
 
   it("keeps read issues in the touched list but excludes them from unread counts", () => {
@@ -473,7 +518,6 @@ describe("inbox helpers", () => {
       approvals,
       joinRequests: [],
       dashboard,
-      heartbeatRuns: [],
       mineIssues: [],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map(),
@@ -488,7 +532,6 @@ describe("inbox helpers", () => {
       approvals: [],
       joinRequests: [],
       dashboard,
-      heartbeatRuns: [],
       mineIssues: [],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map(),
