@@ -306,6 +306,48 @@ describe("execution admission", () => {
     expect(resolveExecutionAdmissionPolicyForResourceBudget(global, null)).toEqual(global);
   });
 
+  it("uses an explicit larger coding envelope without widening spend ceilings", () => {
+    const global = policy();
+    const resolved = resolveExecutionAdmissionPolicyForResourceBudget(global, {
+      maxRunsPerTask: global.maxRunsPerTask + 3,
+      maxRetriesPerTask: global.maxRetriesPerTask + 3,
+      maxInputTokensPerTask: global.maxInputTokensPerTask + 10_000,
+      maxOutputTokensPerTask: global.maxOutputTokensPerTask + 10_000,
+      maxWallMsPerTask: global.maxWallMsPerTask + 60_000,
+      maxTurnsPerInvocation: 20,
+      maxToolCallsPerInvocation: 60,
+    });
+
+    expect(resolved).toMatchObject({
+      enabled: true,
+      maxRunsPerTask: global.maxRunsPerTask,
+      maxRetriesPerTask: global.maxRetriesPerTask,
+      maxInputTokensPerTask: global.maxInputTokensPerTask,
+      maxOutputTokensPerTask: global.maxOutputTokensPerTask,
+      maxWallMsPerTask: global.maxWallMsPerTask,
+      maxTurnsPerInvocation: 20,
+      maxToolCallsPerInvocation: 60,
+    });
+  });
+
+  it("keeps an inherited structural envelope as the authority ceiling", () => {
+    const global = policy();
+    const parent = {
+      ...global,
+      maxTurnsPerInvocation: 12,
+      maxToolCallsPerInvocation: 36,
+    };
+    const resolved = resolveEffectiveExecutionAdmissionPolicy(global, {
+      maxTurnsPerInvocation: 20,
+      maxToolCallsPerInvocation: 60,
+    }, parent);
+
+    expect(resolved).toMatchObject({
+      maxTurnsPerInvocation: 12,
+      maxToolCallsPerInvocation: 36,
+    });
+  });
+
   it("preserves exact turn and tool-call overages in reservation receipts", () => {
     const global = policy();
     const envelope = buildExecutionAdmissionEnvelope({
