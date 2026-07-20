@@ -5,6 +5,7 @@ import {
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
   readExecutionAdmissionEnvelope,
+  resolveEffectiveExecutionAdmissionPolicy,
   resolveExecutionBudgetIdentity,
 } from "./execution-admission.js";
 
@@ -189,4 +190,82 @@ describe("execution admission", () => {
     expect(readExecutionAdmissionEnvelope({ ...parent, policyDigest: "forged" })).toBeNull();
     expect(readExecutionAdmissionEnvelope({ ...parent, observed: { ...parent.observed, runCount: -1 } })).toBeNull();
   });
+
+  it("resolves an effective policy from task and parent overrides", () => {
+    const global = policy();
+    const request = {
+      maxInputTokensPerTask: 800,
+      maxOutputTokensPerTask: 50,
+      maxRetriesPerTask: 1,
+    };
+    expect(resolveEffectiveExecutionAdmissionPolicy(global, null, null)).toEqual(global);
+    expect(resolveEffectiveExecutionAdmissionPolicy(global, request, null)).toMatchObject({
+      maxInputTokensPerTask: 800,
+      maxOutputTokensPerTask: 50,
+      maxRetriesPerTask: 1,
+    });
+    const parent = resolveEffectiveExecutionAdmissionPolicy(global, { maxInputTokensPerTask: 500, maxRetriesPerTask: 1 }, null);
+    expect(resolveEffectiveExecutionAdmissionPolicy(global, null, parent)).toMatchObject({
+      maxInputTokensPerTask: 500,
+      maxRetriesPerTask: 1,
+    });
+    const tightened = resolveEffectiveExecutionAdmissionPolicy(global, { maxInputTokensPerTask: 700, maxRetriesPerTask: 0 }, parent);
+    expect(tightened).toMatchObject({
+      maxInputTokensPerTask: 500,
+      maxRetriesPerTask: 0,
+    });
+    const widened = resolveEffectiveExecutionAdmissionPolicy(global, { maxInputTokensPerTask: 900, maxRetriesPerTask: 2 }, parent);
+    expect(widened).toMatchObject({
+      maxInputTokensPerTask: 500,
+      maxRetriesPerTask: 1,
+    });
+  });
+
+  it("enforces relational clamps between effective retry and invocation settings", () => {
+    const base = policy();
+    const widerTokens = resolveEffectiveExecutionAdmissionPolicy(base, {
+      maxInputTokensPerInvocation: 500,
+      maxOutputTokensPerInvocation: 150,
+      maxRetriesPerTask: 1,
+    }, null);
+    expect(widerTokens.maxInputTokensPerInvocation).toBe(base.maxInputTokensPerInvocation);
+    expect(widerTokens.maxOutputTokensPerInvocation).toBe(base.maxOutputTokensPerInvocation);
+    const narrowTask = resolveEffectiveExecutionAdmissionPolicy(base, {
+      maxInputTokensPerTask: 200,
+      maxOutputTokensPerTask: 50,
+      maxRunsPerTask: 2,
+      maxRetriesPerTask: 0,
+    }, null);
+    expect(narrowTask.maxInputTokensPerInvocation).toBe(200);
+    expect(narrowTask.maxOutputTokensPerInvocation).toBe(50);
+    expect(narrowTask.maxTurnsPerInvocation).toBeGreaterThan(0);
+  });
+
+  it("rejects malformed task or parent policy values", () => {
+    const base = policy();
+    const cases = [
+      { label: "zero positive-only field", req: { maxRunsPerTask: 0 }, expected: "must be a positive safe integer" },
+      { label: "negative retries", req: { maxRetriesPerTask: -1 }, expected: "must be a non-negative safe integer" },
+      { label: "unsafe integer", req: { maxInputTokensPerTask: Number.MAX_SAFE_INTEGER + 1 }, expected: "safe integer" },
+      { label: "NaN field", req: { maxWallMsPerTask: NaN }, expected: "must be a finite number" },
+    ];
+    for (const { label, req, expected } of cases) {
+      expect(() => resolveEffectiveExecutionAdmissionPolicy(base, req, null), label).toThrow(expected);
+    }
+    const parent = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:abc:default", epoch: "default" },
+      policy: base,
+      decision: evaluateExecutionAdmission(base, []),
+      evaluatedAt: new Date("2026-07-13T00:00:00Z"),
+    });
+    expect(() => resolveEffectiveExecutionAdmissionPolicy(base, null, { ...base, maxRetriesPerTask: -2 })).toThrow("must be a non-negative safe integer");
+    expect(() => resolveEffectiveExecutionAdmissionPolicy({ ...base, maxRunsPerTask: 0 }, null, null)).toThrow("must be a positive safe integer");
+  });
+
+  it("preserves global numeric values when request and parent are absent", () => {
+    const global = policy();
+    const resolved = resolveEffectiveExecutionAdmissionPolicy(global, null, null);
+    expect(resolved).toEqual(global);
+  });
+
 });

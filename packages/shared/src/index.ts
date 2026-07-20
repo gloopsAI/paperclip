@@ -747,6 +747,7 @@ export type {
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
   IssueExecutionMonitorPolicy,
+  IssueExecutionResourceBudget,
   IssueExecutionMonitorState,
   IssueRelation,
   IssueRelationIssueSummary,
