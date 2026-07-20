@@ -73,6 +73,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
+const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
@@ -605,7 +606,7 @@ export function attentionService(db: Db) {
           updatedAt: approvals.updatedAt,
         })
         .from(approvals)
-        .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
+        .where(and(eq(approvals.companyId, companyId), inArray(approvals.status, [...ACTIONABLE_APPROVAL_STATUSES])))
         .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
       for (const approval of pendingApprovals) {
@@ -628,15 +629,17 @@ export function attentionService(db: Db) {
               requestedByUserId: approval.requestedByUserId,
             },
           },
-          whyNow: "Approval is pending a board decision.",
+          whyNow: approval.status === "revision_requested"
+            ? "Approval needs a revised board decision."
+            : "Approval is pending a board decision.",
           decisionVerbs: decisionVerbs(
             { id: "approve", label: "Approve", description: "Approve the request." },
             { id: "reject", label: "Reject", description: "Reject the request." },
             { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
           ),
           inlineResolvable: approval.type !== "request_board_approval",
-          entryRule: "approvals.status = 'pending'",
-          exitRule: "Approval leaves pending status.",
+          entryRule: "approvals.status in ('pending', 'revision_requested')",
+          exitRule: "Approval leaves an actionable status.",
           dedupKey,
           severity: "medium",
           activityAt: toIso(approval.updatedAt),

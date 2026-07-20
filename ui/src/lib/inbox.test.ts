@@ -404,6 +404,58 @@ describe("inbox helpers", () => {
     ).toBe(false);
   });
 
+  it("uses attention dismissal keys for legacy badge helper inputs", () => {
+    const dismissedAtByKey = buildInboxDismissedAtByKey([
+      {
+        id: "dismissal-1",
+        companyId: "company-1",
+        userId: "user-1",
+        itemKey: "attention:join_request:join-1",
+        kind: "dismiss",
+        dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+        snoozedUntil: null,
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      },
+      {
+        id: "dismissal-2",
+        companyId: "company-1",
+        userId: "user-1",
+        itemKey: "attention:approval:approval-pending",
+        kind: "dismiss",
+        dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+        snoozedUntil: null,
+        createdAt: new Date("2026-03-11T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-11T01:00:00.000Z"),
+      },
+    ]);
+
+    const result = computeInboxBadgeData({
+      approvals: [
+        {
+          ...makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T00:30:00.000Z"),
+          requestedByUserId: "user-1",
+        },
+        {
+          ...makeApprovalWithTimestamps("approval-revision", "revision_requested", "2026-03-11T02:00:00.000Z"),
+          requestedByUserId: "user-1",
+        },
+      ],
+      joinRequests: [makeJoinRequest("join-1")],
+      dashboard,
+      mineIssues: [],
+      dismissedAlerts: new Set<string>(),
+      dismissedAtByKey,
+      currentUserId: "user-1",
+    });
+
+    expect(result).toMatchObject({
+      inbox: 1,
+      approvals: 1,
+      joinRequests: 0,
+    });
+  });
+
   it("keeps read issues in the touched list but excludes them from unread counts", () => {
     const issues = [makeIssue("1", true), makeIssue("2", false)];
 

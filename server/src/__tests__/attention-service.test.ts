@@ -540,9 +540,9 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(11);
+    expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({
-      approval: 1,
+      approval: 2,
       issue_thread_interaction: 1,
       join_request: 1,
       recovery_action: 1,
@@ -574,13 +574,13 @@ describeEmbeddedPostgres("attention service", () => {
       expect(item.decisionVerbs.length).toBeGreaterThan(0);
       expect(item.rank).toBeGreaterThan(0);
     }
-    expect(feed.items.some((item) => item.subject.title === "Revision requested")).toBe(false);
+    expect(feed.items.some((item) => item.subject.title === "Revision requested")).toBe(true);
     expect(feed.items.some((item) => item.subject.title === "Agent productivity review excluded")).toBe(false);
     expect(feed.items.some((item) => item.subject.title === "Agent review excluded")).toBe(false);
     expect(feed.items.some((item) =>
       item.sourceKind === "failed_run" && item.subject.metadata?.errorCode === "provider_quota"
     )).toBe(false);
-    expect(feed.items.find((item) => item.sourceKind === "approval")?.detail).toMatchObject({
+    expect(feed.items.find((item) => item.sourceKind === "approval" && item.subject.title === "Hire Designer")?.detail).toMatchObject({
       kind: "approval",
       approvalType: "hire_agent",
       summaryExcerpt: "Hire Designer",

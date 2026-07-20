@@ -307,6 +307,14 @@ export function isInboxEntityDismissed(
   return dismissedAt >= normalizeTimestamp(activityAt);
 }
 
+function isInboxEntityDismissedByAnyKey(
+  dismissedAtByKey: ReadonlyMap<string, number>,
+  itemKeys: readonly string[],
+  activityAt: string | Date | null | undefined,
+): boolean {
+  return itemKeys.some((itemKey) => isInboxEntityDismissed(dismissedAtByKey, itemKey, activityAt));
+}
+
 export function loadReadInboxItems(): Set<string> {
   try {
     const raw = localStorage.getItem(READ_ITEMS_KEY);
@@ -1243,11 +1251,20 @@ export function computeInboxBadgeData({
     (approval) =>
       isApprovalVisibleInMine(approval, currentUserId) &&
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
-      !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
+      !isInboxEntityDismissedByAnyKey(
+        dismissedAtByKey,
+        [`approval:${approval.id}`, `attention:approval:${approval.id}`],
+        approval.updatedAt,
+      ),
   ).length;
   const failedRuns = 0;
   const visibleJoinRequests = joinRequests.filter(
-    (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
+    (jr) =>
+      !isInboxEntityDismissedByAnyKey(
+        dismissedAtByKey,
+        [`join:${jr.id}`, `attention:join_request:${jr.id}`],
+        jr.updatedAt ?? jr.createdAt,
+      ),
   ).length;
   const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;

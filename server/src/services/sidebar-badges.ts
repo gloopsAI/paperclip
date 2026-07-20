@@ -5,6 +5,14 @@ import type { AttentionFeed, SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
 
+function isDismissedByAnyKey(
+  dismissedAtByKey: ReadonlyMap<string, number>,
+  itemKeys: readonly string[],
+  activityAt: Date | string | null | undefined,
+) {
+  return itemKeys.some((itemKey) => isDismissed(dismissedAtByKey, itemKey, activityAt));
+}
+
 function normalizeTimestamp(value: Date | string | null | undefined): number {
   if (!value) return 0;
   const timestamp = new Date(value).getTime();
@@ -35,9 +43,9 @@ export function sidebarBadgeService(db: Db) {
         const feedJoinRequests = extra.attentionFeed.countsBySourceKind.join_request ?? 0;
         const visibleJoinRequests = extra.joinRequests
           ? extra.joinRequests.filter((row) =>
-            !isDismissed(
+            !isDismissedByAnyKey(
               extra.dismissals ?? new Map(),
-              `join:${row.id}`,
+              [`join:${row.id}`, `attention:join_request:${row.id}`],
               row.updatedAt ?? row.createdAt,
             )
           ).length
@@ -63,13 +71,19 @@ export function sidebarBadgeService(db: Db) {
           ),
         )
         .then((rows) =>
-          rows.filter((row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)).length
+          rows.filter((row) =>
+            !isDismissedByAnyKey(
+              extra?.dismissals ?? new Map(),
+              [`approval:${row.id}`, `attention:approval:${row.id}`],
+              row.updatedAt,
+            )
+          ).length
         );
 
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>
-        !isDismissed(
+        !isDismissedByAnyKey(
           extra?.dismissals ?? new Map(),
-          `join:${row.id}`,
+          [`join:${row.id}`, `attention:join_request:${row.id}`],
           row.updatedAt ?? row.createdAt,
         )
       ).length;
