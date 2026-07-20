@@ -836,6 +836,14 @@ if (!gloopsStage) {
   if (!/apt-get install[^\n]+openssh-client/.test(gloopsStage[1])) {
     fail("gloops-production must include the SSH client required by remote execution environments");
   }
+  // Workspace validation (Hermes canary and git-sensitive adapters) spawns `git`
+  // in the control-plane container; ENOENT becomes workspace_validation_failed.
+  if (!/apt-get install[^\n]+\bgit\b/.test(gloopsStage[1])) {
+    fail("gloops-production must include the git binary required by workspace validation");
+  }
+  if (!/command -v git/.test(gloopsStage[1]) || !/git --version/.test(gloopsStage[1])) {
+    fail("gloops-production must assert at image build time that git is present and executable");
+  }
 }
 if (!dockerfile.includes("node scripts/prepare-gloops-runtime.mjs")) {
   fail("Dockerfile must prepare compiled workspace packages for the GLoops runtime");

@@ -121,7 +121,9 @@ ARG USER_GID=985
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates locales openssh-client \
+  && apt-get install -y --no-install-recommends ca-certificates locales openssh-client git \
+  && command -v git \
+  && git --version \
   && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
   && locale-gen en_US.UTF-8 \
   && rm -rf /var/lib/apt/lists/* \
