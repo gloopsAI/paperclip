@@ -36,6 +36,8 @@ export type CanonicalContinuationPacketInput = {
     id: string;
     identifier?: string | null;
     title: string;
+    /** Issue objective / description text; bounded into work.objective. */
+    objective?: string | null;
     status?: string | null;
     priority?: string | null;
     workMode?: string | null;
@@ -178,6 +180,7 @@ export function buildCanonicalContinuationPacket(input: CanonicalContinuationPac
       issueId: input.issue.id,
       identifier: readString(input.issue.identifier),
       title: input.issue.title,
+      objective: boundedString(input.issue.objective, 4_000),
       status: readString(input.issue.status),
       priority: readString(input.issue.priority),
       workMode: readString(input.issue.workMode),

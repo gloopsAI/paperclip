@@ -13049,6 +13049,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           id: issueRef.id,
           identifier: issueRef.identifier,
           title: issueRef.title,
+          objective: issueRef.description,
           status: issueRef.status,
           priority: issueRef.priority,
           workMode: issueRef.workMode,

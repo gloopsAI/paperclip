@@ -241,7 +241,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       projectWorkspaceId,
       parentId: parentIssueId,
       title: "Implement automatic compact packet",
-      description: "LEGACY TASK MARKDOWN BODY SHOULD NOT BE COPIED INTO THE PACKET",
+      description: "Ship automatic compact packets with the issue objective bound into work.objective",
       status: "in_progress",
       workMode: "standard",
       priority: "critical",
@@ -291,7 +291,12 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.runtime.sessionParams).toBeNull();
     expect(binding?.serializedBytes).toBeLessThanOrEqual(16_000);
-    expect(binding?.packet.work).toMatchObject({ id: "GLO-1074", issueId, title: "Implement automatic compact packet" });
+    expect(binding?.packet.work).toMatchObject({
+      id: "GLO-1074",
+      issueId,
+      title: "Implement automatic compact packet",
+      objective: "Ship automatic compact packets with the issue objective bound into work.objective",
+    });
     expect(binding?.packet.scope).toMatchObject({
       issueId,
       parentId: parentIssueId,
@@ -304,10 +309,11 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       workspaceId: projectWorkspaceId,
     });
     const serialized = JSON.stringify(binding?.packet);
+    expect(serialized).toContain("Ship automatic compact packets with the issue objective bound into work.objective");
     expect(serialized).not.toContain("paperclipTaskMarkdown");
     expect(serialized).not.toContain("paperclipSessionHandoffMarkdown");
     expect(serialized).not.toContain("resumedSessionTranscript");
-    expect(serialized).not.toContain("LEGACY TASK MARKDOWN BODY");
+    expect(serialized).not.toContain("paperclipContinuationSummary");
   });
 
   async function seedAcceptedPlanClaim(args: {
