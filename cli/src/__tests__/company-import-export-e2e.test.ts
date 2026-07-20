@@ -15,6 +15,10 @@ import { createStoredZipArchive } from "./helpers/zip.js";
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
 
+// The complete import/export round trip can exceed 90 seconds on a cold CI
+// runner. Preserve the end-to-end coverage while keeping a finite ceiling.
+const COMPANY_IMPORT_EXPORT_E2E_TIMEOUT_MS = 180_000;
+
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -618,5 +622,5 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     expect(importedFromZip.company.action).toBe("created");
     expect(importedFromZip.agents.some((agent) => agent.action === "created")).toBe(true);
-  }, 90_000);
+  }, COMPANY_IMPORT_EXPORT_E2E_TIMEOUT_MS);
 });
