@@ -9035,7 +9035,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const workId = readNonEmptyString((boundExecutionContext.packet.work as Record<string, unknown> | undefined)?.id)
         ?? issueId
         ?? run.id;
-      if (!contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY] && retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+      if (!contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY]) {
         const routePathId = readNonEmptyString(parseObject(run.usageJson).provider) ?? agent.adapterType;
         contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY] = buildExecutionRetryReceipt({
           workId,
