@@ -184,22 +184,87 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
-export function resolveSessionKey(input: {
-  strategy: SessionKeyStrategy;
-  companyId: string;
-  agentId: string;
-  runId: string;
-  issueId: string | null;
-}): string | null {
-  if (input.strategy === "none") return null;
-  if (input.strategy === "agent") {
-    return `paperclip:company:${input.companyId}:agent:${input.agentId}`;
+function canonicalJson(value: unknown): string {
+  const stable = (v: unknown): unknown => {
+    if (v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return v.map(stable);
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, vv]) => [k, stable(vv)]),
+    );
+  };
+  return JSON.stringify(stable(value));
+}
+
+function digestInstruction(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function readExecutionWorkspace(ctx: AdapterExecutionContext): { cwd: string | null; repoUrl: string | null; ref: string | null } {
+  const workspace = asRecord(ctx.context.paperclipWorkspace);
+  if (!workspace) return { cwd: null, repoUrl: null, ref: null };
+  return {
+    cwd: nonEmpty(workspace.cwd),
+    repoUrl:
+      nonEmpty(workspace.repoUrl) ??
+      nonEmpty(workspace.repositoryUrl) ??
+      nonEmpty(workspace.url) ??
+      nonEmpty(workspace.repository),
+    ref:
+      nonEmpty(workspace.repoRef) ??
+      nonEmpty(workspace.ref) ??
+      nonEmpty(workspace.branch) ??
+      nonEmpty(workspace.commit) ??
+      nonEmpty(workspace.headSha),
+  };
+}
+
+function renderAssignedExecutionWorkspace(ctx: AdapterExecutionContext): string | null {
+  const workspace = readExecutionWorkspace(ctx);
+  const lines: string[] = [];
+  if (workspace.cwd) lines.push(`- CWD: ${workspace.cwd}`);
+  if (workspace.repoUrl) lines.push(`- Repository URL: ${workspace.repoUrl}`);
+  if (workspace.ref) lines.push(`- Ref: ${workspace.ref}`);
+  if (lines.length === 0) return null;
+  return ["Assigned execution workspace:", ...lines].join("\n");
+}
+
+function resolveSessionKeyScope(strategy: SessionKeyStrategy, ctx: AdapterExecutionContext): Record<string, unknown> {
+  if (strategy === "agent") {
+    return { companyId: ctx.agent.companyId, agentId: ctx.agent.id };
   }
-  if (input.strategy === "run") {
-    return `paperclip:run:${input.runId}`;
+  if (strategy === "run") {
+    return { runId: ctx.runId };
   }
-  const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  return {
+    companyId: ctx.agent.companyId,
+    agentId: ctx.agent.id,
+    issueId: issueIdFromContext(ctx) ?? ctx.runId,
+  };
+}
+
+export function resolveSessionKey(ctx: AdapterExecutionContext, strategy: SessionKeyStrategy): string | null {
+  if (strategy === "none") return null;
+  const workspace = readExecutionWorkspace(ctx);
+  const payloadTemplate = parseObject(ctx.config.payloadTemplate);
+  const model = nonEmpty(ctx.config.model) ?? nonEmpty(payloadTemplate.model) ?? null;
+  const instructions =
+    nonEmpty(ctx.config.instructions) ?? nonEmpty(payloadTemplate.instructions) ?? "";
+  const routeFacts = configuredExecutionRouteFacts(ctx.config);
+  const material = {
+    v: "0",
+    scope: resolveSessionKeyScope(strategy, ctx),
+    repoUrl: workspace.repoUrl,
+    ref: workspace.ref,
+    model,
+    executionProfile: routeFacts.executionProfile ?? null,
+    routingReason: routeFacts.routingReason ?? null,
+    subscriptionClass: routeFacts.subscriptionClass ?? null,
+    instructionDigest: instructions ? digestInstruction(instructions) : null,
+  };
+  const hash = createHash("sha256").update(canonicalJson(material), "utf8").digest("base64url");
+  return `v1:${hash}`;
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
@@ -308,6 +373,7 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
     throw error;
   }
   if (binding) {
+    const workspaceSection = renderAssignedExecutionWorkspace(ctx);
     return [
       `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
       "",
@@ -317,6 +383,7 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
       "- Do not reconstruct or request legacy transcript/task context.",
       "- Leave a terminal execution-truth receipt or an explicitly bounded continuation.",
       "",
+      ...(workspaceSection ? [workspaceSection, ""] : []),
       renderBoundExecutionContext(binding),
     ].join("\n");
   }
@@ -325,6 +392,7 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
   const taskMarkdown = nonEmpty(ctx.context.paperclipTaskMarkdown);
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
+  const workspaceSection = renderAssignedExecutionWorkspace(ctx);
   const lines = [
     `You are ${ctx.agent.name}, an AI agent employee in a Paperclip-managed company.`,
     "",
@@ -341,6 +409,7 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
     "- Leave durable progress and update the issue to a clear final disposition.",
     "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
     "",
+    ...(workspaceSection ? [workspaceSection, ""] : []),
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),
@@ -1193,13 +1262,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const configuredStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const strategy: SessionKeyStrategy = binding ? "none" : configuredStrategy;
-  const sessionKey = resolveSessionKey({
-    strategy,
-    companyId: ctx.agent.companyId,
-    agentId: ctx.agent.id,
-    runId: ctx.runId,
-    issueId: issueIdFromContext(ctx),
-  });
+  const sessionKey = resolveSessionKey(ctx, strategy);
   const extraHeaders = parseHeaders(ctx.config.headers);
   const runHeaders = buildHeaders({
     apiKey,
