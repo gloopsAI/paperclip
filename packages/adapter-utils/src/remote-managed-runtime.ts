@@ -1,5 +1,5 @@
 import path from "node:path";
-import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
+import { readGitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
@@ -8,6 +8,10 @@ import {
 } from "./ssh.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
+import {
+  buildManagedWorkspaceArchiveExclude,
+  mergeWorkspaceArchiveExcludes,
+} from "./workspace-archive-excludes.js";
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
@@ -64,12 +68,29 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
   );
 }
 
+/**
+ * Extra excludes applied to both SSH prepare (local→remote overlay) and
+ * restore baseline/tar (remote→local). Heavy dirs are applied inside
+ * prepareWorkspaceForSshExecution / buildManagedWorkspaceArchiveExclude.
+ */
+export function buildRemoteManagedWorkspaceExclude(input: {
+  workspaceExclude?: string[];
+  gitIgnoredPaths?: string[];
+}): string[] {
+  return mergeWorkspaceArchiveExcludes(input.workspaceExclude, input.gitIgnoredPaths);
+}
+
 export async function prepareRemoteManagedRuntime(input: {
   spec: SshRemoteExecutionSpec;
   runId: string;
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  /**
+   * Caller-supplied excludes (e.g. run-created skill homes). Merged with gitignored
+   * paths and always-on heavy dependency/build cache excludes.
+   */
+  workspaceExclude?: string[];
   assets?: RemoteManagedRuntimeAsset[];
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
@@ -85,13 +106,23 @@ export async function prepareRemoteManagedRuntime(input: {
   );
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
+  const gitSnapshot = await readGitWorkspaceSnapshot(input.workspaceLocalDir);
+  const prepareExclude = buildRemoteManagedWorkspaceExclude({
+    workspaceExclude: input.workspaceExclude,
+    gitIgnoredPaths: gitSnapshot?.ignoredPaths,
+  });
+
   const preparedWorkspace = await prepareWorkspaceForSshExecution({
     spec: input.spec,
     localDir: input.workspaceLocalDir,
     remoteDir: workspaceRemoteDir,
+    exclude: prepareExclude,
     onProgress: input.onProgress,
   });
-  const restoreExclude = preparedWorkspace.gitBacked ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"] : [".paperclip-runtime"];
+  const restoreExclude = buildManagedWorkspaceArchiveExclude({
+    gitBacked: preparedWorkspace.gitBacked,
+    workspaceExclude: prepareExclude,
+  });
   const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
     exclude: restoreExclude,
   });
@@ -118,6 +149,7 @@ export async function prepareRemoteManagedRuntime(input: {
       remoteDir: workspaceRemoteDir,
       baselineSnapshot,
       restoreGitHistory: preparedWorkspace.gitBacked,
+      exclude: prepareExclude,
       onProgress: input.onProgress,
     });
     throw error;
@@ -136,6 +168,7 @@ export async function prepareRemoteManagedRuntime(input: {
         remoteDir: workspaceRemoteDir,
         baselineSnapshot,
         restoreGitHistory: preparedWorkspace.gitBacked,
+        exclude: prepareExclude,
         onProgress,
       });
     },
