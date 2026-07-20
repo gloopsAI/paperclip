@@ -265,7 +265,55 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
-  it("passes an issue resource budget through claim-time admission to the adapter", async () => {
+  it("uses conservative turn and tool defaults when an issue has no explicit budget", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Default coding envelope",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `DEF-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
+      executionBudget: expect.objectContaining({
+        maxTurns: 8,
+        maxToolCalls: 32,
+      }),
+    }));
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.contextSnapshot).toMatchObject({
+      gloopsExecutionAdmission: {
+        reservation: {
+          maxTurns: 8,
+          maxToolCalls: 32,
+        },
+      },
+    });
+  });
+
+  it("passes a larger explicit coding envelope through claim-time admission to the adapter", async () => {
     const { companyId, agentId } = await seedDirectAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -285,8 +333,8 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
         resourceBudget: {
           maxRunsPerTask: 1,
           maxRetriesPerTask: 0,
-          maxTurnsPerInvocation: 4,
-          maxToolCallsPerInvocation: 12,
+          maxTurnsPerInvocation: 20,
+          maxToolCallsPerInvocation: 60,
         },
       },
     });
@@ -304,16 +352,16 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
 
     expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
       executionBudget: expect.objectContaining({
-        maxTurns: 4,
-        maxToolCalls: 12,
+        maxTurns: 20,
+        maxToolCalls: 60,
       }),
     }));
     const persisted = await heartbeat.getRun(run!.id);
     expect(persisted?.contextSnapshot).toMatchObject({
       gloopsExecutionAdmission: {
         reservation: {
-          maxTurns: 4,
-          maxToolCalls: 12,
+          maxTurns: 20,
+          maxToolCalls: 60,
         },
       },
     });

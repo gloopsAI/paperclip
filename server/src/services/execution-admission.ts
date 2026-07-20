@@ -155,6 +155,11 @@ const LIMIT_FIELDS: Array<keyof IssueExecutionResourceBudget & keyof Extract<Exe
   "maxToolCallsPerInvocation",
 ];
 
+type SpendLimitField = Exclude<
+  typeof LIMIT_FIELDS[number],
+  "maxTurnsPerInvocation" | "maxToolCallsPerInvocation"
+>;
+
 function validateLimitNumber(name: string, value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`Execution admission ${name} must be a finite number`);
@@ -172,7 +177,7 @@ export function resolveEffectiveExecutionAdmissionPolicy(
   requestBudget?: IssueExecutionResourceBudget | null,
   parentPolicy?: Extract<ExecutionAdmissionPolicy, { enabled: true }> | null,
 ): Extract<ExecutionAdmissionPolicy, { enabled: true }> {
-  const pick = (field: typeof LIMIT_FIELDS[number]) => {
+  const pickSpendLimit = (field: SpendLimitField) => {
     const candidates: number[] = [
       validateLimitNumber(field, globalPolicy[field]),
     ];
@@ -185,16 +190,30 @@ export function resolveEffectiveExecutionAdmissionPolicy(
     return Math.min(...candidates);
   };
 
+  const pickStructuralLimit = (
+    field: "maxTurnsPerInvocation" | "maxToolCallsPerInvocation",
+  ) => {
+    // The environment value is the conservative default for unclassified
+    // work. A task may explicitly select a larger bounded turn/tool envelope
+    // without widening its token, wall-time, run, or retry ceilings. An
+    // inherited parent policy, when present, remains an authority ceiling.
+    const requested = requestBudget?.[field] === undefined
+      ? validateLimitNumber(field, globalPolicy[field])
+      : validateLimitNumber(field, requestBudget[field]);
+    if (parentPolicy == null) return requested;
+    return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+  };
+
   const values = {
-    maxRunsPerTask: pick("maxRunsPerTask"),
-    maxRetriesPerTask: pick("maxRetriesPerTask"),
-    maxInputTokensPerTask: pick("maxInputTokensPerTask"),
-    maxOutputTokensPerTask: pick("maxOutputTokensPerTask"),
-    maxWallMsPerTask: pick("maxWallMsPerTask"),
-    maxInputTokensPerInvocation: pick("maxInputTokensPerInvocation"),
-    maxOutputTokensPerInvocation: pick("maxOutputTokensPerInvocation"),
-    maxTurnsPerInvocation: pick("maxTurnsPerInvocation"),
-    maxToolCallsPerInvocation: pick("maxToolCallsPerInvocation"),
+    maxRunsPerTask: pickSpendLimit("maxRunsPerTask"),
+    maxRetriesPerTask: pickSpendLimit("maxRetriesPerTask"),
+    maxInputTokensPerTask: pickSpendLimit("maxInputTokensPerTask"),
+    maxOutputTokensPerTask: pickSpendLimit("maxOutputTokensPerTask"),
+    maxWallMsPerTask: pickSpendLimit("maxWallMsPerTask"),
+    maxInputTokensPerInvocation: pickSpendLimit("maxInputTokensPerInvocation"),
+    maxOutputTokensPerInvocation: pickSpendLimit("maxOutputTokensPerInvocation"),
+    maxTurnsPerInvocation: pickStructuralLimit("maxTurnsPerInvocation"),
+    maxToolCallsPerInvocation: pickStructuralLimit("maxToolCallsPerInvocation"),
   };
 
   if (values.maxRetriesPerTask >= values.maxRunsPerTask) {
@@ -424,9 +443,11 @@ export function evaluateExecutionReservationUsage(input: {
 }
 
 /**
- * Resolve the componentwise-tightened policy for a task that carries an
- * explicit executionPolicy.resourceBudget. Absent budgets keep the global
- * defaults unchanged.
+ * Resolve the effective policy for a task that carries an explicit
+ * executionPolicy.resourceBudget. Spend-bearing limits are componentwise
+ * tightened. Explicit turn/tool limits may choose a larger bounded coding
+ * envelope while token, wall-time, run, and retry ceilings remain unchanged.
+ * Absent budgets keep the conservative global defaults.
  */
 export function resolveExecutionAdmissionPolicyForResourceBudget(
   globalPolicy: ExecutionAdmissionPolicy,
