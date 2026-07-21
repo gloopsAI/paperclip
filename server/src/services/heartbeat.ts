@@ -12966,7 +12966,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
       if (Object.keys(nextIssuePatch).length > 0) {
-        await issuesSvc.update(issueId, nextIssuePatch);
+        await issuesSvc.update(issueId, {
+          ...nextIssuePatch,
+          runtimeExecutionWorkspacePersistence: true,
+        });
       }
     }
     if (persistedExecutionWorkspace) {

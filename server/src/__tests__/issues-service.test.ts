@@ -2921,6 +2921,120 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("normalizes explicit workspace ids on child create and update and rejects conflicting preferences", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const parentIssueId = randomUUID();
+    const updateIssueId = randomUUID();
+    const runtimePersistenceIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "operator_branch",
+      strategyType: "git_worktree",
+      name: "Canonical operator branch",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Parent issue",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: updateIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Issue to update",
+        status: "todo",
+        priority: "medium",
+        executionWorkspacePreference: "shared_workspace",
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+      },
+      {
+        id: runtimePersistenceIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Runtime-persisted workspace issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspacePreference: "shared_workspace",
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+      },
+    ]);
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Child on canonical workspace",
+      status: "todo",
+      executionWorkspaceId,
+    });
+    const updated = await svc.update(updateIssueId, { executionWorkspaceId });
+
+    for (const issue of [child, updated]) {
+      expect(issue?.executionWorkspaceId).toBe(executionWorkspaceId);
+      expect(issue?.executionWorkspacePreference).toBe("reuse_existing");
+      expect(issue?.executionWorkspaceSettings).toEqual({ mode: "operator_branch" });
+    }
+    const runtimePersisted = await svc.update(runtimePersistenceIssueId, {
+      executionWorkspaceId,
+      runtimeExecutionWorkspacePersistence: true,
+    });
+    expect(runtimePersisted).toMatchObject({
+      executionWorkspaceId,
+      executionWorkspacePreference: "shared_workspace",
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+
+    await expect(svc.createChild(parentIssueId, {
+      title: "Conflicting child",
+      status: "todo",
+      executionWorkspaceId,
+      executionWorkspacePreference: "shared_workspace",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "executionWorkspaceId requires executionWorkspacePreference to be reuse_existing",
+    });
+    await expect(svc.update(updateIssueId, {
+      executionWorkspaceId,
+      executionWorkspacePreference: "isolated_workspace",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "executionWorkspaceId requires executionWorkspacePreference to be reuse_existing",
+    });
+  });
+
   it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

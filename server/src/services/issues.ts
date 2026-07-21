@@ -181,6 +181,21 @@ function workspaceWorktreeRequiresProjectDetails() {
   };
 }
 
+function assertExplicitExecutionWorkspacePreference(
+  executionWorkspaceId: string | null | undefined,
+  executionWorkspacePreference: string | null | undefined,
+) {
+  if (
+    executionWorkspaceId &&
+    executionWorkspacePreference != null &&
+    executionWorkspacePreference !== "reuse_existing"
+  ) {
+    throw unprocessable(
+      "executionWorkspaceId requires executionWorkspacePreference to be reuse_existing",
+    );
+  }
+}
+
 function assertExplicitPinnedWorktreeIssueRunnable(input: {
   projectId: string | null | undefined;
   projectWorkspaceId: string | null | undefined;
@@ -4096,6 +4111,7 @@ export function issueService(db: Db) {
         id: executionWorkspaces.id,
         companyId: executionWorkspaces.companyId,
         projectId: executionWorkspaces.projectId,
+        mode: executionWorkspaces.mode,
       })
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, executionWorkspaceId))
@@ -5990,12 +6006,20 @@ export function issueService(db: Db) {
         trustExplicitResponsibleUserId,
         ...issueData
       } = data;
+      const requestedExecutionWorkspaceId = issueData.executionWorkspaceId ?? null;
+      assertExplicitExecutionWorkspacePreference(
+        requestedExecutionWorkspaceId,
+        issueData.executionWorkspacePreference,
+      );
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
+      const explicitlySelectedExecutionWorkspaceId = isolatedWorkspacesEnabled
+        ? requestedExecutionWorkspaceId
+        : null;
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -6015,6 +6039,9 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+        if (explicitlySelectedExecutionWorkspaceId && executionWorkspacePreference == null) {
+          executionWorkspacePreference = "reuse_existing";
+        }
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
@@ -6057,9 +6084,26 @@ export function issueService(db: Db) {
           const workspace = await assertValidProjectWorkspace(companyId, null, projectWorkspaceId, tx);
           issueData.projectId = workspace.projectId;
         }
-        if (issueData.projectId == null && executionWorkspaceId) {
-          const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
-          issueData.projectId = workspace.projectId;
+        let validatedExecutionWorkspace: Awaited<ReturnType<typeof assertValidExecutionWorkspace>> | null = null;
+        if (executionWorkspaceId) {
+          validatedExecutionWorkspace = await assertValidExecutionWorkspace(
+            companyId,
+            issueData.projectId,
+            executionWorkspaceId,
+            tx,
+          );
+          if (issueData.projectId == null) {
+            issueData.projectId = validatedExecutionWorkspace.projectId;
+          }
+          if (
+            explicitlySelectedExecutionWorkspaceId &&
+            !parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings, { includeEnvironmentId: true })?.mode
+          ) {
+            executionWorkspaceSettings = {
+              ...(executionWorkspaceSettings ?? {}),
+              mode: issueExecutionWorkspaceModeForPersistedWorkspace(validatedExecutionWorkspace.mode),
+            };
+          }
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         // Cache the project policy lookup for this insert so the default
@@ -6114,7 +6158,7 @@ export function issueService(db: Db) {
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
         }
-        if (executionWorkspaceId) {
+        if (executionWorkspaceId && !validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
         if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
@@ -6234,6 +6278,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        runtimeExecutionWorkspacePersistence?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -6249,14 +6294,28 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        runtimeExecutionWorkspacePersistence,
         ...issueData
       } = data;
+      const requestedExecutionWorkspaceId = issueData.executionWorkspaceId ?? null;
+      if (!runtimeExecutionWorkspacePersistence) {
+        assertExplicitExecutionWorkspacePreference(
+          requestedExecutionWorkspaceId,
+          issueData.executionWorkspacePreference,
+        );
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
+      // Runtime realization persists a workspace selected by the strategy; it is not an
+      // operator request to change this issue to reuse-existing semantics.
+      const explicitlySelectedExecutionWorkspaceId =
+        isolatedWorkspacesEnabled && !runtimeExecutionWorkspacePersistence
+          ? requestedExecutionWorkspaceId
+          : null;
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
@@ -6305,11 +6364,18 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
-      const nextExecutionWorkspacePreference =
+      let nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
           : existing.executionWorkspacePreference;
-      const nextExecutionWorkspaceSettings =
+      if (
+        explicitlySelectedExecutionWorkspaceId &&
+        issueData.executionWorkspacePreference == null
+      ) {
+        nextExecutionWorkspacePreference = "reuse_existing";
+        patch.executionWorkspacePreference = "reuse_existing";
+      }
+      let nextExecutionWorkspaceSettings =
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings, {
               includeEnvironmentId: true,
@@ -6323,16 +6389,10 @@ export function issueService(db: Db) {
           : null;
       }
       let validatedProjectWorkspace: { projectId: string } | null = null;
-      let validatedExecutionWorkspace: { projectId: string } | null = null;
+      let validatedExecutionWorkspace: Awaited<ReturnType<typeof assertValidExecutionWorkspace>> | null = null;
       if (!nextProjectId && nextProjectWorkspaceId) {
         const workspace = await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
         validatedProjectWorkspace = workspace;
-        nextProjectId = workspace.projectId;
-        patch.projectId = workspace.projectId;
-      }
-      if (!nextProjectId && nextExecutionWorkspaceId) {
-        const workspace = await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
-        validatedExecutionWorkspace = workspace;
         nextProjectId = workspace.projectId;
         patch.projectId = workspace.projectId;
       }
@@ -6342,17 +6402,39 @@ export function issueService(db: Db) {
         }
       }
       if (nextExecutionWorkspaceId) {
-        if (!validatedExecutionWorkspace) {
-          await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+        validatedExecutionWorkspace = await assertValidExecutionWorkspace(
+          existing.companyId,
+          nextProjectId,
+          nextExecutionWorkspaceId,
+          dbOrTx,
+        );
+        if (!nextProjectId) {
+          nextProjectId = validatedExecutionWorkspace.projectId;
+          patch.projectId = validatedExecutionWorkspace.projectId;
+        }
+        if (
+          explicitlySelectedExecutionWorkspaceId &&
+          (
+            issueData.executionWorkspaceSettings === undefined ||
+            !nextExecutionWorkspaceSettings?.mode
+          )
+        ) {
+          nextExecutionWorkspaceSettings = {
+            ...(issueData.executionWorkspaceSettings === undefined
+              ? {}
+              : nextExecutionWorkspaceSettings ?? {}),
+            mode: issueExecutionWorkspaceModeForPersistedWorkspace(validatedExecutionWorkspace.mode),
+          };
+          patch.executionWorkspaceSettings = { ...nextExecutionWorkspaceSettings };
         }
       }
-      if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+      if (isolatedWorkspacesEnabled && patch.executionWorkspaceSettings !== undefined) {
         assertExplicitPinnedWorktreeIssueRunnable({
           projectId: nextProjectId ?? null,
           projectWorkspaceId: nextProjectWorkspaceId ?? null,
           executionWorkspaceId: nextExecutionWorkspaceId ?? null,
           executionWorkspacePreference: nextExecutionWorkspacePreference ?? null,
-          executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+          executionWorkspaceSettings: nextExecutionWorkspaceSettings,
         });
       }
 
