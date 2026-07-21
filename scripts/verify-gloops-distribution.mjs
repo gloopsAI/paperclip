@@ -1512,6 +1512,17 @@ for (const required of [
     fail(`distribution workflow is missing live firewall proof ${required}`);
   }
 }
+// Serial stable-head publication: one concurrency group per ref so successive
+// merges to gloops/stable cancel superseded multiarch runs before they publish.
+for (const required of [
+  "concurrency:",
+  "group: gloops-distribution-${{ github.workflow }}-${{ github.ref }}",
+  "cancel-in-progress: true",
+]) {
+  if (!workflow.includes(required)) {
+    fail(`distribution workflow is missing stable-publication supersession ${required}`);
+  }
+}
 for (const required of [
   "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
   "--network paperclip-handshake --ip 172.30.241.4",

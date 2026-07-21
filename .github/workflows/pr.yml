@@ -61,6 +61,9 @@ jobs:
       - name: Test release verify workflow wiring
         run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs
 
+      - name: Test gloops distribution concurrency supersession
+        run: node --test ./scripts/__tests__/gloops-distribution-concurrency.test.mjs
+
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
