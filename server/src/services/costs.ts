@@ -1,7 +1,18 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import {
+  buildSubscriptionEconomicsSummary,
+  currentUtcMonthWindow,
+  isTerminalHeartbeatStatus,
+  matchSubscriptionPlanId,
+  parseUsageProvenance,
+  type SubscriptionAllocatableRun,
+  type SubscriptionEconomicsSummary,
+  type SubscriptionPlanId,
+  type UsageProvenance,
+} from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -507,5 +518,227 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
     },
+
+    /**
+     * Derived subscription economics for the current UTC month.
+     * Fixed plan fees are never written into cost_events or budget enforcement.
+     */
+    subscriptionEconomics: async (
+      companyId: string,
+      now = new Date(),
+    ): Promise<SubscriptionEconomicsSummary> => {
+      const company = await db
+        .select({ id: companies.id })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+      if (!company) throw notFound("Company not found");
+
+      const { start, end } = currentUtcMonthWindow(now);
+      const terminalStatuses = [
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "interrupted",
+      ] as const;
+
+      const runRows = await db
+        .select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          agentName: agents.name,
+          status: heartbeatRuns.status,
+          usageJson: heartbeatRuns.usageJson,
+          resultJson: heartbeatRuns.resultJson,
+          finishedAt: heartbeatRuns.finishedAt,
+          startedAt: heartbeatRuns.startedAt,
+          createdAt: heartbeatRuns.createdAt,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...terminalStatuses]),
+            // Prefer finishedAt; fall back to createdAt for sparse legacy rows.
+            sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${start}`,
+            sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) < ${end}`,
+          ),
+        );
+
+      const runIds = runRows.map((row) => row.id);
+      const costRows = runIds.length === 0
+        ? []
+        : await db
+          .select({
+            heartbeatRunId: costEvents.heartbeatRunId,
+            provider: costEvents.provider,
+            biller: costEvents.biller,
+            billingType: costEvents.billingType,
+            model: costEvents.model,
+            costCents: sumAsNumber(costEvents.costCents),
+            inputTokens: sumAsNumber(costEvents.inputTokens),
+            cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+            outputTokens: sumAsNumber(costEvents.outputTokens),
+          })
+          .from(costEvents)
+          .where(
+            and(
+              eq(costEvents.companyId, companyId),
+              inArray(costEvents.heartbeatRunId, runIds),
+            ),
+          )
+          .groupBy(
+            costEvents.heartbeatRunId,
+            costEvents.provider,
+            costEvents.biller,
+            costEvents.billingType,
+            costEvents.model,
+          );
+
+      const costsByRun = new Map<string, {
+        marginalCostCents: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        provider: string;
+        biller: string;
+        billingType: string;
+        model: string;
+      }>();
+      for (const row of costRows) {
+        if (!row.heartbeatRunId) continue;
+        const existing = costsByRun.get(row.heartbeatRunId);
+        if (!existing) {
+          costsByRun.set(row.heartbeatRunId, {
+            marginalCostCents: Number(row.costCents ?? 0),
+            inputTokens: Number(row.inputTokens ?? 0),
+            cachedInputTokens: Number(row.cachedInputTokens ?? 0),
+            outputTokens: Number(row.outputTokens ?? 0),
+            provider: row.provider,
+            biller: row.biller,
+            billingType: row.billingType,
+            model: row.model,
+          });
+        } else {
+          existing.marginalCostCents += Number(row.costCents ?? 0);
+          existing.inputTokens += Number(row.inputTokens ?? 0);
+          existing.cachedInputTokens += Number(row.cachedInputTokens ?? 0);
+          existing.outputTokens += Number(row.outputTokens ?? 0);
+        }
+      }
+
+      const allocatable: SubscriptionAllocatableRun[] = [];
+      for (const row of runRows) {
+        if (!isTerminalHeartbeatStatus(row.status)) continue;
+        const usage = (row.usageJson ?? {}) as Record<string, unknown>;
+        const result = (row.resultJson ?? {}) as Record<string, unknown>;
+        const cost = costsByRun.get(row.id);
+
+        const provider = readNonEmptyString(
+          usage.provider,
+          result.provider,
+          cost?.provider,
+        ) ?? "unknown";
+        const biller = readNonEmptyString(usage.biller, result.biller, cost?.biller);
+        const model = readNonEmptyString(usage.model, result.model, cost?.model);
+        const billingType = readNonEmptyString(
+          usage.billingType,
+          result.billingType,
+          cost?.billingType,
+        );
+        const subscriptionClass = readNonEmptyString(
+          usage.subscriptionClass,
+          usage.subscription_class,
+          result.subscriptionClass,
+          result.subscription_class,
+        );
+
+        const planId = matchSubscriptionPlanId({
+          provider,
+          biller,
+          model,
+          subscriptionClass,
+          billingType,
+        });
+        if (!planId) continue;
+
+        const usageProvenance = resolveRunUsageProvenance(usage);
+        const inputTokens = firstNonNegativeInt(
+          usage.inputTokens,
+          usage.rawInputTokens,
+          cost?.inputTokens,
+        );
+        const cachedInputTokens = firstNonNegativeInt(
+          usage.cachedInputTokens,
+          usage.rawCachedInputTokens,
+          cost?.cachedInputTokens,
+        );
+        const outputTokens = firstNonNegativeInt(
+          usage.outputTokens,
+          usage.rawOutputTokens,
+          cost?.outputTokens,
+        );
+
+        // Prefer a typed terminal grade only when already present — never infer ROI.
+        const outcomeGrade = readNonEmptyString(
+          usage.outcomeGrade,
+          usage.terminalGrade,
+          result.outcomeGrade,
+          result.terminalGrade,
+        );
+
+        allocatable.push({
+          runId: row.id,
+          agentId: row.agentId,
+          agentName: row.agentName,
+          planId: planId as SubscriptionPlanId,
+          status: row.status,
+          provider,
+          biller,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          usageProvenance,
+          marginalCostCents: cost?.marginalCostCents ?? 0,
+          outcomeGrade,
+        });
+      }
+
+      return buildSubscriptionEconomicsSummary({
+        companyId,
+        now,
+        runs: allocatable,
+      });
+    },
   };
+}
+
+function readNonEmptyString(...values: Array<unknown>): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function firstNonNegativeInt(...values: Array<unknown>): number {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.floor(value));
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return 0;
+}
+
+function resolveRunUsageProvenance(usage: Record<string, unknown>): UsageProvenance | null {
+  const explicit = parseUsageProvenance(usage.usageProvenance)
+    ?? parseUsageProvenance(usage.provenance);
+  if (explicit) return explicit;
+  // PR #121: omit usage entirely when unknown — empty/missing usage stays unavailable.
+  return null;
 }
