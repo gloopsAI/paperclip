@@ -132,10 +132,71 @@ describe("grok_local execute", () => {
       summary: "done",
       sessionId: "sess-1",
       sessionDisplayId: "sess-1",
+      costUsd: null,
+      usageBasis: "per_run",
+    });
+    // Successful CLI work without native counters must not be measured zeros.
+    expect(result.usage).toBeDefined();
+    expect(result.usage?.provenance).toBe("estimated");
+    expect(result.usage?.estimationMethod).toBe("utf8_bytes_div_4");
+    expect((result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0)).toBeGreaterThan(0);
+    expect(result.usage).not.toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      provenance: "measured",
     });
     expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
     expect(await pathExists(path.join(root, ".claude", "skills", "paperclip"))).toBe(false);
     expect(logs.map((entry) => entry.chunk)).not.toEqual([]);
+  });
+
+  it("labels native CLI token counters as measured when present", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "text", data: "done" }),
+        JSON.stringify({
+          type: "end",
+          stopReason: "EndTurn",
+          sessionId: "sess-measured",
+          usage: { input_tokens: 50, output_tokens: 12 },
+        }),
+      ].join("\n"),
+      stderr: "",
+    }));
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-measured",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { cwd: root },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.usage).toEqual({
+      inputTokens: 50,
+      outputTokens: 12,
+      cachedInputTokens: 0,
+      provenance: "measured",
+    });
+    expect(result.costUsd).toBeNull();
   });
 
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {

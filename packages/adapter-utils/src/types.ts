@@ -29,10 +29,28 @@ export interface AdapterRuntime {
 // Execution types (moved from server/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
 
+/**
+ * How adapter-reported token totals were obtained.
+ * - measured: native provider/CLI counters
+ * - estimated: deterministic token-equivalent proxy (never label as measured)
+ * - unknown: usage unavailable; do not invent measured zeros
+ */
+export type UsageProvenance = "measured" | "estimated" | "unknown";
+
 export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /**
+   * Provenance of the token totals. Absent means legacy measured-or-unknown;
+   * adapters that lack native counters must set `estimated` or `unknown`
+   * instead of fabricating measured zeros.
+   */
+  provenance?: UsageProvenance;
+  /** Estimation method id when provenance is `estimated` (e.g. utf8_bytes_div_4). */
+  estimationMethod?: string;
+  /** 0–1 confidence for estimated totals. */
+  estimationConfidence?: number;
 }
 
 export type AdapterBillingType =

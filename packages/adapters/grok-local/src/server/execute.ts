@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { resolveGrokLocalUsage } from "./usage.js";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -534,16 +535,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } as Record<string, unknown>)
         : null;
 
+      // Never fabricate measured zeros when Grok omits native counters.
+      // Prefer measured usage; otherwise estimate token-equivalents from the
+      // already-captured prompt and assistant/thought output bytes.
+      const outputText = [attempt.parsed.summary, attempt.parsed.thought]
+        .filter((part) => part.length > 0)
+        .join("\n");
+      const usage = resolveGrokLocalUsage({
+        measured: attempt.parsed.usage,
+        prompt,
+        outputText,
+      });
+
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: failed ? fallbackErrorMessage : null,
-        usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
-        },
+        ...(usage ? { usage } : {}),
+        // Token-equivalents are scoped to this run's prompt/output capture.
+        usageBasis: usage ? "per_run" : null,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
@@ -551,10 +562,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         biller: billingType === "api" ? "xai" : "grok",
         model,
         billingType,
+        // Subscription fixed cost stays out of marginal costCents (costUsd null).
         costUsd: null,
         resultJson: {
           stopReason: attempt.parsed.stopReason,
           requestId: attempt.parsed.requestId,
+          ...(usage?.provenance
+            ? {
+                usageProvenance: usage.provenance,
+                ...(usage.estimationMethod ? { estimationMethod: usage.estimationMethod } : {}),
+                ...(typeof usage.estimationConfidence === "number"
+                  ? { estimationConfidence: usage.estimationConfidence }
+                  : {}),
+              }
+            : {}),
           ...(failed ? { stderr: attempt.proc.stderr } : {}),
         },
         summary: attempt.parsed.summary,
