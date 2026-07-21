@@ -37,6 +37,7 @@ export {
   type SubscriptionEconomicsSummary,
   type SubscriptionPlanId,
   type SubscriptionPlanRegistryEntry,
+  type SubscriptionUsageTruth,
   type UsageProvenance,
 } from "./subscription-economics.js";
 export {

@@ -7,7 +7,7 @@
  */
 
 /** How token-equivalent totals were obtained (aligned with PR #121 shapes). */
-export type UsageProvenance = "measured" | "estimated" | "unknown";
+export type UsageProvenance = "measured" | "estimated" | "reserved" | "unknown";
 
 export type SubscriptionPlanId =
   | "ollama_cloud_max"
@@ -116,6 +116,10 @@ export function matchSubscriptionPlanId(input: {
   const subscriptionClass = normalizeKey(input.subscriptionClass);
   const billingType = normalizeKey(input.billingType);
 
+  // Metered API traffic is never subscription capacity, even when its
+  // provider happens to share a name with a subscription-backed CLI.
+  if (billingType === "metered_api") return null;
+
   // Prefer explicit subscription-class markers (Hermes path).
   if (subscriptionClass.length > 0) {
     for (const plan of SUBSCRIPTION_PLAN_REGISTRY) {
@@ -132,14 +136,20 @@ export function matchSubscriptionPlanId(input: {
     }
   }
 
-  // Ollama models often look like ollama/… even when the gateway provider differs.
-  if (provider.includes("ollama") || model.startsWith("ollama/") || model.includes("ollama/")) {
+  const subscriptionBacked =
+    billingType === "subscription_included"
+    || billingType === "subscription_overage"
+    || billingType === "subscription";
+
+  // Provider/model names alone do not prove subscription billing. Require a
+  // typed subscription billing marker unless an explicit class matched above.
+  if (subscriptionBacked && (provider.includes("ollama") || model.startsWith("ollama/") || model.includes("ollama/"))) {
     return "ollama_cloud_max";
   }
-  if (provider === "xai" || provider.includes("grok") || biller === "xai" || biller.includes("grok")) {
+  if (subscriptionBacked && (provider === "xai" || provider.includes("grok") || biller === "xai" || biller.includes("grok"))) {
     return "grok_supergrok_build";
   }
-  if (provider === "anthropic" || provider.includes("claude") || biller === "anthropic") {
+  if (subscriptionBacked && (provider === "anthropic" || provider.includes("claude") || biller === "anthropic")) {
     return "claude";
   }
   // Codex: OpenAI/ChatGPT subscription-backed paths (not metered API by default).
@@ -154,13 +164,13 @@ export function matchSubscriptionPlanId(input: {
       billingType === "subscription_included"
       || billingType === "subscription_overage"
       || billingType === "subscription"
-      || billingType === ""
       || biller === "chatgpt"
     ) {
       return "codex_subscription";
     }
   }
 
+  if (!subscriptionBacked) return null;
   for (const plan of SUBSCRIPTION_PLAN_REGISTRY) {
     if (plan.providerKeys.some((key) => provider === key || provider.includes(key))) {
       return plan.id;
@@ -207,13 +217,12 @@ export function tokenEquivalentTotal(run: Pick<
  * Returns null when usage is missing/unknown — callers must not fabricate zero weight.
  */
 export function allocationWeight(run: SubscriptionAllocatableRun): number | null {
-  if (run.usageProvenance === "unknown") return null;
+  if (run.usageProvenance === "unknown" || run.usageProvenance === "reserved") return null;
   if (run.usageProvenance === "measured" || run.usageProvenance === "estimated") {
     return tokenEquivalentTotal(run);
   }
-  // Legacy rows without provenance: only positive token totals count as measured weight.
-  const total = tokenEquivalentTotal(run);
-  if (total > 0) return total;
+  // Missing provenance is unknown. Positive legacy totals may be reservation
+  // ceilings and must not silently become measured consumption.
   return null;
 }
 
@@ -328,7 +337,7 @@ export function mergeUsageProvenance(
   values: Array<UsageProvenance | null | undefined>,
 ): UsageProvenance | "mixed" | null {
   const present = values.filter((value): value is UsageProvenance =>
-    value === "measured" || value === "estimated" || value === "unknown"
+    value === "measured" || value === "estimated" || value === "reserved" || value === "unknown"
   );
   if (present.length === 0) {
     // Legacy positive-token rows may have been treated as measured weight without
@@ -350,8 +359,19 @@ export function currentUtcMonthWindow(now = new Date()): { start: Date; end: Dat
 }
 
 export function parseUsageProvenance(value: unknown): UsageProvenance | null {
-  if (value === "measured" || value === "estimated" || value === "unknown") return value;
+  if (value === "measured" || value === "estimated" || value === "reserved" || value === "unknown") return value;
+  if (value === "reservation_fallback") return "reserved";
   return null;
+}
+
+export interface SubscriptionUsageTruth {
+  terminalRunCount: number;
+  classifiedSubscriptionRunCount: number;
+  unclassifiedRunCount: number;
+  measuredTokenEquivalents: number;
+  estimatedTokenEquivalents: number;
+  reservedTokenCeilings: number;
+  unknownRunCount: number;
 }
 
 export interface SubscriptionEconomicsPlanRow {
@@ -391,6 +411,7 @@ export interface SubscriptionEconomicsSummary {
   periodEnd: string;
   knownBaseMonthlyCents: number;
   knownBaseLabel: string;
+  usageTruth: SubscriptionUsageTruth;
   plans: SubscriptionEconomicsPlanRow[];
   byProvider: SubscriptionEconomicsBreakdownRow[];
   byAgent: SubscriptionEconomicsBreakdownRow[];
@@ -404,6 +425,7 @@ export function buildSubscriptionEconomicsSummary(input: {
   companyId: string;
   now?: Date;
   runs: SubscriptionAllocatableRun[];
+  usageTruth?: SubscriptionUsageTruth;
 }): SubscriptionEconomicsSummary {
   const { start, end } = currentUtcMonthWindow(input.now);
   const runsByPlan = new Map<SubscriptionPlanId, SubscriptionAllocatableRun[]>();
@@ -425,9 +447,7 @@ export function buildSubscriptionEconomicsSummary(input: {
       ? weights.reduce<number>((sum, weight) => sum + (weight ?? 0), 0)
       : null;
     const provenances = planRuns.map((run) => {
-      if (run.usageProvenance) return run.usageProvenance;
-      if (tokenEquivalentTotal(run) > 0) return "measured" as const;
-      return null;
+      return run.usageProvenance;
     });
     const usageProvenance = mergeUsageProvenance(provenances);
 
@@ -479,7 +499,7 @@ export function buildSubscriptionEconomicsSummary(input: {
     const rows: SubscriptionEconomicsBreakdownRow[] = [];
     for (const [key, group] of groups) {
       const provenances = group.map((run) =>
-        run.usageProvenance ?? (tokenEquivalentTotal(run) > 0 ? "measured" : null),
+        run.usageProvenance,
       );
       const weights = group.map((run) => allocationWeight(run));
       const anyWeight = weights.some((weight) => weight != null);
@@ -528,6 +548,21 @@ export function buildSubscriptionEconomicsSummary(input: {
     periodEnd: end.toISOString(),
     knownBaseMonthlyCents: knownSubscriptionBaseMonthlyCents(),
     knownBaseLabel: "Known fixed base $330/month plus Claude (unknown)",
+    usageTruth: input.usageTruth ?? {
+      terminalRunCount: input.runs.length,
+      classifiedSubscriptionRunCount: input.runs.length,
+      unclassifiedRunCount: 0,
+      measuredTokenEquivalents: input.runs
+        .filter((run) => run.usageProvenance === "measured")
+        .reduce((sum, run) => sum + tokenEquivalentTotal(run), 0),
+      estimatedTokenEquivalents: input.runs
+        .filter((run) => run.usageProvenance === "estimated")
+        .reduce((sum, run) => sum + tokenEquivalentTotal(run), 0),
+      reservedTokenCeilings: input.runs
+        .filter((run) => run.usageProvenance === "reserved")
+        .reduce((sum, run) => sum + tokenEquivalentTotal(run), 0),
+      unknownRunCount: input.runs.filter((run) => run.usageProvenance == null || run.usageProvenance === "unknown").length,
+    },
     plans,
     byProvider,
     byAgent,

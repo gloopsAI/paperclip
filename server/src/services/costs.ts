@@ -29,15 +29,6 @@ function sumAsNumber(column: typeof costEvents.costCents | typeof costEvents.inp
   return sql<number>`coalesce(sum(${column}), 0)::double precision`;
 }
 
-function currentUtcMonthWindow(now = new Date()) {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  return {
-    start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
-    end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
-  };
-}
-
 async function getMonthlySpendTotal(
   db: Db,
   scope: { companyId: string; agentId?: string | null },
@@ -630,8 +621,18 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       const allocatable: SubscriptionAllocatableRun[] = [];
+      const usageTruth = {
+        terminalRunCount: 0,
+        classifiedSubscriptionRunCount: 0,
+        unclassifiedRunCount: 0,
+        measuredTokenEquivalents: 0,
+        estimatedTokenEquivalents: 0,
+        reservedTokenCeilings: 0,
+        unknownRunCount: 0,
+      };
       for (const row of runRows) {
         if (!isTerminalHeartbeatStatus(row.status)) continue;
+        usageTruth.terminalRunCount += 1;
         const usage = (row.usageJson ?? {}) as Record<string, unknown>;
         const result = (row.resultJson ?? {}) as Record<string, unknown>;
         const cost = costsByRun.get(row.id);
@@ -662,8 +663,6 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           subscriptionClass,
           billingType,
         });
-        if (!planId) continue;
-
         const usageProvenance = resolveRunUsageProvenance(usage);
         const inputTokens = firstNonNegativeInt(
           usage.inputTokens,
@@ -680,6 +679,17 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           usage.rawOutputTokens,
           cost?.outputTokens,
         );
+        const tokenEquivalents = inputTokens + cachedInputTokens + outputTokens;
+        if (usageProvenance === "measured") usageTruth.measuredTokenEquivalents += tokenEquivalents;
+        else if (usageProvenance === "estimated") usageTruth.estimatedTokenEquivalents += tokenEquivalents;
+        else if (usageProvenance === "reserved") usageTruth.reservedTokenCeilings += tokenEquivalents;
+        else usageTruth.unknownRunCount += 1;
+
+        if (!planId) {
+          usageTruth.unclassifiedRunCount += 1;
+          continue;
+        }
+        usageTruth.classifiedSubscriptionRunCount += 1;
 
         // Prefer a typed terminal grade only when already present — never infer ROI.
         const outcomeGrade = readNonEmptyString(
@@ -710,6 +720,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         companyId,
         now,
         runs: allocatable,
+        usageTruth,
       });
     },
   };
@@ -737,7 +748,8 @@ function firstNonNegativeInt(...values: Array<unknown>): number {
 
 function resolveRunUsageProvenance(usage: Record<string, unknown>): UsageProvenance | null {
   const explicit = parseUsageProvenance(usage.usageProvenance)
-    ?? parseUsageProvenance(usage.provenance);
+    ?? parseUsageProvenance(usage.provenance)
+    ?? parseUsageProvenance(usage.usageSource);
   if (explicit) return explicit;
   // PR #121: omit usage entirely when unknown — empty/missing usage stays unavailable.
   return null;

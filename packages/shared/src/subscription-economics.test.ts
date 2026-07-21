@@ -7,6 +7,7 @@ import {
   buildSubscriptionEconomicsSummary,
   knownSubscriptionBaseMonthlyCents,
   matchSubscriptionPlanId,
+  parseUsageProvenance,
   type SubscriptionAllocatableRun,
 } from "./subscription-economics.js";
 
@@ -46,13 +47,23 @@ describe("subscription plan registry", () => {
   });
 
   it("matches provider/subscription-class identities to registry plans", () => {
-    expect(matchSubscriptionPlanId({ provider: "xai" })).toBe("grok_supergrok_build");
+    expect(matchSubscriptionPlanId({ provider: "xai", billingType: "subscription_included" })).toBe("grok_supergrok_build");
     expect(matchSubscriptionPlanId({ provider: "hermes_gateway", subscriptionClass: "ollama-max" }))
       .toBe("ollama_cloud_max");
     expect(matchSubscriptionPlanId({ provider: "openai", biller: "chatgpt", billingType: "subscription_included" }))
       .toBe("codex_subscription");
-    expect(matchSubscriptionPlanId({ provider: "anthropic" })).toBe("claude");
+    expect(matchSubscriptionPlanId({ provider: "anthropic", billingType: "subscription_included" })).toBe("claude");
     expect(matchSubscriptionPlanId({ provider: "google" })).toBeNull();
+  });
+
+  it("never classifies metered xAI/Grok API traffic as fixed subscription capacity", () => {
+    expect(matchSubscriptionPlanId({
+      provider: "xai",
+      biller: "grok",
+      billingType: "metered_api",
+      subscriptionClass: "grok-build",
+    })).toBeNull();
+    expect(matchSubscriptionPlanId({ provider: "xai" })).toBeNull();
   });
 });
 
@@ -61,7 +72,16 @@ describe("allocationWeight", () => {
     expect(allocationWeight(run({ usageProvenance: "unknown", inputTokens: 0, outputTokens: 0 }))).toBeNull();
     expect(allocationWeight(run({ usageProvenance: null, inputTokens: 0, outputTokens: 0 }))).toBeNull();
     expect(allocationWeight(run({ usageProvenance: "estimated", inputTokens: 40, outputTokens: 10 }))).toBe(50);
-    expect(allocationWeight(run({ usageProvenance: null, inputTokens: 12, outputTokens: 0 }))).toBe(12);
+    expect(allocationWeight(run({ usageProvenance: "reserved", inputTokens: 40, outputTokens: 10 }))).toBeNull();
+    expect(allocationWeight(run({ usageProvenance: null, inputTokens: 12, outputTokens: 0 }))).toBeNull();
+  });
+});
+
+describe("usage provenance", () => {
+  it("keeps reservation fallback separate from measured and estimated usage", () => {
+    expect(parseUsageProvenance("reservation_fallback")).toBe("reserved");
+    expect(parseUsageProvenance("measured")).toBe("measured");
+    expect(parseUsageProvenance("estimated")).toBe("estimated");
   });
 });
 
@@ -105,6 +125,27 @@ describe("allocatePlanFixedCost", () => {
 });
 
 describe("buildSubscriptionEconomicsSummary", () => {
+  it("reports measured, estimated, reserved, and unknown usage as separate truth buckets", () => {
+    const summary = buildSubscriptionEconomicsSummary({
+      companyId: "company-1",
+      runs: [
+        run({ runId: "m", usageProvenance: "measured", inputTokens: 10, outputTokens: 2 }),
+        run({ runId: "e", usageProvenance: "estimated", inputTokens: 20, outputTokens: 3 }),
+        run({ runId: "r", usageProvenance: "reserved", inputTokens: 1000, outputTokens: 200 }),
+        run({ runId: "u", usageProvenance: "unknown", inputTokens: 5000, outputTokens: 500 }),
+      ],
+    });
+    expect(summary.usageTruth).toMatchObject({
+      measuredTokenEquivalents: 12,
+      estimatedTokenEquivalents: 23,
+      reservedTokenCeilings: 1200,
+      unknownRunCount: 1,
+    });
+    const grok = summary.plans.find((plan) => plan.planId === "grok_supergrok_build")!;
+    expect(grok.tokenEquivalents).toBe(35);
+    expect(grok.allocatedFixedCostCents).toBe(3000);
+  });
+
   it("surfaces plan fees, allocation, and breakdown rows for the current UTC month", () => {
     const summary = buildSubscriptionEconomicsSummary({
       companyId: "company-1",

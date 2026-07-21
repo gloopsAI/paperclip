@@ -192,6 +192,13 @@ function SubscriptionEconomicsCard({ data }: { data: SubscriptionEconomicsSummar
           </div>
         </div>
 
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricTile label="Measured usage" value={formatTokens(data.usageTruth.measuredTokenEquivalents)} subtitle="Observed provider consumption" icon={ReceiptText} />
+          <MetricTile label="Estimated usage" value={`~${formatTokens(data.usageTruth.estimatedTokenEquivalents)}`} subtitle="Explicit estimates, never relabeled measured" icon={Coins} />
+          <MetricTile label="Reserved ceilings" value={formatTokens(data.usageTruth.reservedTokenCeilings)} subtitle="Excluded from actual usage and allocation" icon={ArrowUpRight} />
+          <MetricTile label="Unknown usage" value={String(data.usageTruth.unknownRunCount)} subtitle={`${data.usageTruth.unclassifiedRunCount} unclassified terminal runs`} icon={ChevronRight} />
+        </div>
+
         <div className="space-y-2">
           {data.plans.map((plan) => (
             <div key={plan.planId} className="border border-border px-4 py-3">
@@ -679,12 +686,6 @@ export function Costs() {
     ];
   }, [byBiller]);
 
-  const inferenceTokenTotal =
-    (spendData?.byAgent ?? []).reduce(
-      (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
-      0,
-    );
-
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -748,9 +749,9 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
+              label="Marginal API spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle="Excludes fixed subscription fees; usage provenance appears below"
               icon={DollarSign}
             />
             <MetricTile
@@ -824,9 +825,9 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">Inference ledger</CardTitle>
+                    <CardTitle className="text-base">Marginal API ledger</CardTitle>
                     <CardDescription>
-                      Request-scoped inference spend for the selected period.
+                      Metered request spend for the selected period. Fixed subscription fees appear separately.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
@@ -842,10 +843,11 @@ export function Costs() {
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">usage</div>
+                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">actual + estimated</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
-                          {formatTokens(inferenceTokenTotal)}
+                          {formatTokens((subscriptionEconomics?.usageTruth.measuredTokenEquivalents ?? 0) + (subscriptionEconomics?.usageTruth.estimatedTokenEquivalents ?? 0))}
                         </div>
+                        <div className="mt-1 text-xs text-muted-foreground">current UTC month; reservation ceilings excluded</div>
                       </div>
                     </div>
                     {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
