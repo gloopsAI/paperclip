@@ -360,6 +360,11 @@ function isCommentDrivenWake(run: HeartbeatRunRow) {
     wakeReason === "issue_reopened_via_comment";
 }
 
+function isIssueCommentOptionalRun(run: HeartbeatRunRow) {
+  const context = readRecord(run.contextSnapshot);
+  return context.skipIssueComment === true;
+}
+
 function isProductiveSuccessfulRun(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
@@ -418,6 +423,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
+  if (isIssueCommentOptionalRun(run)) {
+    return { kind: "skip", reason: "issue execution policy does not require a disposition comment" };
+  }
   if (hasValidFinalGovernedLifecycleReceipt(run)) {
     return { kind: "skip", reason: "governed terminal lifecycle receipt owns the next action" };
   }

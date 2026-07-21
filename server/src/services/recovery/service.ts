@@ -426,6 +426,10 @@ function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun): lates
   return latestRun?.status === "succeeded";
 }
 
+function isIssueCommentOptionalRun(latestRun: LatestIssueRun) {
+  return parseObject(latestRun?.contextSnapshot).skipIssueComment === true;
+}
+
 function isProductiveContinuationRun(latestRun: LatestIssueRun) {
   return latestRun?.status === "succeeded" &&
     (latestRun.livenessState === "advanced" ||
@@ -3333,6 +3337,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
+
+        if (isIssueCommentOptionalRun(successfulRun)) {
+          result.successfulContinuationObserved += 1;
+          result.skipped += 1;
+          continue;
+        }
 
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;
