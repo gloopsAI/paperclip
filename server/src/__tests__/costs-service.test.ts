@@ -84,6 +84,16 @@ const mockCostService = vi.hoisted(() => ({
   }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  subscriptionEconomics: vi.fn().mockResolvedValue({
+    companyId: "company-1",
+    periodStart: "2026-07-01T00:00:00.000Z",
+    periodEnd: "2026-08-01T00:00:00.000Z",
+    knownBaseMonthlyCents: 33000,
+    knownBaseLabel: "Known fixed base $330/month plus Claude (unknown)",
+    plans: [],
+    byProvider: [],
+    byAgent: [],
+  }),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -246,6 +256,44 @@ describe("cost routes", () => {
       estimatedDebitCents: 0,
       eventCount: 0,
     });
+  });
+
+  it("returns subscription economics for the current UTC month", async () => {
+    const summary = {
+      companyId: "company-1",
+      periodStart: "2026-07-01T00:00:00.000Z",
+      periodEnd: "2026-08-01T00:00:00.000Z",
+      knownBaseMonthlyCents: 33000,
+      knownBaseLabel: "Known fixed base $330/month plus Claude (unknown)",
+      plans: [
+        {
+          planId: "grok_supergrok_build",
+          label: "Grok / SuperGrok Build",
+          billingType: "subscription_included",
+          monthlyCostCents: 3000,
+          costStatus: "known",
+          terminalRunCount: 1,
+          failedOrNoValueRunCount: 0,
+          tokenEquivalents: 150,
+          usageProvenance: "estimated",
+          marginalCostCents: 0,
+          allocatedFixedCostCents: 3000,
+          unallocatedPlanCostCents: 0,
+          allocationAvailable: true,
+        },
+      ],
+      byProvider: [],
+      byAgent: [],
+    };
+    mockCostService.subscriptionEconomics.mockResolvedValueOnce(summary);
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/subscription-economics");
+    expect(res.status).toBe(200);
+    expect(res.body.knownBaseMonthlyCents).toBe(33000);
+    expect(res.body.plans[0]?.monthlyCostCents).toBe(3000);
+    expect(res.body.plans[0]?.monthlyCostCents).not.toBe(0);
+    expect(mockCostService.subscriptionEconomics).toHaveBeenCalledWith("company-1");
   });
 
   it("returns issue subtree cost summaries for issue refs", async () => {

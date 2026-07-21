@@ -8,6 +8,8 @@ import type {
   CostWindowSpendRow,
   FinanceEvent,
   QuotaWindow,
+  SubscriptionEconomicsSummary,
+  UsageProvenance,
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
@@ -146,6 +148,169 @@ function FinanceSummaryCard({
   );
 }
 
+
+function formatMaybeCents(value: number | null | undefined): string {
+  if (value == null) return "Unavailable";
+  return formatCents(value);
+}
+
+function formatMaybeTokens(value: number | null | undefined, provenance?: UsageProvenance | "mixed" | null): string {
+  if (value == null) return "Unavailable";
+  if (provenance === "estimated") return `~${formatTokens(value)}`;
+  if (provenance === "unknown") return "Unknown";
+  if (provenance === "mixed") return `${formatTokens(value)} (mixed)`;
+  return formatTokens(value);
+}
+
+function provenanceLabel(value: UsageProvenance | "mixed" | null | undefined): string {
+  if (value == null) return "unknown";
+  return value;
+}
+
+function SubscriptionEconomicsCard({ data }: { data: SubscriptionEconomicsSummary }) {
+  return (
+    <Card>
+      <CardHeader className="px-5 pt-5 pb-2">
+        <CardTitle className="text-base">Subscription Economics</CardTitle>
+        <CardDescription>
+          Fixed plan fees for the current UTC month. Marginal inference spend stays separate — plans are never shown as $0.
+          {` ${data.knownBaseLabel}.`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5 px-5 pb-5 pt-2">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              Known fixed base
+            </div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">
+              {formatCents(data.knownBaseMonthlyCents)}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              UTC {data.periodStart.slice(0, 10)} → {data.periodEnd.slice(0, 10)} · Claude remains unknown
+            </div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricTile label="Measured usage" value={formatTokens(data.usageTruth.measuredTokenEquivalents)} subtitle="Observed provider consumption" icon={ReceiptText} />
+          <MetricTile label="Estimated usage" value={`~${formatTokens(data.usageTruth.estimatedTokenEquivalents)}`} subtitle="Explicit estimates, never relabeled measured" icon={Coins} />
+          <MetricTile label="Reserved ceilings" value={formatTokens(data.usageTruth.reservedTokenCeilings)} subtitle="Excluded from actual usage and allocation" icon={ArrowUpRight} />
+          <MetricTile label="Unknown usage" value={String(data.usageTruth.unknownRunCount)} subtitle={`${data.usageTruth.unclassifiedRunCount} unclassified terminal runs`} icon={ChevronRight} />
+        </div>
+
+        <div className="space-y-2">
+          {data.plans.map((plan) => (
+            <div key={plan.planId} className="border border-border px-4 py-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-medium">{plan.label}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {billingTypeDisplayName(plan.billingType)}
+                    {" · "}
+                    {plan.costStatus === "unknown" ? "fee unknown" : "confirmed monthly fee"}
+                    {" · "}
+                    {plan.terminalRunCount} terminal run{plan.terminalRunCount === 1 ? "" : "s"}
+                    {plan.failedOrNoValueRunCount > 0
+                      ? ` · ${plan.failedOrNoValueRunCount} failed/no-value`
+                      : ""}
+                  </div>
+                </div>
+                <div className="text-right text-sm tabular-nums">
+                  <div className="font-medium">
+                    {plan.monthlyCostCents == null ? "Unknown" : formatCents(plan.monthlyCostCents)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    allocated {formatMaybeCents(plan.allocatedFixedCostCents)}
+                    {" · unallocated "}
+                    {formatMaybeCents(plan.unallocatedPlanCostCents)}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>
+                  usage {formatMaybeTokens(plan.tokenEquivalents, plan.usageProvenance)}
+                  {plan.usageProvenance ? (
+                    <span className={plan.usageProvenance === "estimated" ? "ml-1 italic text-muted-foreground" : "ml-1"}>
+                      ({provenanceLabel(plan.usageProvenance)})
+                    </span>
+                  ) : null}
+                </span>
+                <span>marginal {formatCents(plan.marginalCostCents)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {(data.byProvider.length > 0 || data.byAgent.length > 0) ? (
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="space-y-2">
+              <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                By provider
+              </div>
+              {data.byProvider.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No terminal subscription runs this month.</p>
+              ) : (
+                data.byProvider.map((row) => (
+                  <div key={row.key} className="border border-border px-3 py-2 text-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-medium">{providerDisplayName(row.label)}</div>
+                      <div className="text-right tabular-nums">
+                        <div>{formatMaybeCents(row.allocatedFixedCostCents)}</div>
+                        <div className="text-xs text-muted-foreground">alloc · marginal {formatCents(row.marginalCostCents)}</div>
+                      </div>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {row.terminalRunCount} runs
+                      {row.failedOrNoValueRunCount > 0 ? ` · ${row.failedOrNoValueRunCount} failed/no-value` : ""}
+                      {" · "}
+                      {formatMaybeTokens(row.tokenEquivalents, row.usageProvenance)}
+                      {row.usageProvenance ? ` (${provenanceLabel(row.usageProvenance)})` : ""}
+                      {row.outcomeGrade ? ` · grade ${row.outcomeGrade}` : ""}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="space-y-2">
+              <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                By agent
+              </div>
+              {data.byAgent.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No terminal subscription runs this month.</p>
+              ) : (
+                data.byAgent.map((row) => (
+                  <div key={row.key} className="border border-border px-3 py-2 text-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 truncate font-medium">{row.label}</div>
+                      <div className="text-right tabular-nums">
+                        <div>{formatMaybeCents(row.allocatedFixedCostCents)}</div>
+                        <div className="text-xs text-muted-foreground">alloc · marginal {formatCents(row.marginalCostCents)}</div>
+                      </div>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {row.terminalRunCount} runs
+                      {row.failedOrNoValueRunCount > 0 ? ` · ${row.failedOrNoValueRunCount} failed/no-value` : ""}
+                      {" · "}
+                      {formatMaybeTokens(row.tokenEquivalents, row.usageProvenance)}
+                      {row.usageProvenance ? ` (${provenanceLabel(row.usageProvenance)})` : ""}
+                      {row.outcomeGrade ? ` · grade ${row.outcomeGrade}` : ""}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No terminal runs matched the subscription registry this UTC month. Plan fees still appear above and are never treated as free.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -227,6 +392,14 @@ export function Costs() {
     mutationFn: (input: { incidentId: string; action: "keep_paused" | "raise_budget_and_resume"; amount?: number }) =>
       budgetsApi.resolveIncident(companyId, input.incidentId, input),
     onSuccess: invalidateBudgetViews,
+  });
+
+  const { data: subscriptionEconomics, isLoading: subscriptionLoading, error: subscriptionError } = useQuery({
+    queryKey: queryKeys.subscriptionEconomics(companyId),
+    queryFn: () => costsApi.subscriptionEconomics(companyId),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 60_000,
+    staleTime: 15_000,
   });
 
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
@@ -513,12 +686,6 @@ export function Costs() {
     ];
   }, [byBiller]);
 
-  const inferenceTokenTotal =
-    (spendData?.byAgent ?? []).reduce(
-      (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
-      0,
-    );
-
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -533,8 +700,8 @@ export function Costs() {
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
-  const showOverviewLoading = (spendLoading || financeLoading) && customReady;
-  const overviewError = spendError ?? financeError;
+  const showOverviewLoading = (spendLoading || financeLoading || subscriptionLoading) && customReady;
+  const overviewError = spendError ?? financeError ?? subscriptionError;
 
   return (
     <div className="space-y-6">
@@ -582,9 +749,9 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
+              label="Marginal API spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle="Excludes fixed subscription fees; usage provenance appears below"
               icon={DollarSign}
             />
             <MetricTile
@@ -658,9 +825,9 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">Inference ledger</CardTitle>
+                    <CardTitle className="text-base">Marginal API ledger</CardTitle>
                     <CardDescription>
-                      Request-scoped inference spend for the selected period.
+                      Metered request spend for the selected period. Fixed subscription fees appear separately.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
@@ -676,10 +843,11 @@ export function Costs() {
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">usage</div>
+                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">actual + estimated</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
-                          {formatTokens(inferenceTokenTotal)}
+                          {formatTokens((subscriptionEconomics?.usageTruth.measuredTokenEquivalents ?? 0) + (subscriptionEconomics?.usageTruth.estimatedTokenEquivalents ?? 0))}
                         </div>
+                        <div className="mt-1 text-xs text-muted-foreground">current UTC month; reservation ceilings excluded</div>
                       </div>
                     </div>
                     {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
@@ -713,6 +881,10 @@ export function Costs() {
                   eventCount={financeData?.summary.eventCount ?? 0}
                 />
               </div>
+
+              {subscriptionEconomics ? (
+                <SubscriptionEconomicsCard data={subscriptionEconomics} />
+              ) : null}
 
               <div className="grid gap-4 xl:grid-cols-(--gtc-32)">
                 <Card>
