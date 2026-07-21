@@ -196,6 +196,23 @@ function assertExplicitExecutionWorkspacePreference(
   }
 }
 
+function assertExplicitExecutionWorkspaceSettingsMode(
+  persistedWorkspaceMode: string | null | undefined,
+  executionWorkspaceSettings: unknown,
+) {
+  const canonicalMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedWorkspaceMode);
+  const suppliedMode = parseIssueExecutionWorkspaceSettings(
+    executionWorkspaceSettings,
+    { includeEnvironmentId: true },
+  )?.mode;
+  if (suppliedMode && suppliedMode !== canonicalMode) {
+    throw unprocessable(
+      `executionWorkspaceSettings.mode must match selected execution workspace mode ${canonicalMode}`,
+    );
+  }
+  return canonicalMode;
+}
+
 function assertExplicitPinnedWorktreeIssueRunnable(input: {
   projectId: string | null | undefined;
   projectWorkspaceId: string | null | undefined;
@@ -6095,14 +6112,22 @@ export function issueService(db: Db) {
           if (issueData.projectId == null) {
             issueData.projectId = validatedExecutionWorkspace.projectId;
           }
-          if (
-            explicitlySelectedExecutionWorkspaceId &&
-            !parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings, { includeEnvironmentId: true })?.mode
-          ) {
-            executionWorkspaceSettings = {
-              ...(executionWorkspaceSettings ?? {}),
-              mode: issueExecutionWorkspaceModeForPersistedWorkspace(validatedExecutionWorkspace.mode),
-            };
+          if (explicitlySelectedExecutionWorkspaceId) {
+            const canonicalMode = assertExplicitExecutionWorkspaceSettingsMode(
+              validatedExecutionWorkspace.mode,
+              executionWorkspaceSettings,
+            );
+            if (
+              !parseIssueExecutionWorkspaceSettings(
+                executionWorkspaceSettings,
+                { includeEnvironmentId: true },
+              )?.mode
+            ) {
+              executionWorkspaceSettings = {
+                ...(executionWorkspaceSettings ?? {}),
+                mode: canonicalMode,
+              };
+            }
           }
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -6412,20 +6437,23 @@ export function issueService(db: Db) {
           nextProjectId = validatedExecutionWorkspace.projectId;
           patch.projectId = validatedExecutionWorkspace.projectId;
         }
-        if (
-          explicitlySelectedExecutionWorkspaceId &&
-          (
+        if (explicitlySelectedExecutionWorkspaceId) {
+          const canonicalMode = assertExplicitExecutionWorkspaceSettingsMode(
+            validatedExecutionWorkspace.mode,
+            issueData.executionWorkspaceSettings,
+          );
+          if (
             issueData.executionWorkspaceSettings === undefined ||
             !nextExecutionWorkspaceSettings?.mode
-          )
-        ) {
-          nextExecutionWorkspaceSettings = {
-            ...(issueData.executionWorkspaceSettings === undefined
-              ? {}
-              : nextExecutionWorkspaceSettings ?? {}),
-            mode: issueExecutionWorkspaceModeForPersistedWorkspace(validatedExecutionWorkspace.mode),
-          };
-          patch.executionWorkspaceSettings = { ...nextExecutionWorkspaceSettings };
+          ) {
+            nextExecutionWorkspaceSettings = {
+              ...(issueData.executionWorkspaceSettings === undefined
+                ? {}
+                : nextExecutionWorkspaceSettings ?? {}),
+              mode: canonicalMode,
+            };
+            patch.executionWorkspaceSettings = { ...nextExecutionWorkspaceSettings };
+          }
         }
       }
       if (isolatedWorkspacesEnabled && patch.executionWorkspaceSettings !== undefined) {

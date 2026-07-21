@@ -3033,6 +3033,24 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       status: 422,
       message: "executionWorkspaceId requires executionWorkspacePreference to be reuse_existing",
     });
+    await expect(svc.createChild(parentIssueId, {
+      title: "Child with conflicting workspace mode",
+      status: "todo",
+      executionWorkspaceId,
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message:
+        "executionWorkspaceSettings.mode must match selected execution workspace mode operator_branch",
+    });
+    await expect(svc.update(updateIssueId, {
+      executionWorkspaceId,
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message:
+        "executionWorkspaceSettings.mode must match selected execution workspace mode operator_branch",
+    });
   });
 
   it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
