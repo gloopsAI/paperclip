@@ -291,6 +291,23 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue when issue policy made the disposition comment optional", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          skipIssueComment: true,
+        },
+      } as any,
+      livenessState: "completed",
+      detectedProgressSummary: "Successful run completed without an issue comment.",
+    })).toEqual({
+      kind: "skip",
+      reason: "issue execution policy does not require a disposition comment",
+    });
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",
