@@ -374,6 +374,8 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const WORKSPACE_NOT_WRITABLE_FAILURE_CODE = "workspace_not_writable";
+const WORKSPACE_NOT_WRITABLE_RECOVERY_CAUSE = "workspace_not_writable";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
@@ -1458,6 +1460,24 @@ function isConfigurationIncompleteFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE;
+}
+
+function isWorkspaceNotWritableFailure(error: unknown): error is Error & {
+  code: typeof WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
+  providerInvocationAttempted: false;
+} {
+  const maybe = error as { code?: unknown; providerInvocationAttempted?: unknown } | null;
+  return Boolean(
+    maybe &&
+      maybe.code === WORKSPACE_NOT_WRITABLE_FAILURE_CODE &&
+      maybe.providerInvocationAttempted === false,
+  );
+}
+
+function isWorkspaceNotWritableFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -14723,11 +14743,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const workspaceNotWritableSetupFailure = isWorkspaceNotWritableFailure(outerErr) ? outerErr : null;
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
+            workspaceNotWritableSetupFailure?.code ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
@@ -14741,7 +14763,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
                 resultJson:
-                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
+                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ??
+                  (workspaceNotWritableSetupFailure
+                    ? {
+                        provider_invocation: { attempted: false },
+                        workspaceWritePreflight: {
+                          status: "failed",
+                          code: WORKSPACE_NOT_WRITABLE_FAILURE_CODE,
+                        },
+                      }
+                    : null),
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
@@ -14788,7 +14819,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
+              if (
+                !isWorkspaceValidationFailedRun(livenessRun) &&
+                !isConfigurationIncompleteFailedRun(livenessRun) &&
+                !isWorkspaceNotWritableFailedRun(livenessRun)
+              ) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
               await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent).catch((retryError) => {
@@ -14920,6 +14955,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
       `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
+    );
+  }
+
+  function buildWorkspaceNotWritableRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip stopped before provider invocation because the configured execution identity could not safely edit " +
+      `and round-trip the materialized workspace.${failureSummary ?? ""} Moving it to \`blocked\` without consuming ` +
+      "a model retry; repair the environment workspace-write policy before resuming."
     );
   }
 
@@ -15096,20 +15142,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Sibling lock cleanup is already done above; only the primary issue carries
       // the recovery surface because the comment is attached to a single issue.
       if (
-        (isWorkspaceValidationFailedRun(run) || isConfigurationIncompleteFailedRun(run)) &&
+        (
+          isWorkspaceValidationFailedRun(run) ||
+          isConfigurationIncompleteFailedRun(run) ||
+          isWorkspaceNotWritableFailedRun(run)
+        ) &&
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
         const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
+        const workspaceNotWritable = isWorkspaceNotWritableFailedRun(run);
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
-          comment: configurationIncomplete
+          comment: workspaceNotWritable
+            ? buildWorkspaceNotWritableRecoveryComment({ latestRun: run })
+            : configurationIncomplete
             ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
             : buildWorkspaceValidationRecoveryComment({ latestRun: run }),
-          recoveryCause: configurationIncomplete
+          recoveryCause: workspaceNotWritable
+            ? WORKSPACE_NOT_WRITABLE_RECOVERY_CAUSE
+            : configurationIncomplete
             ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
             : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
         };
@@ -15571,12 +15626,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
+        isWorkspaceNotWritableFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
+        const workspaceNotWritableFailure = isWorkspaceNotWritableFailedRun(run);
         const comment = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
+          : workspaceNotWritableFailure
+            ? buildWorkspaceNotWritableRecoveryComment({ latestRun: run })
           : configurationIncompleteFailure
             ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
             : buildImmediateExecutionPathRecoveryComment({
@@ -15590,6 +15649,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           comment,
           recoveryCause: workspaceValidationFailure
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            : workspaceNotWritableFailure
+              ? WORKSPACE_NOT_WRITABLE_RECOVERY_CAUSE
             : configurationIncompleteFailure
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               : undefined,

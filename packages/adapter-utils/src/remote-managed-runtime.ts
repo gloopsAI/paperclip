@@ -3,6 +3,8 @@ import { readGitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
+  normalizeSshWorkspaceWriteAccess,
+  preflightSshWorkspaceWriteAccess,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
@@ -142,6 +144,14 @@ export async function prepareRemoteManagedRuntime(input: {
         progressLabel: asset.key,
       });
     }
+    await normalizeSshWorkspaceWriteAccess({
+      spec: input.spec,
+      remoteDir: workspaceRemoteDir,
+    });
+    await preflightSshWorkspaceWriteAccess({
+      spec: input.spec,
+      remoteDir: workspaceRemoteDir,
+    });
   } catch (error) {
     await restoreWorkspaceFromSshExecution({
       spec: input.spec,

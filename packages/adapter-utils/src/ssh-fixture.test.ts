@@ -8,6 +8,7 @@ import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
+  parseSshRemoteExecutionSpec,
   readSshEnvLabFixtureStatus,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
@@ -61,6 +62,47 @@ interface ParsedProgressLine {
   doneMb: number | null;
   totalMb: number | null;
 }
+
+describe("SSH workspace write policy", () => {
+  it("parses a provider-neutral ACL policy without changing the SSH identity", () => {
+    expect(parseSshRemoteExecutionSpec({
+      host: "ssh.example.test",
+      port: 22,
+      username: "materializer",
+      remoteCwd: "/srv/paperclip/workspace",
+      remoteWorkspacePath: "/srv/paperclip",
+      strictHostKeyChecking: true,
+      workspaceWritePolicy: {
+        strategy: "acl",
+        executionUsername: "provider-runner",
+        syncUsername: "materializer",
+        sharedGroup: "paperclip-workspace",
+      },
+    })).toMatchObject({
+      username: "materializer",
+      workspaceWritePolicy: {
+        strategy: "acl",
+        executionUsername: "provider-runner",
+        syncUsername: "materializer",
+        sharedGroup: "paperclip-workspace",
+      },
+    });
+  });
+
+  it("rejects the entire SSH target for an invalid identity", () => {
+    expect(parseSshRemoteExecutionSpec({
+      host: "ssh.example.test",
+      port: 22,
+      username: "materializer",
+      remoteCwd: "/srv/paperclip/workspace",
+      remoteWorkspacePath: "/srv/paperclip",
+      workspaceWritePolicy: {
+        strategy: "acl",
+        executionUsername: "provider runner; rm -rf /",
+      },
+    })).toBeNull();
+  });
+});
 
 function parseProgressLine(line: string): ParsedProgressLine {
   const trimmed = line.trimEnd();

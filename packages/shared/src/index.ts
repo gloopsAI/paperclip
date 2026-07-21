@@ -457,6 +457,7 @@ export type {
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
   SshEnvironmentConfig,
+  SshWorkspaceWritePolicy,
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,
