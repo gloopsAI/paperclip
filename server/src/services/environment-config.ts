@@ -36,10 +36,22 @@ const secretRefSchema = z.object({
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
+const posixIdentitySchema = z.string()
+  .trim()
+  .min(1)
+  .regex(/^[a-z_][a-z0-9_-]*[$]?$/i, "Workspace identities must be POSIX user or group names.");
+
+const sshWorkspaceWritePolicySchema = z.object({
+  strategy: z.literal("acl").default("acl"),
+  executionUsername: posixIdentitySchema,
+  syncUsername: posixIdentitySchema.optional().nullable().default(null),
+  sharedGroup: posixIdentitySchema.optional().nullable().default(null),
+}).strict();
+
 const sshEnvironmentConfigSchema = z.object({
   host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: posixIdentitySchema,
   remoteWorkspacePath: z
     .string({ required_error: "SSH environments require a remote workspace path." })
     .trim()
@@ -54,6 +66,7 @@ const sshEnvironmentConfigSchema = z.object({
     .nullable()
     .transform((value) => (value && value.length > 0 ? value : null)),
   strictHostKeyChecking: z.boolean().optional().default(true),
+  workspaceWritePolicy: sshWorkspaceWritePolicySchema.optional().nullable().default(null),
 }).strict();
 
 const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({

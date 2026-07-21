@@ -33,6 +33,7 @@ describe("environment config helpers", () => {
       },
       knownHosts: null,
       strictHostKeyChecking: true,
+      workspaceWritePolicy: null,
     });
   });
 
@@ -87,6 +88,7 @@ describe("environment config helpers", () => {
         privateKeySecretRef: null,
         knownHosts: null,
         strictHostKeyChecking: false,
+        workspaceWritePolicy: null,
       },
     });
 
@@ -101,8 +103,50 @@ describe("environment config helpers", () => {
         privateKeySecretRef: null,
         knownHosts: null,
         strictHostKeyChecking: false,
+        workspaceWritePolicy: null,
       },
     });
+  });
+
+  it("normalizes a mixed-identity SSH workspace ACL policy", () => {
+    const config = normalizeEnvironmentConfig({
+      driver: "ssh",
+      config: {
+        host: "ssh.example.test",
+        username: "materializer",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        workspaceWritePolicy: {
+          strategy: "acl",
+          executionUsername: "provider-runner",
+          syncUsername: "materializer",
+          sharedGroup: "paperclip-workspace",
+        },
+      },
+    });
+
+    expect(config).toMatchObject({
+      workspaceWritePolicy: {
+        strategy: "acl",
+        executionUsername: "provider-runner",
+        syncUsername: "materializer",
+        sharedGroup: "paperclip-workspace",
+      },
+    });
+  });
+
+  it("rejects shell-shaped workspace identities before they reach SSH", () => {
+    expect(() => normalizeEnvironmentConfig({
+      driver: "ssh",
+      config: {
+        host: "ssh.example.test",
+        username: "materializer",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        workspaceWritePolicy: {
+          strategy: "acl",
+          executionUsername: "provider-runner; id",
+        },
+      },
+    })).toThrow(HttpError);
   });
 
   it("normalizes sandbox config into its canonical stored shape", () => {

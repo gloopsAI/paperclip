@@ -11,6 +11,16 @@ export interface LocalEnvironmentConfig {
   [key: string]: unknown;
 }
 
+export interface SshWorkspaceWritePolicy {
+  strategy: "acl";
+  /** OS identity that actually runs the provider CLI after SSH materialization. */
+  executionUsername: string;
+  /** OS identity that restores the remote workspace back into Paperclip. Defaults to the SSH username. */
+  syncUsername: string | null;
+  /** Optional shared group used for setgid inheritance in addition to named ACLs. */
+  sharedGroup: string | null;
+}
+
 export interface SshEnvironmentConfig {
   host: string;
   port: number;
@@ -20,6 +30,7 @@ export interface SshEnvironmentConfig {
   privateKeySecretRef: EnvSecretRefBinding | null;
   knownHosts: string | null;
   strictHostKeyChecking: boolean;
+  workspaceWritePolicy: SshWorkspaceWritePolicy | null;
 }
 
 export type SandboxEnvironmentProvider = "fake" | (string & {});

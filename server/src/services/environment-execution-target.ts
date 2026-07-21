@@ -152,6 +152,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       privateKey: parsed.config.privateKey,
       knownHosts: parsed.config.knownHosts,
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+      workspaceWritePolicy: parsed.config.workspaceWritePolicy,
       remoteCwd,
     },
   };

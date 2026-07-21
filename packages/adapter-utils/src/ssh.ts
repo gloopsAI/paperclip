@@ -25,6 +25,12 @@ export interface SshConnectionConfig {
   privateKey: string | null;
   knownHosts: string | null;
   strictHostKeyChecking: boolean;
+  workspaceWritePolicy?: {
+    strategy: "acl";
+    executionUsername: string;
+    syncUsername: string | null;
+    sharedGroup: string | null;
+  } | null;
 }
 
 export interface SshCommandResult {
@@ -34,6 +40,16 @@ export interface SshCommandResult {
 
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
+}
+
+export class WorkspaceNotWritableError extends Error {
+  readonly code = "workspace_not_writable";
+  readonly providerInvocationAttempted = false;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WorkspaceNotWritableError";
+  }
 }
 
 export function createSshCommandManagedRuntimeRunner(input: {
@@ -165,9 +181,57 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   const username = typeof parsed.username === "string" ? parsed.username.trim() : "";
   const remoteCwd = typeof parsed.remoteCwd === "string" ? parsed.remoteCwd.trim() : "";
   const portValue = typeof parsed.port === "number" ? parsed.port : Number(parsed.port);
-  if (!host || !username || !remoteCwd || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+  const identityPattern = /^[a-z_][a-z0-9_-]*[$]?$/i;
+  if (
+    !host ||
+    !username ||
+    !identityPattern.test(username) ||
+    !remoteCwd ||
+    !Number.isInteger(portValue) ||
+    portValue < 1 ||
+    portValue > 65535
+  ) {
     return null;
   }
+
+  const rawWritePolicy = parsed.workspaceWritePolicy && typeof parsed.workspaceWritePolicy === "object"
+    && !Array.isArray(parsed.workspaceWritePolicy)
+    ? parsed.workspaceWritePolicy as Record<string, unknown>
+    : null;
+  const executionUsername = typeof rawWritePolicy?.executionUsername === "string"
+    ? rawWritePolicy.executionUsername.trim()
+    : "";
+  const readOptionalIdentity = (key: "syncUsername" | "sharedGroup") => {
+    const raw = rawWritePolicy?.[key];
+    if (raw == null || raw === "") return { valid: true as const, value: null };
+    if (typeof raw !== "string") return { valid: false as const, value: null };
+    const candidate = raw.trim();
+    return identityPattern.test(candidate)
+      ? { valid: true as const, value: candidate }
+      : { valid: false as const, value: null };
+  };
+  const syncUsername = readOptionalIdentity("syncUsername");
+  const sharedGroup = readOptionalIdentity("sharedGroup");
+  if (
+    rawWritePolicy &&
+    (
+      rawWritePolicy.strategy !== "acl" ||
+      !executionUsername ||
+      !identityPattern.test(executionUsername) ||
+      !syncUsername.valid ||
+      !sharedGroup.valid
+    )
+  ) {
+    return null;
+  }
+  const workspaceWritePolicy = rawWritePolicy
+    ? {
+        strategy: "acl" as const,
+        executionUsername,
+        syncUsername: syncUsername.value,
+        sharedGroup: sharedGroup.value,
+      }
+    : null;
 
   return {
     host,
@@ -182,6 +246,7 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     knownHosts: typeof parsed.knownHosts === "string" && parsed.knownHosts.length > 0 ? parsed.knownHosts : null,
     strictHostKeyChecking:
       typeof parsed.strictHostKeyChecking === "boolean" ? parsed.strictHostKeyChecking : true,
+    workspaceWritePolicy,
   };
 }
 
@@ -1370,6 +1435,98 @@ export async function syncDirectoryToSsh(input: {
   } catch (error) {
     await progress?.fail();
     throw error;
+  }
+}
+
+function workspaceIdentityCommand(spec: SshRemoteExecutionSpec, username: string, script: string): string {
+  if (username === spec.username) {
+    return `sh -c ${shellQuote(script)}`;
+  }
+  return `sudo -n -u ${shellQuote(username)} sh -c ${shellQuote(script)}`;
+}
+
+/**
+ * Make the per-run workspace writable by both the SSH materializer and the
+ * provider CLI identity. The realpath boundary check is executed remotely and
+ * fails closed before any permission mutation can leave remoteWorkspacePath.
+ */
+export async function normalizeSshWorkspaceWriteAccess(input: {
+  spec: SshRemoteExecutionSpec;
+  remoteDir: string;
+}): Promise<void> {
+  const policy = input.spec.workspaceWritePolicy;
+  if (!policy) return;
+
+  const syncUsername = policy.syncUsername ?? input.spec.username;
+  const identities = [...new Set([policy.executionUsername, syncUsername])];
+  const accessAcl = identities.map((identity) => `u:${identity}:rwX`).join(",");
+  const defaultAcl = identities.map((identity) => `d:u:${identity}:rwx`).join(",");
+  const groupCommands = policy.sharedGroup
+    ? [
+        `sudo -n chgrp -R ${shellQuote(policy.sharedGroup)} "$target"`,
+        'sudo -n find "$target" -type d -exec chmod g+rws {} +',
+        'sudo -n find "$target" -type f -exec chmod g+rw {} +',
+      ]
+    : [];
+  const script = [
+    "set -eu",
+    `base=$(cd ${shellQuote(input.spec.remoteWorkspacePath)} && pwd -P)`,
+    `target=$(cd ${shellQuote(input.remoteDir)} && pwd -P)`,
+    'case "$target" in "$base"|"$base"/*) ;; *) echo "workspace path escaped configured root" >&2; exit 91 ;; esac',
+    'command -v setfacl >/dev/null 2>&1 || { echo "setfacl is required for workspace ACL policy" >&2; exit 92; }',
+    `sudo -n setfacl -R -m ${shellQuote(`${accessAcl},m::rwx`)} "$target"`,
+    `sudo -n find "$target" -type d -exec setfacl -m ${shellQuote(`${defaultAcl},d:m::rwx`)} {} +`,
+    ...groupCommands,
+  ].join("; ");
+
+  try {
+    await runSshCommand(input.spec, script, { timeoutMs: 120_000 });
+  } catch (error) {
+    throw new WorkspaceNotWritableError(
+      `Could not establish the configured shared-write contract for ${input.remoteDir}.`,
+      { cause: error },
+    );
+  }
+}
+
+/** Zero-model-cost proof using the same OS identity that will run the CLI. */
+export async function preflightSshWorkspaceWriteAccess(input: {
+  spec: SshRemoteExecutionSpec;
+  remoteDir: string;
+}): Promise<void> {
+  const policy = input.spec.workspaceWritePolicy;
+  if (!policy) return;
+
+  const probeName = `.paperclip-writability-${randomUUID()}`;
+  const identityScript = [
+    "set -eu",
+    'target="$1"',
+    'probe="$2"',
+    'cd "$target"',
+    'trap \'rm -rf -- "$probe" "$probe.moved"\' EXIT HUP INT TERM',
+    'mkdir "$probe"',
+    'printf writability > "$probe/payload"',
+    'mv "$probe/payload" "$probe.moved"',
+    'test "$(cat "$probe.moved")" = writability',
+    'rm -f "$probe.moved"',
+    'rmdir "$probe"',
+    'git rev-parse --git-dir >/dev/null',
+    'git status --short --untracked-files=no >/dev/null',
+  ].join("; ");
+  const command = workspaceIdentityCommand(
+    input.spec,
+    policy.executionUsername,
+    `${identityScript}; :`,
+  );
+  const script = `${command} sh ${shellQuote(input.remoteDir)} ${shellQuote(probeName)}`;
+
+  try {
+    await runSshCommand(input.spec, script, { timeoutMs: 30_000 });
+  } catch (error) {
+    throw new WorkspaceNotWritableError(
+      `Workspace preflight failed for execution identity ${policy.executionUsername} in ${input.remoteDir}; provider invocation was not attempted.`,
+      { cause: error },
+    );
   }
 }
 
