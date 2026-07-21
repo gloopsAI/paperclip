@@ -538,10 +538,41 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const personalFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const companyFeed = await attentionService(db).list(companyId);
 
-    expect(feed.totalCount).toBe(12);
-    expect(feed.countsBySourceKind).toMatchObject({
+    // Personal Focus (userId set) is decision-only: no autonomous telemetry.
+    expect(personalFeed.totalCount).toBe(7);
+    expect(personalFeed.countsBySourceKind).toMatchObject({
+      approval: 2,
+      issue_thread_interaction: 1,
+      join_request: 1,
+      recovery_action: 1,
+      productivity_review: 1,
+      blocker_attention: 0,
+      review: 1,
+      failed_run: 0,
+      budget_alert: 0,
+      agent_error_alert: 0,
+    });
+    expect(personalFeed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
+      "approval",
+      "issue_thread_interaction",
+      "join_request",
+      "recovery_action",
+      "productivity_review",
+      "review",
+    ]));
+    expect(personalFeed.items.some((item) =>
+      item.sourceKind === "failed_run"
+      || item.sourceKind === "blocker_attention"
+      || item.sourceKind === "budget_alert"
+      || item.sourceKind === "agent_error_alert"
+    )).toBe(false);
+
+    // Company-wide list (no userId) retains telemetry sources for non-personal surfaces.
+    expect(companyFeed.totalCount).toBe(12);
+    expect(companyFeed.countsBySourceKind).toMatchObject({
       approval: 2,
       issue_thread_interaction: 1,
       join_request: 1,
@@ -553,19 +584,7 @@ describeEmbeddedPostgres("attention service", () => {
       budget_alert: 2,
       agent_error_alert: 1,
     });
-    expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
-      "approval",
-      "issue_thread_interaction",
-      "join_request",
-      "recovery_action",
-      "productivity_review",
-      "blocker_attention",
-      "review",
-      "failed_run",
-      "budget_alert",
-      "agent_error_alert",
-    ]));
-    for (const item of feed.items) {
+    for (const item of personalFeed.items) {
       expect(item.dedupKey).toBeTruthy();
       expect(item.dismissalKey).toBe(`attention:${item.dedupKey}`);
       expect(item.whyNow).toBeTruthy();
@@ -574,34 +593,34 @@ describeEmbeddedPostgres("attention service", () => {
       expect(item.decisionVerbs.length).toBeGreaterThan(0);
       expect(item.rank).toBeGreaterThan(0);
     }
-    expect(feed.items.some((item) => item.subject.title === "Revision requested")).toBe(true);
-    expect(feed.items.some((item) => item.subject.title === "Agent productivity review excluded")).toBe(false);
-    expect(feed.items.some((item) => item.subject.title === "Agent review excluded")).toBe(false);
-    expect(feed.items.some((item) =>
+    expect(personalFeed.items.some((item) => item.subject.title === "Revision requested")).toBe(true);
+    expect(personalFeed.items.some((item) => item.subject.title === "Agent productivity review excluded")).toBe(false);
+    expect(personalFeed.items.some((item) => item.subject.title === "Agent review excluded")).toBe(false);
+    expect(companyFeed.items.some((item) =>
       item.sourceKind === "failed_run" && item.subject.metadata?.errorCode === "provider_quota"
     )).toBe(false);
-    expect(feed.items.find((item) => item.sourceKind === "approval" && item.subject.title === "Hire Designer")?.detail).toMatchObject({
+    expect(personalFeed.items.find((item) => item.sourceKind === "approval" && item.subject.title === "Hire Designer")?.detail).toMatchObject({
       kind: "approval",
       approvalType: "hire_agent",
       summaryExcerpt: "Hire Designer",
     });
-    expect(feed.items.find((item) => item.sourceKind === "issue_thread_interaction")?.detail).toMatchObject({
+    expect(personalFeed.items.find((item) => item.sourceKind === "issue_thread_interaction")?.detail).toMatchObject({
       kind: "questions",
       questionCount: 0,
     });
-    expect(feed.items.find((item) => item.sourceKind === "blocker_attention")?.detail).toMatchObject({
+    expect(companyFeed.items.find((item) => item.sourceKind === "blocker_attention")?.detail).toMatchObject({
       kind: "blocker",
       blockingIssue: { identifier: "ATN-5", title: "Stalled review blocker" },
     });
-    expect(feed.items.find((item) => item.sourceKind === "failed_run")?.detail).toMatchObject({
+    expect(companyFeed.items.find((item) => item.sourceKind === "failed_run")?.detail).toMatchObject({
       kind: "failed_run",
       agentName: "Worker",
       failureReasonExcerpt: "adapter failed",
     });
-    expect(feed.items.find((item) =>
+    expect(companyFeed.items.find((item) =>
       item.sourceKind === "budget_alert" && item.detail?.kind === "budget" && item.detail.observedPercent === 100
     )).toBeTruthy();
-    expect(feed.items.find((item) => item.sourceKind === "agent_error_alert")?.detail).toMatchObject({
+    expect(companyFeed.items.find((item) => item.sourceKind === "agent_error_alert")?.detail).toMatchObject({
       kind: "agent_error",
       agentName: "Broken Agent",
       failureReasonExcerpt: "adapter config missing",
@@ -654,9 +673,11 @@ describeEmbeddedPostgres("attention service", () => {
       createdAt: new Date("2026-07-09T12:00:01.000Z"),
     });
 
-    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
-
-    expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
+    // Company-wide still evaluates failed-run suppression; personal feed never includes failed runs.
+    const companyFeed = await attentionService(db).list(companyId);
+    expect(companyFeed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
+    const personalFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(personalFeed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
 
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
@@ -871,10 +892,11 @@ describeEmbeddedPostgres("attention service", () => {
       dismissedAt: new Date("2026-07-09T13:00:00.000Z"),
     });
 
+    // Personal feed excludes agent_error_alert telemetry from seed; dismissed approval is hidden.
     await expect(attentionService(db).list(companyId, { userId: "board-user" }))
-      .resolves.toMatchObject({ totalCount: 1 }); // agent_error_alert from seed
+      .resolves.toMatchObject({ totalCount: 0 });
     const includeDismissedFeed = await attentionService(db).list(companyId, { userId: "board-user", includeDismissed: true });
-    expect(includeDismissedFeed.totalCount).toBe(2);
+    expect(includeDismissedFeed.totalCount).toBe(1);
     expect(includeDismissedFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`)?.dismissal)
       .toMatchObject({ kind: "dismiss", isActive: true, snoozedUntil: null });
 
@@ -908,8 +930,9 @@ describeEmbeddedPostgres("attention service", () => {
       snoozedUntil: new Date("2099-01-02T00:00:00.000Z"),
     });
 
+    // Personal feed excludes agent_error_alert telemetry from seed; snoozed approval is hidden.
     await expect(attentionService(db).list(companyId, { userId: "board-user" }))
-      .resolves.toMatchObject({ totalCount: 1 }); // agent_error_alert from seed
+      .resolves.toMatchObject({ totalCount: 0 });
     const hiddenFeed = await attentionService(db).list(companyId, { userId: "board-user", includeDismissed: true });
     expect(hiddenFeed.items.find((item) => item.dedupKey === `approval:${approvalId}`)?.dismissal)
       .toMatchObject({ kind: "snooze", isActive: true, snoozedUntil: "2099-01-02T00:00:00.000Z" });

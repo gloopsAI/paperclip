@@ -390,8 +390,18 @@ describe("Inbox toolbar", () => {
 
   it("paints row hover via CSS only, without moving React selection state", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
-    const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
+    const issueA = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "First inbox row",
+      assigneeUserId: "local-board",
+    });
+    const issueB = createIssue({
+      id: "issue-b",
+      identifier: "PAP-1002",
+      title: "Second inbox row",
+      assigneeUserId: "local-board",
+    });
     apiMocks.issuesList.mockResolvedValue([issueA, issueB]);
 
     const queryClient = new QueryClient({
@@ -440,8 +450,18 @@ describe("Inbox toolbar", () => {
 
   it("keeps other issue archive controls enabled while one archive is pending", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
-    const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
+    const issueA = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "First inbox row",
+      assigneeUserId: "local-board",
+    });
+    const issueB = createIssue({
+      id: "issue-b",
+      identifier: "PAP-1002",
+      title: "Second inbox row",
+      assigneeUserId: "local-board",
+    });
     apiMocks.issuesList.mockResolvedValue([issueA, issueB]);
     const archiveA = createDeferred<{ id: string; archivedAt: Date }>();
     apiMocks.archiveFromInbox.mockImplementation((id: string) =>

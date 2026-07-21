@@ -136,6 +136,7 @@ import {
   getLatestFailedRunsByAgent,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
+  isExplicitlyUserAssignedIssue,
   isInboxEntityDismissed,
   isMineInboxTab,
   loadCollapsedInboxGroupKeys,
@@ -982,7 +983,10 @@ export function Inbox() {
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
+    () =>
+      applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext).filter(
+        (issue) => isExplicitlyUserAssignedIssue(issue, currentUserId),
+      ),
     [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const visibleTouchedIssues = useMemo(
@@ -1177,6 +1181,8 @@ export function Inbox() {
     allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
+    // Mine is personal-action-only; failed-run telemetry stays on Recent/Unread/All.
+    if (tab === "mine") return [];
     if (tab === "all" && !showFailedRunsCategory) return [];
     return failedRuns;
   }, [failedRuns, tab, showFailedRunsCategory]);

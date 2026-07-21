@@ -585,6 +585,8 @@ export function attentionService(db: Db) {
       const prefix = await companyPrefix(db, companyId);
       const dismissals = await dismissalByKey(db, companyId, options.userId);
       const includeDismissed = options.includeDismissed === true;
+      // Personal Focus is decision-only; autonomous telemetry remains available to unscoped operators.
+      const includeAutonomousTelemetry = !options.userId;
       const now = Date.now();
       const collected: AttentionItem[] = [];
 
@@ -898,6 +900,7 @@ export function attentionService(db: Db) {
         }));
       }
 
+      if (includeAutonomousTelemetry) {
       const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
       const blockedIssueSummaries = await issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockedImageMap = await issueImageMap(db, companyId, blockedIssues.map((issue) => issue.id));
@@ -932,6 +935,7 @@ export function attentionService(db: Db) {
           ...issueContext(issueSummary),
           detail: { kind: "blocker", blockingIssue, images: issueImages(blockedImageMap, issue.id) },
         }));
+      }
       }
 
       const reviewRows = await db
@@ -1004,6 +1008,7 @@ export function attentionService(db: Db) {
         }));
       }
 
+      if (includeAutonomousTelemetry) {
       const exhaustedRunRows = await db
         .select({
           id: heartbeatRuns.id,
@@ -1230,6 +1235,7 @@ export function attentionService(db: Db) {
             images: [],
           },
         }));
+      }
       }
 
       const deduped = new Map<string, AttentionItem>();
