@@ -367,6 +367,66 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("persists the fixed-overhead split and carries an executable bootstrap envelope", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bootstrap token-efficiency evaluation",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `BOOT-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        resourceBudget: {
+          executionClass: "bootstrap",
+          fixedOverheadInputTokens: 200,
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
+      executionBudget: expect.objectContaining({
+        fixedOverheadInputTokens: 200,
+        maxInputTokens: 180_200,
+        maxTurns: 25,
+        maxToolCalls: 45,
+      }),
+    }));
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.usageJson).toMatchObject({
+      inputTokens: 1_000,
+      fixedOverheadInputTokens: 200,
+      discretionaryInputTokens: 800,
+    });
+    expect(persisted?.contextSnapshot).toMatchObject({
+      gloopsExecutionAdmission: {
+        policy: {
+          executionClass: "bootstrap",
+          maxRunsPerTask: 2,
+          maxRetriesPerTask: 1,
+        },
+      },
+    });
+  });
+
   it("pessimistically settles missing usage from a reconciled CLI adapter", async () => {
     process.env.PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS = "codex_local";
     mockAdapterState.supportsBudget = false;
@@ -490,6 +550,8 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       outputTokens: 0,
       usageSource: "per_run",
       providerInvocationAttempted: false,
+      fixedOverheadInputTokens: 0,
+      discretionaryInputTokens: 0,
     });
   });
 

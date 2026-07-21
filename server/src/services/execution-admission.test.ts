@@ -451,6 +451,14 @@ describe("execution admission", () => {
       providerInvocationAttempted: true,
       errorCode: "adapter_failed",
     })).toBe(false);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: true,
+      errorCode: "execution_admission.input_reservation_exceeded",
+    })).toBe(false);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: true,
+      errorCode: "execution_admission.reservation_exceeded",
+    })).toBe(false);
 
     const observed = summarizePriorExecution([
       {
@@ -546,6 +554,25 @@ describe("execution admission", () => {
     });
   });
 
+  it("rehydrates pre-change v2 observed usage with zero-valued accounting fields", () => {
+    const current = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:legacy-observed:default", epoch: "default" },
+      policy: policy(),
+      decision: evaluateExecutionAdmission(policy(), []),
+      evaluatedAt: new Date("2026-07-21T00:00:00Z"),
+    });
+    const legacyObserved = { ...current.observed } as Partial<typeof current.observed>;
+    delete legacyObserved.fixedOverheadInputTokens;
+    delete legacyObserved.preflightExemptRunCount;
+
+    expect(readExecutionAdmissionEnvelope({ ...current, observed: legacyObserved })).toMatchObject({
+      observed: {
+        fixedOverheadInputTokens: 0,
+        preflightExemptRunCount: 0,
+      },
+    });
+  });
+
   it("allows bootstrap tasks to declare a generous bounded completion envelope", () => {
     const global = policy();
     const bootstrap = resolveEffectiveExecutionAdmissionPolicy(global, {
@@ -561,6 +588,8 @@ describe("execution admission", () => {
       maxTurnsPerInvocation: BOOTSTRAP_EXECUTION_DEFAULTS.maxTurnsPerInvocation,
       maxToolCallsPerInvocation: BOOTSTRAP_EXECUTION_DEFAULTS.maxToolCallsPerInvocation,
     });
+    expect(bootstrap.maxRunsPerTask).toBeGreaterThanOrEqual(BOOTSTRAP_EXECUTION_DEFAULTS.maxRunsPerTask);
+    expect(bootstrap.maxRetriesPerTask).toBeGreaterThanOrEqual(BOOTSTRAP_EXECUTION_DEFAULTS.maxRetriesPerTask);
     expect(bootstrap.maxInputTokensPerInvocation).toBeLessThanOrEqual(bootstrap.maxInputTokensPerTask);
 
     const envelope = buildExecutionAdmissionEnvelope({
