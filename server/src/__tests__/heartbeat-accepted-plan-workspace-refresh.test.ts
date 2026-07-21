@@ -609,7 +609,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(isolatedRows[0]?.cwd).not.toBe(repoRoot);
   }, 20_000);
 
-  it("keeps accepted-plan children strategy-only until first realization after the base ref moves", async () => {
+  it("keeps strategy-only children fresh while preserving explicit exact workspace bindings", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -620,6 +620,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
 
     await instanceSettingsService(db).updateExperimental({
       enableIsolatedWorkspaces: true,
+      enableWorkspaceBranchReconcileForward: false,
     });
     await db.insert(companies).values({
       id: companyId,
@@ -730,6 +731,9 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       baseRef: "origin/master",
     });
     expect(sourceWorkspace?.branchName).toBeTruthy();
+    if (!sourceWorkspace?.id || !sourceWorkspace.cwd) {
+      throw new Error("Planning source run did not persist its execution workspace");
+    }
 
     await writeFile(path.join(repoRoot, "base-moved.txt"), "base moved after planning\n");
     await runGit(repoRoot, ["add", "base-moved.txt"]);
@@ -753,11 +757,21 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
           priority: "medium",
           assigneeAgentId: agentId,
         },
+        {
+          title: "Continue in the exact planning workspace",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          executionWorkspaceId: sourceWorkspace.id,
+        },
       ],
       actorAgentId: agentId,
     });
     const childIssueId = decomposition.childIssueIds[0];
+    const exactWorkspaceChildIssueId = decomposition.childIssueIds[1];
     expect(childIssueId).toBeTruthy();
+    expect(exactWorkspaceChildIssueId).toBeTruthy();
 
     const childBeforeRun = await db
       .select({
@@ -776,6 +790,22 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         type: "git_worktree",
         baseRef: "origin/master",
         branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    });
+    const exactWorkspaceChildBeforeRun = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, exactWorkspaceChildIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(exactWorkspaceChildBeforeRun).toMatchObject({
+      executionWorkspaceId: sourceWorkspace.id,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
       },
     });
 
@@ -833,7 +863,77 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       .where(eq(issues.id, childIssueId!))
       .then((rows) => rows[0] ?? null);
     expect(childAfterRun?.executionWorkspaceId).toBe(childRunWorkspace?.executionWorkspaceId);
-  }, 20_000);
+
+    await writeFile(
+      path.join(sourceWorkspace.cwd, "canonical-workspace-only.txt"),
+      "commit that exists only on the requested execution workspace\n",
+    );
+    await runGit(sourceWorkspace.cwd, ["add", "canonical-workspace-only.txt"]);
+    await runGit(sourceWorkspace.cwd, ["commit", "-m", "Advance canonical execution workspace"]);
+    const canonicalWorkspaceHead = await runGit(sourceWorkspace.cwd, ["rev-parse", "HEAD"]);
+    expect(canonicalWorkspaceHead).not.toBe(movedBaseSha);
+
+    let exactWorkspaceChildRunWorkspace:
+      | { cwd: string; executionWorkspaceId: string }
+      | null = null;
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const context = (input as { context?: Record<string, unknown> }).context ?? {};
+      const workspace = context.paperclipWorkspace as Record<string, unknown> | undefined;
+      const cwd = typeof workspace?.cwd === "string" ? workspace.cwd : null;
+      const executionWorkspaceId =
+        typeof context.executionWorkspaceId === "string" ? context.executionWorkspaceId : null;
+      if (!cwd || !executionWorkspaceId) {
+        throw new Error("Exact-workspace child run did not receive a restored workspace");
+      }
+      exactWorkspaceChildRunWorkspace = { cwd, executionWorkspaceId };
+      expect(cwd).toBe(sourceWorkspace.cwd);
+      expect(executionWorkspaceId).toBe(sourceWorkspace.id);
+      await expect(runGit(cwd, ["rev-parse", "HEAD"])).resolves.toBe(canonicalWorkspaceHead);
+      await db
+        .update(issues)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(eq(issues.id, exactWorkspaceChildIssueId!));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "exact-workspace-child-session" },
+        sessionDisplayId: "exact-workspace-child-session",
+        summary: "Child restored the exact planning workspace.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const exactWorkspaceChildRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      contextSnapshot: {
+        issueId: exactWorkspaceChildIssueId,
+        taskId: exactWorkspaceChildIssueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+    expect(exactWorkspaceChildRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(exactWorkspaceChildRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    expect(exactWorkspaceChildRunWorkspace).toEqual({
+      cwd: sourceWorkspace.cwd,
+      executionWorkspaceId: sourceWorkspace.id,
+    });
+    const exactWorkspaceChildAfterRun = await db
+      .select({ executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.id, exactWorkspaceChildIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(exactWorkspaceChildAfterRun?.executionWorkspaceId).toBe(sourceWorkspace.id);
+    expect(await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)).toHaveLength(2);
+  }, 30_000);
 
   it("forces a fresh session and suppresses accepted-plan continuation when another issue owns the in-flight claim", async () => {
     const companyId = randomUUID();
