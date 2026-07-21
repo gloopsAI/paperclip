@@ -18,6 +18,7 @@ import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  createSandboxTerminalCallbackCapability,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
@@ -1624,6 +1625,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   timeoutSec?: number | null;
   hostApiToken: string | null | undefined;
   hostApiUrl?: string | null;
+  paperclipScope?: {
+    companyId?: string | null;
+    issueId?: string | null;
+    agentId?: string | null;
+  } | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   maxBodyBytes?: number | null;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
@@ -1663,7 +1669,14 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const bridgeTimeoutMs =
     typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
       ? Math.trunc(input.timeoutSec * 1000)
-      : adapterExecutionTargetTimeoutMs(target);
+      : adapterExecutionTargetTimeoutMs(target) ?? 30_000;
+  const terminalCapability = createSandboxTerminalCallbackCapability({
+    companyId: input.paperclipScope?.companyId,
+    issueId: input.paperclipScope?.issueId,
+    agentId: input.paperclipScope?.agentId,
+    runId: input.runId,
+    ttlMs: bridgeTimeoutMs + 60_000,
+  });
 
   await onLog(
     "stdout",
@@ -1691,6 +1704,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       client,
       queueDir,
       maxBodyBytes,
+      terminalCapability,
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {
@@ -1731,6 +1745,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       assetRemoteDir,
       queueDir,
       bridgeToken,
+      terminalCapability,
       bridgeAsset,
       timeoutMs: bridgeTimeoutMs,
       maxBodyBytes,
@@ -1762,6 +1777,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+      ...(terminalCapability
+        ? {
+            PAPERCLIP_TERMINAL_CALLBACK_URL: server.baseUrl,
+            PAPERCLIP_TERMINAL_CALLBACK_TOKEN: terminalCapability.token,
+            PAPERCLIP_TERMINAL_CALLBACK_IDEMPOTENCY_KEY: terminalCapability.idempotencyKey,
+            PAPERCLIP_TERMINAL_CALLBACK_EXPIRES_AT: terminalCapability.expiresAt,
+            PAPERCLIP_TERMINAL_CALLBACK_ALLOWED_ACTIONS: terminalCapability.allowedActions.join(","),
+          }
+        : {}),
     },
     runLogTail,
     stop: async () => {

@@ -7,11 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import {
+  authorizeSandboxTerminalCallbackRequest,
   authorizeSandboxCallbackBridgeRequestWithRoutes,
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  createSandboxTerminalCallbackCapability,
   sandboxCallbackBridgeDirectories,
   syncSandboxCallbackBridgeEntrypoint,
   startSandboxCallbackBridgeServer,
@@ -955,6 +957,105 @@ describe("sandbox callback bridge", () => {
         `Route not allowed: ${request.method} ${request.path}`,
       );
     }
+  });
+
+  it("authorizes terminal callbacks only for the exact run-scoped terminal surface", () => {
+    const capability = createSandboxTerminalCallbackCapability({
+      companyId: "co-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      ttlMs: 60_000,
+    });
+    expect(capability).toBeTruthy();
+    const headers = { "idempotency-key": capability!.idempotencyKey };
+
+    expect(authorizeSandboxTerminalCallbackRequest({
+      capability,
+      request: {
+        method: "PATCH",
+        path: "/api/issues/issue-1",
+        headers,
+        body: JSON.stringify({ status: "done", comment: "Finished." }),
+      },
+    })).toMatchObject({ action: "issue_terminal_update" });
+
+    expect(authorizeSandboxTerminalCallbackRequest({
+      capability,
+      request: {
+        method: "POST",
+        path: "/api/issues/issue-1/work-products",
+        headers,
+        body: JSON.stringify({ type: "commit", provider: "git", externalId: "abc", title: "Commit" }),
+      },
+    })).toMatchObject({ action: "work_product_create" });
+
+    const denied = [
+      {
+        method: "PATCH",
+        path: "/api/issues/other-issue",
+        headers,
+        body: JSON.stringify({ status: "done" }),
+      },
+      {
+        method: "PATCH",
+        path: "/api/issues/issue-1",
+        headers,
+        body: JSON.stringify({ status: "in_progress" }),
+      },
+      {
+        method: "PATCH",
+        path: "/api/issues/issue-1",
+        headers,
+        body: JSON.stringify({ status: "done", title: "Scope creep" }),
+      },
+      {
+        method: "DELETE",
+        path: "/api/work-products/wp-1",
+        headers,
+        body: "",
+      },
+      {
+        method: "PATCH",
+        path: "/api/issues/issue-1",
+        headers: { "idempotency-key": "wrong" },
+        body: JSON.stringify({ status: "done" }),
+      },
+    ];
+
+    for (const request of denied) {
+      expect(authorizeSandboxTerminalCallbackRequest({ capability, request })).toHaveProperty("error");
+    }
+  });
+
+  it("fails closed for expired or duplicate terminal callback capabilities", () => {
+    const capability = createSandboxTerminalCallbackCapability({
+      companyId: "co-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      ttlMs: 60_000,
+    });
+    expect(capability).toBeTruthy();
+
+    const request = {
+      method: "PATCH",
+      path: "/api/issues/issue-1",
+      headers: { "idempotency-key": capability!.idempotencyKey },
+      body: JSON.stringify({ status: "done" }),
+    };
+
+    expect(authorizeSandboxTerminalCallbackRequest({
+      capability: { ...capability!, expiresAt: new Date(Date.now() - 1_000).toISOString() },
+      request,
+    })).toEqual({ error: "Terminal callback capability expired." });
+
+    const used = new Set([`issue_terminal_update:${capability!.idempotencyKey}`]);
+    expect(authorizeSandboxTerminalCallbackRequest({
+      capability,
+      request,
+      usedIdempotencyKeys: used,
+    })).toEqual({ error: "Terminal callback idempotency key already used." });
   });
 
   it("marks command-managed bridge operations with the bridge execution channel", async () => {

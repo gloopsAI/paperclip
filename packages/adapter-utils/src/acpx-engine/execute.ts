@@ -1141,6 +1141,11 @@ async function buildRuntime(input: {
       adapterKey: input.engine.adapterType,
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
+      paperclipScope: {
+        companyId: agent.companyId,
+        issueId: wakeTaskId,
+        agentId: agent.id,
+      },
       onLog: input.ctx.onLog,
     });
     if (paperclipBridge) {
