@@ -78,6 +78,7 @@ import type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginGetDataContext,
   PerformActionParams,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
@@ -299,7 +300,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const dataHandlers = new Map<
+    string,
+    (params: Record<string, unknown>, context: PluginGetDataContext) => Promise<unknown>
+  >();
   const actionHandlers = new Map<
     string,
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
@@ -1210,7 +1214,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       data: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(
+          key: string,
+          handler: (params: Record<string, unknown>, context: PluginGetDataContext) => Promise<unknown>,
+        ): void {
           dataHandlers.set(key, handler);
         },
       },
@@ -1571,11 +1578,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler({
-      ...params.params,
-      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
-      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    return handler(
+      {
+        ...params.params,
+        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+      },
+      requestContextFromActor(params.actorContext),
+    );
   }
 
   function stringOrNull(value: unknown): string | null {
@@ -1586,9 +1596,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return value === "user" || value === "agent" || value === "system" ? value : "system";
   }
 
-  function actionContextFromParams(params: PerformActionParams): PluginPerformActionContext {
-    const rawActor = params.actorContext && typeof params.actorContext === "object"
-      ? params.actorContext
+  function requestContextFromActor(
+    actorContext: PluginPerformActionActorContext | null | undefined,
+  ): PluginGetDataContext {
+    const rawActor = actorContext && typeof actorContext === "object"
+      ? actorContext
       : null;
     const actor = Object.freeze({
       type: actorTypeOrSystem(rawActor?.type),
@@ -1614,7 +1626,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
         ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
       },
-      actionContextFromParams(params),
+      requestContextFromActor(params.actorContext),
     );
   }
 

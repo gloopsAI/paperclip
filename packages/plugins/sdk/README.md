@@ -606,6 +606,10 @@ export function DashboardWidget() {
 
 Fetches data from the worker's registered `getData` handler. Re-fetches when `params` changes. Returns `{ data, loading, error, refresh }`.
 
+Worker-side `ctx.data.register(key, handler)` handlers receive immutable
+host-authenticated actor context as their second argument. Use that context for
+viewer-specific data; never trust identity fields supplied in `params`.
+
 ```tsx
 import { usePluginData } from "@paperclipai/plugin-sdk/ui";
 

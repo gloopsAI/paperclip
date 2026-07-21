@@ -150,6 +150,7 @@ export type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginGetDataContext,
   PerformActionParams,
   PluginPerformActionActorType,
   PluginPerformActionActorContext,
