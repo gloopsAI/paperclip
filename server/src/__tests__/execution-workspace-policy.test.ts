@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertIssuePinnedExecutionEnvironment,
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -378,6 +379,109 @@ describe("execution workspace policy helpers", () => {
       environmentId: "local-env",
       source: "default",
     });
+  });
+
+  it("fails closed for a missing explicit issue environment pin", () => {
+    expect(() =>
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "missing-env",
+        environment: null,
+      }),
+    ).toThrow(/was not found/i);
+    expect(() =>
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "missing-env",
+        environment: null,
+      }),
+    ).toThrow(/never fall back/i);
+  });
+
+  it("fails closed for an archived explicit issue environment pin", () => {
+    expect(() =>
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "archived-env",
+        environment: {
+          id: "archived-env",
+          name: "Archived Env",
+          status: "archived",
+          driver: "plugin",
+          config: {},
+          metadata: null,
+        },
+      }),
+    ).toThrow(/status: archived/i);
+  });
+
+  it("fails closed for a cross-company explicit issue environment pin", () => {
+    expect(() =>
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "foreign-env",
+        environment: {
+          id: "foreign-env",
+          name: "Foreign Env",
+          status: "active",
+          driver: "plugin",
+          config: {},
+          metadata: { companyId: "company-b" },
+        },
+      }),
+    ).toThrow(/belongs to another company/i);
+  });
+
+  it("accepts a valid explicit issue environment pin for the same company", () => {
+    expect(
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "valid-env",
+        environment: {
+          id: "valid-env",
+          name: "Valid Env",
+          status: "active",
+          driver: "plugin",
+          config: { pluginKey: "acme.env", driverKey: "sandbox" },
+          metadata: { companyId: "company-a" },
+        },
+      }),
+    ).toMatchObject({
+      id: "valid-env",
+      status: "active",
+    });
+    // Instance-scoped environments without metadata.companyId remain usable.
+    expect(
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "shared-env",
+        environment: {
+          id: "shared-env",
+          name: "Shared Env",
+          status: "active",
+          driver: "local",
+          config: {},
+          metadata: null,
+        },
+      }),
+    ).toMatchObject({ id: "shared-env" });
+  });
+
+  it("fails closed for unusable probe-only fake sandbox pins", () => {
+    expect(() =>
+      assertIssuePinnedExecutionEnvironment({
+        companyId: "company-a",
+        environmentId: "fake-env",
+        environment: {
+          id: "fake-env",
+          name: "Fake Env",
+          status: "active",
+          driver: "sandbox",
+          config: { provider: "fake" },
+          metadata: null,
+        },
+      }),
+    ).toThrow(/probe-only fake sandbox/i);
   });
 
   it("maps persisted execution workspace modes back to issue settings", () => {

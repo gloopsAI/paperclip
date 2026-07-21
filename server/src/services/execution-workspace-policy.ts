@@ -224,8 +224,9 @@ export type ExecutionWorkspaceEnvironmentResolution = {
  * 4. Built-in Local environment
  *
  * Explicit `null` / empty issue pins do not win — they fall through to the
- * agent/instance/local chain. Callers validate issue pins for usability and
- * may re-invoke without issueEnvironmentId for safe fallback.
+ * agent/instance/local chain. Callers must validate non-empty issue pins and
+ * fail closed when the pin is missing, archived, unusable, or otherwise
+ * invalid — never re-invoke without the pin to fall back.
  */
 export function resolveExecutionWorkspaceEnvironmentId(input: {
   issueEnvironmentId?: string | null;
@@ -255,6 +256,64 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
     environmentId: input.localDefaultEnvironmentId,
     source: "default",
   };
+}
+
+export type IssuePinnedExecutionEnvironmentLike = {
+  id: string;
+  name: string;
+  status: string;
+  driver: string;
+  config?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+/**
+ * Validate an explicit non-empty issue environment pin before provider invocation.
+ * Missing, archived/inactive, unusable (probe-only fake sandbox), or cross-company
+ * pins fail closed — callers must never fall back to agent/instance/Local.
+ */
+export function assertIssuePinnedExecutionEnvironment(input: {
+  companyId: string;
+  environmentId: string;
+  environment: IssuePinnedExecutionEnvironmentLike | null;
+}): IssuePinnedExecutionEnvironmentLike {
+  const environmentId = input.environmentId.trim();
+  const environment = input.environment;
+  if (!environment) {
+    throw new Error(
+      `Issue-pinned execution environment "${environmentId}" was not found. ` +
+        "Explicit issue environment pins fail closed and never fall back to agent, instance, or Local defaults.",
+    );
+  }
+  if (environment.status !== "active") {
+    throw new Error(
+      `Issue-pinned execution environment "${environment.name}" (${environmentId}) is not usable ` +
+        `(status: ${environment.status}). Explicit issue environment pins fail closed and never fall back ` +
+        "to agent, instance, or Local defaults.",
+    );
+  }
+  const metadataCompanyId = (() => {
+    const raw = environment.metadata?.companyId;
+    return typeof raw === "string" ? raw.trim() : "";
+  })();
+  if (metadataCompanyId && metadataCompanyId !== input.companyId) {
+    throw new Error(
+      `Issue-pinned execution environment "${environment.name}" (${environmentId}) belongs to another company. ` +
+        "Explicit issue environment pins fail closed and never fall back to agent, instance, or Local defaults.",
+    );
+  }
+  if (environment.driver === "sandbox") {
+    const config = parseObject(environment.config);
+    const provider = typeof config.provider === "string" ? config.provider : "";
+    if (provider === "fake") {
+      throw new Error(
+        `Issue-pinned execution environment "${environment.name}" (${environmentId}) uses the ` +
+          "probe-only fake sandbox provider and is not usable for runs. Explicit issue environment pins fail " +
+          "closed and never fall back to agent, instance, or Local defaults.",
+      );
+    }
+  }
+  return environment;
 }
 
 export function defaultIssueExecutionWorkspaceSettingsForProject(

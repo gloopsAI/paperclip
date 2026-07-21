@@ -165,6 +165,7 @@ import {
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
+  assertIssuePinnedExecutionEnvironment,
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -12341,36 +12342,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
     const issuePinnedEnvironmentId = issueExecutionWorkspaceSettings?.environmentId ?? null;
-    let environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+    const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
       issueEnvironmentId: issuePinnedEnvironmentId,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
     });
-    // Explicit issue pins win only when the environment still exists and is usable.
-    // Missing/archived pins fall through to agent → instance → Local (safe fallback).
+    // Explicit non-empty issue pins have highest precedence and fail closed.
+    // Missing, archived, unusable, or cross-company pins never fall back to
+    // agent / instance / Local — fallback applies only when no explicit pin exists.
     if (environmentResolution.source === "issue") {
+      const pinnedEnvironmentId = environmentResolution.environmentId;
       const pinnedEnvironment =
-        environmentResolution.environmentId === localEnvironment.id
+        pinnedEnvironmentId === localEnvironment.id
           ? localEnvironment
-          : await environmentsSvc.getById(environmentResolution.environmentId);
-      if (!pinnedEnvironment || pinnedEnvironment.status === "archived") {
-        logger.warn(
-          {
-            runId: run.id,
-            issueId,
-            agentId: agent.id,
-            issueEnvironmentId: environmentResolution.environmentId,
-            environmentStatus: pinnedEnvironment?.status ?? "missing",
-          },
-          "Issue-pinned execution environment is missing or archived; falling back to agent/instance/local defaults",
-        );
-        environmentResolution = resolveExecutionWorkspaceEnvironmentId({
-          agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-          instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
-          localDefaultEnvironmentId: localEnvironment.id,
-        });
-      }
+          : await environmentsSvc.getById(pinnedEnvironmentId);
+      assertIssuePinnedExecutionEnvironment({
+        companyId: agent.companyId,
+        environmentId: pinnedEnvironmentId,
+        environment: pinnedEnvironment,
+      });
     }
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;
