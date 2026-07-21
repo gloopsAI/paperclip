@@ -18,7 +18,34 @@ describe("parseGrokJsonl", () => {
       errorMessage: null,
       stopReason: "EndTurn",
       requestId: "req-1",
+      usage: null,
     });
+  });
+
+  it("captures native usage counters when the CLI emits them", () => {
+    const parsed = parseGrokJsonl([
+      JSON.stringify({ type: "text", data: "ok" }),
+      JSON.stringify({
+        type: "end",
+        stopReason: "EndTurn",
+        sessionId: "sess-2",
+        usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 5 },
+      }),
+    ].join("\n"));
+
+    expect(parsed.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 25,
+      cachedInputTokens: 5,
+    });
+  });
+
+  it("leaves usage null when the stream has no token counters", () => {
+    const parsed = parseGrokJsonl([
+      JSON.stringify({ type: "text", data: "ok" }),
+      JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-3" }),
+    ].join("\n"));
+    expect(parsed.usage).toBeNull();
   });
 
   it("reads structured error payloads", () => {

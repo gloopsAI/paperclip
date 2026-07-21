@@ -55,7 +55,15 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import {
+  formatCents,
+  formatDate,
+  relativeTime,
+  formatTokens,
+  formatTokensWithProvenance,
+  readUsageTokenProvenance,
+  visibleRunCostUsd,
+} from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
@@ -307,6 +315,7 @@ function runMetrics(run: HeartbeatRun) {
     visibleRunCostUsd(usage, result);
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
+  const provenance = readUsageTokenProvenance(usage);
   return {
     input,
     output,
@@ -315,6 +324,7 @@ function runMetrics(run: HeartbeatRun) {
     totalTokens: input + output,
     provider,
     model,
+    provenance,
   };
 }
 
@@ -1617,8 +1627,12 @@ function CostsSection({
                   <tr key={run.id} className="border-b border-border last:border-b-0">
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {formatTokensWithProvenance(metrics.input, metrics.provenance)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {formatTokensWithProvenance(metrics.output, metrics.provenance)}
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {metrics.cost > 0
                         ? `$${metrics.cost.toFixed(4)}`
@@ -2840,7 +2854,12 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
       )}
       {(metrics.totalTokens > 0 || metrics.cost > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.totalTokens > 0 && (
+            <span>
+              {formatTokensWithProvenance(metrics.totalTokens, metrics.provenance)} tok
+              {metrics.provenance === "estimated" ? " est." : ""}
+            </span>
+          )}
           {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
@@ -3300,16 +3319,26 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           {hasMetrics && (
             <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
-                <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
+                <div className="text-xs text-muted-foreground">
+                  Input{metrics.provenance === "estimated" ? " (est.)" : ""}
+                </div>
+                <div className="text-sm font-medium font-mono">
+                  {formatTokensWithProvenance(metrics.input, metrics.provenance)}
+                </div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Output</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
+                <div className="text-xs text-muted-foreground">
+                  Output{metrics.provenance === "estimated" ? " (est.)" : ""}
+                </div>
+                <div className="text-sm font-medium font-mono">
+                  {formatTokensWithProvenance(metrics.output, metrics.provenance)}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
+                <div className="text-sm font-medium font-mono">
+                  {formatTokensWithProvenance(metrics.cached, metrics.provenance)}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Cost</div>

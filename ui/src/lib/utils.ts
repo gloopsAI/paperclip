@@ -96,6 +96,33 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Usage token provenance carried on run `usageJson` (GLO-1247). */
+export type UsageTokenProvenance = "measured" | "estimated" | "unknown";
+
+export function readUsageTokenProvenance(
+  usage: Record<string, unknown> | null | undefined,
+): UsageTokenProvenance | null {
+  const value = usage?.usageProvenance ?? usage?.provenance;
+  if (value === "measured" || value === "estimated" || value === "unknown") return value;
+  return null;
+}
+
+/**
+ * Format token counts for run/cost receipts without presenting unavailable
+ * native usage as an exact measured zero.
+ */
+export function formatTokensWithProvenance(
+  n: number,
+  provenance: UsageTokenProvenance | null | undefined,
+): string {
+  if (provenance === "unknown" && (!Number.isFinite(n) || n <= 0)) {
+    return "unavailable";
+  }
+  const formatted = formatTokens(Number.isFinite(n) ? n : 0);
+  if (provenance === "estimated") return `~${formatted}`;
+  return formatted;
+}
+
 /** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
 export function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0s";

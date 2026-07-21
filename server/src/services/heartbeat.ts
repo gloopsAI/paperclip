@@ -14217,6 +14217,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             inputTokens: accountedUsage?.inputTokens ?? 0,
             fixedOverheadInputTokens: invocationBudget?.fixedOverheadInputTokens,
           });
+      const adapterUsageProvenance = (() => {
+        const raw = adapterResult.usage?.provenance;
+        if (raw === "measured" || raw === "estimated" || raw === "unknown") return raw;
+        return null;
+      })();
+      const adapterEstimationMethod = readNonEmptyString(adapterResult.usage?.estimationMethod);
+      const adapterEstimationConfidence =
+        typeof adapterResult.usage?.estimationConfidence === "number"
+          && Number.isFinite(adapterResult.usage.estimationConfidence)
+          ? Math.min(1, Math.max(0, adapterResult.usage.estimationConfidence))
+          : null;
       const usageJson =
         accountedUsage || adapterResult.costUsd != null || reportedTurns != null || reportedToolCalls != null
           ? ({
@@ -14233,6 +14244,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 : adapterResult.usageBasis === "per_run"
                   ? { usageSource: "per_run" }
                   : {}),
+              // Economic truth: preserve measured vs estimated vs unknown.
+              // Estimated totals must never be re-labeled as measured.
+              ...(adapterUsageProvenance ? { usageProvenance: adapterUsageProvenance } : {}),
+              ...(adapterEstimationMethod ? { estimationMethod: adapterEstimationMethod } : {}),
+              ...(adapterEstimationConfidence != null
+                ? { estimationConfidence: adapterEstimationConfidence }
+                : {}),
               ...((nextSessionState.displayId ?? nextSessionState.legacySessionId)
                 ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
                 : {}),
