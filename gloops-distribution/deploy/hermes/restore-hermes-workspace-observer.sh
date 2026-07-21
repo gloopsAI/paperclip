@@ -27,6 +27,10 @@ done
 # initialization; repository contents remain owned and writable by Hermes.
 chown "${HERMES_UID}:${PAPERCLIP_GID}" "${WORKSPACE}"
 chmod 0750 "${WORKSPACE}"
+# A numeric chmod may preserve an inherited setgid bit on an existing
+# directory. Clear it explicitly so the exact observer contract below is
+# stable across reused workspace roots.
+chmod g-s "${WORKSPACE}"
 
 [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}")" == '750:10000:985' ]] || {
   echo 'Hermes execution workspace observer permissions were not restored' >&2
