@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,7 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+const DEFAULT_TERMINAL_CALLBACK_EXTRA_TTL_MS = 60_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -107,6 +108,8 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
+  "idempotency-key",
+  "x-idempotency-key",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest {
@@ -115,6 +118,9 @@ export interface SandboxCallbackBridgeRequest {
   path: string;
   query: string;
   headers: Record<string, string>;
+  authKind?: "bridge" | "terminal";
+  /** HMAC proof that authKind was derived by the authenticated bridge server. */
+  authProof?: string;
   /**
    * UTF-8 body contents. The bridge rejects non-JSON request bodies; binary
    * payloads are intentionally out of scope for this queue protocol.
@@ -174,6 +180,17 @@ export interface StartedSandboxCallbackBridgeServer {
   pid: number;
   directories: SandboxCallbackBridgeDirectories;
   stop(): Promise<void>;
+}
+
+export interface SandboxTerminalCallbackCapability {
+  token: string;
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  runId: string;
+  expiresAt: string;
+  idempotencyKey: string;
+  allowedActions: readonly ("issue_terminal_update" | "work_product_create")[];
 }
 
 function shellQuote(value: string) {
@@ -278,6 +295,37 @@ export function createSandboxCallbackBridgeToken(bytes = DEFAULT_BRIDGE_TOKEN_BY
   return randomBytes(bytes).toString("base64url");
 }
 
+export function createSandboxTerminalCallbackCapability(input: {
+  companyId: string | null | undefined;
+  issueId: string | null | undefined;
+  agentId: string | null | undefined;
+  runId: string | null | undefined;
+  ttlMs?: number | null;
+  allowedActions?: readonly SandboxTerminalCallbackCapability["allowedActions"][number][];
+}): SandboxTerminalCallbackCapability | null {
+  const companyId = input.companyId?.trim();
+  const issueId = input.issueId?.trim();
+  const agentId = input.agentId?.trim();
+  const runId = input.runId?.trim();
+  if (!companyId || !issueId || !agentId || !runId) return null;
+  const ttlMs =
+    typeof input.ttlMs === "number" && Number.isFinite(input.ttlMs) && input.ttlMs > 0
+      ? Math.trunc(input.ttlMs)
+      : DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS + DEFAULT_TERMINAL_CALLBACK_EXTRA_TTL_MS;
+  return {
+    token: createSandboxCallbackBridgeToken(),
+    companyId,
+    issueId,
+    agentId,
+    runId,
+    expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+    idempotencyKey: ["terminal_callback", companyId, issueId, agentId, runId].join(":"),
+    allowedActions: input.allowedActions?.length
+      ? [...input.allowedActions]
+      : ["issue_terminal_update", "work_product_create"],
+  };
+}
+
 export function authorizeSandboxCallbackBridgeRequestWithRoutes(
   request: Pick<SandboxCallbackBridgeRequest, "method" | "path">,
   routes: readonly SandboxCallbackBridgeRouteRule[] = DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
@@ -313,6 +361,7 @@ export function sandboxCallbackBridgeDirectories(rootDir: string): SandboxCallba
 export function buildSandboxCallbackBridgeEnv(input: {
   queueDir: string;
   bridgeToken: string;
+  terminalCapability?: SandboxTerminalCallbackCapability | null;
   host?: string;
   port?: number | null;
   pollIntervalMs?: number | null;
@@ -338,7 +387,111 @@ export function buildSandboxCallbackBridgeEnv(input: {
     PAPERCLIP_BRIDGE_MAX_BODY_BYTES: String(
       normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES),
     ),
+    ...(input.terminalCapability
+      ? {
+          PAPERCLIP_TERMINAL_CALLBACK_TOKEN: input.terminalCapability.token,
+        }
+      : {}),
   };
+}
+
+function parseBridgeJsonBody(body: string): Record<string, unknown> {
+  if (body.trim().length === 0) return {};
+  const parsed = JSON.parse(body) as unknown;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+}
+
+function terminalCallbackActionForRequest(
+  request: Pick<SandboxCallbackBridgeRequest, "method" | "path" | "body">,
+  capability: SandboxTerminalCallbackCapability,
+): SandboxTerminalCallbackCapability["allowedActions"][number] | null {
+  const method = normalizeMethod(request.method);
+  if (method === "POST" && request.path === `/api/issues/${capability.issueId}/work-products`) {
+    return "work_product_create";
+  }
+  if (method !== "PATCH" || request.path !== `/api/issues/${capability.issueId}`) return null;
+  let body: Record<string, unknown>;
+  try {
+    body = parseBridgeJsonBody(request.body);
+  } catch {
+    return null;
+  }
+  const status = typeof body.status === "string" ? body.status : "";
+  if (!["done", "cancelled", "in_review", "blocked"].includes(status)) return null;
+  const allowedFields = new Set([
+    "status",
+    "comment",
+    "reviewRequest",
+  ]);
+  if (Object.keys(body).some((key) => !allowedFields.has(key))) return null;
+  return "issue_terminal_update";
+}
+
+export function authorizeSandboxTerminalCallbackRequest(input: {
+  request: Pick<SandboxCallbackBridgeRequest, "method" | "path" | "headers" | "body">;
+  capability: SandboxTerminalCallbackCapability | null | undefined;
+  usedIdempotencyKeys?: ReadonlySet<string>;
+  now?: Date;
+}): { action: SandboxTerminalCallbackCapability["allowedActions"][number]; idempotencyKey: string } | { error: string } {
+  const capability = input.capability;
+  if (!capability) return { error: "Terminal callback capability is not available for this run." };
+  const expiresAtMs = Date.parse(capability.expiresAt);
+  const nowMs = input.now?.getTime() ?? Date.now();
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+    return { error: "Terminal callback capability expired." };
+  }
+  const action = terminalCallbackActionForRequest(input.request, capability);
+  if (!action || !capability.allowedActions.includes(action)) {
+    return { error: `Terminal callback route not allowed: ${normalizeMethod(input.request.method)} ${input.request.path}` };
+  }
+  const idempotencyKey =
+    input.request.headers["idempotency-key"]?.trim() ||
+    input.request.headers["x-idempotency-key"]?.trim() ||
+    "";
+  if (idempotencyKey !== capability.idempotencyKey) {
+    return { error: "Terminal callback idempotency key mismatch." };
+  }
+  const requestDigest = action === "work_product_create"
+    ? createHash("sha256").update(input.request.body).digest("base64url")
+    : "";
+  const scopedKey = [action, idempotencyKey, requestDigest].filter(Boolean).join(":");
+  if (input.usedIdempotencyKeys?.has(scopedKey)) {
+    return { error: "Terminal callback idempotency key already used." };
+  }
+  return { action, idempotencyKey: scopedKey };
+}
+
+function terminalAuthProofPayload(request: Pick<
+  SandboxCallbackBridgeRequest,
+  "id" | "method" | "path" | "query" | "body" | "createdAt"
+>): string {
+  return [
+    request.id,
+    normalizeMethod(request.method),
+    request.path,
+    request.query,
+    request.body,
+    request.createdAt,
+  ].join("\n");
+}
+
+export function createSandboxTerminalCallbackAuthProof(
+  request: Pick<SandboxCallbackBridgeRequest, "id" | "method" | "path" | "query" | "body" | "createdAt">,
+  token: string,
+): string {
+  return createHmac("sha256", token).update(terminalAuthProofPayload(request)).digest("base64url");
+}
+
+function verifyTerminalAuthProof(
+  request: SandboxCallbackBridgeRequest,
+  capability: SandboxTerminalCallbackCapability | null | undefined,
+): boolean {
+  if (!capability || typeof request.authProof !== "string") return false;
+  const expected = Buffer.from(createSandboxTerminalCallbackAuthProof(request, capability.token), "utf8");
+  const actual = Buffer.from(request.authProof, "utf8");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 export async function createSandboxCallbackBridgeAsset(): Promise<SandboxCallbackBridgeAsset> {
@@ -596,6 +749,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   queueDir: string;
   pollIntervalMs?: number | null;
   authorizeRequest?: (request: SandboxCallbackBridgeRequest) => string | null | Promise<string | null>;
+  terminalCapability?: SandboxTerminalCallbackCapability | null;
   handleRequest: (request: SandboxCallbackBridgeRequest) => Promise<{
     status: number;
     headers?: Record<string, string>;
@@ -610,6 +764,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   await input.client.makeDir(directories.requestsDir);
   await input.client.makeDir(directories.responsesDir);
   await input.client.makeDir(directories.logsDir);
+  const usedTerminalIdempotencyKeys = new Set<string>();
 
   let stopping = false;
   let inFlight = 0;
@@ -644,7 +799,26 @@ export async function startSandboxCallbackBridgeWorker(input: {
       return;
     }
 
-    const denialReason = await authorizeRequest(request);
+    let terminalIdempotencyKey: string | null = null;
+    let denialReason: string | null = null;
+    if (request.authKind === "terminal") {
+      if (!verifyTerminalAuthProof(request, input.terminalCapability)) {
+        denialReason = "Terminal callback authentication proof invalid.";
+      } else {
+        const decision = authorizeSandboxTerminalCallbackRequest({
+          request,
+          capability: input.terminalCapability,
+          usedIdempotencyKeys: usedTerminalIdempotencyKeys,
+        });
+        if ("error" in decision) {
+          denialReason = decision.error;
+        } else {
+          terminalIdempotencyKey = decision.idempotencyKey;
+        }
+      }
+    } else {
+      denialReason = await authorizeRequest(request);
+    }
     if (denialReason) {
       await writeBridgeResponse(input.client, requestPath, responsePath, {
         id: request.id,
@@ -659,6 +833,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
 
     try {
       const result = await input.handleRequest(request);
+      if (terminalIdempotencyKey && result.status >= 200 && result.status < 300) {
+        usedTerminalIdempotencyKeys.add(terminalIdempotencyKey);
+      }
       const responseBody = result.body ?? "";
       if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
         throw new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
@@ -876,6 +1053,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   assetRemoteDir: string;
   queueDir: string;
   bridgeToken: string;
+  terminalCapability?: SandboxTerminalCallbackCapability | null;
   bridgeAsset?: SandboxCallbackBridgeAsset | null;
   host?: string;
   port?: number | null;
@@ -905,6 +1083,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   const env = buildSandboxCallbackBridgeEnv({
     queueDir: input.queueDir,
     bridgeToken: input.bridgeToken,
+    terminalCapability: input.terminalCapability,
     host: input.host,
     port: input.port,
     pollIntervalMs: input.pollIntervalMs,
@@ -1019,13 +1198,14 @@ export async function startSandboxCallbackBridgeServer(input: {
 }
 
 function getSandboxCallbackBridgeServerSource(): string {
-  return `import { randomUUID, timingSafeEqual } from "node:crypto";
+  return `import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
 const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
 const bridgeToken = process.env.PAPERCLIP_BRIDGE_TOKEN;
+const terminalCallbackToken = process.env.PAPERCLIP_TERMINAL_CALLBACK_TOKEN || "";
 const host = process.env.PAPERCLIP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.PAPERCLIP_BRIDGE_PORT || "0");
 const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "100");
@@ -1079,11 +1259,28 @@ async function queueDepth() {
   return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
 }
 
-function tokensMatch(received) {
+function tokenKind(received) {
   const expected = Buffer.from(bridgeToken, "utf8");
   const actual = Buffer.from(typeof received === "string" ? received : "", "utf8");
-  if (expected.length !== actual.length) return false;
-  return timingSafeEqual(expected, actual);
+  if (expected.length === actual.length && timingSafeEqual(expected, actual)) return "bridge";
+  if (terminalCallbackToken) {
+    const terminal = Buffer.from(terminalCallbackToken, "utf8");
+    if (terminal.length === actual.length && timingSafeEqual(terminal, actual)) return "terminal";
+  }
+  return null;
+}
+
+function terminalAuthProof(payload) {
+  return createHmac("sha256", terminalCallbackToken)
+    .update([
+      payload.id,
+      String(payload.method || "GET").trim().toUpperCase(),
+      payload.path,
+      payload.query,
+      payload.body,
+      payload.createdAt,
+    ].join("\\n"))
+    .digest("base64url");
 }
 
 async function waitForResponse(requestId) {
@@ -1104,7 +1301,8 @@ const server = createServer(async (req, res) => {
   try {
     const auth = req.headers.authorization || "";
     const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
-    if (!tokensMatch(receivedToken)) {
+    const authKind = tokenKind(receivedToken);
+    if (!authKind) {
       res.statusCode = 401;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ error: "Invalid bridge token." }));
@@ -1134,9 +1332,11 @@ const server = createServer(async (req, res) => {
       path: url.pathname,
       query: url.search,
       headers: normalizeHeaders(req.headers),
+      authKind,
       body: requestBody,
       createdAt: new Date().toISOString(),
     };
+    if (authKind === "terminal") payload.authProof = terminalAuthProof(payload);
     const requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
     const tempPath = \`\${requestPath}.tmp\`;
     await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");

@@ -818,6 +818,7 @@ describe("shared ACPX engine runtime behavior", () => {
           remoteCwd,
           runner,
         },
+        context: { issueId: "issue-1" },
       },
     );
 
@@ -835,6 +836,11 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
+    expect(payloadEnv.PAPERCLIP_TERMINAL_CALLBACK_URL).toBe(payloadEnv.PAPERCLIP_API_URL);
+    expect(payloadEnv.PAPERCLIP_TERMINAL_CALLBACK_TOKEN).toBeTruthy();
+    expect(payloadEnv.PAPERCLIP_TERMINAL_CALLBACK_TOKEN).not.toBe(payloadEnv.PAPERCLIP_API_KEY);
+    expect(payloadEnv.PAPERCLIP_TERMINAL_CALLBACK_IDEMPOTENCY_KEY).toBe("terminal_callback:company-1:issue-1:agent-1:run-1");
+    expect(payloadEnv.PAPERCLIP_TERMINAL_CALLBACK_ALLOWED_ACTIONS).toBe("issue_terminal_update,work_product_create");
   });
 
   it.skipIf(process.platform === "win32")("drops benign ACP nes/close cleanup stderr but keeps it in the run log", async () => {
