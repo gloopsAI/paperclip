@@ -10,6 +10,16 @@ on:
     tags:
       - "gloops/v*"
 
+# One canonical publication per ref. Successive merges to gloops/stable share
+# refs/heads/gloops/stable, so older in-flight multiarch release runs are
+# cancelled before they can finish and overwrite stable. PR refs
+# (refs/pull/N/merge) and tag refs stay isolated so PR CI and tag builds do
+# not cancel each other or cross-contaminate. Manual release.yml
+# workflow_dispatch is intentionally untouched.
+concurrency:
+  group: gloops-distribution-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
