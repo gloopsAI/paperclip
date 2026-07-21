@@ -51,7 +51,7 @@ const sshWorkspaceWritePolicySchema = z.object({
 const sshEnvironmentConfigSchema = z.object({
   host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: posixIdentitySchema,
   remoteWorkspacePath: z
     .string({ required_error: "SSH environments require a remote workspace path." })
     .trim()

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
   parseSshRemoteExecutionSpec,
+  preflightSshWorkspaceWriteAccess,
   readSshEnvLabFixtureStatus,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
@@ -16,6 +17,7 @@ import {
   syncDirectoryToSsh,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
+  WorkspaceNotWritableError,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
 
@@ -102,6 +104,20 @@ describe("SSH workspace write policy", () => {
       },
     })).toBeNull();
   });
+
+  it("rejects an invalid materializer identity before it can enter an ACL", () => {
+    expect(parseSshRemoteExecutionSpec({
+      host: "ssh.example.test",
+      port: 22,
+      username: "materializer,u:root:rwx",
+      remoteCwd: "/srv/paperclip/workspace",
+      remoteWorkspacePath: "/srv/paperclip",
+      workspaceWritePolicy: {
+        strategy: "acl",
+        executionUsername: "provider-runner",
+      },
+    })).toBeNull();
+  });
 });
 
 function parseProgressLine(line: string): ParsedProgressLine {
@@ -132,6 +148,40 @@ describe("ssh env-lab fixture", () => {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   });
+
+  it("fails the zero-model preflight with providerInvocationAttempted=false when the execution identity cannot write", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-write-preflight-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH workspace write preflight test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const repoDir = path.join(started.workspaceDir, "read-only-repo");
+    await mkdir(repoDir);
+    await git(repoDir, ["init"]);
+    await chmod(repoDir, 0o555);
+
+    try {
+      const spec = parseSshRemoteExecutionSpec({
+        ...config,
+        remoteCwd: repoDir,
+        remoteWorkspacePath: started.workspaceDir,
+        workspaceWritePolicy: {
+          strategy: "acl",
+          executionUsername: started.username,
+          syncUsername: started.username,
+        },
+      });
+      expect(spec).not.toBeNull();
+      await expect(preflightSshWorkspaceWriteAccess({ spec: spec!, remoteDir: repoDir }))
+        .rejects.toMatchObject({
+          code: "workspace_not_writable",
+          providerInvocationAttempted: false,
+        });
+    } finally {
+      await chmod(repoDir, 0o755).catch(() => undefined);
+    }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("starts an isolated sshd fixture and executes commands through it", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));

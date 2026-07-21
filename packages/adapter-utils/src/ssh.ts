@@ -181,7 +181,16 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   const username = typeof parsed.username === "string" ? parsed.username.trim() : "";
   const remoteCwd = typeof parsed.remoteCwd === "string" ? parsed.remoteCwd.trim() : "";
   const portValue = typeof parsed.port === "number" ? parsed.port : Number(parsed.port);
-  if (!host || !username || !remoteCwd || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+  const identityPattern = /^[a-z_][a-z0-9_-]*[$]?$/i;
+  if (
+    !host ||
+    !username ||
+    !identityPattern.test(username) ||
+    !remoteCwd ||
+    !Number.isInteger(portValue) ||
+    portValue < 1 ||
+    portValue > 65535
+  ) {
     return null;
   }
 
@@ -189,7 +198,6 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
     && !Array.isArray(parsed.workspaceWritePolicy)
     ? parsed.workspaceWritePolicy as Record<string, unknown>
     : null;
-  const identityPattern = /^[a-z_][a-z0-9_-]*[$]?$/i;
   const executionUsername = typeof rawWritePolicy?.executionUsername === "string"
     ? rawWritePolicy.executionUsername.trim()
     : "";

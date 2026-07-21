@@ -514,7 +514,7 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
-function isRetryableInteractionContinuationInfrastructureFailure(
+export function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
   if (run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE || run.errorCode === "process_lost") {
@@ -1462,7 +1462,7 @@ function isConfigurationIncompleteFailedRun(
   return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE;
 }
 
-function isWorkspaceNotWritableFailure(error: unknown): error is Error & {
+export function isWorkspaceNotWritableFailure(error: unknown): error is Error & {
   code: typeof WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
   providerInvocationAttempted: false;
 } {
@@ -1474,7 +1474,7 @@ function isWorkspaceNotWritableFailure(error: unknown): error is Error & {
   );
 }
 
-function isWorkspaceNotWritableFailedRun(
+export function isWorkspaceNotWritableFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
