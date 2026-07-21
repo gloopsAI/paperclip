@@ -772,11 +772,18 @@ export function getApprovalsForTab(
 
 export function isApprovalVisibleInMine(
   approval: Approval,
+  _currentUserId?: string | null,
+): boolean {
+  // Mine is personal-action-only: unresolved approvals only, never resolved history.
+  return ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
+}
+
+/** True when the issue is explicitly assigned to the current board user (not agent-owned). */
+export function isExplicitlyUserAssignedIssue(
+  issue: Pick<Issue, "assigneeUserId">,
   currentUserId?: string | null,
 ): boolean {
-  if (ACTIONABLE_APPROVAL_STATUSES.has(approval.status)) return true;
-  if (!currentUserId) return false;
-  return approval.requestedByUserId === currentUserId || approval.decidedByUserId === currentUserId;
+  return Boolean(currentUserId) && issue.assigneeUserId === currentUserId;
 }
 
 export function approvalActivityTimestamp(approval: Approval): number {
@@ -1257,6 +1264,7 @@ export function computeInboxBadgeData({
         approval.updatedAt,
       ),
   ).length;
+  // Failed-run telemetry is never part of the personal action badge.
   const failedRuns = 0;
   const visibleJoinRequests = joinRequests.filter(
     (jr) =>
@@ -1270,7 +1278,9 @@ export function computeInboxBadgeData({
         jr.updatedAt ?? jr.createdAt,
       ),
   ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const visibleMineIssues = mineIssues.filter(
+    (issue) => issue.isUnreadForMe && isExplicitlyUserAssignedIssue(issue, currentUserId),
+  ).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;

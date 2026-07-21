@@ -29,6 +29,7 @@ import {
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   groupInboxWorkItems,
+  isExplicitlyUserAssignedIssue,
   isInboxEntityDismissed,
   isMineInboxTab,
   loadInboxFilterPreferences,
@@ -313,6 +314,8 @@ describe("inbox helpers", () => {
   });
 
   it("counts the same inbox sources the badge uses", () => {
+    const userAssignedUnread = makeIssue("1", true);
+    userAssignedUnread.assigneeUserId = "user-1";
     const result = computeInboxBadgeData({
       approvals: [
         { ...makeApproval("pending"), requestedByUserId: "user-1" },
@@ -320,7 +323,7 @@ describe("inbox helpers", () => {
       ],
       joinRequests: [makeJoinRequest("join-1")],
       dashboard,
-      mineIssues: [makeIssue("1", true)],
+      mineIssues: [userAssignedUnread],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map<string, number>(),
       currentUserId: "user-1",
@@ -358,11 +361,16 @@ describe("inbox helpers", () => {
   });
 
   it("excludes unread touched issues from the action badge count", () => {
+    const readAssigned = makeIssue("1", false);
+    readAssigned.assigneeUserId = "user-1";
+    const readUnassigned = makeIssue("2", false);
+    const unreadAssigned = makeIssue("3", true);
+    unreadAssigned.assigneeUserId = "user-1";
     const result = computeInboxBadgeData({
       approvals: [],
       joinRequests: [],
       dashboard,
-      mineIssues: [makeIssue("1", false), makeIssue("2", false), makeIssue("3", true)],
+      mineIssues: [readAssigned, readUnassigned, unreadAssigned],
       dismissedAlerts: new Set<string>(),
       dismissedAtByKey: new Map(),
       currentUserId: "user-1",
@@ -479,9 +487,9 @@ describe("inbox helpers", () => {
       },
     ];
 
+    // Mine is personal-action-only: actionable statuses once, resolved approvals never.
     expect(getApprovalsForTab(approvals, "mine", "all", "user-1").map((approval) => approval.id)).toEqual([
       "approval-revision",
-      "approval-approved",
       "approval-pending",
     ]);
     expect(getApprovalsForTab(approvals, "recent", "all").map((approval) => approval.id)).toEqual([
@@ -540,6 +548,66 @@ describe("inbox helpers", () => {
 
     expect(result.alerts).toBe(2);
     expect(result.inbox).toBe(0);
+  });
+
+  it("keeps Mine personal-action-only and preserves non-Mine history", () => {
+    const agentIssue = makeIssue("agent", true);
+    agentIssue.assigneeAgentId = "agent-1";
+    agentIssue.assigneeUserId = null;
+
+    const userAssignedUnread = makeIssue("user-unread", true);
+    userAssignedUnread.assigneeUserId = "user-1";
+
+    const userAssignedRead = makeIssue("user-read", false);
+    userAssignedRead.assigneeUserId = "user-1";
+
+    const unassignedUnread = makeIssue("unassigned", true);
+    unassignedUnread.assigneeUserId = null;
+
+    expect(isExplicitlyUserAssignedIssue(agentIssue, "user-1")).toBe(false);
+    expect(isExplicitlyUserAssignedIssue(userAssignedUnread, "user-1")).toBe(true);
+    expect(isExplicitlyUserAssignedIssue(unassignedUnread, "user-1")).toBe(false);
+
+    const approvals = [
+      {
+        ...makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T03:00:00.000Z"),
+        requestedByUserId: null,
+      },
+      {
+        ...makeApprovalWithTimestamps("approval-resolved", "approved", "2026-03-11T04:00:00.000Z"),
+        requestedByUserId: "user-1",
+        decidedByUserId: "user-1",
+      },
+    ];
+
+    // Actionable approval once; resolved approval absent from Mine.
+    expect(getApprovalsForTab(approvals, "mine", "all", "user-1").map((a) => a.id)).toEqual([
+      "approval-pending",
+    ]);
+    // Non-Mine history preserves resolved approval.
+    expect(getApprovalsForTab(approvals, "recent", "all", "user-1").map((a) => a.id)).toEqual([
+      "approval-resolved",
+      "approval-pending",
+    ]);
+    expect(getApprovalsForTab(approvals, "all", "resolved", "user-1").map((a) => a.id)).toEqual([
+      "approval-resolved",
+    ]);
+
+    const badge = computeInboxBadgeData({
+      approvals,
+      joinRequests: [],
+      dashboard,
+      mineIssues: [agentIssue, userAssignedUnread, userAssignedRead, unassignedUnread],
+      dismissedAlerts: new Set<string>(["alert:budget", "alert:agent-errors"]),
+      dismissedAtByKey: new Map(),
+      currentUserId: "user-1",
+    });
+
+    // Badge: no failed runs; only explicitly user-assigned unread issue.
+    expect(badge.failedRuns).toBe(0);
+    expect(badge.mineIssues).toBe(1);
+    expect(badge.approvals).toBe(1);
+    expect(badge.inbox).toBe(1);
   });
 
   it("mixes approvals into the inbox feed by most recent activity", () => {
