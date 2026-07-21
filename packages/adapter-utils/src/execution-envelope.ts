@@ -10,11 +10,25 @@ export type ExecutionInvocationBudget = {
   schemaVersion: "paperclip.provider-invocation-budget.v1";
   budgetId: string;
   reservationId: string;
+  /**
+   * Total input reservation for this invocation: fixed overhead + discretionary.
+   * Provider prompt size is checked against this combined ceiling.
+   */
   maxInputTokens: number;
   maxOutputTokens: number;
   maxTurns: number;
   maxToolCalls: number;
   maxWallMs: number;
+  /**
+   * Fixed charter/packet/tool-schema overhead reserved inside maxInputTokens.
+   * Optional for legacy reservations written before net-of-overhead accounting.
+   */
+  fixedOverheadInputTokens?: number;
+  /**
+   * Discretionary task allowance reserved inside maxInputTokens.
+   * Optional for legacy reservations; when absent, treat maxInputTokens as discretionary.
+   */
+  discretionaryInputTokens?: number;
 };
 
 export type BoundExecutionContext = {

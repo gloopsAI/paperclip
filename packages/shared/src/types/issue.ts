@@ -613,6 +613,21 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+/**
+ * Task-level execution resource budget.
+ *
+ * `maxInputTokensPerTask` is the discretionary task allowance. Fixed
+ * charter/packet/tool-schema overhead is declared separately via
+ * `fixedOverheadInputTokens` so admission and receipts can keep them apart.
+ *
+ * `executionClass`:
+ * - `bootstrap` — platform/tool/input provisioning; may declare generous
+ *   bounded capacity that is not clamped by tight steady-state ceilings.
+ * - `steady_state` — default; spend ceilings only tighten from global policy.
+ * - `proven` — empirically proven task class; same tightening as steady_state.
+ */
+export type IssueExecutionTaskClass = "bootstrap" | "steady_state" | "proven";
+
 export interface IssueExecutionResourceBudget {
   maxRunsPerTask?: number;
   maxRetriesPerTask?: number;
@@ -623,6 +638,12 @@ export interface IssueExecutionResourceBudget {
   maxOutputTokensPerInvocation?: number;
   maxTurnsPerInvocation?: number;
   maxToolCallsPerInvocation?: number;
+  /**
+   * Fixed per-invocation overhead (charter, compact packet, tool schemas,
+   * system context). Reserved in addition to the discretionary task allowance.
+   */
+  fixedOverheadInputTokens?: number;
+  executionClass?: IssueExecutionTaskClass;
 }
 
 export interface IssueExecutionPolicy {

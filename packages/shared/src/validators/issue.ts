@@ -208,6 +208,8 @@ const issueExecutionResourceBudgetSchema = z
     maxOutputTokensPerInvocation: z.number().int().positive().safe().optional(),
     maxTurnsPerInvocation: z.number().int().positive().safe().optional(),
     maxToolCallsPerInvocation: z.number().int().positive().safe().optional(),
+    fixedOverheadInputTokens: z.number().int().nonnegative().safe().optional(),
+    executionClass: z.enum(["bootstrap", "steady_state", "proven"]).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
