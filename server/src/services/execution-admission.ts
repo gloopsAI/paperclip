@@ -8,8 +8,8 @@ export const EXECUTION_ADMISSION_RESET_CONTEXT_KEY = "gloopsExecutionBudgetReset
 
 /** Bootstrap class may declare generous bounded capacity for tool/input provisioning. */
 export const BOOTSTRAP_EXECUTION_DEFAULTS = {
-  maxRunsPerTask: 1,
-  maxRetriesPerTask: 0,
+  maxRunsPerTask: 2,
+  maxRetriesPerTask: 1,
   maxInputTokensPerTask: 220_000,
   maxOutputTokensPerTask: 22_000,
   maxWallMsPerTask: 30 * 60 * 1000,
@@ -26,7 +26,6 @@ export const BOOTSTRAP_EXECUTION_DEFAULTS = {
 export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "workspace_validation_failed",
   "execution_admission.adapter_budget_unsupported",
-  "execution_admission.input_reservation_exceeded",
   "configuration_incomplete",
   "agent_not_invokable",
 ]);
@@ -649,16 +648,25 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Partial<ExecutionAdmissionEnvelope>;
   const observed = candidate.observed as Partial<ExecutionAdmissionUsage> | undefined;
-  const validObserved = observed && [
+  const validObservedBase = observed && [
     observed.runCount,
     observed.retryCount,
     observed.inputTokens,
     observed.cachedInputTokens,
     observed.outputTokens,
     observed.wallMs,
-    observed.fixedOverheadInputTokens,
-    observed.preflightExemptRunCount,
   ].every((item) => typeof item === "number" && Number.isSafeInteger(item) && item >= 0);
+  const validObserved = Boolean(
+    validObservedBase &&
+    (observed.fixedOverheadInputTokens === undefined ||
+      (typeof observed.fixedOverheadInputTokens === "number" &&
+        Number.isSafeInteger(observed.fixedOverheadInputTokens) &&
+        observed.fixedOverheadInputTokens >= 0)) &&
+    (observed.preflightExemptRunCount === undefined ||
+      (typeof observed.preflightExemptRunCount === "number" &&
+        Number.isSafeInteger(observed.preflightExemptRunCount) &&
+        observed.preflightExemptRunCount >= 0)),
+  );
   const validReason = candidate.reason === null || [
     "run_limit_exhausted",
     "retry_limit_exhausted",
@@ -708,7 +716,14 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
   ) {
     return null;
   }
-  const envelope = candidate as ExecutionAdmissionEnvelope;
+  const envelope = {
+    ...candidate,
+    observed: {
+      ...(observed as ExecutionAdmissionUsage),
+      fixedOverheadInputTokens: observed?.fixedOverheadInputTokens ?? 0,
+      preflightExemptRunCount: observed?.preflightExemptRunCount ?? 0,
+    },
+  } as ExecutionAdmissionEnvelope;
   if (policy) {
     return { ...envelope, policy };
   }
@@ -847,6 +862,7 @@ export function buildExecutionAdmissionEnvelope(input: {
   evaluatedAt: Date;
 }): ExecutionAdmissionEnvelope {
   const attempt = input.decision.observed.runCount + 1;
+  const reservationSequence = attempt + input.decision.observed.preflightExemptRunCount;
   const remainingInputTokens = Math.max(0, input.policy.maxInputTokensPerTask - input.decision.observed.inputTokens);
   const remainingOutputTokens = Math.max(0, input.policy.maxOutputTokensPerTask - input.decision.observed.outputTokens);
   const remainingWallMs = Math.max(0, input.policy.maxWallMsPerTask - input.decision.observed.wallMs);
@@ -856,7 +872,7 @@ export function buildExecutionAdmissionEnvelope(input: {
     schemaVersion: "paperclip.provider-invocation-budget.v1" as const,
     budgetId: input.identity.budgetId,
     reservationId: createHash("sha256")
-      .update(`${input.identity.budgetId}:${input.identity.epoch}:${attempt}:${input.policy.digest}`)
+      .update(`${input.identity.budgetId}:${input.identity.epoch}:${reservationSequence}:${input.policy.digest}`)
       .digest("hex"),
     maxInputTokens: discretionaryInputTokens + fixedOverheadInputTokens,
     maxOutputTokens: Math.min(input.policy.maxOutputTokensPerInvocation, remainingOutputTokens),

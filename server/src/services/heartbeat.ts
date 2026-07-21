@@ -204,6 +204,7 @@ import {
   resolveExecutionBudgetIdentity,
   resolveReportedReservationExceeded,
   selectEpochLockingAdmissionEnvelope,
+  splitInputTokenAccounting,
   type ExecutionAdmissionEnvelope,
   type ExecutionAdmissionPolicy,
   type ExecutionAdmissionReason,
@@ -14210,6 +14211,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? adapterReportedExceeded
               : ["usage_missing"])
             : [];
+      const terminalInputAccounting = effectiveProviderInvocationAttempted === false
+        ? { fixedOverheadInputTokens: 0, discretionaryInputTokens: 0 }
+        : splitInputTokenAccounting({
+            inputTokens: accountedUsage?.inputTokens ?? 0,
+            fixedOverheadInputTokens: invocationBudget?.fixedOverheadInputTokens,
+          });
       const usageJson =
         accountedUsage || adapterResult.costUsd != null || reportedTurns != null || reportedToolCalls != null
           ? ({
@@ -14236,6 +14243,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sessionRotationReason: sessionCompaction.reason,
               configFreshness: configFreshnessResultMetadata,
               providerInvocationAttempted: effectiveProviderInvocationAttempted,
+              fixedOverheadInputTokens: terminalInputAccounting.fixedOverheadInputTokens,
+              discretionaryInputTokens: terminalInputAccounting.discretionaryInputTokens,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
