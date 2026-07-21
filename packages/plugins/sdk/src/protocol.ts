@@ -379,6 +379,8 @@ export interface GetDataParams {
   companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
+  /** Authenticated actor context resolved by the host, never by caller params. */
+  actorContext?: PluginPerformActionActorContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
 }
@@ -405,6 +407,14 @@ export interface PluginPerformActionActorContext {
 
 export interface PluginPerformActionContext {
   /** Immutable authenticated actor context supplied by the host. */
+  actor: Readonly<PluginPerformActionActorContext>;
+  /** Convenience alias for `actor.companyId`. */
+  companyId: string | null;
+}
+
+/** Immutable authenticated request context supplied to plugin data handlers. */
+export interface PluginGetDataContext {
+  /** Authenticated principal resolved by the Paperclip host. */
   actor: Readonly<PluginPerformActionActorContext>;
   /** Convenience alias for `actor.companyId`. */
   companyId: string | null;

@@ -80,6 +80,12 @@ describe("worker performAction context", () => {
     let nextRequestId = 1;
     const plugin = definePlugin({
       async setup(ctx) {
+        ctx.data.register("inspect", async (params, context) => ({
+          paramsCompanyId: params.companyId,
+          actor: context.actor,
+          companyId: context.companyId,
+          frozen: Object.isFrozen(context) && Object.isFrozen(context.actor),
+        }));
         ctx.actions.register("inspect", async (params, context) => ({
           paramsCompanyId: params.companyId,
           actor: context.actor,
@@ -145,6 +151,33 @@ describe("worker performAction context", () => {
           companyId: null,
         },
         companyId: null,
+      });
+
+      await expect(callWorker("getData", {
+        key: "inspect",
+        params: {
+          companyId: "spoofed-company",
+          actorContext: { type: "agent", agentId: "spoofed-agent" },
+        },
+        companyId: "company-a",
+        actorContext: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: "run-1",
+          companyId: "company-a",
+        },
+      })).resolves.toEqual({
+        paramsCompanyId: "company-a",
+        actor: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: "run-1",
+          companyId: "company-a",
+        },
+        companyId: "company-a",
+        frozen: true,
       });
     } finally {
       worker.stop();

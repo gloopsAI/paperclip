@@ -705,6 +705,56 @@ describe.sequential("plugin tool and bridge authz", () => {
       key: "health",
       companyId: companyA,
       params: { view: "compact" },
+      actorContext: {
+        type: "user",
+        userId: "user-1",
+        agentId: null,
+        runId: null,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+  });
+
+  it.each([
+    ["legacy", `/api/plugins/${pluginId}/bridge/data`, { key: "health" }],
+    ["url", `/api/plugins/${pluginId}/data/health`, {}],
+  ] as const)("passes trusted actor context to %s plugin data and ignores caller spoofing", async (_label, path, baseBody) => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ runId: runA }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(path)
+      .send({
+        ...baseBody,
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          actorContext: { type: "agent", agentId: "spoofed-agent" },
+        },
+        actorContext: { type: "agent", agentId: "spoofed-agent" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "getData", {
+      key: "health",
+      companyId: companyA,
+      params: {
+        companyId: companyB,
+        actorContext: { type: "agent", agentId: "spoofed-agent" },
+      },
+      actorContext: {
+        type: "user",
+        userId: "user-1",
+        agentId: null,
+        runId: runA,
+        companyId: companyA,
+      },
       renderEnvironment: null,
     });
   });

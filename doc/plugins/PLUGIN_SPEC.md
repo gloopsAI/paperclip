@@ -610,6 +610,10 @@ Input includes:
 - context (company id, project id, entity id, etc.)
 - optional query parameters
 
+The registered handler also receives immutable actor context resolved by the
+host. Plugins must use this trusted context—not caller-supplied params—when a
+data projection depends on the current board user or agent identity.
+
 ### 13.9 `performAction`
 
 Runs an explicit plugin action initiated by the board UI.
@@ -660,7 +664,7 @@ Required SDK clients:
 - `ctx.tools`
 - `ctx.logger`
 
-`ctx.data` and `ctx.actions` register handlers that the plugin's own UI calls through the host bridge. `ctx.data.register(key, handler)` backs `usePluginData(key)` on the frontend. `ctx.actions.register(key, handler)` backs `usePluginAction(key)`.
+`ctx.data` and `ctx.actions` register handlers that the plugin's own UI calls through the host bridge. `ctx.data.register(key, handler)` backs `usePluginData(key)` on the frontend and receives immutable host-authenticated actor context as its second argument. `ctx.actions.register(key, handler)` backs `usePluginAction(key)` and receives the same trusted context shape.
 
 Plugins that need filesystem, git, terminal, or process operations handle those directly using standard Node APIs or libraries. The host provides project workspace metadata through `ctx.projects` so plugins can resolve workspace paths, but the host does not proxy low-level OS operations.
 
