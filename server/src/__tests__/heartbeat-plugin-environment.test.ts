@@ -682,4 +682,346 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       adapterType: "codex_local",
     });
   }, 15_000);
+
+  it("honors explicit issue environmentId over agent default and local fallback", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const agentEnvironmentId = randomUUID();
+    const issueEnvironmentId = randomUUID();
+    const pluginId = randomUUID();
+    const pluginKey = `acme.environments.${pluginId}`;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-env-issue-pin-"));
+    tempRoots.push(workspaceRoot);
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, payload: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `plugin-heartbeat-lease-${String(payload.environmentId)}`,
+            metadata: {
+              remoteCwd: `/workspace/${String(payload.environmentId)}`,
+            },
+          };
+        }
+        if (method === "environmentReleaseLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin environment method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+
+    await instanceSettingsService(db).updateExperimental({
+      enableEnvironments: true,
+      enableIsolatedWorkspaces: true,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Issue pin environment",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceRoot,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey,
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: pluginKey,
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "sandbox",
+            displayName: "Sandbox",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await db.insert(environments).values([
+      {
+        id: agentEnvironmentId,
+        companyId,
+        name: "Agent default env",
+        driver: "plugin",
+        status: "active",
+        config: {
+          pluginKey,
+          driverKey: "sandbox",
+          driverConfig: { template: "agent-default" },
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: issueEnvironmentId,
+        companyId,
+        name: "Issue pinned env",
+        driver: "plugin",
+        status: "active",
+        config: {
+          pluginKey,
+          driverKey: "sandbox",
+          driverConfig: { template: "issue-pin" },
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: agentEnvironmentId,
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Pinned remote environment canary",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionWorkspaceSettings: {
+        mode: "shared_workspace",
+        environmentId: issueEnvironmentId,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 5_000 });
+
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.objectContaining({
+        companyId,
+        environmentId: issueEnvironmentId,
+        issueId,
+        config: { template: "issue-pin" },
+        agentId,
+        runId: run!.id,
+      }),
+    );
+  }, 15_000);
+
+  it("falls back when an issue-pinned environment is missing or archived", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const agentEnvironmentId = randomUUID();
+    const missingEnvironmentId = randomUUID();
+    const pluginId = randomUUID();
+    const pluginKey = `acme.environments.${pluginId}`;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-env-issue-fallback-"));
+    tempRoots.push(workspaceRoot);
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, payload: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `plugin-heartbeat-lease-${String(payload.environmentId)}`,
+            metadata: {
+              remoteCwd: `/workspace/${String(payload.environmentId)}`,
+            },
+          };
+        }
+        if (method === "environmentReleaseLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin environment method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+
+    await instanceSettingsService(db).updateExperimental({
+      enableEnvironments: true,
+      enableIsolatedWorkspaces: true,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Issue pin fallback",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceRoot,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey,
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: pluginKey,
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "sandbox",
+            displayName: "Sandbox",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await db.insert(environments).values({
+      id: agentEnvironmentId,
+      companyId,
+      name: "Agent default env",
+      driver: "plugin",
+      status: "active",
+      config: {
+        pluginKey,
+        driverKey: "sandbox",
+        driverConfig: { template: "agent-default" },
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      defaultEnvironmentId: agentEnvironmentId,
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Missing pinned environment fallback",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionWorkspaceSettings: {
+        mode: "shared_workspace",
+        environmentId: missingEnvironmentId,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 5_000 });
+
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.objectContaining({
+        companyId,
+        environmentId: agentEnvironmentId,
+        issueId,
+        config: { template: "agent-default" },
+        agentId,
+        runId: run!.id,
+      }),
+    );
+  }, 15_000);
 });

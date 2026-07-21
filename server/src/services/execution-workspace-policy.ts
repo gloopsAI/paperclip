@@ -156,6 +156,10 @@ export function gateProjectExecutionWorkspacePolicy(
 }
 
 type ParseIssueExecutionWorkspaceSettingsOptions = {
+  /**
+   * When false, omit environmentId from the parsed result.
+   * Defaults to true so explicit issue pins survive parse/update/heartbeat paths.
+   */
   includeEnvironmentId?: boolean;
 };
 
@@ -182,11 +186,14 @@ export function parseIssueExecutionWorkspaceSettings(
     if (mode === "isolated") return "isolated_workspace";
     return "";
   })();
+  // Default true: explicit issue environmentId must survive parse/update/heartbeat
+  // round-trips. Callers may set includeEnvironmentId: false to strip it.
+  const includeEnvironmentId = options.includeEnvironmentId !== false;
   return {
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
-    ...(options.includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
+    ...(includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
       ? { environmentId: parsed.environmentId }
       : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
@@ -197,6 +204,7 @@ export function parseIssueExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
   | "agent"
   | "instance"
   | "default";
@@ -206,11 +214,31 @@ export type ExecutionWorkspaceEnvironmentResolution = {
   source: ExecutionWorkspaceEnvironmentSource;
 };
 
+/**
+ * Resolve which execution environment a run should use.
+ *
+ * Precedence (highest first):
+ * 1. Explicit non-empty issue pin (`executionWorkspaceSettings.environmentId`)
+ * 2. Agent defaultEnvironmentId
+ * 3. Instance defaultEnvironmentId
+ * 4. Built-in Local environment
+ *
+ * Explicit `null` / empty issue pins do not win — they fall through to the
+ * agent/instance/local chain. Callers validate issue pins for usability and
+ * may re-invoke without issueEnvironmentId for safe fallback.
+ */
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  issueEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
 }): ExecutionWorkspaceEnvironmentResolution {
+  if (typeof input.issueEnvironmentId === "string" && input.issueEnvironmentId.trim().length > 0) {
+    return {
+      environmentId: input.issueEnvironmentId.trim(),
+      source: "issue",
+    };
+  }
   if (input.agentDefaultEnvironmentId) {
     return {
       environmentId: input.agentDefaultEnvironmentId,

@@ -278,6 +278,7 @@ describe("execution workspace policy helpers", () => {
       }),
     ).toEqual({
       mode: "shared_workspace",
+      environmentId: "11111111-1111-4111-8111-111111111111",
     });
     expect(
       parseIssueExecutionWorkspaceSettings(
@@ -285,11 +286,58 @@ describe("execution workspace policy helpers", () => {
           mode: "project_primary",
           environmentId: "11111111-1111-4111-8111-111111111111",
         },
-        { includeEnvironmentId: true },
+        { includeEnvironmentId: false },
       ),
     ).toEqual({
       mode: "shared_workspace",
-      environmentId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "shared_workspace",
+        environmentId: null,
+      }),
+    ).toEqual({
+      mode: "shared_workspace",
+      environmentId: null,
+    });
+  });
+
+  it("prefers an explicit non-empty issue environment over agent, instance, and local defaults", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        issueEnvironmentId: "issue-env",
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "issue-env",
+      source: "issue",
+    });
+  });
+
+  it("ignores null/empty issue environment pins and falls through to agent default", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        issueEnvironmentId: null,
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "agent-env",
+      source: "agent",
+    });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        issueEnvironmentId: "   ",
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "agent-env",
+      source: "agent",
     });
   });
 

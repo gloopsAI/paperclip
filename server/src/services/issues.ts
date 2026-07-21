@@ -6311,8 +6311,12 @@ export function issueService(db: Db) {
           : existing.executionWorkspacePreference;
       const nextExecutionWorkspaceSettings =
         issueData.executionWorkspaceSettings !== undefined
-          ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
-          : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+          ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings, {
+              includeEnvironmentId: true,
+            })
+          : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings, {
+              includeEnvironmentId: true,
+            });
       if (issueData.executionWorkspaceSettings !== undefined) {
         patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
           ? { ...nextExecutionWorkspaceSettings }
