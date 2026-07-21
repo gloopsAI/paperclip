@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -119,6 +119,8 @@ export interface SandboxCallbackBridgeRequest {
   query: string;
   headers: Record<string, string>;
   authKind?: "bridge" | "terminal";
+  /** HMAC proof that authKind was derived by the authenticated bridge server. */
+  authProof?: string;
   /**
    * UTF-8 body contents. The bridge rejects non-JSON request bodies; binary
    * payloads are intentionally out of scope for this queue protocol.
@@ -422,9 +424,6 @@ function terminalCallbackActionForRequest(
     "status",
     "comment",
     "reviewRequest",
-    "blockedByIssueIds",
-    "assigneeAgentId",
-    "assigneeUserId",
   ]);
   if (Object.keys(body).some((key) => !allowedFields.has(key))) return null;
   return "issue_terminal_update";
@@ -454,11 +453,45 @@ export function authorizeSandboxTerminalCallbackRequest(input: {
   if (idempotencyKey !== capability.idempotencyKey) {
     return { error: "Terminal callback idempotency key mismatch." };
   }
-  const scopedKey = `${action}:${idempotencyKey}`;
+  const requestDigest = action === "work_product_create"
+    ? createHash("sha256").update(input.request.body).digest("base64url")
+    : "";
+  const scopedKey = [action, idempotencyKey, requestDigest].filter(Boolean).join(":");
   if (input.usedIdempotencyKeys?.has(scopedKey)) {
     return { error: "Terminal callback idempotency key already used." };
   }
   return { action, idempotencyKey: scopedKey };
+}
+
+function terminalAuthProofPayload(request: Pick<
+  SandboxCallbackBridgeRequest,
+  "id" | "method" | "path" | "query" | "body" | "createdAt"
+>): string {
+  return [
+    request.id,
+    normalizeMethod(request.method),
+    request.path,
+    request.query,
+    request.body,
+    request.createdAt,
+  ].join("\n");
+}
+
+export function createSandboxTerminalCallbackAuthProof(
+  request: Pick<SandboxCallbackBridgeRequest, "id" | "method" | "path" | "query" | "body" | "createdAt">,
+  token: string,
+): string {
+  return createHmac("sha256", token).update(terminalAuthProofPayload(request)).digest("base64url");
+}
+
+function verifyTerminalAuthProof(
+  request: SandboxCallbackBridgeRequest,
+  capability: SandboxTerminalCallbackCapability | null | undefined,
+): boolean {
+  if (!capability || typeof request.authProof !== "string") return false;
+  const expected = Buffer.from(createSandboxTerminalCallbackAuthProof(request, capability.token), "utf8");
+  const actual = Buffer.from(request.authProof, "utf8");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 export async function createSandboxCallbackBridgeAsset(): Promise<SandboxCallbackBridgeAsset> {
@@ -769,15 +802,19 @@ export async function startSandboxCallbackBridgeWorker(input: {
     let terminalIdempotencyKey: string | null = null;
     let denialReason: string | null = null;
     if (request.authKind === "terminal") {
-      const decision = authorizeSandboxTerminalCallbackRequest({
-        request,
-        capability: input.terminalCapability,
-        usedIdempotencyKeys: usedTerminalIdempotencyKeys,
-      });
-      if ("error" in decision) {
-        denialReason = decision.error;
+      if (!verifyTerminalAuthProof(request, input.terminalCapability)) {
+        denialReason = "Terminal callback authentication proof invalid.";
       } else {
-        terminalIdempotencyKey = decision.idempotencyKey;
+        const decision = authorizeSandboxTerminalCallbackRequest({
+          request,
+          capability: input.terminalCapability,
+          usedIdempotencyKeys: usedTerminalIdempotencyKeys,
+        });
+        if ("error" in decision) {
+          denialReason = decision.error;
+        } else {
+          terminalIdempotencyKey = decision.idempotencyKey;
+        }
       }
     } else {
       denialReason = await authorizeRequest(request);
@@ -796,7 +833,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
 
     try {
       const result = await input.handleRequest(request);
-      if (terminalIdempotencyKey) {
+      if (terminalIdempotencyKey && result.status >= 200 && result.status < 300) {
         usedTerminalIdempotencyKeys.add(terminalIdempotencyKey);
       }
       const responseBody = result.body ?? "";
@@ -1161,7 +1198,7 @@ export async function startSandboxCallbackBridgeServer(input: {
 }
 
 function getSandboxCallbackBridgeServerSource(): string {
-  return `import { randomUUID, timingSafeEqual } from "node:crypto";
+  return `import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -1233,6 +1270,19 @@ function tokenKind(received) {
   return null;
 }
 
+function terminalAuthProof(payload) {
+  return createHmac("sha256", terminalCallbackToken)
+    .update([
+      payload.id,
+      String(payload.method || "GET").trim().toUpperCase(),
+      payload.path,
+      payload.query,
+      payload.body,
+      payload.createdAt,
+    ].join("\\n"))
+    .digest("base64url");
+}
+
 async function waitForResponse(requestId) {
   const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
   const deadline = Date.now() + responseTimeoutMs;
@@ -1286,6 +1336,7 @@ const server = createServer(async (req, res) => {
       body: requestBody,
       createdAt: new Date().toISOString(),
     };
+    if (authKind === "terminal") payload.authProof = terminalAuthProof(payload);
     const requestPath = path.posix.join(requestsDir, \`\${requestId}.json\`);
     const tempPath = \`\${requestPath}.tmp\`;
     await fs.writeFile(tempPath, \`\${JSON.stringify(payload)}\\n\`, "utf8");

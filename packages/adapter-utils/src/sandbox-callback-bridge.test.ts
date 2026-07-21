@@ -13,6 +13,7 @@ import {
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  createSandboxTerminalCallbackAuthProof,
   createSandboxTerminalCallbackCapability,
   sandboxCallbackBridgeDirectories,
   syncSandboxCallbackBridgeEntrypoint,
@@ -990,6 +991,28 @@ describe("sandbox callback bridge", () => {
       },
     })).toMatchObject({ action: "work_product_create" });
 
+    const firstWorkProduct = authorizeSandboxTerminalCallbackRequest({
+      capability,
+      request: {
+        method: "POST",
+        path: "/api/issues/issue-1/work-products",
+        headers,
+        body: JSON.stringify({ type: "commit", provider: "git", externalId: "first", title: "First" }),
+      },
+    });
+    const secondWorkProduct = authorizeSandboxTerminalCallbackRequest({
+      capability,
+      request: {
+        method: "POST",
+        path: "/api/issues/issue-1/work-products",
+        headers,
+        body: JSON.stringify({ type: "pull_request", provider: "github", externalId: "second", title: "Second" }),
+      },
+    });
+    expect("idempotencyKey" in firstWorkProduct && "idempotencyKey" in secondWorkProduct
+      ? firstWorkProduct.idempotencyKey !== secondWorkProduct.idempotencyKey
+      : false).toBe(true);
+
     const denied = [
       {
         method: "PATCH",
@@ -1010,6 +1033,12 @@ describe("sandbox callback bridge", () => {
         body: JSON.stringify({ status: "done", title: "Scope creep" }),
       },
       {
+        method: "PATCH",
+        path: "/api/issues/issue-1",
+        headers,
+        body: JSON.stringify({ status: "done", assigneeAgentId: "victim-agent" }),
+      },
+      {
         method: "DELETE",
         path: "/api/work-products/wp-1",
         headers,
@@ -1026,6 +1055,66 @@ describe("sandbox callback bridge", () => {
     for (const request of denied) {
       expect(authorizeSandboxTerminalCallbackRequest({ capability, request })).toHaveProperty("error");
     }
+  });
+
+  it("requires a signed terminal marker and only consumes idempotency after a successful response", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-terminal-proof-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const capability = createSandboxTerminalCallbackCapability({
+      companyId: "co-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      ttlMs: 60_000,
+    })!;
+    let attempts = 0;
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      queueDir,
+      terminalCapability: capability,
+      handleRequest: async () => {
+        attempts += 1;
+        return { status: attempts === 1 ? 503 : 200, body: "{}" };
+      },
+    });
+    cleanupFns.push(() => worker.stop());
+
+    const writeTerminalRequest = async (id: string, withProof: boolean) => {
+      const request = {
+        id,
+        method: "PATCH",
+        path: "/api/issues/issue-1",
+        query: "",
+        headers: { "idempotency-key": capability.idempotencyKey },
+        authKind: "terminal" as const,
+        body: JSON.stringify({ status: "done" }),
+        createdAt: new Date().toISOString(),
+      };
+      await writeFile(
+        path.posix.join(directories.requestsDir, `${id}.json`),
+        `${JSON.stringify({
+          ...request,
+          ...(withProof
+            ? { authProof: createSandboxTerminalCallbackAuthProof(request, capability.token) }
+            : {}),
+        })}\n`,
+        "utf8",
+      );
+      await waitForJsonFile(directories.responsesDir);
+      const response = JSON.parse(
+        await readFile(path.posix.join(directories.responsesDir, `${id}.json`), "utf8"),
+      ) as { status: number; body: string };
+      await rm(path.posix.join(directories.responsesDir, `${id}.json`), { force: true });
+      return response;
+    };
+
+    expect((await writeTerminalRequest("forged", false)).status).toBe(403);
+    expect((await writeTerminalRequest("retryable", true)).status).toBe(503);
+    expect((await writeTerminalRequest("success", true)).status).toBe(200);
+    expect((await writeTerminalRequest("duplicate", true)).status).toBe(403);
+    expect(attempts).toBe(2);
   });
 
   it("fails closed for expired or duplicate terminal callback capabilities", () => {
