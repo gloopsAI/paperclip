@@ -1,10 +1,35 @@
 import { createHash } from "node:crypto";
-import type { IssueExecutionResourceBudget } from "@paperclipai/shared";
+import type { IssueExecutionResourceBudget, IssueExecutionTaskClass } from "@paperclipai/shared";
 import type { ExecutionInvocationBudget } from "@paperclipai/adapter-utils";
 
 export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v2" as const;
 export const EXECUTION_ADMISSION_CONTEXT_KEY = "gloopsExecutionAdmission" as const;
 export const EXECUTION_ADMISSION_RESET_CONTEXT_KEY = "gloopsExecutionBudgetResetId" as const;
+
+/** Bootstrap class may declare generous bounded capacity for tool/input provisioning. */
+export const BOOTSTRAP_EXECUTION_DEFAULTS = {
+  maxRunsPerTask: 1,
+  maxRetriesPerTask: 0,
+  maxInputTokensPerTask: 220_000,
+  maxOutputTokensPerTask: 22_000,
+  maxWallMsPerTask: 30 * 60 * 1000,
+  maxInputTokensPerInvocation: 180_000,
+  maxOutputTokensPerInvocation: 18_000,
+  maxTurnsPerInvocation: 25,
+  maxToolCallsPerInvocation: 45,
+} as const;
+
+/**
+ * Preflight / bootstrap failures that must not consume task run/retry budget
+ * and must not charge provider reservation tokens.
+ */
+export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
+  "workspace_validation_failed",
+  "execution_admission.adapter_budget_unsupported",
+  "execution_admission.input_reservation_exceeded",
+  "configuration_incomplete",
+  "agent_not_invokable",
+]);
 
 export type ExecutionAdmissionPolicy =
   | { enabled: false }
@@ -19,6 +44,12 @@ export type ExecutionAdmissionPolicy =
       maxOutputTokensPerInvocation: number;
       maxTurnsPerInvocation: number;
       maxToolCallsPerInvocation: number;
+      /**
+       * Fixed overhead reserved on top of discretionary input ceilings.
+       * Not part of the epoch digest; carried for admission + receipts.
+       */
+      fixedOverheadInputTokens: number;
+      executionClass: IssueExecutionTaskClass;
       digest: string;
     };
 
@@ -32,18 +63,28 @@ export type ExecutionAdmissionReason =
   | "output_reservation_unavailable";
 
 export type ExecutionAdmissionUsage = {
+  /** Provider-invoking runs counted against maxRunsPerTask. */
   runCount: number;
+  /** Provider-invoking retries counted against maxRetriesPerTask. */
   retryCount: number;
+  /** Discretionary input tokens spent (excludes fixed overhead). */
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
   wallMs: number;
+  /** Fixed overhead charged across counted runs (receipt field). */
+  fixedOverheadInputTokens: number;
+  /** Preflight/bootstrap failures excluded from run/retry ceilings. */
+  preflightExemptRunCount: number;
 };
 
 /**
  * Snapshot of the effective task policy admitted for a budget epoch.
  * Stored on the envelope so retries and continuations can rehydrate the exact
  * ceilings without re-reading live env or issue edits.
+ *
+ * `maxInputTokensPerTask` / `maxInputTokensPerInvocation` are discretionary
+ * ceilings. Fixed overhead is carried separately and reserved on top.
  */
 export type ExecutionAdmissionPolicyLimits = {
   maxRunsPerTask: number;
@@ -55,6 +96,8 @@ export type ExecutionAdmissionPolicyLimits = {
   maxOutputTokensPerInvocation: number;
   maxTurnsPerInvocation: number;
   maxToolCallsPerInvocation: number;
+  fixedOverheadInputTokens: number;
+  executionClass: IssueExecutionTaskClass;
 };
 
 export type ExecutionAdmissionEnvelope = {
@@ -81,7 +124,72 @@ export type PriorExecutionRun = {
   cachedInputTokens?: number | null;
   outputTokens?: number | null;
   wallMs?: number | null;
+  /**
+   * When false, the run is a preflight/bootstrap failure that must not
+   * consume run/retry budget or discretionary token spend.
+   * Defaults to true when omitted (legacy rows).
+   */
+  countsTowardTaskBudget?: boolean;
+  /** Fixed overhead charged for this run (0 for preflight-exempt). */
+  fixedOverheadInputTokens?: number | null;
+  /** Discretionary input charged for this run. */
+  discretionaryInputTokens?: number | null;
 };
+
+/**
+ * True when a terminal run failed before provider invocation and must not
+ * burn the sole implementation retry or task token reservation.
+ */
+export function isBudgetExemptPreflightFailure(input: {
+  providerInvocationAttempted?: boolean | null;
+  errorCode?: string | null;
+}): boolean {
+  if (input.providerInvocationAttempted === false) return true;
+  const code = typeof input.errorCode === "string" ? input.errorCode.trim() : "";
+  if (!code) return false;
+  if (PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES.has(code)) return true;
+  // Configuration / workspace preflight family prefixes.
+  if (
+    code.startsWith("workspace_validation") ||
+    code.startsWith("configuration_") ||
+    code === "missing_workspace" ||
+    code === "workspace_not_ready"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Split observed input tokens into fixed overhead vs discretionary spend.
+ * Legacy rows without an explicit split charge the full amount as discretionary
+ * except when a reservation recorded the fixed overhead portion.
+ */
+export function splitInputTokenAccounting(input: {
+  inputTokens: number;
+  fixedOverheadInputTokens?: number | null;
+  discretionaryInputTokens?: number | null;
+}): { fixedOverheadInputTokens: number; discretionaryInputTokens: number } {
+  const total = nonNegative(input.inputTokens);
+  if (
+    input.discretionaryInputTokens != null &&
+    Number.isFinite(input.discretionaryInputTokens)
+  ) {
+    const discretionary = nonNegative(input.discretionaryInputTokens);
+    const fixed = input.fixedOverheadInputTokens != null
+      ? nonNegative(input.fixedOverheadInputTokens)
+      : Math.max(0, total - discretionary);
+    return { fixedOverheadInputTokens: fixed, discretionaryInputTokens: discretionary };
+  }
+  if (input.fixedOverheadInputTokens != null && Number.isFinite(input.fixedOverheadInputTokens)) {
+    const fixed = Math.min(total, nonNegative(input.fixedOverheadInputTokens));
+    return {
+      fixedOverheadInputTokens: fixed,
+      discretionaryInputTokens: Math.max(0, total - fixed),
+    };
+  }
+  return { fixedOverheadInputTokens: 0, discretionaryInputTokens: total };
+}
 
 const POSITIVE_INTEGER = /^[1-9]\d*$/;
 const NON_NEGATIVE_INTEGER = /^(0|[1-9]\d*)$/;
@@ -158,14 +266,30 @@ export function parseExecutionAdmissionPolicy(
   if (values.maxOutputTokensPerInvocation > values.maxOutputTokensPerTask) {
     throw new Error("PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION must not exceed the task output-token limit");
   }
+  const limits: ExecutionAdmissionPolicyLimits = {
+    ...values,
+    fixedOverheadInputTokens: 0,
+    executionClass: "steady_state",
+  };
   return {
     enabled: true,
-    ...values,
-    digest: createHash("sha256").update(JSON.stringify(values)).digest("hex"),
+    ...limits,
+    digest: digestPolicyLimits(limits),
   };
 }
 
-const LIMIT_FIELDS: Array<keyof IssueExecutionResourceBudget & keyof Extract<ExecutionAdmissionPolicy, { enabled: true }>> = [
+type ResourceBudgetLimitField =
+  | "maxRunsPerTask"
+  | "maxRetriesPerTask"
+  | "maxInputTokensPerTask"
+  | "maxOutputTokensPerTask"
+  | "maxWallMsPerTask"
+  | "maxInputTokensPerInvocation"
+  | "maxOutputTokensPerInvocation"
+  | "maxTurnsPerInvocation"
+  | "maxToolCallsPerInvocation";
+
+const LIMIT_FIELDS: ResourceBudgetLimitField[] = [
   "maxRunsPerTask",
   "maxRetriesPerTask",
   "maxInputTokensPerTask",
@@ -177,10 +301,7 @@ const LIMIT_FIELDS: Array<keyof IssueExecutionResourceBudget & keyof Extract<Exe
   "maxToolCallsPerInvocation",
 ];
 
-type SpendLimitField = Exclude<
-  typeof LIMIT_FIELDS[number],
-  "maxTurnsPerInvocation" | "maxToolCallsPerInvocation"
->;
+type SpendLimitField = Exclude<ResourceBudgetLimitField, "maxTurnsPerInvocation" | "maxToolCallsPerInvocation">;
 
 function validateLimitNumber(name: string, value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -207,11 +328,39 @@ export function executionAdmissionPolicyLimits(
     maxOutputTokensPerInvocation: policy.maxOutputTokensPerInvocation,
     maxTurnsPerInvocation: policy.maxTurnsPerInvocation,
     maxToolCallsPerInvocation: policy.maxToolCallsPerInvocation,
+    fixedOverheadInputTokens: policy.fixedOverheadInputTokens ?? 0,
+    executionClass: policy.executionClass ?? "steady_state",
   };
 }
 
+/**
+ * Digest only spend/structural ceilings so fixed-overhead and execution-class
+ * accounting metadata can evolve without invalidating epoch locks that share
+ * the same executable ceilings.
+ */
 function digestPolicyLimits(values: ExecutionAdmissionPolicyLimits): string {
-  return createHash("sha256").update(JSON.stringify(values)).digest("hex");
+  const {
+    fixedOverheadInputTokens: _fixed,
+    executionClass: _class,
+    ...ceilings
+  } = values;
+  return createHash("sha256").update(JSON.stringify(ceilings)).digest("hex");
+}
+
+function normalizeExecutionTaskClass(value: unknown): IssueExecutionTaskClass {
+  if (value === "bootstrap" || value === "steady_state" || value === "proven") return value;
+  return "steady_state";
+}
+
+function normalizeFixedOverheadInputTokens(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error("Execution admission fixedOverheadInputTokens must be a finite number");
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error("Execution admission fixedOverheadInputTokens must be a non-negative safe integer");
+  }
+  return Math.floor(value);
 }
 
 /**
@@ -242,6 +391,8 @@ export function rehydrateExecutionAdmissionPolicy(
       "maxToolCallsPerInvocation",
       limits.maxToolCallsPerInvocation,
     ),
+    fixedOverheadInputTokens: normalizeFixedOverheadInputTokens(limits.fixedOverheadInputTokens),
+    executionClass: normalizeExecutionTaskClass(limits.executionClass),
   };
   if (values.maxRetriesPerTask >= values.maxRunsPerTask) {
     throw new Error("Execution admission maxRetriesPerTask must be lower than maxRunsPerTask");
@@ -264,7 +415,36 @@ export function resolveEffectiveExecutionAdmissionPolicy(
   requestBudget?: IssueExecutionResourceBudget | null,
   parentPolicy?: Extract<ExecutionAdmissionPolicy, { enabled: true }> | null,
 ): Extract<ExecutionAdmissionPolicy, { enabled: true }> {
+  const executionClass = normalizeExecutionTaskClass(
+    requestBudget?.executionClass ?? parentPolicy?.executionClass ?? globalPolicy.executionClass,
+  );
+  const isBootstrap = executionClass === "bootstrap";
+  const fixedOverheadInputTokens = normalizeFixedOverheadInputTokens(
+    requestBudget?.fixedOverheadInputTokens ??
+      parentPolicy?.fixedOverheadInputTokens ??
+      globalPolicy.fixedOverheadInputTokens ??
+      0,
+  );
+
   const pickSpendLimit = (field: SpendLimitField) => {
+    // Bootstrap tasks may declare generous bounded capacity that is not
+    // clamped by tight steady-state environment ceilings. Parent authority,
+    // when present, still caps the child.
+    if (isBootstrap) {
+      const bootstrapDefault = BOOTSTRAP_EXECUTION_DEFAULTS[field];
+      const requested = requestBudget?.[field] === undefined
+        ? Math.max(validateLimitNumber(field, globalPolicy[field]), bootstrapDefault)
+        : validateLimitNumber(field, requestBudget[field]);
+      if (parentPolicy != null && parentPolicy.executionClass !== "bootstrap") {
+        // Non-bootstrap parent remains a hard authority ceiling.
+        return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+      }
+      if (parentPolicy != null) {
+        return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+      }
+      return requested;
+    }
+
     const candidates: number[] = [
       validateLimitNumber(field, globalPolicy[field]),
     ];
@@ -284,14 +464,27 @@ export function resolveEffectiveExecutionAdmissionPolicy(
     // work. A task may explicitly select a larger bounded turn/tool envelope
     // without widening its token, wall-time, run, or retry ceilings. An
     // inherited parent policy, when present, remains an authority ceiling.
+    // Bootstrap may also adopt generous structural defaults.
     const requested = requestBudget?.[field] === undefined
-      ? validateLimitNumber(field, globalPolicy[field])
+      ? (isBootstrap
+        ? Math.max(
+          validateLimitNumber(field, globalPolicy[field]),
+          BOOTSTRAP_EXECUTION_DEFAULTS[field],
+        )
+        : validateLimitNumber(field, globalPolicy[field]))
       : validateLimitNumber(field, requestBudget[field]);
     if (parentPolicy == null) return requested;
+    if (isBootstrap && parentPolicy.executionClass === "bootstrap") {
+      return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+    }
+    if (isBootstrap && parentPolicy.executionClass !== "bootstrap") {
+      // Bootstrap child under non-bootstrap parent: allow request up to parent.
+      return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+    }
     return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
   };
 
-  const values = {
+  const values: ExecutionAdmissionPolicyLimits = {
     maxRunsPerTask: pickSpendLimit("maxRunsPerTask"),
     maxRetriesPerTask: pickSpendLimit("maxRetriesPerTask"),
     maxInputTokensPerTask: pickSpendLimit("maxInputTokensPerTask"),
@@ -301,6 +494,8 @@ export function resolveEffectiveExecutionAdmissionPolicy(
     maxOutputTokensPerInvocation: pickSpendLimit("maxOutputTokensPerInvocation"),
     maxTurnsPerInvocation: pickStructuralLimit("maxTurnsPerInvocation"),
     maxToolCallsPerInvocation: pickStructuralLimit("maxToolCallsPerInvocation"),
+    fixedOverheadInputTokens,
+    executionClass,
   };
 
   if (values.maxRetriesPerTask >= values.maxRunsPerTask) {
@@ -442,6 +637,8 @@ function readExecutionAdmissionPolicyLimits(value: unknown): ExecutionAdmissionP
       maxOutputTokensPerInvocation: candidate.maxOutputTokensPerInvocation as number,
       maxTurnsPerInvocation: candidate.maxTurnsPerInvocation as number,
       maxToolCallsPerInvocation: candidate.maxToolCallsPerInvocation as number,
+      fixedOverheadInputTokens: candidate.fixedOverheadInputTokens ?? 0,
+      executionClass: candidate.executionClass ?? "steady_state",
     }));
   } catch {
     return null;
@@ -459,6 +656,8 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     observed.cachedInputTokens,
     observed.outputTokens,
     observed.wallMs,
+    observed.fixedOverheadInputTokens,
+    observed.preflightExemptRunCount,
   ].every((item) => typeof item === "number" && Number.isSafeInteger(item) && item >= 0);
   const validReason = candidate.reason === null || [
     "run_limit_exhausted",
@@ -477,7 +676,15 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     typeof reservation.reservationId === "string" && /^[a-f0-9]{64}$/.test(reservation.reservationId) &&
     [reservation.maxInputTokens, reservation.maxOutputTokens, reservation.maxTurns,
       reservation.maxToolCalls, reservation.maxWallMs]
-      .every((item) => typeof item === "number" && Number.isSafeInteger(item) && item > 0)
+      .every((item) => typeof item === "number" && Number.isSafeInteger(item) && item > 0) &&
+    (reservation.fixedOverheadInputTokens === undefined ||
+      (typeof reservation.fixedOverheadInputTokens === "number" &&
+        Number.isSafeInteger(reservation.fixedOverheadInputTokens) &&
+        reservation.fixedOverheadInputTokens >= 0)) &&
+    (reservation.discretionaryInputTokens === undefined ||
+      (typeof reservation.discretionaryInputTokens === "number" &&
+        Number.isSafeInteger(reservation.discretionaryInputTokens) &&
+        reservation.discretionaryInputTokens >= 0))
   );
   const hasPolicyField = Object.prototype.hasOwnProperty.call(candidate, "policy");
   const policy = hasPolicyField ? readExecutionAdmissionPolicyLimits(candidate.policy) : undefined;
@@ -561,16 +768,41 @@ function nonNegative(value: number | null | undefined) {
 
 export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): ExecutionAdmissionUsage {
   return priorRuns.reduce<ExecutionAdmissionUsage>(
-    (total, run) => ({
-      runCount: total.runCount + 1,
-      // Independent workflow stages consume run budget but are not retries.
-      retryCount: total.retryCount + (run.retryOfRunId ? 1 : 0),
-      inputTokens: total.inputTokens + nonNegative(run.inputTokens),
-      cachedInputTokens: total.cachedInputTokens + nonNegative(run.cachedInputTokens),
-      outputTokens: total.outputTokens + nonNegative(run.outputTokens),
-      wallMs: total.wallMs + nonNegative(run.wallMs),
-    }),
-    { runCount: 0, retryCount: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, wallMs: 0 },
+    (total, run) => {
+      if (run.countsTowardTaskBudget === false) {
+        return {
+          ...total,
+          preflightExemptRunCount: total.preflightExemptRunCount + 1,
+        };
+      }
+      const inputSplit = splitInputTokenAccounting({
+        inputTokens: nonNegative(run.inputTokens),
+        fixedOverheadInputTokens: run.fixedOverheadInputTokens,
+        discretionaryInputTokens: run.discretionaryInputTokens,
+      });
+      return {
+        runCount: total.runCount + 1,
+        // Independent workflow stages consume run budget but are not retries.
+        retryCount: total.retryCount + (run.retryOfRunId ? 1 : 0),
+        inputTokens: total.inputTokens + inputSplit.discretionaryInputTokens,
+        cachedInputTokens: total.cachedInputTokens + nonNegative(run.cachedInputTokens),
+        outputTokens: total.outputTokens + nonNegative(run.outputTokens),
+        wallMs: total.wallMs + nonNegative(run.wallMs),
+        fixedOverheadInputTokens:
+          total.fixedOverheadInputTokens + inputSplit.fixedOverheadInputTokens,
+        preflightExemptRunCount: total.preflightExemptRunCount,
+      };
+    },
+    {
+      runCount: 0,
+      retryCount: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      wallMs: 0,
+      fixedOverheadInputTokens: 0,
+      preflightExemptRunCount: 0,
+    },
   );
 }
 
@@ -618,17 +850,21 @@ export function buildExecutionAdmissionEnvelope(input: {
   const remainingInputTokens = Math.max(0, input.policy.maxInputTokensPerTask - input.decision.observed.inputTokens);
   const remainingOutputTokens = Math.max(0, input.policy.maxOutputTokensPerTask - input.decision.observed.outputTokens);
   const remainingWallMs = Math.max(0, input.policy.maxWallMsPerTask - input.decision.observed.wallMs);
+  const discretionaryInputTokens = Math.min(input.policy.maxInputTokensPerInvocation, remainingInputTokens);
+  const fixedOverheadInputTokens = input.policy.fixedOverheadInputTokens;
   const reservation = input.decision.allowed ? {
     schemaVersion: "paperclip.provider-invocation-budget.v1" as const,
     budgetId: input.identity.budgetId,
     reservationId: createHash("sha256")
       .update(`${input.identity.budgetId}:${input.identity.epoch}:${attempt}:${input.policy.digest}`)
       .digest("hex"),
-    maxInputTokens: Math.min(input.policy.maxInputTokensPerInvocation, remainingInputTokens),
+    maxInputTokens: discretionaryInputTokens + fixedOverheadInputTokens,
     maxOutputTokens: Math.min(input.policy.maxOutputTokensPerInvocation, remainingOutputTokens),
     maxTurns: input.policy.maxTurnsPerInvocation,
     maxToolCalls: input.policy.maxToolCallsPerInvocation,
     maxWallMs: remainingWallMs,
+    fixedOverheadInputTokens,
+    discretionaryInputTokens,
   } : null;
   return {
     schemaVersion: EXECUTION_ADMISSION_SCHEMA_VERSION,

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOOTSTRAP_EXECUTION_DEFAULTS,
   allowsAutomaticRecoveryCreation,
   buildExecutionAdmissionEnvelope,
   evaluateExecutionReservationUsage,
   evaluateExecutionAdmission,
+  isBudgetExemptPreflightFailure,
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
@@ -15,6 +17,8 @@ import {
   resolveExecutionBudgetIdentity,
   resolveReportedReservationExceeded,
   selectEpochLockingAdmissionEnvelope,
+  splitInputTokenAccounting,
+  summarizePriorExecution,
 } from "./execution-admission.js";
 
 const enabledEnv = {
@@ -209,6 +213,8 @@ describe("execution admission", () => {
       maxOutputTokens: 100,
       maxTurns: 6,
       maxToolCalls: 24,
+      fixedOverheadInputTokens: 0,
+      discretionaryInputTokens: 400,
     });
     expect(readExecutionAdmissionEnvelope({ ...parent, policyDigest: "forged" })).toBeNull();
     expect(readExecutionAdmissionEnvelope({ ...parent, observed: { ...parent.observed, runCount: -1 } })).toBeNull();
@@ -363,6 +369,8 @@ describe("execution admission", () => {
       maxOutputTokensPerInvocation: admitted.maxOutputTokensPerInvocation,
       maxTurnsPerInvocation: admitted.maxTurnsPerInvocation,
       maxToolCallsPerInvocation: admitted.maxToolCallsPerInvocation,
+      fixedOverheadInputTokens: admitted.fixedOverheadInputTokens,
+      executionClass: admitted.executionClass,
     });
     expect(readExecutionAdmissionEnvelope(envelope)?.policy).toEqual(envelope.policy);
 
@@ -428,6 +436,146 @@ describe("execution admission", () => {
       maxTurnsPerInvocation: 20,
       maxToolCallsPerInvocation: 60,
     });
+  });
+
+  it("exempts preflight failures from run, retry, and token budget usage", () => {
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: false,
+      errorCode: "adapter_failed",
+    })).toBe(true);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: null,
+      errorCode: "workspace_validation_failed",
+    })).toBe(true);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: true,
+      errorCode: "adapter_failed",
+    })).toBe(false);
+
+    const observed = summarizePriorExecution([
+      {
+        retryOfRunId: null,
+        countsTowardTaskBudget: false,
+        inputTokens: 400,
+        outputTokens: 100,
+        wallMs: 60_000,
+      },
+      {
+        retryOfRunId: null,
+        inputTokens: 100,
+        outputTokens: 10,
+        wallMs: 1_000,
+      },
+    ]);
+
+    expect(observed).toMatchObject({
+      runCount: 1,
+      retryCount: 0,
+      inputTokens: 100,
+      outputTokens: 10,
+      wallMs: 1_000,
+      preflightExemptRunCount: 1,
+    });
+    expect(evaluateExecutionAdmission(policy(), [
+      {
+        retryOfRunId: null,
+        countsTowardTaskBudget: false,
+        inputTokens: 1_000,
+        outputTokens: 200,
+        wallMs: 60_000,
+      },
+    ])).toMatchObject({
+      allowed: true,
+      observed: {
+        runCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        wallMs: 0,
+        preflightExemptRunCount: 1,
+      },
+    });
+  });
+
+  it("accounts fixed input overhead separately from discretionary task budget", () => {
+    expect(splitInputTokenAccounting({
+      inputTokens: 450,
+      fixedOverheadInputTokens: 50,
+    })).toEqual({
+      fixedOverheadInputTokens: 50,
+      discretionaryInputTokens: 400,
+    });
+    expect(splitInputTokenAccounting({
+      inputTokens: 450,
+      fixedOverheadInputTokens: 100,
+      discretionaryInputTokens: 300,
+    })).toEqual({
+      fixedOverheadInputTokens: 100,
+      discretionaryInputTokens: 300,
+    });
+
+    const global = policy();
+    const withOverhead = resolveEffectiveExecutionAdmissionPolicy(global, {
+      fixedOverheadInputTokens: 50,
+      maxInputTokensPerTask: 400,
+      maxInputTokensPerInvocation: 400,
+    }, null);
+    const envelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:overhead:default", epoch: "default" },
+      policy: withOverhead,
+      decision: evaluateExecutionAdmission(withOverhead, []),
+      evaluatedAt: new Date("2026-07-21T00:00:00Z"),
+    });
+
+    expect(envelope.reservation).toMatchObject({
+      maxInputTokens: 450,
+      fixedOverheadInputTokens: 50,
+      discretionaryInputTokens: 400,
+    });
+    expect(readExecutionAdmissionEnvelope(envelope)).toEqual(envelope);
+    expect(evaluateExecutionAdmission(withOverhead, [{
+      inputTokens: 450,
+      fixedOverheadInputTokens: 50,
+      discretionaryInputTokens: 400,
+    }], { isRetry: true })).toMatchObject({
+      allowed: false,
+      reason: "input_token_limit_exhausted",
+      observed: {
+        inputTokens: 400,
+        fixedOverheadInputTokens: 50,
+      },
+    });
+  });
+
+  it("allows bootstrap tasks to declare a generous bounded completion envelope", () => {
+    const global = policy();
+    const bootstrap = resolveEffectiveExecutionAdmissionPolicy(global, {
+      executionClass: "bootstrap",
+      fixedOverheadInputTokens: 2_000,
+    }, null);
+
+    expect(bootstrap).toMatchObject({
+      executionClass: "bootstrap",
+      fixedOverheadInputTokens: 2_000,
+      maxInputTokensPerTask: BOOTSTRAP_EXECUTION_DEFAULTS.maxInputTokensPerTask,
+      maxOutputTokensPerTask: BOOTSTRAP_EXECUTION_DEFAULTS.maxOutputTokensPerTask,
+      maxTurnsPerInvocation: BOOTSTRAP_EXECUTION_DEFAULTS.maxTurnsPerInvocation,
+      maxToolCallsPerInvocation: BOOTSTRAP_EXECUTION_DEFAULTS.maxToolCallsPerInvocation,
+    });
+    expect(bootstrap.maxInputTokensPerInvocation).toBeLessThanOrEqual(bootstrap.maxInputTokensPerTask);
+
+    const envelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: "issue:bootstrap:default", epoch: "default" },
+      policy: bootstrap,
+      decision: evaluateExecutionAdmission(bootstrap, []),
+      evaluatedAt: new Date("2026-07-21T00:00:00Z"),
+    });
+    expect(envelope.reservation).toMatchObject({
+      maxInputTokens:
+        BOOTSTRAP_EXECUTION_DEFAULTS.maxInputTokensPerInvocation + 2_000,
+      discretionaryInputTokens: BOOTSTRAP_EXECUTION_DEFAULTS.maxInputTokensPerInvocation,
+      fixedOverheadInputTokens: 2_000,
+    });
+    expect(rehydrateExecutionAdmissionPolicy(envelope.policy!, envelope.policyDigest)).toEqual(bootstrap);
   });
 
   it("keeps an inherited structural envelope as the authority ceiling", () => {

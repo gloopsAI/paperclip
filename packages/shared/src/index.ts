@@ -748,6 +748,7 @@ export type {
   IssueRelatedWorkSummary,
   IssueExecutionMonitorPolicy,
   IssueExecutionResourceBudget,
+  IssueExecutionTaskClass,
   IssueExecutionMonitorState,
   IssueRelation,
   IssueRelationIssueSummary,

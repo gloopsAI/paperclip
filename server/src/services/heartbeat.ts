@@ -195,6 +195,7 @@ import {
   evaluateExecutionAdmission,
   evaluateExecutionReservationUsage,
   executionInvocationBudgetFromEnvelope,
+  isBudgetExemptPreflightFailure,
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
@@ -10275,13 +10276,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     row: {
       retryOfRunId: string | null;
       usageJson: unknown;
+      resultJson: unknown;
       contextSnapshot: unknown;
+      errorCode: string | null;
       startedAt: Date | null;
       finishedAt: Date | null;
     },
     now: Date,
   ): PriorExecutionRun {
     const persistedUsage = parseObject(row.usageJson);
+    const resultJson = parseObject(row.resultJson);
+    const providerInvocation = parseObject(resultJson.provider_invocation);
+    const providerInvocationAttempted = typeof persistedUsage.providerInvocationAttempted === "boolean"
+      ? persistedUsage.providerInvocationAttempted
+      : typeof providerInvocation.attempted === "boolean"
+        ? providerInvocation.attempted
+        : null;
+    const countsTowardTaskBudget = !isBudgetExemptPreflightFailure({
+      providerInvocationAttempted,
+      errorCode: row.errorCode,
+    });
     const reservation = executionInvocationBudgetFromEnvelope(
       parseObject(row.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
     );
@@ -10305,6 +10319,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     return {
       retryOfRunId: row.retryOfRunId,
+      countsTowardTaskBudget,
       inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
       outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
@@ -10313,6 +10328,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : row.startedAt
         ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
         : 0,
+      fixedOverheadInputTokens: useReservation && reservation
+        ? reservation.fixedOverheadInputTokens
+        : typeof persistedUsage.fixedOverheadInputTokens === "number"
+          ? persistedUsage.fixedOverheadInputTokens
+          : undefined,
+      discretionaryInputTokens: useReservation && reservation
+        ? reservation.discretionaryInputTokens
+        : typeof persistedUsage.discretionaryInputTokens === "number"
+          ? persistedUsage.discretionaryInputTokens
+          : undefined,
     };
   }
 
@@ -10554,7 +10579,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .select({
           retryOfRunId: heartbeatRuns.retryOfRunId,
           usageJson: heartbeatRuns.usageJson,
+          resultJson: heartbeatRuns.resultJson,
           contextSnapshot: heartbeatRuns.contextSnapshot,
+          errorCode: heartbeatRuns.errorCode,
           startedAt: heartbeatRuns.startedAt,
           finishedAt: heartbeatRuns.finishedAt,
         })
