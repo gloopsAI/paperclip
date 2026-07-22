@@ -8,6 +8,7 @@ import {
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
+  adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
@@ -17,6 +18,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
+  startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
@@ -239,6 +241,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
   try {
     const envConfig = parseObject(config.env);
@@ -348,6 +351,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId,
+        target: runtimeExecutionTarget,
+        runtimeRootDir: null,
+        adapterKey: "grok",
+        timeoutSec,
+        hostApiToken: env.PAPERCLIP_API_KEY,
+        paperclipScope: {
+          companyId: agent.companyId,
+          issueId: wakeTaskId,
+          agentId: agent.id,
+        },
+        onLog,
+      });
+      if (paperclipBridge) {
+        Object.assign(env, paperclipBridge.env);
+      }
+    }
     const effectiveEnv = Object.fromEntries(
       Object.entries({ ...process.env, ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -601,6 +623,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toResult(initial);
   } finally {
     await Promise.all([
+      paperclipBridge?.stop(),
       restoreRemoteWorkspace?.(),
       stagedAssets.cleanup(),
     ]);
