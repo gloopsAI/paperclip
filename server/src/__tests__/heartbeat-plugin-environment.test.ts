@@ -22,6 +22,18 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 
+vi.mock("@paperclipai/adapter-utils/execution-envelope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/execution-envelope")>();
+  return {
+    ...actual,
+    evaluateSubscriptionRouteAdmission: vi.fn(() => ({
+      allowed: true,
+      provider: null,
+      reason: "Plugin-environment fixture is independent of the GLoops subscription route.",
+    })),
+  };
+});
+
 const adapterExecute = vi.hoisted(() => vi.fn(async (_input?: { runId?: string }) => ({
   exitCode: 0,
   signal: null,

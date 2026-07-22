@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IssueExecutionResourceBudget, IssueExecutionTaskClass } from "@paperclipai/shared";
 import type { ExecutionInvocationBudget } from "@paperclipai/adapter-utils";
+import { buildExecutionPhaseBudgetPlan } from "@paperclipai/adapter-utils/execution-envelope";
 
 export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v2" as const;
 export const EXECUTION_ADMISSION_CONTEXT_KEY = "gloopsExecutionAdmission" as const;
@@ -149,8 +150,12 @@ export function isBudgetExemptPreflightFailure(input: {
   providerInvocationAttempted?: boolean | null;
   errorCode?: string | null;
 }): boolean {
-  if (input.providerInvocationAttempted === false) return true;
   const code = typeof input.errorCode === "string" ? input.errorCode.trim() : "";
+  // A protected-route denial invokes no provider, but must consume the bounded
+  // task attempt so repeated wakes cannot spin forever outside the provider
+  // budget. Provider token/cost accounting remains zero.
+  if (code.startsWith("execution_route.")) return false;
+  if (input.providerInvocationAttempted === false) return true;
   if (!code) return false;
   if (PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES.has(code)) return true;
   // Configuration / workspace preflight family prefixes.
@@ -686,6 +691,27 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     "output_reservation_unavailable",
   ].includes(candidate.reason as string);
   const reservation = candidate.reservation as Partial<ExecutionInvocationBudget> | null | undefined;
+  const validPhasePlan = (() => {
+    if (!reservation || reservation.phasePlan === undefined) return true;
+    if (!reservation.phasePlan || typeof reservation.phasePlan !== "object" || Array.isArray(reservation.phasePlan)) return false;
+    const phases = ["plan", "implement", "verify", "closeout"] as const;
+    const dimensions = ["inputTokens", "outputTokens", "turns", "toolCalls", "wallMs"] as const;
+    const plan = reservation.phasePlan as Record<string, unknown>;
+    if (Object.keys(plan).length !== phases.length || phases.some((phase) => {
+      const value = plan[phase];
+      if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+      const record = value as Record<string, unknown>;
+      return Object.keys(record).length !== dimensions.length || dimensions.some((dimension) =>
+        typeof record[dimension] !== "number" || !Number.isSafeInteger(record[dimension]) || Number(record[dimension]) < 0);
+    })) return false;
+    const sum = (dimension: typeof dimensions[number]) => phases.reduce((total, phase) =>
+      total + Number((plan[phase] as Record<string, unknown>)[dimension]), 0);
+    return sum("inputTokens") === (reservation.discretionaryInputTokens ?? reservation.maxInputTokens)
+      && sum("outputTokens") === reservation.maxOutputTokens
+      && sum("turns") === reservation.maxTurns
+      && sum("toolCalls") === reservation.maxToolCalls
+      && sum("wallMs") === reservation.maxWallMs;
+  })();
   const validReservation = reservation === null || Boolean(
     reservation &&
     reservation.schemaVersion === "paperclip.provider-invocation-budget.v1" &&
@@ -701,7 +727,8 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     (reservation.discretionaryInputTokens === undefined ||
       (typeof reservation.discretionaryInputTokens === "number" &&
         Number.isSafeInteger(reservation.discretionaryInputTokens) &&
-        reservation.discretionaryInputTokens >= 0))
+        reservation.discretionaryInputTokens >= 0)) &&
+    validPhasePlan
   );
   const hasPolicyField = Object.prototype.hasOwnProperty.call(candidate, "policy");
   const policy = hasPolicyField ? readExecutionAdmissionPolicyLimits(candidate.policy) : undefined;
@@ -890,6 +917,13 @@ export function buildExecutionAdmissionEnvelope(input: {
     maxWallMs: remainingWallMs,
     fixedOverheadInputTokens,
     discretionaryInputTokens,
+    phasePlan: buildExecutionPhaseBudgetPlan({
+      inputTokens: discretionaryInputTokens,
+      outputTokens: Math.min(input.policy.maxOutputTokensPerInvocation, remainingOutputTokens),
+      turns: input.policy.maxTurnsPerInvocation,
+      toolCalls: input.policy.maxToolCallsPerInvocation,
+      wallMs: remainingWallMs,
+    }),
   } : null;
   return {
     schemaVersion: EXECUTION_ADMISSION_SCHEMA_VERSION,

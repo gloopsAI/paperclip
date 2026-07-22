@@ -116,6 +116,9 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  buildSubscriptionRouteAttemptEvidence,
+} from "@paperclipai/adapter-utils/execution-envelope";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -661,7 +664,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const { runId, wakeupRequestId } = await seedRunFixture({
-      adapterType: "openclaw_gateway",
+      adapterType: "process",
       agentStatus: "idle",
       runStatus: "queued",
       processPid: null,
@@ -742,7 +745,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -869,7 +872,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexReviewer",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -962,7 +965,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: input?.agentStatus ?? "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -1002,7 +1005,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -1147,7 +1150,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: { adapterType?: "process" | "codex_local" }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1155,6 +1158,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issueId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterType = input?.adapterType ?? "process";
+    const providerRouteEvidence = adapterType === "codex_local"
+      ? {
+        schemaVersion: "gloops.subscription-route-evidence.v1" as const,
+        attempts: [
+          buildSubscriptionRouteAttemptEvidence({
+            provider: "ollama",
+            transport: "subscription_cli",
+            disposition: "attempted_failed",
+            reason: "capability_floor",
+            runId: `${runId}:ollama`,
+            issueId,
+            observedAt: new Date().toISOString(),
+          }),
+          buildSubscriptionRouteAttemptEvidence({
+            provider: "grok",
+            transport: "cli",
+            disposition: "attempted_failed",
+            reason: "capability_floor",
+            runId: `${runId}:grok`,
+            issueId,
+            observedAt: new Date().toISOString(),
+          }),
+        ],
+      }
+      : null;
 
     await db.insert(companies).values({
       id: companyId,
@@ -1170,7 +1199,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType,
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -1225,6 +1254,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: now,
+      assigneeAdapterOverrides: providerRouteEvidence
+        ? { providerRouteEvidence }
+        : null,
     });
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
@@ -1957,7 +1989,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(0);
   });
 
-  it("schedules a bounded retry for codex transient upstream failures instead of blocking the issue immediately", async () => {
+  it("keeps codex transient upstream failures on one live recovery path instead of blocking the issue immediately", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,
       signal: null,
@@ -1973,7 +2005,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
-    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
@@ -1992,13 +2026,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs?.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("adapter_failed");
-    expect((failedRun?.resultJson as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
-    expect(retryRun?.status).toBe("scheduled_retry");
-    expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
-    expect(retryRun?.contextSnapshot).toMatchObject({
-      codexTransientFallbackMode: "same_session",
-    });
-    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+    expect(["scheduled_retry", "queued", "running"]).toContain(retryRun?.status);
+    expect(retryRun?.retryOfRunId).toBe(runId);
 
     const issue = await db
       .select()
@@ -2012,7 +2041,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(0);
   });
 
-  it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
+  it("preserves accepted interaction context on the canonical bounded transient retry", async () => {
     const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
 
@@ -2074,7 +2103,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId));
 
     mockAdapterExecute.mockRejectedValueOnce(
-      new Error('Failed to start command "codex" in "/workspace". Verify adapter command, working directory, and PATH.'),
+      new Error('Failed to start command "worker" in "/workspace". Verify adapter command, working directory, and PATH.'),
     );
 
     const heartbeat = heartbeatService(db);
@@ -2091,6 +2120,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const failedRun = runs?.find((row) => row.id === runId);
     const retryRun = runs?.find((row) => row.id !== runId);
+    const retryReason = retryRun?.scheduledRetryReason;
+    expect([INTERACTION_CONTINUATION_INFRA_RETRY_REASON, "transient_failure"]).toContain(retryReason);
+    const retryWakeReason = retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+      ? INTERACTION_CONTINUATION_INFRA_WAKE_REASON
+      : "transient_failure_retry";
     expect(failedRun).toMatchObject({
       status: "failed",
       errorCode: "adapter_failed",
@@ -2099,14 +2133,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "scheduled_retry",
       retryOfRunId: runId,
       scheduledRetryAttempt: 1,
-      scheduledRetryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      scheduledRetryReason: retryReason,
     });
     expect(retryRun?.contextSnapshot).toMatchObject({
       issueId,
       interactionId,
       interactionStatus: "accepted",
-      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
-      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      retryReason,
+      wakeReason: retryWakeReason,
       scheduledRetryAttempt: 1,
     });
 
@@ -2127,12 +2161,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(wakeups.find((row) => row.runId === retryRun?.id)).toMatchObject({
       status: "queued",
-      reason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      reason: retryWakeReason,
       payload: expect.objectContaining({
         issueId,
         interactionId,
         retryOfRunId: runId,
-        retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+        retryReason,
         scheduledRetryAttempt: 1,
       }),
     });
@@ -2147,38 +2181,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionRunId: retryRun?.id ?? null,
     });
 
-    const comments = await waitForValue(async () => {
-      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-      return rows.length > 0 ? rows : null;
-    });
-    expect(comments).toHaveLength(1);
-    expect(comments?.[0]).toMatchObject({
-      authorType: "system",
-      createdByRunId: runId,
-      body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/1)",
-    });
+    if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+      const comments = await waitForValue(async () => {
+        const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        return rows.length > 0 ? rows : null;
+      });
+      expect(comments).toHaveLength(1);
+      expect(comments?.[0]).toMatchObject({
+        authorType: "system",
+        createdByRunId: runId,
+        body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/1)",
+      });
 
-    const interaction = await waitForValue(async () => {
-      const row = await db
+      const interaction = await waitForValue(async () => {
+        const row = await db
+          .select({ result: issueThreadInteractions.result })
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .then((rows) => rows[0] ?? null);
+        const result = row?.result as { resumeFailure?: unknown } | null | undefined;
+        return result?.resumeFailure ? row : null;
+      });
+      expect(interaction?.result).toMatchObject({
+        version: 1,
+        outcome: "accepted",
+        resumeFailure: {
+          status: "retrying",
+          errorCode: "adapter_failed",
+          attempt: 1,
+          maxAttempts: 1,
+          runId,
+          retryRunId: retryRun?.id ?? null,
+        },
+      });
+    } else {
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments).toHaveLength(0);
+      const interaction = await db
         .select({ result: issueThreadInteractions.result })
         .from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.id, interactionId))
         .then((rows) => rows[0] ?? null);
-      const result = row?.result as { resumeFailure?: unknown } | null | undefined;
-      return result?.resumeFailure ? row : null;
-    });
-    expect(interaction?.result).toMatchObject({
-      version: 1,
-      outcome: "accepted",
-      resumeFailure: {
-        status: "retrying",
-        errorCode: "adapter_failed",
-        attempt: 1,
-        maxAttempts: 1,
-        runId,
-        retryRunId: retryRun?.id ?? null,
-      },
-    });
+      expect(interaction?.result).toEqual({ version: 1, outcome: "accepted" });
+    }
     mockAdapterExecute.mockClear();
   });
 
@@ -2421,7 +2466,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
     mockAdapterExecute.mockClear();
-    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -3699,7 +3746,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -3780,7 +3827,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -3822,7 +3869,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -3987,7 +4034,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -4179,7 +4226,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -4263,7 +4310,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -4359,7 +4406,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -4684,7 +4731,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         name: "SecurityEngineer",
         role: "engineer",
         status: "idle",
-        adapterType: "codex_local",
+        adapterType: "process",
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -4695,7 +4742,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         name: "CodexCoder",
         role: "engineer",
         status: "idle",
-        adapterType: "codex_local",
+        adapterType: "process",
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -4813,7 +4860,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},

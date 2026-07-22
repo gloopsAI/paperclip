@@ -213,11 +213,16 @@ import {
 import {
   PAPERCLIP_EXECUTION_CONTEXT_KEY,
   PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY,
   buildBoundExecutionContext,
   buildCanonicalContinuationPacket,
   buildExecutionRetryReceipt,
+  buildSubscriptionRouteAttemptEvidence,
   evaluateExecutionTruthTransition,
+  evaluateSubscriptionRouteAdmission,
   readBoundExecutionContext,
+  readSubscriptionRouteEvidence,
+  type SubscriptionRouteProvider,
 } from "@paperclipai/adapter-utils/execution-envelope";
 
 import {
@@ -2127,6 +2132,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
   modelProfile: ModelProfileKey | null;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
+  providerRouteEvidence: Record<string, unknown> | null;
 }
 
 type ModelProfileRequestSource = "issue_override" | "wake_context";
@@ -2734,11 +2740,63 @@ function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!modelProfile && !adapterConfig && useProjectWorkspace === null) return null;
+  const parsedProviderRouteEvidence = parseObject(parsed.providerRouteEvidence);
+  const providerRouteEvidence = Object.keys(parsedProviderRouteEvidence).length > 0
+    ? parsedProviderRouteEvidence
+    : null;
+  if (!modelProfile && !adapterConfig && useProjectWorkspace === null && !providerRouteEvidence) return null;
   return {
     modelProfile,
     adapterConfig,
     useProjectWorkspace,
+    providerRouteEvidence,
+  };
+}
+
+type SubscriptionRouteAdvanceReason = "quota_exhausted" | "provider_unavailable" | "capability_floor" | "quality_failure";
+
+type SubscriptionRouteAdvance = {
+  provider: Exclude<SubscriptionRouteProvider, "codex">;
+  transport: "cli" | "subscription_cli";
+  reason: SubscriptionRouteAdvanceReason;
+  targetAdapterType: "grok_local" | "codex_local";
+};
+
+function subscriptionProviderForAdapter(adapterType: string): SubscriptionRouteProvider | null {
+  const normalized = adapterType.trim().toLowerCase();
+  if (normalized === "hermes_gateway" || normalized === "hermes_local") return "ollama";
+  if (normalized === "grok_local") return "grok";
+  if (normalized === "codex_local") return "codex";
+  return null;
+}
+
+export function subscriptionRouteAdvanceForRun(
+  adapterType: string,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "error" | "errorCode" | "resultJson">,
+): SubscriptionRouteAdvance | null {
+  if (run.status !== "failed" && run.status !== "timed_out") return null;
+  const provider = subscriptionProviderForAdapter(adapterType);
+  if (!provider || provider === "codex") return null;
+  const resultJson = parseObject(run.resultJson);
+  const explicit = readNonEmptyString(parseObject(resultJson.subscriptionRouteAdvance).reason);
+  const explicitReason = ["quota_exhausted", "provider_unavailable", "capability_floor", "quality_failure"]
+    .includes(explicit ?? "")
+      ? explicit as SubscriptionRouteAdvanceReason
+      : null;
+  const errorFamily = readHeartbeatRunErrorFamily(run);
+  const diagnostic = `${run.errorCode ?? ""} ${run.error ?? ""}`;
+  const reason: SubscriptionRouteAdvanceReason | null = explicitReason
+    ?? (errorFamily === "provider_quota" || /(?:quota|usage|weekly|session)\s+(?:is\s+)?(?:limit|exhausted)|rate[ -]?limit|too many requests/i.test(diagnostic)
+      ? "quota_exhausted"
+      : errorFamily === "transient_upstream" || run.status === "timed_out" || /temporar(?:y|ily) unavailable|overloaded|capacity|econnrefused|connection refused/i.test(diagnostic)
+        ? "provider_unavailable"
+        : null);
+  if (!reason) return null;
+  return {
+    provider,
+    transport: provider === "grok" ? "cli" : "subscription_cli",
+    reason,
+    targetAdapterType: provider === "ollama" ? "grok_local" : "codex_local",
   };
 }
 
@@ -9263,7 +9321,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const interactionContinuationPayload = retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+    const interactionContinuationPayload = isResolvedInteractionContinuationWakeContext(contextSnapshot)
       ? {
           mutation: "interaction",
           interactionId: readNonEmptyString(contextSnapshot.interactionId),
@@ -12132,6 +12190,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issueContext.assigneeAdapterOverrides,
           )
         : null;
+    if (issueAssigneeOverrides?.providerRouteEvidence) {
+      context[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY] = issueAssigneeOverrides.providerRouteEvidence;
+    } else {
+      delete context[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY];
+    }
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {
@@ -13871,6 +13934,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       let adapterInvocationAttempted = false;
+      const subscriptionRouteAdmission = evaluateSubscriptionRouteAdmission(agent.adapterType, context);
       const invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
@@ -13881,7 +13945,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? "reconciled"
             : "unsupported"
         : null;
-      if (invocationBudget && executionBudgetMode === "unsupported") {
+      if (!subscriptionRouteAdmission.allowed) {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "execution_route.prior_subscription_receipt_missing",
+          errorMessage: subscriptionRouteAdmission.reason,
+          clearSession: true,
+          providerInvocationAttempted: false,
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else if (invocationBudget && executionBudgetMode === "unsupported") {
         adapterResult = {
           exitCode: 1,
           signal: null,
@@ -14490,6 +14565,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         const livenessRun = finalizedRun;
+        const subscriptionRouteAdvance = subscriptionRouteAdvanceForRun(agent.adapterType, livenessRun);
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
@@ -14508,7 +14584,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
+        if (!subscriptionRouteAdvance && outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
             await scheduleBoundedRetryForRun(livenessRun, agent, {
@@ -14529,21 +14605,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        } else if (!subscriptionRouteAdvance && outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
-        await handleRunLivenessContinuation(livenessRun);
-        await handleSuccessfulRunHandoff(
-          issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
-            ? {
-              ...livenessRun,
-              issueCommentStatus: issueCommentPolicyResult.outcome,
-            }
-            : livenessRun,
-          agent,
-        );
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: Boolean(subscriptionRouteAdvance),
+        });
+        const subscriptionRouteAdvanced = subscriptionRouteAdvance
+          ? await advanceSubscriptionRoute(livenessRun, agent, subscriptionRouteAdvance)
+          : false;
+        if (!subscriptionRouteAdvanced) {
+          await handleRunLivenessContinuation(livenessRun);
+          await handleSuccessfulRunHandoff(
+            issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
+              ? {
+                ...livenessRun,
+                issueCommentStatus: issueCommentPolicyResult.outcome,
+              }
+              : livenessRun,
+            agent,
+          );
+        }
 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
@@ -14985,6 +15068,108 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
       "restore the review stage, or record an intentional manual resolution."
     );
+  }
+
+  async function advanceSubscriptionRoute(
+    run: typeof heartbeatRuns.$inferSelect,
+    sourceAgent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType">,
+    advance: SubscriptionRouteAdvance,
+  ): Promise<boolean> {
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    if (!issueId) return false;
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, sourceAgent.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.assigneeAgentId !== sourceAgent.id || issue.status === "done" || issue.status === "cancelled") {
+      return false;
+    }
+
+    const overrides = parseObject(issue.assigneeAdapterOverrides);
+    const rawEvidence = overrides.providerRouteEvidence;
+    const existingEvidence = rawEvidence === undefined
+      ? { schemaVersion: "gloops.subscription-route-evidence.v1" as const, attempts: [] }
+      : readSubscriptionRouteEvidence(rawEvidence);
+    if (!existingEvidence || existingEvidence.attempts.some((attempt) => attempt.provider === advance.provider)) {
+      logger.warn({ runId: run.id, issueId, provider: advance.provider }, "subscription route advance refused because prior evidence is invalid or duplicated");
+      return false;
+    }
+
+    const targetAgent = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, sourceAgent.companyId),
+        eq(agents.adapterType, advance.targetAdapterType),
+        inArray(agents.status, ["active", "idle", "running", "error"]),
+      ))
+      .orderBy(asc(agents.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!targetAgent) {
+      logger.warn({ runId: run.id, issueId, targetAdapterType: advance.targetAdapterType }, "subscription route advance blocked because the next provider agent is unavailable");
+      return false;
+    }
+
+    const observedAt = (run.finishedAt ?? new Date()).toISOString();
+    const attempt = buildSubscriptionRouteAttemptEvidence({
+      provider: advance.provider,
+      transport: advance.transport,
+      disposition: "attempted_failed",
+      reason: advance.reason,
+      runId: run.id,
+      issueId,
+      observedAt,
+    });
+    const providerRouteEvidence = {
+      schemaVersion: "gloops.subscription-route-evidence.v1" as const,
+      attempts: [...existingEvidence.attempts, attempt],
+    };
+    await issuesSvc.update(issueId, {
+      status: "todo",
+      assigneeAgentId: targetAgent.id,
+      assigneeUserId: null,
+      executionState: null,
+      assigneeAdapterOverrides: {
+        ...overrides,
+        providerRouteEvidence,
+      },
+      actorAgentId: sourceAgent.id,
+    });
+    await enqueueWakeup(targetAgent.id, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "subscription_route_advanced",
+      idempotencyKey: `subscription-route:${issueId}:${attempt.receiptDigest}`,
+      payload: { issueId, sourceRunId: run.id, providerRouteEvidence },
+      contextSnapshot: {
+        issueId,
+        sourceRunId: run.id,
+        wakeReason: "subscription_route_advanced",
+        [PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY]: providerRouteEvidence,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "subscription-route-governor",
+    });
+    await logActivity(db, {
+      companyId: sourceAgent.companyId,
+      actorType: "system",
+      actorId: "subscription-route-governor",
+      agentId: sourceAgent.id,
+      runId: run.id,
+      action: "issue.subscription_route_advanced",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        fromProvider: advance.provider,
+        toAdapterType: advance.targetAdapterType,
+        targetAgentId: targetAgent.id,
+        reason: advance.reason,
+        receiptDigest: attempt.receiptDigest,
+      },
+    });
+    return true;
   }
 
   async function releaseIssueExecutionAndPromote(

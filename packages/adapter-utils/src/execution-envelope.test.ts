@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   assertPromptFitsInvocationBudget,
+  buildExecutionPhaseBudgetPlan,
+  buildSubscriptionRouteAttemptEvidence,
   buildBoundExecutionContext,
   buildCanonicalContinuationPacket,
   buildExecutionRetryReceipt,
   evaluateExecutionTruthTransition,
+  evaluateSubscriptionRouteAdmission,
   hasProhibitedGrokApiConfiguration,
   readBoundExecutionContext,
   renderBoundExecutionContext,
@@ -186,6 +189,83 @@ describe("execution envelope", () => {
       maxToolCalls: 10,
       maxWallMs: 60_000,
     })).toThrow("refused before dispatch");
+  });
+
+  it("reserves ten percent of the provider envelope for deterministic closeout", () => {
+    const plan = buildExecutionPhaseBudgetPlan({
+      inputTokens: 24_000,
+      outputTokens: 8_000,
+      turns: 20,
+      toolCalls: 40,
+      wallMs: 1_200_000,
+    });
+    expect(plan.closeout).toEqual({
+      inputTokens: 2_400,
+      outputTokens: 800,
+      turns: 2,
+      toolCalls: 4,
+      wallMs: 120_000,
+    });
+    expect(Object.values(plan).reduce((sum, phase) => sum + phase.inputTokens, 0)).toBe(24_000);
+    expect(Object.values(plan).reduce((sum, phase) => sum + phase.toolCalls, 0)).toBe(40);
+  });
+
+  it("denies Grok and Codex until lower-cost subscription routes have typed receipts", () => {
+    const ollama = buildSubscriptionRouteAttemptEvidence({
+      provider: "ollama",
+      transport: "cli",
+      disposition: "attempted_failed",
+      reason: "quality_failure",
+      runId: "run-ollama",
+      issueId: "issue-1",
+      observedAt: "2026-07-22T10:00:00Z",
+    });
+    const grok = buildSubscriptionRouteAttemptEvidence({
+      provider: "grok",
+      transport: "cli",
+      disposition: "attempted_failed",
+      reason: "provider_unavailable",
+      runId: "run-grok",
+      issueId: "issue-1",
+      observedAt: "2026-07-22T10:01:00Z",
+    });
+    expect(evaluateSubscriptionRouteAdmission("hermes_gateway", {})).toMatchObject({ allowed: true, provider: "ollama" });
+    expect(evaluateSubscriptionRouteAdmission("process", {})).toMatchObject({ allowed: true, provider: null });
+    expect(evaluateSubscriptionRouteAdmission("claude_local", {})).toMatchObject({ allowed: false, provider: null });
+    expect(evaluateSubscriptionRouteAdmission("grok_local_v2", {})).toMatchObject({ allowed: false, provider: null });
+    expect(evaluateSubscriptionRouteAdmission("grok_local", {})).toMatchObject({ allowed: false, provider: "grok" });
+    expect(evaluateSubscriptionRouteAdmission("grok_local", {
+      gloopsProviderRouteEvidence: { schemaVersion: "gloops.subscription-route-evidence.v1", attempts: [ollama] },
+    }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: true, provider: "grok" });
+    expect(evaluateSubscriptionRouteAdmission("codex_local", {
+      gloopsProviderRouteEvidence: { schemaVersion: "gloops.subscription-route-evidence.v1", attempts: [ollama] },
+    })).toMatchObject({ allowed: false, provider: "codex" });
+    expect(evaluateSubscriptionRouteAdmission("codex_local", {
+      gloopsProviderRouteEvidence: { schemaVersion: "gloops.subscription-route-evidence.v1", attempts: [ollama, grok] },
+    }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: true, provider: "codex" });
+    for (const observedAt of ["2026-07-22T03:59:59Z", "2026-07-22T10:08:00Z"]) {
+      const attempt = buildSubscriptionRouteAttemptEvidence({
+        provider: "ollama",
+        transport: "cli",
+        disposition: "attempted_failed",
+        reason: "quality_failure",
+        runId: "run-ollama",
+        issueId: "issue-1",
+        observedAt,
+      });
+      expect(evaluateSubscriptionRouteAdmission("grok_local", {
+        gloopsProviderRouteEvidence: {
+          schemaVersion: "gloops.subscription-route-evidence.v1",
+          attempts: [attempt],
+        },
+      }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: false, provider: "grok" });
+    }
+    expect(evaluateSubscriptionRouteAdmission("grok_local", {
+      gloopsProviderRouteEvidence: {
+        schemaVersion: "gloops.subscription-route-evidence.v1",
+        attempts: [{ ...ollama, receiptDigest: `sha256:${"0".repeat(64)}` }],
+      },
+    }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: false, provider: "grok" });
   });
 
   it("detects prohibited Grok/xAI routing configuration without scanning prose", () => {

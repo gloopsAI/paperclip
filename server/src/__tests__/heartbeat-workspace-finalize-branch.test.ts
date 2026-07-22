@@ -52,12 +52,12 @@ const adapterExecute = vi.hoisted(() =>
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
-    type: "codex_local",
+    type: "process",
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
   findActiveServerAdapter: () => ({
-    type: "codex_local",
+    type: "process",
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
@@ -197,7 +197,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     name: "CodexCoder",
     role: "engineer",
     status: "idle",
-    adapterType: "codex_local",
+    adapterType: "process",
     adapterConfig: {},
     runtimeConfig: {
       heartbeat: {

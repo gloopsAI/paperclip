@@ -21,6 +21,18 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
+vi.mock("@paperclipai/adapter-utils/execution-envelope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/execution-envelope")>();
+  return {
+    ...actual,
+    evaluateSubscriptionRouteAdmission: vi.fn(() => ({
+      allowed: true,
+      provider: null,
+      reason: "Execution-admission fixture tests a separate admission boundary.",
+    })),
+  };
+});
+
 const mockAdapterState = vi.hoisted(() => ({
   supportsBudget: true,
   includeUsage: true,

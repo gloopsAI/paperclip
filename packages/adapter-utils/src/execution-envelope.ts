@@ -5,6 +5,25 @@ export const CONTINUATION_PACKET_SCHEMA = "gloops.continuation-packet.v1" as con
 export const OPERATOR_RECEIPT_SCHEMA = "gloops.execution-truth.operator-receipt.v2" as const;
 export const PAPERCLIP_EXECUTION_CONTEXT_KEY = "paperclipExecutionContext" as const;
 export const PAPERCLIP_EXECUTION_RECEIPT_KEY = "paperclipExecutionTruthReceipt" as const;
+export const PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY = "gloopsProviderRouteEvidence" as const;
+const PROVIDER_ROUTE_RECEIPT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const PROVIDER_ROUTE_RECEIPT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+export const EXECUTION_PHASE_SHARES = Object.freeze({
+  plan: 15,
+  implement: 55,
+  verify: 20,
+  closeout: 10,
+} as const);
+
+export type ExecutionBudgetPhase = keyof typeof EXECUTION_PHASE_SHARES;
+export type ExecutionPhaseBudgetPlan = Record<ExecutionBudgetPhase, {
+  inputTokens: number;
+  outputTokens: number;
+  turns: number;
+  toolCalls: number;
+  wallMs: number;
+}>;
 
 export type ExecutionInvocationBudget = {
   schemaVersion: "paperclip.provider-invocation-budget.v1";
@@ -29,7 +48,204 @@ export type ExecutionInvocationBudget = {
    * Optional for legacy reservations; when absent, treat maxInputTokens as discretionary.
    */
   discretionaryInputTokens?: number;
+  /**
+   * Completion-aware allocation carried to the provider. Ten percent remains
+   * reserved for a terminal receipt/continuation instead of being consumed by
+   * discovery or implementation loops.
+   */
+  phasePlan?: ExecutionPhaseBudgetPlan;
 };
+
+export type SubscriptionRouteProvider = "ollama" | "grok" | "codex";
+export type SubscriptionRouteAttemptEvidence = {
+  provider: Exclude<SubscriptionRouteProvider, "codex">;
+  transport: "cli" | "subscription_cli";
+  disposition: "attempted_failed" | "ineligible";
+  reason: "quota_exhausted" | "provider_unavailable" | "capability_floor" | "quality_failure";
+  runId: string;
+  issueId: string;
+  receiptDigest: string;
+  observedAt: string;
+};
+
+export type SubscriptionRouteEvidence = {
+  schemaVersion: "gloops.subscription-route-evidence.v1";
+  attempts: SubscriptionRouteAttemptEvidence[];
+};
+
+export type SubscriptionRouteAdmission = {
+  allowed: boolean;
+  provider: SubscriptionRouteProvider | null;
+  reason: string;
+};
+
+const DISALLOWED_AUTONOMOUS_MODEL_ADAPTERS = new Set([
+  "claude-local",
+  "claude_local",
+  "cursor",
+  "cursor-cloud",
+  "cursor_cloud",
+  "gemini_local",
+  "openclaw_gateway",
+  "opencode",
+  "opencode_local",
+  "pi_local",
+]);
+
+export function buildSubscriptionRouteAttemptEvidence(input: Omit<SubscriptionRouteAttemptEvidence, "receiptDigest">): SubscriptionRouteAttemptEvidence {
+  const receiptBody = {
+    schemaVersion: "gloops.subscription-route-attempt.v1",
+    provider: input.provider,
+    transport: input.transport,
+    disposition: input.disposition,
+    reason: input.reason,
+    runId: input.runId,
+    issueId: input.issueId,
+    observedAt: input.observedAt,
+  };
+  return {
+    ...input,
+    receiptDigest: `sha256:${createHash("sha256").update(canonicalSerialize(receiptBody)).digest("hex")}`,
+  };
+}
+
+function routeAttemptReceiptMatches(value: SubscriptionRouteAttemptEvidence): boolean {
+  return buildSubscriptionRouteAttemptEvidence({
+    provider: value.provider,
+    transport: value.transport,
+    disposition: value.disposition,
+    reason: value.reason,
+    runId: value.runId,
+    issueId: value.issueId,
+    observedAt: value.observedAt,
+  }).receiptDigest === value.receiptDigest;
+}
+
+export function readSubscriptionRouteEvidence(value: unknown, now: string | Date | number = new Date()): SubscriptionRouteEvidence | null {
+  const currentTime = typeof now === "string"
+    ? Date.parse(now)
+    : now instanceof Date
+      ? now.getTime()
+      : now;
+  if (!Number.isFinite(currentTime)) return null;
+  if (!isRecord(value) || value.schemaVersion !== "gloops.subscription-route-evidence.v1" || !Array.isArray(value.attempts)) {
+    return null;
+  }
+  const attempts: SubscriptionRouteAttemptEvidence[] = [];
+  for (const raw of value.attempts) {
+    const observedAt = isRecord(raw) && typeof raw.observedAt === "string"
+      ? Date.parse(raw.observedAt)
+      : Number.NaN;
+    if (!isRecord(raw) || (raw.provider !== "ollama" && raw.provider !== "grok") ||
+        (raw.transport !== "cli" && raw.transport !== "subscription_cli") ||
+        (raw.disposition !== "attempted_failed" && raw.disposition !== "ineligible") ||
+        !["quota_exhausted", "provider_unavailable", "capability_floor", "quality_failure"].includes(String(raw.reason)) ||
+        typeof raw.runId !== "string" || raw.runId.trim().length === 0 ||
+        typeof raw.issueId !== "string" || raw.issueId.trim().length === 0 ||
+        typeof raw.receiptDigest !== "string" || !SHA256.test(raw.receiptDigest) ||
+        typeof raw.observedAt !== "string" || !Number.isFinite(observedAt) ||
+        observedAt < currentTime - PROVIDER_ROUTE_RECEIPT_MAX_AGE_MS ||
+        observedAt > currentTime + PROVIDER_ROUTE_RECEIPT_MAX_FUTURE_SKEW_MS ||
+        (raw.provider === "grok" && raw.transport !== "cli") ||
+        !routeAttemptReceiptMatches(raw as SubscriptionRouteAttemptEvidence)) {
+      return null;
+    }
+    attempts.push(raw as SubscriptionRouteAttemptEvidence);
+  }
+  return { schemaVersion: "gloops.subscription-route-evidence.v1", attempts };
+}
+
+export function evaluateSubscriptionRouteAdmission(
+  adapterType: string,
+  context: Record<string, unknown>,
+  now: string | Date = new Date(),
+): SubscriptionRouteAdmission {
+  const normalizedAdapterType = adapterType.trim().toLowerCase();
+  const provider: SubscriptionRouteProvider | null = normalizedAdapterType === "hermes_gateway" || normalizedAdapterType === "hermes_local"
+    ? "ollama"
+    : normalizedAdapterType === "grok_local"
+      ? "grok"
+      : normalizedAdapterType === "codex_local"
+        ? "codex"
+        : null;
+  if (!provider) {
+    const resemblesProtectedRoute = /(ollama|hermes|grok|xai|codex|openai)/.test(normalizedAdapterType);
+    if (resemblesProtectedRoute || DISALLOWED_AUTONOMOUS_MODEL_ADAPTERS.has(normalizedAdapterType)) {
+      return {
+        allowed: false,
+        provider: null,
+        reason: `${adapterType} denied: autonomous model adapter is outside Ollama > Grok CLI > Codex`,
+      };
+    }
+    return { allowed: true, provider: null, reason: "non-model adapter is outside the subscription route chain" };
+  }
+  if (provider === "ollama") {
+    return { allowed: true, provider, reason: "Ollama is the mandatory first route" };
+  }
+  const currentTime = typeof now === "string" ? Date.parse(now) : now.getTime();
+  const evidence = Number.isFinite(currentTime)
+    ? readSubscriptionRouteEvidence(context[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY], currentTime)
+    : null;
+  const required = provider === "grok" ? ["ollama"] : ["ollama", "grok"];
+  const missing = required.filter((requiredProvider) =>
+    !evidence?.attempts.some((attempt) => attempt.provider === requiredProvider));
+  if (missing.length > 0) {
+    return {
+      allowed: false,
+      provider,
+      reason: `${provider} denied: missing typed terminal route receipt for ${missing.join(", ")}`,
+    };
+  }
+  return { allowed: true, provider, reason: `${provider} admitted after typed ${required.join(" and ")} route evidence` };
+}
+
+function splitPhaseTotal(total: number): Record<ExecutionBudgetPhase, number> {
+  const phases = Object.keys(EXECUTION_PHASE_SHARES) as ExecutionBudgetPhase[];
+  const allocation = Object.fromEntries(phases.map((phase) => [
+    phase,
+    Math.floor(total * EXECUTION_PHASE_SHARES[phase] / 100),
+  ])) as Record<ExecutionBudgetPhase, number>;
+  let remainder = total - phases.reduce((sum, phase) => sum + allocation[phase], 0);
+  for (const phase of ["closeout", "verify", "implement", "plan"] as ExecutionBudgetPhase[]) {
+    if (remainder <= 0) break;
+    allocation[phase] += 1;
+    remainder -= 1;
+  }
+  return allocation;
+}
+
+export function buildExecutionPhaseBudgetPlan(input: {
+  inputTokens: number;
+  outputTokens: number;
+  turns: number;
+  toolCalls: number;
+  wallMs: number;
+}): ExecutionPhaseBudgetPlan {
+  const dimensions = {
+    inputTokens: splitPhaseTotal(input.inputTokens),
+    outputTokens: splitPhaseTotal(input.outputTokens),
+    turns: splitPhaseTotal(input.turns),
+    toolCalls: splitPhaseTotal(input.toolCalls),
+    wallMs: splitPhaseTotal(input.wallMs),
+  };
+  return Object.fromEntries((Object.keys(EXECUTION_PHASE_SHARES) as ExecutionBudgetPhase[]).map((phase) => [
+    phase,
+    Object.fromEntries(Object.entries(dimensions).map(([name, values]) => [
+      name,
+      (values as Record<ExecutionBudgetPhase, number>)[phase],
+    ])),
+  ])) as ExecutionPhaseBudgetPlan;
+}
+
+export function renderExecutionPhaseBudgetPlan(budget: ExecutionInvocationBudget | null | undefined): string | null {
+  if (!budget?.phasePlan) return null;
+  return [
+    "Completion-aware execution budget:",
+    "- Plan/discovery: 15%; implementation: 55%; verification: 20%; closeout: 10%.",
+    "- Do not borrow from closeout. If another phase exhausts its share, checkpoint and preserve the closeout share.",
+    `- Exact phase ceilings: ${JSON.stringify(budget.phasePlan)}`,
+  ].join("\n");
+}
 
 export type BoundExecutionContext = {
   schemaVersion: typeof EXECUTION_CONTEXT_BINDING_SCHEMA;

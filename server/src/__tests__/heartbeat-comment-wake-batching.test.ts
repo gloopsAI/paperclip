@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -20,6 +20,18 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.ts";
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.ts";
+
+vi.mock("@paperclipai/adapter-utils/execution-envelope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/execution-envelope")>();
+  return {
+    ...actual,
+    evaluateSubscriptionRouteAdmission: vi.fn(() => ({
+      allowed: true,
+      provider: null,
+      reason: "Wake batching fixture is independent of the GLoops subscription route.",
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

@@ -4,7 +4,7 @@ import express from "express";
 import request from "supertest";
 import { WebSocketServer } from "ws";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -43,6 +43,18 @@ import {
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
+
+vi.mock("@paperclipai/adapter-utils/execution-envelope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/execution-envelope")>();
+  return {
+    ...actual,
+    evaluateSubscriptionRouteAdmission: vi.fn(() => ({
+      allowed: true,
+      provider: null,
+      reason: "Legacy low-trust fixture is independent of the GLoops subscription route.",
+    })),
+  };
+});
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
@@ -1232,6 +1244,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
         },
         runtimeConfig: { heartbeat: { wakeOnDemand: true } },
       }).where(eq(agents.id, fixture.agents.standard.id));
+      // Keep this redaction test on the executable path: queued system wakes
+      // dispatch only while the target issue is still owned by the run agent.
+      await db.update(issues).set({
+        assigneeAgentId: fixture.agents.standard.id,
+      }).where(eq(issues.id, fixture.issues.reviewRoot.id));
       await db.update(heartbeatRuns).set({
         status: "succeeded",
         finishedAt: new Date("2026-05-14T12:02:00.000Z"),
@@ -1261,7 +1278,49 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       });
 
       expect(run).not.toBeNull();
-      await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
+      const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+      const gatewayDeadline = Date.now() + 30_000;
+      let observedRun = null;
+      while (Date.now() < gatewayDeadline && gateway.getAgentPayloads().length !== 1) {
+        observedRun = await db
+          .select({
+            status: heartbeatRuns.status,
+            errorCode: heartbeatRuns.errorCode,
+            error: heartbeatRuns.error,
+            wakeupRequestId: heartbeatRuns.wakeupRequestId,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run!.id))
+          .then((rows) => rows[0] ?? null);
+        if (observedRun && terminalRunStatuses.has(observedRun.status)) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      observedRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      const observedWakeup = observedRun?.wakeupRequestId
+        ? await db
+            .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, observedRun.wakeupRequestId))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const observedAgent = await db
+        .select({ status: agents.status, adapterType: agents.adapterType })
+        .from(agents)
+        .where(eq(agents.id, fixture.agents.standard.id))
+        .then((rows) => rows[0] ?? null);
+      expect(
+        gateway.getAgentPayloads().length,
+        JSON.stringify({ runId: run!.id, run: observedRun, wakeup: observedWakeup, agent: observedAgent }),
+      ).toBe(1);
       const payload = gateway.getAgentPayloads()[0] ?? {};
       // The gateway rejects unknown root params, so the wake context rides in the
       // generated message rather than a top-level `paperclip` field.

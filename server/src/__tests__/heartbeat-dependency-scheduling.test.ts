@@ -185,7 +185,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "CodexCoder",
       role: "engineer",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -434,7 +434,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "CodexCoder",
       role: "engineer",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -567,7 +567,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "CodexCoder",
       role: "engineer",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -704,7 +704,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "QAChecker",
       role: "qa",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -904,7 +904,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "SecurityEngineer",
       role: "engineer",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -1036,7 +1036,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "SecurityEngineer",
       role: "engineer",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
