@@ -91,7 +91,23 @@ import { parseExecutionAdmissionPolicy } from "./execution-admission.js";
 const PLUGIN_FETCH_TIMEOUT_MS = 30_000;
 const PLUGIN_ISSUE_IDEMPOTENCY_KEY_MAX_CHARS = 256;
 const PLUGIN_ISSUE_IDEMPOTENCY_FINGERPRINT_VERSION = "plugin-issue-create:v1";
+const ORCHESTRATION_SUMMARY_TRUNCATION_MARKER = "\n...[truncated]...\n";
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+function boundedOrchestrationResultSummary(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const redacted = redactSensitiveText(value);
+  if (redacted.length <= HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS) return redacted;
+
+  // Preserve both the opening context and the terminal disposition. Workflow
+  // markers and receipts are intentionally emitted at the end of a run, so a
+  // head-only truncation can turn a successful run into missing evidence.
+  const remaining = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS
+    - ORCHESTRATION_SUMMARY_TRUNCATION_MARKER.length;
+  const tailLength = Math.floor(remaining / 2);
+  const headLength = remaining - tailLength;
+  return `${redacted.slice(0, headLength)}${ORCHESTRATION_SUMMARY_TRUNCATION_MARKER}${redacted.slice(-tailLength)}`;
+}
 
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 const DNS_LOOKUP_TIMEOUT_MS = 5_000;
@@ -816,9 +832,7 @@ export function buildHostServices(
         : isRecord(usage.executionRoute)
           ? usage.executionRoute
           : null;
-      const resultSummary = typeof result.summary === "string"
-        ? redactSensitiveText(result.summary).slice(0, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)
-        : null;
+      const resultSummary = boundedOrchestrationResultSummary(result.summary);
       const number = (value: unknown) => typeof value === "number" && Number.isFinite(value)
         ? Math.max(0, Math.floor(value))
         : 0;
