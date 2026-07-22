@@ -309,6 +309,9 @@ describe("buildInput", () => {
     expect(input).toContain("- Run ID: pc-run-1");
     expect(input).toContain(
       "node /opt/data/bin/github-push-tool.bundle.cjs client --run-id pc-run-1");
+    expect(input).toContain("/opt/data/bin/apply_patch --diff -");
+    expect(input).toContain(
+      "use one update-status call with --comment instead of separate comment and status calls");
   });
 });
 
