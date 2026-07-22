@@ -2027,7 +2027,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("adapter_failed");
     expect(["scheduled_retry", "queued"]).toContain(retryRun?.status);
-    expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
+    expect(retryRun).toMatchObject({
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 1,
+    });
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
     expect(retryRun?.contextSnapshot).toMatchObject({
       codexTransientFallbackMode: "same_session",
@@ -2047,9 +2050,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
-    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture({
-      adapterType: "codex_local",
-    });
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
 
     await db.insert(issueThreadInteractions).values({
@@ -2110,7 +2111,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId));
 
     mockAdapterExecute.mockRejectedValueOnce(
-      new Error('Failed to start command "codex" in "/workspace". Verify adapter command, working directory, and PATH.'),
+      new Error('Failed to start command "worker" in "/workspace". Verify adapter command, working directory, and PATH.'),
     );
 
     const heartbeat = heartbeatService(db);
