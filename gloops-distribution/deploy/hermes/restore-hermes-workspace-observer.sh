@@ -23,28 +23,25 @@ done
 }
 
 # The Hermes image initializes /opt/data as uid:gid 10000:10000, including the
-# bind-mounted workspace root. Restore only the host-side observer group after
-# initialization; repository contents remain owned and writable by Hermes.
+# bind-mounted workspace root. Restore the shared transaction boundary after
+# initialization: Hermes owns the root and Paperclip's group can create the
+# adjacent merge lock required for deterministic sync-back.
 chown "${HERMES_UID}:${PAPERCLIP_GID}" "${WORKSPACE}"
-chmod 0750 "${WORKSPACE}"
-# A numeric chmod may preserve an inherited setgid bit on an existing
-# directory. Clear it explicitly so the exact observer contract below is
-# stable across reused workspace roots.
-chmod g-s "${WORKSPACE}"
+chmod 2770 "${WORKSPACE}"
 
-[[ "$(stat -c '%a:%u:%g' "${WORKSPACE}")" == '750:10000:985' ]] || {
-  echo 'Hermes execution workspace observer permissions were not restored' >&2
+[[ "$(stat -c '%a:%u:%g' "${WORKSPACE}")" == '2770:10000:985' ]] || {
+  echo 'Hermes/Paperclip shared workspace transaction permissions were not restored' >&2
   exit 1
 }
 observer_image="$(<"${APPROVED_IMAGE_FILE}")"
 docker image inspect "${observer_image}" >/dev/null
 docker run --rm --pull never --user "${PAPERCLIP_UID}:${PAPERCLIP_GID}" \
   --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-  --mount "type=bind,src=${WORKSPACE},dst=/workspace,readonly" \
+  --mount "type=bind,src=${WORKSPACE},dst=/workspace" \
   --entrypoint /bin/sh "${observer_image}" -c \
-  'test -r /workspace/gloops-paperclip-plugin/.git/HEAD' || {
-  echo 'Paperclip observer identity cannot read the exact plugin pilot repository' >&2
+  'set -eu; probe=/workspace/.paperclip-restore-preflight; trap '\''rm -rf "$probe"'\'' EXIT; mkdir "$probe"; printf ok >"$probe/owner"; test "$(cat "$probe/owner")" = ok; rm -rf "$probe"; test -r /workspace/gloops-paperclip-plugin/.git/HEAD' || {
+  echo 'Paperclip identity cannot use the shared workspace transaction boundary' >&2
   exit 1
 }
 
-echo 'restored and verified Paperclip read-only workspace observation'
+echo 'restored and verified Hermes/Paperclip shared workspace transaction boundary'

@@ -2,13 +2,17 @@ import path from "node:path";
 import { readGitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
+  WorkspaceNotWritableError,
   prepareWorkspaceForSshExecution,
   normalizeSshWorkspaceWriteAccess,
   preflightSshWorkspaceWriteAccess,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
-import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
+import {
+  captureDirectorySnapshot,
+  preflightDirectoryMergeLock,
+} from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 import {
   buildManagedWorkspaceArchiveExclude,
@@ -107,6 +111,15 @@ export async function prepareRemoteManagedRuntime(input: {
     "workspace",
   );
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+
+  try {
+    await preflightDirectoryMergeLock(input.workspaceLocalDir);
+  } catch (error) {
+    throw new WorkspaceNotWritableError(
+      `Local workspace restore preflight failed for ${input.workspaceLocalDir}; provider invocation was not attempted.`,
+      { cause: error },
+    );
+  }
 
   const gitSnapshot = await readGitWorkspaceSnapshot(input.workspaceLocalDir);
   const prepareExclude = buildRemoteManagedWorkspaceExclude({

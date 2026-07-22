@@ -477,15 +477,15 @@ PY
       fail 'live authenticated API boundary is not healthy'
     fi
     observer_image="$(<"${APPROVED_IMAGE_FILE}")"
-    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '750:10000:985' ]] \
+    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '2770:10000:985' ]] \
       && docker run --rm --pull never --user 995:985 --network none --read-only \
         --cap-drop ALL --security-opt no-new-privileges:true \
-        --mount "type=bind,src=${WORKSPACE},dst=/workspace,readonly" \
+        --mount "type=bind,src=${WORKSPACE},dst=/workspace" \
         --entrypoint /bin/sh "${observer_image}" -c \
-        'test -r /workspace/gloops-paperclip-plugin/.git/HEAD'; then
-      pass 'live Paperclip observer can read the exact plugin pilot repository'
+        'set -eu; probe=/workspace/.paperclip-restore-preflight; trap '\''rm -rf "$probe"'\'' EXIT; mkdir "$probe"; printf ok >"$probe/owner"; test "$(cat "$probe/owner")" = ok; rm -rf "$probe"; test -r /workspace/gloops-paperclip-plugin/.git/HEAD'; then
+      pass 'live Paperclip identity can use the shared workspace transaction boundary'
     else
-      fail 'live execution workspace is not readable by the bounded Paperclip observer'
+      fail 'live execution workspace is not writable by the bounded Paperclip transaction identity'
     fi
     if docker exec -i "${CONTAINER}" python - <<'PY'
 import urllib.error
