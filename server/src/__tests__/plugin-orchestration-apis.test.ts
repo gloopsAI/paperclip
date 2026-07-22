@@ -1001,6 +1001,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       status: "in_progress",
       priority: "medium",
     });
+    const terminalMarker = 'PAPERCLIP_SWARM_V1:{"action":"operations_complete"}';
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -1009,7 +1010,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       invocationSource: "assignment",
       contextSnapshot: { issueId },
       resultJson: {
-        summary: `Authorization: Bearer ghp_${"s".repeat(40)} ${"x".repeat(700)}`,
+        summary: `Authorization: Bearer ghp_${"s".repeat(40)} ${"x".repeat(700)} ${terminalMarker}`,
       },
     });
 
@@ -1019,6 +1020,8 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(summary.runs[0]?.resultSummary).toHaveLength(500);
     expect(summary.runs[0]?.resultSummary).toContain("***REDACTED***");
     expect(summary.runs[0]?.resultSummary).not.toContain(`ghp_${"s".repeat(40)}`);
+    expect(summary.runs[0]?.resultSummary).toContain("...[truncated]...");
+    expect(summary.runs[0]?.resultSummary).toContain(terminalMarker);
   });
 
   it("narrows orchestration cost summaries by subtree and billing code", async () => {
