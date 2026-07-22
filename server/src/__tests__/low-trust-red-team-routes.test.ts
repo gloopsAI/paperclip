@@ -1232,6 +1232,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
         },
         runtimeConfig: { heartbeat: { wakeOnDemand: true } },
       }).where(eq(agents.id, fixture.agents.standard.id));
+      // Keep this redaction test on the executable path: queued system wakes
+      // dispatch only while the target issue is still owned by the run agent.
+      await db.update(issues).set({
+        assigneeAgentId: fixture.agents.standard.id,
+      }).where(eq(issues.id, fixture.issues.reviewRoot.id));
       await db.update(heartbeatRuns).set({
         status: "succeeded",
         finishedAt: new Date("2026-05-14T12:02:00.000Z"),
