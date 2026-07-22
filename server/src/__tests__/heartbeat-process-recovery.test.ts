@@ -664,7 +664,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const { runId, wakeupRequestId } = await seedRunFixture({
-      adapterType: "openclaw_gateway",
+      adapterType: "process",
       agentStatus: "idle",
       runStatus: "queued",
       processPid: null,
@@ -2047,7 +2047,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
-    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
     const interactionId = randomUUID();
 
     await db.insert(issueThreadInteractions).values({
