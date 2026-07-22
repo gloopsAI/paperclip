@@ -39,10 +39,10 @@ ROLLBACK_JOURNAL_PHASES = (
 )
 EXECUTION_ROUTE = {
     "apiBaseUrl": "http://hermes-execution:8642",
-    "dangerouslyAllowInsecureRemoteHttp": True,
+    "dangerouslyAllowInsecureRemoteHttp": False,
     "executionProfile": "paperclip-execution-only",
     "fallbackOccurred": False,
-    "paperclipApiUrl": "http://paperclip-gloops:3100",
+    "paperclipApiUrl": "https://paperclip.gloops.ai/api",
     "routingReason": "controlled-swarm-ollama-only",
     "sessionKeyStrategy": "none",
     "subscriptionClass": "ollama-max",
