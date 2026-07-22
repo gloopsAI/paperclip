@@ -202,6 +202,15 @@ class FakePlatform:
 
 
 class CommissionerTest(unittest.TestCase):
+    def test_execution_route_uses_public_paperclip_tls_origin(self) -> None:
+        self.assertEqual(
+            MODULE.EXECUTION_ROUTE["paperclipApiUrl"],
+            "https://paperclip.gloops.ai/api",
+        )
+        self.assertFalse(
+            MODULE.EXECUTION_ROUTE["dangerouslyAllowInsecureRemoteHttp"],
+        )
+
     @mock.patch.object(MODULE.subprocess, "run")
     def test_host_restart_best_effort_clears_failed_state_before_checked_restart(
         self,
