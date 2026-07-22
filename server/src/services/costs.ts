@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
@@ -553,8 +553,21 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...terminalStatuses]),
             // Prefer finishedAt; fall back to createdAt for sparse legacy rows.
-            sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${start}`,
-            sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) < ${end}`,
+            // Keep Date values bound through typed timestamp columns. Passing them
+            // through a raw coalesce expression leaves postgres-js without a
+            // column encoder and fails at runtime when it receives a Date object.
+            or(
+              and(
+                isNotNull(heartbeatRuns.finishedAt),
+                gte(heartbeatRuns.finishedAt, start),
+                lt(heartbeatRuns.finishedAt, end),
+              ),
+              and(
+                isNull(heartbeatRuns.finishedAt),
+                gte(heartbeatRuns.createdAt, start),
+                lt(heartbeatRuns.createdAt, end),
+              ),
+            ),
           ),
         );
 

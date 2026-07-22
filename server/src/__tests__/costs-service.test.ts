@@ -480,6 +480,55 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await tempDb?.cleanup();
   });
 
+  it("loads current-month subscription economics through the Postgres driver", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Subscription Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "succeeded",
+      startedAt: new Date("2026-07-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-07-10T00:01:00.000Z"),
+      usageJson: {
+        provider: "ollama",
+        subscriptionClass: "ollama_cloud_max",
+        inputTokens: 100,
+        outputTokens: 10,
+        usageProvenance: "measured",
+      },
+    });
+
+    const summary = await costs.subscriptionEconomics(
+      companyId,
+      new Date("2026-07-21T12:00:00.000Z"),
+    );
+
+    expect(summary.companyId).toBe(companyId);
+    expect(summary.periodStart).toBe("2026-07-01T00:00:00.000Z");
+    expect(summary.periodEnd).toBe("2026-08-01T00:00:00.000Z");
+    expect(summary.usageTruth.terminalRunCount).toBe(1);
+    expect(summary.usageTruth.measuredTokenEquivalents).toBe(110);
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
