@@ -179,6 +179,13 @@ if jq -e '
     "authority": "outer-safety-ceiling-only",
     "taskBudgetAuthority": "paperclip-execution-admission",
     "explicitTaskEnvelopeMustNotExceed": 32
+  } and
+  .runtime.gitSafeDirectories == {
+    "source": "environment-only-no-gitconfig-file",
+    "paths": [
+      "/opt/data/workspace/controlled-swarm-plugin",
+      "/opt/data/workspace/gloops-paperclip-plugin"
+    ]
   }
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal execution-only policy is installed'
@@ -274,6 +281,11 @@ for required in \
   '--cap-add SETGID' \
   '--cap-add SETUID' \
   '--security-opt no-new-privileges:true' \
+  '--env GIT_CONFIG_COUNT=2 ' \
+  '--env GIT_CONFIG_KEY_0=safe.directory ' \
+  '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/controlled-swarm-plugin ' \
+  '--env GIT_CONFIG_KEY_1=safe.directory ' \
+  '--env GIT_CONFIG_VALUE_1=/opt/data/workspace/gloops-paperclip-plugin ' \
   '--memory 2048m' \
   '--cpus 2.0' \
   '--pids-limit 512' \
@@ -342,6 +354,13 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
+    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == $'/opt/data/workspace/controlled-swarm-plugin\n/opt/data/workspace/gloops-paperclip-plugin' ]] \
+      && docker exec --user 10000:10000 "${CONTAINER}" \
+        git -C /opt/data/workspace/controlled-swarm-plugin status --short >/dev/null; then
+      pass 'live Git trust is limited to the two declared shared repositories'
+    else
+      fail 'live Git trust is missing, over-broad, or unusable for the shared repository'
+    fi
     if [[ "$(docker inspect --format '{{json .HostConfig.GroupAdd}}' "${CONTAINER}")" == '["985"]' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" /usr/bin/id -G \
         | tr ' ' '\n' | grep -Fxq '985'; then

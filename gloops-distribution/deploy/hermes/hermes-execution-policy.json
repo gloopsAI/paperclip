@@ -85,6 +85,13 @@
       "authority": "outer-safety-ceiling-only",
       "taskBudgetAuthority": "paperclip-execution-admission",
       "explicitTaskEnvelopeMustNotExceed": 32
+    },
+    "gitSafeDirectories": {
+      "source": "environment-only-no-gitconfig-file",
+      "paths": [
+        "/opt/data/workspace/controlled-swarm-plugin",
+        "/opt/data/workspace/gloops-paperclip-plugin"
+      ]
     }
   }
 }
