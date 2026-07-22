@@ -9321,7 +9321,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const interactionContinuationPayload = retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+    const interactionContinuationPayload = isResolvedInteractionContinuationWakeContext(contextSnapshot)
       ? {
           mutation: "interaction",
           interactionId: readNonEmptyString(contextSnapshot.interactionId),
