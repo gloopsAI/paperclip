@@ -170,7 +170,8 @@ describe("paperclip-task-bridge helper", () => {
   });
 
   it("comments and updates status through direct issue identifier routes", async () => {
-    const comment = await runHelper(["comment", "--issue", "PAP-123", "--body", "Progress from Hermes"], env());
+    const overrideRunId = "77777777-7777-4777-8777-777777777777";
+    const comment = await runHelper(["comment", "--issue", "PAP-123", "--body", "Progress from Hermes", "--run-id", overrideRunId], env());
     const update = await runHelper(["update-status", "--issue", "PAP-123", "--status", "in_review", "--comment", "Ready"], env());
 
     expect(comment.code).toBe(0);
@@ -178,6 +179,7 @@ describe("paperclip-task-bridge helper", () => {
     const commentRequest = requests.find((request) => request.method === "POST" && request.url.includes("/comments"));
     const patchRequest = requests.find((request) => request.method === "PATCH");
     expect(commentRequest?.body).toMatchObject({ body: "Progress from Hermes" });
+    expect(commentRequest?.headers["x-paperclip-run-id"]).toBe(overrideRunId);
     expect(patchRequest?.body).toMatchObject({ status: "in_review", comment: "Ready" });
     expect(comment.stdout + update.stdout).not.toContain(apiKey);
   });

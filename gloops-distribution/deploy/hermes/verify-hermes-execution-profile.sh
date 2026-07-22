@@ -17,6 +17,7 @@ readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
 readonly GITHUB_BROKER_SOCKET='/run/paperclip-github-broker/broker.sock'
 readonly GITHUB_BROKER_TOOL='/usr/local/lib/paperclip-gloops/tools/github-push-tool.bundle.cjs'
+readonly PAPERCLIP_TASK_TOOL='/usr/local/lib/paperclip-gloops/tools/paperclip-task.mjs'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
@@ -263,6 +264,11 @@ if [[ ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh" && ! -e "${PROFILE_DIR}
 else
   fail 'legacy GitHub write authority remains in the Hermes profile'
 fi
+if [[ "$(stat -c '%a:%U:%G' "${PAPERCLIP_TASK_TOOL}" 2>/dev/null || true)" == '555:root:root' ]]; then
+  pass 'Hermes receives an immutable Paperclip task helper'
+else
+  fail 'Paperclip task helper is absent or mutable'
+fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
   || grep -Eq -- '--publish|-p[ =]' "${UNIT}"; then
@@ -282,11 +288,9 @@ for required in \
   '--cap-add SETGID' \
   '--cap-add SETUID' \
   '--security-opt no-new-privileges:true' \
-  '--env GIT_CONFIG_COUNT=2 ' \
+  '--env GIT_CONFIG_COUNT=1 ' \
   '--env GIT_CONFIG_KEY_0=safe.directory ' \
-  '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/controlled-swarm-plugin ' \
-  '--env GIT_CONFIG_KEY_1=safe.directory ' \
-  '--env GIT_CONFIG_VALUE_1=/opt/data/workspace/gloops-paperclip-plugin ' \
+  '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/* ' \
   '--memory 2048m' \
   '--cpus 2.0' \
   '--pids-limit 512' \
@@ -355,10 +359,10 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
-    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == $'/opt/data/workspace/repos/induct\n/opt/data/workspace/controlled-swarm-plugin\n/opt/data/workspace/gloops-paperclip-plugin' ]] \
+    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == '/opt/data/workspace/*' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" \
         git -C /opt/data/workspace/controlled-swarm-plugin status --short >/dev/null; then
-      pass 'live Git trust is limited to the three declared shared repositories'
+      pass 'live Git trust covers dynamically realized repositories under the dedicated workspace root'
     else
       fail 'live Git trust is missing, over-broad, or unusable for the shared repository'
     fi

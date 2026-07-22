@@ -83,6 +83,8 @@ function terminalEnvelope(input: {
   requestBody: string;
   payload: Record<string, unknown>;
   transportClass?: string;
+  turnTotal?: number;
+  toolCallTotal?: number;
 }) {
   const usage = typeof input.payload.usage === "object" && input.payload.usage !== null
     ? input.payload.usage as Record<string, unknown>
@@ -112,8 +114,8 @@ function terminalEnvelope(input: {
     outputUsage: { present: true, value: Number(usage.output_tokens ?? 0) },
     cachedUsage: { present: true, value: Number(usage.cached_input_tokens ?? 0) },
     usageSource: "provider_response_aggregate",
-    turnTotal: 1,
-    toolCallTotal: 0,
+    turnTotal: input.turnTotal ?? 1,
+    toolCallTotal: input.toolCallTotal ?? 0,
     terminalStatus: status === "canceled" ? "cancelled" : status,
   };
   const terminalEvidenceDigest = createHash("sha256")
@@ -501,7 +503,7 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/budget-1/stop"))).toBe(true);
   });
 
-  it("counts parallel tool calls as one model turn", async () => {
+  it("settles turn and tool counts from authoritative terminal evidence", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "parallel-turns" }), { status: 200 });
@@ -545,7 +547,7 @@ describe("execute", () => {
     const result = await execute(ctx);
 
     expect(result.exitCode).toBe(0);
-    expect(result.resultJson?.execution_metrics).toEqual({ turns: 2, tool_calls: 2 });
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 1, tool_calls: 0 });
   });
 
   it("stops the remote run when distinct model turns exceed the reservation", async () => {

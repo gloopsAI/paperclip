@@ -460,6 +460,13 @@ describe("issue validators", () => {
     expect(withoutBudget.stages).toEqual([]);
   });
 
+  it("accepts only declared execution completion profiles", () => {
+    expect(issueExecutionPolicySchema.parse({ completionProfile: "direct" }).completionProfile).toBe("direct");
+    expect(issueExecutionPolicySchema.parse({ completionProfile: "verified_change" }).completionProfile)
+      .toBe("verified_change");
+    expect(issueExecutionPolicySchema.safeParse({ completionProfile: "verify_everything" }).success).toBe(false);
+  });
+
   it("rejects resourceBudget retries that are not less than runs", () => {
     expect(
       issueExecutionPolicySchema.safeParse({

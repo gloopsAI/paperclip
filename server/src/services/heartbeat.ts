@@ -137,6 +137,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
+import { compileExecutionVerification } from "./execution-context-verification.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
@@ -13330,10 +13331,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           responsibleUserId: responsibleUserId ?? issueContext?.responsibleUserId ?? null,
           runId: run.id,
         },
-        verification: {
+        verification: compileExecutionVerification({
+          completionProfile: normalizeIssueExecutionPolicy(issueContext?.executionPolicy ?? null)?.completionProfile,
           exactHeadSha: executionWorkspace.baseRefSha ?? executionWorkspace.repoRef,
-          cursor: "verify exact head, run focused checks, and record terminal disposition before completion",
-        },
+        }),
         continuation: {
           summary: safeContinuationSummary?.body ?? null,
           next: readNonEmptyString(context.wakeReason) ?? "issue wake",

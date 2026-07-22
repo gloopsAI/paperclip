@@ -23,6 +23,7 @@ Environment:
   PAPERCLIP_COMPANY_ID Optional company id override.
   PAPERCLIP_AGENT_ID   Optional agent id override.
   PAPERCLIP_RUN_ID     Optional run id for X-Paperclip-Run-Id on mutations.
+  --run-id <uuid>      Per-invocation override used by Paperclip gateway runs.
 
 create-task options:
   --assignee-agent-id <uuid|self>  Assign to an agent. Defaults to self.
@@ -102,13 +103,13 @@ function normalizeApiBaseUrl(raw) {
   return trimmed.endsWith("/api") ? trimmed : `${trimmed}/api`;
 }
 
-function getConfig() {
+function getConfig(args) {
   const apiKey = process.env.PAPERCLIP_BRIDGE_API_KEY?.trim() || process.env.PAPERCLIP_API_KEY?.trim();
   if (!apiKey) throw new UsageError("PAPERCLIP_BRIDGE_API_KEY is required");
   return {
     apiBaseUrl: normalizeApiBaseUrl(process.env.PAPERCLIP_API_URL),
     apiKey,
-    runId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
+    runId: readStringFlag(args, "run-id") || process.env.PAPERCLIP_RUN_ID?.trim() || null,
     companyId: process.env.PAPERCLIP_COMPANY_ID?.trim() || null,
     agentId: process.env.PAPERCLIP_AGENT_ID?.trim() || null,
   };
@@ -323,7 +324,7 @@ async function main() {
     process.stdout.write(`${HELP}\n`);
     return;
   }
-  const config = getConfig();
+  const config = getConfig(args);
   if (command === "list-assigned") return listAssigned(config, args);
   if (command === "create-task") return createTask(config, args);
   if (command === "comment") return comment(config, args);

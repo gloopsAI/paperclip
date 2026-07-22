@@ -404,6 +404,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   // Preserve validated resourceBudget byte-for-byte. Dropping it here is what
   // prevented task-class coding envelopes from reaching admission/adapters.
   const resourceBudget = parsed.data.resourceBudget;
+  const completionProfile = parsed.data.completionProfile;
 
   if (
     stages.length === 0 &&
@@ -411,6 +412,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     !reviewPreset &&
     !authorizationPolicy &&
     !resourceBudget &&
+    !completionProfile &&
     parsed.data.commentRequired
   ) {
     return null;
@@ -418,6 +420,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   return {
     mode: parsed.data.mode ?? "normal",
+    ...(completionProfile ? { completionProfile } : {}),
     commentRequired: parsed.data.commentRequired,
     stages,
     ...(monitor ? { monitor } : {}),

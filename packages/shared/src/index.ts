@@ -362,6 +362,8 @@ export {
   type ExternalObjectMentionSourceKind,
   type ExternalObjectMentionConfidence,
   type IssueExecutionPolicyMode,
+  ISSUE_EXECUTION_COMPLETION_PROFILES,
+  type IssueExecutionCompletionProfile,
   type IssueExecutionStageType,
   type IssueMonitorScheduledBy,
   type IssueExecutionMonitorKind,
