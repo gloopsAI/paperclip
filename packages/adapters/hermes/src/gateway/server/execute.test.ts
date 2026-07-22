@@ -82,6 +82,7 @@ function terminalEnvelope(input: {
   runId: string;
   requestBody: string;
   payload: Record<string, unknown>;
+  transportClass?: string;
 }) {
   const usage = typeof input.payload.usage === "object" && input.payload.usage !== null
     ? input.payload.usage as Record<string, unknown>
@@ -99,12 +100,12 @@ function terminalEnvelope(input: {
     requestSha256: createHash("sha256").update(input.requestBody, "utf8").digest("hex"),
     resolvedProvider: "ollama-cloud",
     resolvedModel: model,
-    transportClass: "openai_chat_completions",
+    transportClass: input.transportClass ?? "openai_chat_completions",
     billingClass: "subscription_included",
     fallbackPath: [{
       provider: "ollama-cloud",
       model,
-      transportClass: "openai_chat_completions",
+      transportClass: input.transportClass ?? "openai_chat_completions",
       billingClass: "subscription_included",
     }],
     inputUsage: { present: true, value: Number(usage.input_tokens ?? 0) },
@@ -124,6 +125,7 @@ function terminalEnvelope(input: {
 
 function stubEvidencedFetch(
   fetchMock: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  transportClass?: string,
 ): void {
   let requestBody = "";
   let runId = "";
@@ -146,7 +148,7 @@ function stubEvidencedFetch(
         const payload = JSON.parse(line.slice("data: ".length)) as Record<string, unknown>;
         const status = typeof payload.status === "string" ? payload.status : null;
         if (!status || !["completed", "failed", "cancelled", "canceled"].includes(status)) return line;
-        frozenEnvelope = terminalEnvelope({ runId, requestBody, payload });
+        frozenEnvelope = terminalEnvelope({ runId, requestBody, payload, transportClass });
         return `data: ${JSON.stringify({ ...payload, run_id: runId, ...frozenEnvelope })}`;
       }).join("\n");
       return new Response(sseStream(evidenced), {
@@ -159,7 +161,7 @@ function stubEvidencedFetch(
     if (!status || !["completed", "failed", "cancelled", "canceled"].includes(status)) {
       return new Response(JSON.stringify(payload), { status: response.status, headers: response.headers });
     }
-    const envelope = frozenEnvelope ?? terminalEnvelope({ runId, requestBody, payload });
+    const envelope = frozenEnvelope ?? terminalEnvelope({ runId, requestBody, payload, transportClass });
     return new Response(JSON.stringify({ ...payload, run_id: runId, ...envelope }), {
       status: response.status,
       headers: response.headers,
@@ -708,6 +710,45 @@ describe("execute", () => {
       },
     });
   });
+
+  it.each(["openai_responses", "anthropic_messages"])(
+    "normalizes the %s terminal transport class to the API route boundary",
+    async (transportClass) => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) {
+          return new Response(JSON.stringify({ run_id: `run-${transportClass}` }), { status: 200 });
+        }
+        const payload = {
+          status: "completed",
+          output: "done",
+          model: "ollama/qwen3-coder",
+          usage: { input_tokens: 17, output_tokens: 5 },
+        };
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(`event: run.completed\ndata: ${JSON.stringify(payload)}\n\n`),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify(payload), { status: 200 });
+      });
+      stubEvidencedFetch(fetchMock, transportClass);
+
+      const result = await execute(makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        subscriptionClass: "ollama-max",
+      }));
+
+      expect(result.resultJson).toMatchObject({
+        execution_route: {
+          transport: "api",
+          transport_class: transportClass,
+        },
+      });
+    },
+  );
 
   it("bounds final-status reconciliation when Hermes never responds", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

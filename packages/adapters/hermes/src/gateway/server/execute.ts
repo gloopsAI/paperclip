@@ -961,7 +961,11 @@ function normalizedObservedProviderId(provider: string): string {
 }
 
 function normalizedObservedTransport(transportClass: string): "api" | "cli" | "local" | null {
-  if (transportClass === "openai_chat_completions") return "api";
+  if (
+    transportClass === "openai_chat_completions"
+    || transportClass === "openai_responses"
+    || transportClass === "anthropic_messages"
+  ) return "api";
   if (transportClass === "cli") return "cli";
   if (transportClass === "local") return "local";
   return null;
