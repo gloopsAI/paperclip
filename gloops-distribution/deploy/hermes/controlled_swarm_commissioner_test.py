@@ -202,13 +202,17 @@ class FakePlatform:
 
 
 class CommissionerTest(unittest.TestCase):
-    def test_execution_route_uses_public_paperclip_tls_origin(self) -> None:
+    def test_execution_route_separates_private_sidecar_from_public_paperclip_tls(self) -> None:
+        self.assertEqual(
+            MODULE.EXECUTION_ROUTE["apiBaseUrl"],
+            "http://hermes-execution:8642",
+        )
+        self.assertTrue(
+            MODULE.EXECUTION_ROUTE["dangerouslyAllowInsecureRemoteHttp"],
+        )
         self.assertEqual(
             MODULE.EXECUTION_ROUTE["paperclipApiUrl"],
             "https://paperclip.gloops.ai/api",
-        )
-        self.assertFalse(
-            MODULE.EXECUTION_ROUTE["dangerouslyAllowInsecureRemoteHttp"],
         )
 
     @mock.patch.object(MODULE.subprocess, "run")

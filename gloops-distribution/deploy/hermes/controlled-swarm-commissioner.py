@@ -39,7 +39,10 @@ ROLLBACK_JOURNAL_PHASES = (
 )
 EXECUTION_ROUTE = {
     "apiBaseUrl": "http://hermes-execution:8642",
-    "dangerouslyAllowInsecureRemoteHttp": False,
+    # This flag applies to apiBaseUrl (the isolated Docker-network Hermes
+    # sidecar), not to Paperclip's callback URL. The control-plane callback
+    # remains HTTPS below.
+    "dangerouslyAllowInsecureRemoteHttp": True,
     "executionProfile": "paperclip-execution-only",
     "fallbackOccurred": False,
     "paperclipApiUrl": "https://paperclip.gloops.ai/api",
