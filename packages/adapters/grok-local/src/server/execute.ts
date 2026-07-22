@@ -204,6 +204,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "grok");
+  if (!new Set(["grok", "paperclip-grok"]).has(path.basename(command))) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_route.grok_cli_required",
+      errorMessage: `Grok dispatch denied: ${command} is not an approved Grok Build CLI command`,
+      clearSession: true,
+      providerInvocationAttempted: false,
+    };
+  }
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
   const permissionMode = asString(config.permissionMode, "dontAsk").trim() || "dontAsk";
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
@@ -375,6 +386,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    if (hasNonEmptyEnvValue(effectiveEnv, "XAI_API_KEY")) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "execution_route.grok_api_forbidden",
+        errorMessage: "Grok dispatch denied: XAI_API_KEY would route subscription work through the API",
+        clearSession: true,
+        providerInvocationAttempted: false,
+      };
+    }
     const runtimeEnv = ensurePathInEnv(effectiveEnv);
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
       installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,

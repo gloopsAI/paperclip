@@ -471,6 +471,10 @@ describe("execution admission", () => {
       providerInvocationAttempted: true,
       errorCode: "execution_admission.reservation_exceeded",
     })).toBe(false);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: false,
+      errorCode: "execution_route.prior_subscription_receipt_missing",
+    })).toBe(false);
 
     const observed = summarizePriorExecution([
       {

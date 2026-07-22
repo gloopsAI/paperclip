@@ -77,6 +77,37 @@ describe("grok_local execute", () => {
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
+  it("fails closed before invocation when Grok API credentials are present", async () => {
+    const root = await makeTempRoot();
+    const result = await execute({
+      runId: "run-api-denied",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { cwd: root, env: { XAI_API_KEY: "must-not-be-used" } },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "execution_route.grok_api_forbidden",
+      providerInvocationAttempted: false,
+    });
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
   it("stages Grok-native instructions and skills into the workspace for the run and cleans them up afterward", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");

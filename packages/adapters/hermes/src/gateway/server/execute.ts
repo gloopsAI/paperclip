@@ -21,6 +21,7 @@ import {
   hasProhibitedGrokApiConfiguration,
   readBoundExecutionContext,
   renderBoundExecutionContext,
+  renderExecutionPhaseBudgetPlan,
 } from "@paperclipai/adapter-utils/execution-envelope";
 import {
   ADAPTER_TYPE,
@@ -402,6 +403,9 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
       "- Preserve its authority, exact-head, verification, and continuation constraints.",
       "- Do not reconstruct or request legacy transcript/task context.",
       "- Leave a terminal execution-truth receipt or an explicitly bounded continuation.",
+      ...(renderExecutionPhaseBudgetPlan(ctx.executionBudget)
+        ? ["", renderExecutionPhaseBudgetPlan(ctx.executionBudget)!]
+        : []),
       "",
       ...(workspaceSection ? [workspaceSection, ""] : []),
       renderBoundExecutionContext(binding),
@@ -423,6 +427,9 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
     "- Do not stop at a plan unless the issue asks for planning only.",
     "- Leave durable progress and update the issue to a clear final disposition.",
     "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
+    ...(renderExecutionPhaseBudgetPlan(ctx.executionBudget)
+      ? ["", renderExecutionPhaseBudgetPlan(ctx.executionBudget)!]
+      : []),
     "",
     ...(workspaceSection ? [workspaceSection, ""] : []),
     wakePrompt,

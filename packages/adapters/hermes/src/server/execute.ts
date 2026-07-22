@@ -43,6 +43,7 @@ import {
   hasProhibitedGrokApiConfiguration,
   readBoundExecutionContext,
   renderBoundExecutionContext,
+  renderExecutionPhaseBudgetPlan,
 } from "@paperclipai/adapter-utils/execution-envelope";
 
 import {
@@ -440,6 +441,10 @@ export async function execute(
   let prompt = boundExecutionContext
     ? renderBoundExecutionContext(boundExecutionContext)
     : buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
+  const phaseBudgetContract = renderExecutionPhaseBudgetPlan(ctx.executionBudget);
+  if (phaseBudgetContract) {
+    prompt = `${phaseBudgetContract}\n\n${prompt}`;
+  }
   if (agentInstructions && !boundExecutionContext) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
