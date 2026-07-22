@@ -19,6 +19,8 @@ readonly GITHUB_BROKER_SOCKET='/run/paperclip-github-broker/broker.sock'
 readonly GITHUB_BROKER_TOOL='/usr/local/lib/paperclip-gloops/tools/github-push-tool.bundle.cjs'
 readonly PAPERCLIP_TASK_TOOL='/usr/local/lib/paperclip-gloops/tools/paperclip-task.mjs'
 readonly APPLY_PATCH_TOOL='/usr/local/lib/paperclip-gloops/tools/apply_patch'
+readonly FOCUSED_TEST_TOOL='/usr/local/lib/paperclip-gloops/tools/focused_test'
+readonly FOCUSED_TEST_PREFLIGHT='/usr/local/lib/paperclip-gloops/verify-focused-test-runtime.sh'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
@@ -277,6 +279,14 @@ if [[ "$(stat -c '%a:%U:%G' "${APPLY_PATCH_TOOL}" 2>/dev/null || true)" == '555:
 else
   fail 'Hermes workspace edit primitive is absent, mutable, or unusable'
 fi
+if [[ "$(stat -c '%a:%U:%G' "${FOCUSED_TEST_TOOL}" 2>/dev/null || true)" == '555:root:root' ]] \
+  && "${FOCUSED_TEST_TOOL}" --help | grep -Fq 'usage: focused_test --check' \
+  && [[ "$(stat -c '%a:%U:%G' "${FOCUSED_TEST_PREFLIGHT}" 2>/dev/null || true)" == '755:root:root' ]] \
+  && grep -Fq 'ExecStartPre=/usr/local/lib/paperclip-gloops/verify-focused-test-runtime.sh' "${UNIT}"; then
+  pass 'Hermes receives one immutable non-installing focused-test primitive with activation preflight'
+else
+  fail 'Hermes focused-test primitive or activation preflight is absent, mutable, or unusable'
+fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
   || grep -Eq -- '--publish|-p[ =]' "${UNIT}"; then
@@ -445,9 +455,16 @@ if [[ "${MODE}" == '--live' ]]; then
         | grep -Fq "${TIRITH_VERSION}" \
       && docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/apply_patch --help \
         | grep -Fq 'usage: apply_patch [--diff -]'; then
-      pass 'live Tirith scanner and workspace edit primitive are exact and read-only'
+      pass 'live Tirith scanner is the exact read-only pre-provisioned binary'
+      pass 'live workspace edit primitive is exact and read-only'
     else
       fail 'live Tirith scanner or workspace edit primitive is missing, writable, inexact, or unusable'
+    fi
+    if docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/focused_test --help \
+      | grep -Fq 'usage: focused_test --check'; then
+      pass 'live focused-test primitive is exact and read-only'
+    else
+      fail 'live focused-test primitive is missing, writable, inexact, or unusable'
     fi
     live_state_mounts_valid=1
     for path in cache logs memories sessions; do

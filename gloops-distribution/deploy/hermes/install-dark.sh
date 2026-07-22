@@ -152,6 +152,8 @@ install -d -m 0555 -o root -g root "${LIB_DIR}/tools"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-tool.bundle.cjs" "${LIB_DIR}/tools/github-push-tool.bundle.cjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/../../../packages/adapters/hermes/skills/paperclip-task-bridge/paperclip-task.mjs" "${LIB_DIR}/tools/paperclip-task.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/apply_patch" "${LIB_DIR}/tools/apply_patch"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/focused_test" "${LIB_DIR}/tools/focused_test"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-focused-test-runtime.sh" "${LIB_DIR}/verify-focused-test-runtime.sh"
 if [[ ! -f "${CONFIG_DIR}/github-broker-receipt-token" ]]; then
   token_stage="$(mktemp "${CONFIG_DIR}/.github-broker-receipt-token.XXXXXX")"
   python3 -c 'import secrets; print("pcp_broker_" + secrets.token_hex(32))' >"${token_stage}"

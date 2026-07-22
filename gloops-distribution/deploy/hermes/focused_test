@@ -1,0 +1,124 @@
+#!/bin/sh
+set -eu
+
+readonly WORKSPACE_ROOT='/opt/data/workspace'
+readonly ALLOWED_TARGET='packages/adapters/hermes/src/gateway/server/execute.test.ts'
+
+usage() {
+  cat <<'EOF'
+usage: focused_test --check
+       focused_test packages/adapters/hermes/src/gateway/server/execute.test.ts
+
+Runs the single allowlisted Hermes adapter test from the current Git worktree.
+The dependency runtime is pre-provisioned; this command never installs packages.
+EOF
+}
+
+fail() {
+  echo "focused_test: $*" >&2
+  exit 1
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  --check)
+    check_only=1
+    ;;
+  "${ALLOWED_TARGET}")
+    check_only=0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
+  || fail 'current directory is not inside a Git repository'
+repo_root="$(cd "${repo_root}" && pwd -P)"
+case "${repo_root}" in
+  "${WORKSPACE_ROOT}"/*) ;;
+  *) fail 'repository is outside the assigned Paperclip workspace' ;;
+esac
+
+git_common_dir="$(git -C "${repo_root}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+  || fail 'cannot resolve the canonical dependency runtime'
+case "${git_common_dir}" in
+  "${WORKSPACE_ROOT}"/*/.git) ;;
+  *) fail 'Git common directory is outside the assigned Paperclip workspace' ;;
+esac
+dependency_root="${git_common_dir%/.git}"
+
+vitest="${dependency_root}/node_modules/vitest/vitest.mjs"
+hermes_dependencies="${dependency_root}/packages/adapters/hermes/node_modules"
+adapter_dependencies="${dependency_root}/packages/adapter-utils/node_modules"
+test_target="${repo_root}/${ALLOWED_TARGET}"
+
+test -r "${vitest}" || fail 'pre-provisioned Vitest runtime is unavailable'
+test -d "${hermes_dependencies}" || fail 'pre-provisioned Hermes dependencies are unavailable'
+test -d "${adapter_dependencies}" || fail 'pre-provisioned adapter-utils dependencies are unavailable'
+test -r "${test_target}" || fail 'allowlisted test target is unavailable'
+
+if [ "${check_only}" -eq 1 ]; then
+  printf 'focused_test: ready (%s)\n' "${ALLOWED_TARGET}"
+  exit 0
+fi
+
+overlay="$(mktemp -d /tmp/paperclip-focused-test.XXXXXX)"
+created_links=''
+cleanup() {
+  for link in ${created_links}; do
+    rm -f -- "${link}"
+  done
+  rm -rf -- "${overlay}"
+}
+trap cleanup EXIT HUP INT TERM
+
+link_dependency_tree() {
+  source_dir="$1"
+  target_dir="$2"
+  mkdir -p "${target_dir}"
+  for source_entry in "${source_dir}"/*; do
+    test -e "${source_entry}" || continue
+    entry_name="${source_entry##*/}"
+    if [ "${entry_name#@}" != "${entry_name}" ]; then
+      mkdir -p "${target_dir}/${entry_name}"
+      for scoped_entry in "${source_entry}"/*; do
+        test -e "${scoped_entry}" || continue
+        ln -s "${scoped_entry}" "${target_dir}/${entry_name}/${scoped_entry##*/}"
+      done
+    else
+      ln -s "${source_entry}" "${target_dir}/${entry_name}"
+    fi
+  done
+}
+
+link_dependency_tree "${hermes_dependencies}" "${overlay}/hermes"
+link_dependency_tree "${adapter_dependencies}" "${overlay}/adapter-utils"
+
+mkdir -p "${overlay}/hermes/@paperclipai" "${overlay}/adapter-utils/@paperclipai"
+rm -f "${overlay}/hermes/@paperclipai/adapter-utils"
+ln -s "${repo_root}/packages/adapter-utils" "${overlay}/hermes/@paperclipai/adapter-utils"
+rm -f "${overlay}/adapter-utils/@paperclipai/shared"
+ln -s "${repo_root}/packages/shared" "${overlay}/adapter-utils/@paperclipai/shared"
+
+for binding in \
+  "packages/adapters/hermes/node_modules:${overlay}/hermes" \
+  "packages/adapter-utils/node_modules:${overlay}/adapter-utils"; do
+  relative_path="${binding%%:*}"
+  target_path="${binding#*:}"
+  link_path="${repo_root}/${relative_path}"
+  test ! -e "${link_path}" || fail "refusing to replace existing ${relative_path}"
+  ln -s "${target_path}" "${link_path}"
+  created_links="${link_path} ${created_links}"
+done
+
+cd "${repo_root}/packages/adapters/hermes"
+node "${vitest}" run "src/gateway/server/execute.test.ts" \
+  --root "${repo_root}/packages/adapters/hermes" \
+  --maxWorkers=1 \
+  --no-file-parallelism \
+  --no-cache

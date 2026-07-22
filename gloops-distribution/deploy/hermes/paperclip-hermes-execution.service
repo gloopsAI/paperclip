@@ -15,6 +15,7 @@ Type=simple
 Environment=HERMES_EXECUTION_IMAGE=sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca
 ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source
+ExecStartPre=/usr/local/lib/paperclip-gloops/verify-focused-test-runtime.sh
 ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-execution
 # s6-supervise is root while the gateway child is uid 10000. CAP_KILL is the
 # narrow capability it needs to deliver the container's graceful-stop signal.
