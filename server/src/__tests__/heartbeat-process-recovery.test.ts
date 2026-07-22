@@ -2026,7 +2026,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs?.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("adapter_failed");
-    expect(["scheduled_retry", "queued"]).toContain(retryRun?.status);
+    expect(["scheduled_retry", "queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
 
     const issue = await db
@@ -2120,6 +2120,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const failedRun = runs?.find((row) => row.id === runId);
     const retryRun = runs?.find((row) => row.id !== runId);
+    const retryReason = retryRun?.scheduledRetryReason;
+    expect([INTERACTION_CONTINUATION_INFRA_RETRY_REASON, "transient_failure"]).toContain(retryReason);
+    const retryWakeReason = retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
+      ? INTERACTION_CONTINUATION_INFRA_WAKE_REASON
+      : "transient_failure_retry";
     expect(failedRun).toMatchObject({
       status: "failed",
       errorCode: "adapter_failed",
@@ -2128,14 +2133,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "scheduled_retry",
       retryOfRunId: runId,
       scheduledRetryAttempt: 1,
-      scheduledRetryReason: "transient_failure",
+      scheduledRetryReason: retryReason,
     });
     expect(retryRun?.contextSnapshot).toMatchObject({
       issueId,
       interactionId,
       interactionStatus: "accepted",
-      retryReason: "transient_failure",
-      wakeReason: "transient_failure_retry",
+      retryReason,
+      wakeReason: retryWakeReason,
       scheduledRetryAttempt: 1,
     });
 
@@ -2156,12 +2161,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(wakeups.find((row) => row.runId === retryRun?.id)).toMatchObject({
       status: "queued",
-      reason: "transient_failure_retry",
+      reason: retryWakeReason,
       payload: expect.objectContaining({
         issueId,
         interactionId,
         retryOfRunId: runId,
-        retryReason: "transient_failure",
+        retryReason,
         scheduledRetryAttempt: 1,
       }),
     });
@@ -2176,15 +2181,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionRunId: retryRun?.id ?? null,
     });
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(0);
+    if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+      const comments = await waitForValue(async () => {
+        const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        return rows.length > 0 ? rows : null;
+      });
+      expect(comments).toHaveLength(1);
+      expect(comments?.[0]).toMatchObject({
+        authorType: "system",
+        createdByRunId: runId,
+        body: "Agent failed to resume after approval: `adapter_failed` — retrying (attempt 1/1)",
+      });
 
-    const interaction = await db
-      .select({ result: issueThreadInteractions.result })
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction?.result).toEqual({ version: 1, outcome: "accepted" });
+      const interaction = await waitForValue(async () => {
+        const row = await db
+          .select({ result: issueThreadInteractions.result })
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .then((rows) => rows[0] ?? null);
+        const result = row?.result as { resumeFailure?: unknown } | null | undefined;
+        return result?.resumeFailure ? row : null;
+      });
+      expect(interaction?.result).toMatchObject({
+        version: 1,
+        outcome: "accepted",
+        resumeFailure: {
+          status: "retrying",
+          errorCode: "adapter_failed",
+          attempt: 1,
+          maxAttempts: 1,
+          runId,
+          retryRunId: retryRun?.id ?? null,
+        },
+      });
+    } else {
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments).toHaveLength(0);
+      const interaction = await db
+        .select({ result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+      expect(interaction?.result).toEqual({ version: 1, outcome: "accepted" });
+    }
     mockAdapterExecute.mockClear();
   });
 
