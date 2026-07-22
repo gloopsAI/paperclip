@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import {
+  captureDirectorySnapshot,
+  mergeDirectoryWithBaseline,
+  preflightDirectoryMergeLock,
+} from "./workspace-restore-merge.js";
 
 describe("workspace restore merge", () => {
   const cleanupDirs: string[] = [];
@@ -15,6 +19,26 @@ describe("workspace restore merge", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("preflights the exact adjacent restore lock and removes the probe", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-preflight-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    const lockDir = `${targetDir}.paperclip-restore.lock`;
+    await mkdir(targetDir);
+
+    await preflightDirectoryMergeLock(targetDir);
+
+    await expect(readFile(path.join(lockDir, "owner.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails preflight when the adjacent restore-lock parent is unavailable", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-preflight-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "missing-parent", "target");
+
+    await expect(preflightDirectoryMergeLock(targetDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("preserves sibling files when sequential stale-baseline restores create the same nested directory tree", async () => {

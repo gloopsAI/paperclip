@@ -158,6 +158,19 @@ async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise
   }
 }
 
+/**
+ * Prove that the current process can create the adjacent lock used by restore.
+ *
+ * Workspace writability alone is insufficient: merge serialization uses a
+ * sibling directory so concurrent restores cannot place their lock inside the
+ * snapshot being merged. Run this before provider invocation so an unusable
+ * local restore boundary fails without spending model tokens.
+ */
+export async function preflightDirectoryMergeLock(targetDir: string): Promise<void> {
+  const releaseLock = await acquireDirectoryMergeLock(`${targetDir}.paperclip-restore.lock`);
+  await releaseLock();
+}
+
 export async function withDirectoryMergeLock<T>(
   targetDir: string,
   fn: () => Promise<T>,

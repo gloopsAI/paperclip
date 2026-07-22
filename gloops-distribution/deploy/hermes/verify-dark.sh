@@ -491,7 +491,7 @@ for required in \
   '--log-opt max-file=3' \
   '--mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly' \
   '--mount type=bind,src=/etc/paperclip-gloops/github-broker-receipt-token,dst=/run/secrets/paperclip-github-broker-receipt-token,readonly' \
-  '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace,readonly'; do
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace'; do
   if ! grep -Fq -- "${required}" "${unit_file}"; then
     echo "FAIL missing resource/security bound: ${required}" >&2
     failed=1
@@ -512,10 +512,10 @@ if [[ "${failed}" -eq 0 ]]; then
   echo "PASS resource and container-security bounds are installed"
 fi
 
-if [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/workspace 2>/dev/null || true)" == '750:10000:985' ]]; then
-  echo "PASS host execution workspace is readable only by the Paperclip observer group"
+if [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/workspace 2>/dev/null || true)" == '2770:10000:985' ]]; then
+  echo "PASS host execution workspace supports the bounded Hermes/Paperclip transaction identities"
 else
-  echo "FAIL host execution workspace observation permissions are not bounded" >&2
+  echo "FAIL host execution workspace transaction permissions are not bounded" >&2
   failed=1
 fi
 
