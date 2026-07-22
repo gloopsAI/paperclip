@@ -173,6 +173,12 @@ if jq -e '
     "maxTurns": 8,
     "maxToolCalls": 32,
     "maxWallMs": 3600000
+  } and
+  .runtime.agentHostTurnCeiling == {
+    "maxTurns": 32,
+    "authority": "outer-safety-ceiling-only",
+    "taskBudgetAuthority": "paperclip-execution-admission",
+    "explicitTaskEnvelopeMustNotExceed": 32
   }
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal execution-only policy is installed'
@@ -259,7 +265,7 @@ fi
 for required in \
   '--network paperclip-execution' \
   '--read-only' \
-  '--group-add 985' \
+  '--group-add 985 ' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
   '--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700' \
   '--cap-drop ALL' \
@@ -332,9 +338,27 @@ if [[ "${MODE}" == '--live' ]]; then
   else
     live_env="$(mktemp)"
     live_mounts="$(mktemp)"
-    trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
+    paperclip_owned_probe="${WORKSPACE}/.gloops-paperclip-owned-write-probe"
+    trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
+    if [[ "$(docker inspect --format '{{json .HostConfig.GroupAdd}}' "${CONTAINER}")" == '["985"]' ]] \
+      && docker exec --user 10000:10000 "${CONTAINER}" /usr/bin/id -G \
+        | tr ' ' '\n' | grep -Fxq '985'; then
+      pass 'live Hermes identity holds only the declared Paperclip workspace supplemental group'
+    else
+      fail 'live Hermes identity is missing or drifted from supplemental workspace gid 985'
+    fi
+    install -o 995 -g 985 -m 0664 /dev/null "${paperclip_owned_probe}"
+    if docker exec --user 10000:10000 "${CONTAINER}" \
+      /opt/hermes/.venv/bin/python -c \
+      'from pathlib import Path; p=Path("/opt/data/workspace/.gloops-paperclip-owned-write-probe"); p.write_text("hermes-ok"); raise SystemExit(0 if p.read_text() == "hermes-ok" else 1)' \
+      && [[ "$(stat -c '%u:%g:%a' "${paperclip_owned_probe}")" == '995:985:664' ]]; then
+      pass 'live Hermes identity can update a Paperclip-owned group-writable workspace file'
+    else
+      fail 'live Hermes identity cannot update the Paperclip-owned shared workspace path'
+    fi
+    rm -f "${paperclip_owned_probe}"
     if systemctl is-active --quiet paperclip-github-push-broker.service \
       && [[ "$(stat -c '%a:%u:%g' "${GITHUB_BROKER_SOCKET}" 2>/dev/null || true)" == '660:0:10000' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" /usr/local/bin/node -e \

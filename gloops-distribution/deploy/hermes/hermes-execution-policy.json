@@ -79,6 +79,12 @@
       "maxTurns": 8,
       "maxToolCalls": 32,
       "maxWallMs": 3600000
+    },
+    "agentHostTurnCeiling": {
+      "maxTurns": 32,
+      "authority": "outer-safety-ceiling-only",
+      "taskBudgetAuthority": "paperclip-execution-admission",
+      "explicitTaskEnvelopeMustNotExceed": 32
     }
   }
 }
