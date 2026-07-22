@@ -6,19 +6,35 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const ensureRuntimeInstalledMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureCommandMock = vi.hoisted(() => vi.fn(async () => {}));
-const prepareRuntimeMock = vi.hoisted(() => vi.fn(async () => ({
+const prepareRuntimeMock = vi.hoisted(() => vi.fn(async (): Promise<{
+  workspaceRemoteDir: string | null;
+  runtimeRootDir?: string | null;
+  restoreWorkspace: () => Promise<void>;
+}> => ({
   workspaceRemoteDir: null,
   restoreWorkspace: async () => {},
 })));
 const resolveCommandForLogsMock = vi.hoisted(() => vi.fn(async () => "grok"));
 const runProcessMock = vi.hoisted(() => vi.fn());
+const executionTargetIsRemoteMock = vi.hoisted(() => vi.fn(() => false));
+const executionTargetUsesBridgeMock = vi.hoisted(() => vi.fn(() => false));
+const bridgeStopMock = vi.hoisted(() => vi.fn(async () => {}));
+const startBridgeMock = vi.hoisted(() => vi.fn(async () => ({
+  env: {
+    PAPERCLIP_TERMINAL_CALLBACK_URL: "http://127.0.0.1:43123",
+    PAPERCLIP_TERMINAL_CALLBACK_TOKEN: "terminal-token",
+    PAPERCLIP_TERMINAL_CALLBACK_IDEMPOTENCY_KEY: "terminal-key",
+  },
+  stop: bridgeStopMock,
+})));
 
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
-  adapterExecutionTargetIsRemote: () => false,
+  adapterExecutionTargetIsRemote: executionTargetIsRemoteMock,
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) => cwd,
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
   adapterExecutionTargetSessionIdentity: () => ({ kind: "local" }),
   adapterExecutionTargetSessionMatches: () => true,
+  adapterExecutionTargetUsesPaperclipBridge: executionTargetUsesBridgeMock,
   describeAdapterExecutionTarget: () => "local",
   ensureAdapterExecutionTargetCommandResolvable: ensureCommandMock,
   ensureAdapterExecutionTargetRuntimeCommandInstalled: ensureRuntimeInstalledMock,
@@ -27,6 +43,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   resolveAdapterExecutionTargetCommandForLogs: resolveCommandForLogsMock,
   resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,
   runAdapterExecutionTargetProcess: runProcessMock,
+  startAdapterExecutionTargetPaperclipBridge: startBridgeMock,
 }));
 
 import { execute } from "./execute.js";
@@ -50,6 +67,10 @@ describe("grok_local execute", () => {
     prepareRuntimeMock.mockClear();
     resolveCommandForLogsMock.mockClear();
     runProcessMock.mockReset();
+    executionTargetIsRemoteMock.mockReset().mockReturnValue(false);
+    executionTargetUsesBridgeMock.mockReset().mockReturnValue(false);
+    startBridgeMock.mockClear();
+    bridgeStopMock.mockClear();
   });
 
   afterEach(async () => {
@@ -197,6 +218,85 @@ describe("grok_local execute", () => {
       provenance: "measured",
     });
     expect(result.costUsd).toBeNull();
+  });
+
+  it("injects and tears down the run-scoped terminal callback bridge for remote Grok runs", async () => {
+    const root = await makeTempRoot();
+    const remoteTarget = {
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      spec: {
+        host: "host",
+        port: 22,
+        username: "runner",
+        remoteCwd: "/remote/workspace",
+        remoteWorkspacePath: "/remote/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    } as const;
+    executionTargetIsRemoteMock.mockReturnValue(true);
+    executionTargetUsesBridgeMock.mockReturnValue(true);
+    prepareRuntimeMock.mockResolvedValueOnce({
+      workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: "/remote/runtime",
+      restoreWorkspace: async () => {},
+    });
+    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+      expect(options.env).toMatchObject({
+        PAPERCLIP_TERMINAL_CALLBACK_URL: "http://127.0.0.1:43123",
+        PAPERCLIP_TERMINAL_CALLBACK_TOKEN: "terminal-token",
+        PAPERCLIP_TERMINAL_CALLBACK_IDEMPOTENCY_KEY: "terminal-key",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "done" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-bridge" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-bridge",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { cwd: root },
+      context: { taskId: "issue-1" },
+      authToken: "run-token",
+      executionTarget: remoteTarget,
+      onLog: async () => {},
+    };
+
+    await expect(execute(ctx)).resolves.toMatchObject({ exitCode: 0, errorMessage: null });
+    expect(startBridgeMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: "run-bridge",
+      target: remoteTarget,
+      adapterKey: "grok",
+      hostApiToken: "run-token",
+      paperclipScope: {
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+    }));
+    expect(bridgeStopMock).toHaveBeenCalledTimes(1);
   });
 
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {
