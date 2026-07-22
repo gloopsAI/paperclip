@@ -948,6 +948,46 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     }).where(eq(heartbeatRuns.id, runId));
     const missing = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
     expect(missing.runs[0]).toMatchObject({ resultSummary: null, executionMetrics: null, route: null });
+
+    await db.update(heartbeatRuns).set({
+      usageJson: {
+        inputTokens: 1_200,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        turns: 1,
+        toolCalls: 0,
+        executionRoute: {
+          provider_id: "ollama",
+          observed_provider_id: "ollama-cloud",
+          model_id: "kimi-k2.7-code",
+          transport: "api",
+          transport_class: "openai_chat_completions",
+          path_id: "ollama-cloud",
+          runner: "hermes_gateway",
+          subscription_class: "ollama-max",
+          billing_class: "subscription_included",
+          routing_reason: "capacity-manager-ollama-first",
+          fallback_occurred: false,
+          execution_profile: "paperclip-execution-only",
+        },
+      },
+      resultJson: null,
+    }).where(eq(heartbeatRuns.id, runId));
+    const usageBacked = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(usageBacked.runs[0]).toMatchObject({
+      executionMetrics: { turns: 1, toolCalls: 0 },
+      route: {
+        providerId: "ollama",
+        modelId: "kimi-k2.7-code",
+        transport: "api",
+        pathId: "ollama-cloud",
+        runner: "hermes_gateway",
+        subscriptionClass: "ollama-max",
+        routingReason: "capacity-manager-ollama-first",
+        fallbackOccurred: false,
+        executionProfile: "paperclip-execution-only",
+      },
+    });
   });
 
   it("redacts and bounds run summaries before projecting them to plugins", async () => {

@@ -806,8 +806,16 @@ export function buildHostServices(
     return rows.map((row) => {
       const usage = isRecord(row.usageJson) ? row.usageJson : {};
       const result = isRecord(row.resultJson) ? row.resultJson : {};
-      const metrics = isRecord(result.execution_metrics) ? result.execution_metrics : null;
-      const route = isRecord(result.execution_route) ? result.execution_route : null;
+      const metrics = isRecord(result.execution_metrics)
+        ? result.execution_metrics
+        : isRecord(usage.executionMetrics)
+          ? usage.executionMetrics
+          : usage;
+      const route = isRecord(result.execution_route)
+        ? result.execution_route
+        : isRecord(usage.executionRoute)
+          ? usage.executionRoute
+          : null;
       const resultSummary = typeof result.summary === "string"
         ? redactSensitiveText(result.summary).slice(0, HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS)
         : null;
@@ -817,11 +825,14 @@ export function buildHostServices(
       const optionalNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value)
         ? Math.max(0, Math.floor(value))
         : null;
-      const turns = optionalNumber(metrics?.turns);
-      const toolCalls = optionalNumber(metrics?.tool_calls ?? metrics?.toolCalls);
-      const transport: "cli" | "api" | "local" | null = route?.transport === "cli" || route?.transport === "api" || route?.transport === "local"
-        ? route.transport
-        : null;
+      const turns = optionalNumber(metrics.turns);
+      const toolCalls = optionalNumber(metrics.tool_calls ?? metrics.toolCalls);
+      const transport: "cli" | "api" | "local" | null =
+        route?.transport === "openai_chat_completions"
+          ? "api"
+          : route?.transport === "cli" || route?.transport === "api" || route?.transport === "local"
+            ? route.transport
+            : null;
       const contextInputBytes = Buffer.byteLength(JSON.stringify(row.contextSnapshot ?? null), "utf8");
       return {
         id: row.id,
@@ -848,7 +859,7 @@ export function buildHostServices(
           && typeof route.path_id === "string"
           && transport
           ? {
-              providerId: route.provider_id,
+              providerId: route.provider_id === "ollama-cloud" ? "ollama" : route.provider_id,
               modelId: typeof route.model_id === "string" ? route.model_id : null,
               transport,
               pathId: route.path_id,

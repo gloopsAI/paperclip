@@ -80,10 +80,21 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       if (activeRuns.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await db.delete(heartbeatRunEvents);
-    await db.delete(issueComments);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
+    // A terminal heartbeat status can become visible just before its final
+    // lifecycle event lands. Keep teardown bounded, but tolerate that narrow
+    // persistence race so the child row is always removed before its run.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await db.delete(heartbeatRunEvents);
+      await db.delete(issueComments);
+      await db.delete(activityLog);
+      try {
+        await db.delete(heartbeatRuns);
+        break;
+      } catch (error) {
+        if (attempt === 19) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(issues);

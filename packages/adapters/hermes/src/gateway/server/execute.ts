@@ -956,6 +956,21 @@ function executionRoute(
   };
 }
 
+function normalizedObservedProviderId(provider: string): string {
+  return provider === "ollama-cloud" ? "ollama" : provider;
+}
+
+function normalizedObservedTransport(transportClass: string): "api" | "cli" | "local" | null {
+  if (
+    transportClass === "openai_chat_completions"
+    || transportClass === "openai_responses"
+    || transportClass === "anthropic_messages"
+  ) return "api";
+  if (transportClass === "cli") return "cli";
+  if (transportClass === "local") return "local";
+  return null;
+}
+
 function deterministicRefusal(input: {
   errorCode: string;
   errorMessage: string;
@@ -1553,15 +1568,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   result.usageBasis = "per_run";
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
+  const normalizedTransport = normalizedObservedTransport(terminalEvidence.transportClass);
   result.resultJson = {
     ...parseObject(result.resultJson),
     execution_route: {
-      provider_id: terminalEvidence.resolvedProvider,
+      provider_id: normalizedObservedProviderId(terminalEvidence.resolvedProvider),
+      observed_provider_id: terminalEvidence.resolvedProvider,
       model_id: terminalEvidence.resolvedModel,
-      transport: terminalEvidence.transportClass,
+      transport: normalizedTransport ?? terminalEvidence.transportClass,
+      transport_class: terminalEvidence.transportClass,
       path_id: terminalEvidence.resolvedProvider,
       runner: "hermes_gateway",
-      subscription_class: terminalEvidence.billingClass,
+      subscription_class: routeFacts.subscriptionClass ?? terminalEvidence.billingClass,
+      billing_class: terminalEvidence.billingClass,
       fallback_occurred: terminalEvidence.fallbackPath.length > 1,
       ...(routeFacts.routingReason !== undefined ? { routing_reason: routeFacts.routingReason } : {}),
       ...(routeFacts.executionProfile !== undefined ? { execution_profile: routeFacts.executionProfile } : {}),
