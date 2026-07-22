@@ -87,8 +87,9 @@
       "explicitTaskEnvelopeMustNotExceed": 32
     },
     "gitSafeDirectories": {
-      "source": "environment-only-no-gitconfig-file",
+      "source": "pinned-image-plus-environment-no-credential-config",
       "paths": [
+        "/opt/data/workspace/repos/induct",
         "/opt/data/workspace/controlled-swarm-plugin",
         "/opt/data/workspace/gloops-paperclip-plugin"
       ]

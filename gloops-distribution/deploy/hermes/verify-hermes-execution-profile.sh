@@ -181,8 +181,9 @@ if jq -e '
     "explicitTaskEnvelopeMustNotExceed": 32
   } and
   .runtime.gitSafeDirectories == {
-    "source": "environment-only-no-gitconfig-file",
+    "source": "pinned-image-plus-environment-no-credential-config",
     "paths": [
+      "/opt/data/workspace/repos/induct",
       "/opt/data/workspace/controlled-swarm-plugin",
       "/opt/data/workspace/gloops-paperclip-plugin"
     ]
@@ -354,10 +355,10 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
-    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == $'/opt/data/workspace/controlled-swarm-plugin\n/opt/data/workspace/gloops-paperclip-plugin' ]] \
+    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == $'/opt/data/workspace/repos/induct\n/opt/data/workspace/controlled-swarm-plugin\n/opt/data/workspace/gloops-paperclip-plugin' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" \
         git -C /opt/data/workspace/controlled-swarm-plugin status --short >/dev/null; then
-      pass 'live Git trust is limited to the two declared shared repositories'
+      pass 'live Git trust is limited to the three declared shared repositories'
     else
       fail 'live Git trust is missing, over-broad, or unusable for the shared repository'
     fi
