@@ -265,6 +265,60 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("persists normalized execution route with terminal usage evidence", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      summary: "Measured subscription run.",
+      provider: "ollama-cloud",
+      model: "kimi-k2.7-code",
+      usage: { inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 100 },
+      resultJson: {
+        execution_metrics: { turns: 1, tool_calls: 0 },
+        execution_route: {
+          provider_id: "ollama",
+          observed_provider_id: "ollama-cloud",
+          model_id: "kimi-k2.7-code",
+          transport: "api",
+          transport_class: "openai_chat_completions",
+          path_id: "ollama-cloud",
+          runner: "hermes_gateway",
+          subscription_class: "ollama-max",
+          billing_class: "subscription_included",
+          routing_reason: "capacity-manager-ollama-first",
+          fallback_occurred: false,
+          execution_profile: "paperclip-execution-only",
+        },
+      },
+    };
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.usageJson).toMatchObject({
+      inputTokens: 1_000,
+      outputTokens: 100,
+      executionRoute: {
+        provider_id: "ollama",
+        observed_provider_id: "ollama-cloud",
+        model_id: "kimi-k2.7-code",
+        transport: "api",
+        path_id: "ollama-cloud",
+        runner: "hermes_gateway",
+        subscription_class: "ollama-max",
+        billing_class: "subscription_included",
+        routing_reason: "capacity-manager-ollama-first",
+        fallback_occurred: false,
+        execution_profile: "paperclip-execution-only",
+      },
+    });
+  });
+
   it("uses conservative turn and tool defaults when an issue has no explicit budget", async () => {
     const { companyId, agentId } = await seedDirectAgent();
     const issueId = randomUUID();

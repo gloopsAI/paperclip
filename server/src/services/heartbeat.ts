@@ -14248,6 +14248,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           && Number.isFinite(adapterResult.usage.estimationConfidence)
           ? Math.min(1, Math.max(0, adapterResult.usage.estimationConfidence))
           : null;
+      const adapterExecutionRoute = parseObject(
+        parseObject(adapterResult.resultJson).execution_route,
+      );
       const usageJson =
         accountedUsage || adapterResult.costUsd != null || reportedTurns != null || reportedToolCalls != null
           ? ({
@@ -14292,6 +14295,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               // alongside token totals so operator receipts stay attributable.
               ...(reportedTurns != null ? { turns: reportedTurns } : {}),
               ...(reportedToolCalls != null ? { toolCalls: reportedToolCalls } : {}),
+              ...(Object.keys(adapterExecutionRoute).length > 0
+                ? { executionRoute: adapterExecutionRoute }
+                : {}),
               ...(effectiveProviderInvocationAttempted || invocationBudget
                 ? { wallMs: observedWallMs }
                 : {}),

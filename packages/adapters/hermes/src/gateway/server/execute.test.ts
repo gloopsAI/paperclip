@@ -694,11 +694,14 @@ describe("execute", () => {
     expect(result.resultJson).toMatchObject({
       final_status_reconciled: true,
       execution_route: {
-        provider_id: "ollama-cloud",
-        transport: "openai_chat_completions",
+        provider_id: "ollama",
+        observed_provider_id: "ollama-cloud",
+        transport: "api",
+        transport_class: "openai_chat_completions",
         path_id: "ollama-cloud",
         runner: "hermes_gateway",
-        subscription_class: "subscription_included",
+        subscription_class: "ollama-max",
+        billing_class: "subscription_included",
         routing_reason: "controlled-swarm-quality-pilot",
         fallback_occurred: false,
         execution_profile: "execution-only",
