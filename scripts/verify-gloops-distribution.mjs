@@ -1940,6 +1940,7 @@ for (const required of [
   "did not become healthy within",
   "chown \"${HERMES_UID}:${PAPERCLIP_GID}\" \"${WORKSPACE}\"",
   "chmod 0750 \"${WORKSPACE}\"",
+  "chmod g-s \"${WORKSPACE}\"",
   "docker run --rm --pull never --user \"${PAPERCLIP_UID}:${PAPERCLIP_GID}\"",
   "--network none --read-only --cap-drop ALL --security-opt no-new-privileges:true",
   "test -r /workspace/gloops-paperclip-plugin/.git/HEAD",
