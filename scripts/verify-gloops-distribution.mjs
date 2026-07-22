@@ -1939,10 +1939,11 @@ if (!prepareHermesExecution.includes("paperclip-hermes-handshake-egress.service"
 for (const required of [
   "did not become healthy within",
   "chown \"${HERMES_UID}:${PAPERCLIP_GID}\" \"${WORKSPACE}\"",
-  "chmod 0750 \"${WORKSPACE}\"",
-  "chmod g-s \"${WORKSPACE}\"",
+  "chmod 2770 \"${WORKSPACE}\"",
   "docker run --rm --pull never --user \"${PAPERCLIP_UID}:${PAPERCLIP_GID}\"",
   "--network none --read-only --cap-drop ALL --security-opt no-new-privileges:true",
+  "mkdir \"$probe\"",
+  "printf ok >\"$probe/owner\"",
   "test -r /workspace/gloops-paperclip-plugin/.git/HEAD",
 ]) {
   if (!restoreHermesWorkspaceObserver.includes(required)) {
@@ -2067,7 +2068,7 @@ for (const required of [
   '.RW == true',
   'docker exec -i --user 10000:10000 "${CONTAINER}" /opt/hermes/.venv/bin/python - <<\'PY\'',
   "live API rejects unauthenticated execution-plane access",
-  "live Paperclip observer can read the exact plugin pilot repository",
+  "live Paperclip identity can use the shared workspace transaction boundary",
   "Grok is host-CLI-only with no API configuration",
 ]) {
   if (!verifyHermesExecution.includes(required)) {
