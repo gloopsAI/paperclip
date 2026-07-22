@@ -116,6 +116,9 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  buildSubscriptionRouteAttemptEvidence,
+} from "@paperclipai/adapter-utils/execution-envelope";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -742,7 +745,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -869,7 +872,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexReviewer",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -962,7 +965,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: input?.agentStatus ?? "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -1002,7 +1005,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -1147,7 +1150,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: { adapterType?: "process" | "codex_local" }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1155,6 +1158,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issueId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterType = input?.adapterType ?? "process";
+    const providerRouteEvidence = adapterType === "codex_local"
+      ? {
+        schemaVersion: "gloops.subscription-route-evidence.v1" as const,
+        attempts: [
+          buildSubscriptionRouteAttemptEvidence({
+            provider: "ollama",
+            transport: "subscription_cli",
+            disposition: "attempted_failed",
+            reason: "capability_floor",
+            runId: `${runId}:ollama`,
+            issueId,
+            observedAt: new Date().toISOString(),
+          }),
+          buildSubscriptionRouteAttemptEvidence({
+            provider: "grok",
+            transport: "cli",
+            disposition: "attempted_failed",
+            reason: "capability_floor",
+            runId: `${runId}:grok`,
+            issueId,
+            observedAt: new Date().toISOString(),
+          }),
+        ],
+      }
+      : null;
 
     await db.insert(companies).values({
       id: companyId,
@@ -1170,7 +1199,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType,
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -1225,6 +1254,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: now,
+      assigneeAdapterOverrides: providerRouteEvidence
+        ? { providerRouteEvidence }
+        : null,
     });
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
@@ -1973,7 +2005,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
-    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
@@ -2421,7 +2455,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
     mockAdapterExecute.mockClear();
-    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -3699,7 +3735,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -3780,7 +3816,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -3822,7 +3858,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -3987,7 +4023,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexImplementor",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -4179,7 +4215,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -4263,7 +4299,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -4359,7 +4395,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -4684,7 +4720,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         name: "SecurityEngineer",
         role: "engineer",
         status: "idle",
-        adapterType: "codex_local",
+        adapterType: "process",
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -4695,7 +4731,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         name: "CodexCoder",
         role: "engineer",
         status: "idle",
-        adapterType: "codex_local",
+        adapterType: "process",
         adapterConfig: {},
         runtimeConfig: {},
         permissions: {},
@@ -4813,7 +4849,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
