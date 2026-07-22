@@ -326,6 +326,7 @@ function createRunContextDb(
         companyId,
         agentId: runAgentOrRows,
         agentCompanyId: companyId,
+        status: "running",
         contextSnapshot,
       }];
   const firstRun = runRows[0] ?? {};
@@ -1025,6 +1026,60 @@ describe("agent issue mutation checkout ownership", () => {
         .send({ status: "done" });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalled();
+    });
+  });
+
+  it("allows a bound running agent to complete a direct task with an atomic result comment", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_progress",
+        executionPolicy: { completionProfile: "direct" },
+      }));
+      const db = createRunContextDb({ issueId }, ownerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "Read-only result recorded." });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+  });
+
+  it("does not let a direct task bypass execution truth without a result comment", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_progress",
+        executionPolicy: { completionProfile: "direct" },
+      }));
+      const db = createRunContextDb({ issueId }, ownerAgentId, ownerRunId);
+      const res = await request(await createApp(ownerActor(), db))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done" });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("execution_truth_transition_denied");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not let a terminal run complete a direct task late", async () => {
+    await withExecutionAdmission(async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        status: "in_progress",
+        executionPolicy: { completionProfile: "direct" },
+      }));
+      const db = createRunContextDb({}, [{
+        id: ownerRunId,
+        companyId,
+        agentId: ownerAgentId,
+        agentCompanyId: companyId,
+        status: "failed",
+        contextSnapshot: { issueId },
+      }]);
+      const res = await request(await createApp(ownerActor(), db))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: "done", comment: "Late result." });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code).toBe("execution_truth_transition_denied");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
 

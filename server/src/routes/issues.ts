@@ -3388,6 +3388,13 @@ export function issueRoutes(
     req: Request,
     issue: { id: string; companyId: string },
   ) {
+    return (await trustedExecutionTruthRunForAgent(req, issue)).receipt;
+  }
+
+  async function trustedExecutionTruthRunForAgent(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw unprocessable("Execution-truth transition requires an authenticated agent", {
         code: "agent_auth_required",
@@ -3401,6 +3408,7 @@ export function issueRoutes(
     }
     const run = await db.select({
       agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
       contextSnapshot: heartbeatRuns.contextSnapshot,
     })
       .from(heartbeatRuns)
@@ -3417,7 +3425,10 @@ export function issueRoutes(
         code: "execution_truth_run_binding_invalid",
       });
     }
-    return runContext[PAPERCLIP_EXECUTION_RECEIPT_KEY];
+    return {
+      receipt: runContext[PAPERCLIP_EXECUTION_RECEIPT_KEY],
+      status: run.status,
+    };
   }
 
   async function hasActiveCheckoutManagementOverride(
@@ -7640,18 +7651,26 @@ export function issueRoutes(
             code: "trusted_execution_truth_projector_required",
           });
         }
-        const trustedReceipt = await trustedExecutionTruthReceiptForAgentRun(req, existing);
-        const decision = evaluateExecutionTruthTransition({
-          transition,
-          workId: existing.identifier ?? existing.id,
-          receipt: trustedReceipt,
-        });
-        if (!decision.allowed) {
-          throw unprocessable("Execution-truth transition denied", {
-            code: "execution_truth_transition_denied",
+        const trustedRun = await trustedExecutionTruthRunForAgent(req, existing);
+        const directCompletionAllowed =
+          transition === "completed" &&
+          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null)?.completionProfile === "direct" &&
+          trustedRun.status === "running" &&
+          typeof commentBody === "string" &&
+          commentBody.trim().length > 0;
+        if (!directCompletionAllowed) {
+          const decision = evaluateExecutionTruthTransition({
             transition,
-            reason: decision.reason,
+            workId: existing.identifier ?? existing.id,
+            receipt: trustedRun.receipt,
           });
+          if (!decision.allowed) {
+            throw unprocessable("Execution-truth transition denied", {
+              code: "execution_truth_transition_denied",
+              transition,
+              reason: decision.reason,
+            });
+          }
         }
       }
     }

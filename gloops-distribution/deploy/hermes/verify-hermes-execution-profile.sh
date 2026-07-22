@@ -90,6 +90,7 @@ assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
+assert d["platform_toolsets"] == {"api_server": ["terminal"]}
 assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
@@ -100,7 +101,7 @@ assert d["security"] == {
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
 PY
 then
-  pass 'model, turn, verification, and channel policy is exact'
+  pass 'model, tool, turn, verification, and channel policy is exact'
 else
   fail 'Hermes execution configuration violates the allowlist'
 fi

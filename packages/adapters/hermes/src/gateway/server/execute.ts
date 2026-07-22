@@ -380,6 +380,7 @@ function renderGatewayRuntimeIdentity(
     "- Hermes Gateway tool shells do not inherit PAPERCLIP_RUN_ID.",
     `- If /opt/data/bin/github-push-tool.bundle.cjs is available, invoke it as: node /opt/data/bin/github-push-tool.bundle.cjs client --run-id ${ctx.runId}`,
     `- If /opt/data/bin/paperclip-task.mjs is available, use it to comment on and complete the assigned issue; pass --run-id ${ctx.runId} on every mutation.`,
+    "- When reporting a result and completing the task, use one update-status call with --comment instead of separate comment and status calls.",
   ].join("\n");
 }
 
