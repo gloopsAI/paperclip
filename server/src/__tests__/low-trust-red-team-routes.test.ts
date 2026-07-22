@@ -1266,7 +1266,49 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       });
 
       expect(run).not.toBeNull();
-      await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
+      const terminalRunStatuses = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+      const gatewayDeadline = Date.now() + 30_000;
+      let observedRun = null;
+      while (Date.now() < gatewayDeadline && gateway.getAgentPayloads().length !== 1) {
+        observedRun = await db
+          .select({
+            status: heartbeatRuns.status,
+            errorCode: heartbeatRuns.errorCode,
+            error: heartbeatRuns.error,
+            wakeupRequestId: heartbeatRuns.wakeupRequestId,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run!.id))
+          .then((rows) => rows[0] ?? null);
+        if (observedRun && terminalRunStatuses.has(observedRun.status)) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      observedRun = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          error: heartbeatRuns.error,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run!.id))
+        .then((rows) => rows[0] ?? null);
+      const observedWakeup = observedRun?.wakeupRequestId
+        ? await db
+            .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, observedRun.wakeupRequestId))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const observedAgent = await db
+        .select({ status: agents.status, adapterType: agents.adapterType })
+        .from(agents)
+        .where(eq(agents.id, fixture.agents.standard.id))
+        .then((rows) => rows[0] ?? null);
+      expect(
+        gateway.getAgentPayloads().length,
+        JSON.stringify({ runId: run!.id, run: observedRun, wakeup: observedWakeup, agent: observedAgent }),
+      ).toBe(1);
       const payload = gateway.getAgentPayloads()[0] ?? {};
       // The gateway rejects unknown root params, so the wake context rides in the
       // generated message rather than a top-level `paperclip` field.
