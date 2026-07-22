@@ -89,7 +89,7 @@ assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
-assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
+assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
     "tirith_enabled": True,
@@ -173,6 +173,20 @@ if jq -e '
     "maxTurns": 8,
     "maxToolCalls": 32,
     "maxWallMs": 3600000
+  } and
+  .runtime.agentHostTurnCeiling == {
+    "maxTurns": 32,
+    "authority": "outer-safety-ceiling-only",
+    "taskBudgetAuthority": "paperclip-execution-admission",
+    "explicitTaskEnvelopeMustNotExceed": 32
+  } and
+  .runtime.gitSafeDirectories == {
+    "source": "pinned-image-plus-environment-no-credential-config",
+    "paths": [
+      "/opt/data/workspace/repos/induct",
+      "/opt/data/workspace/controlled-swarm-plugin",
+      "/opt/data/workspace/gloops-paperclip-plugin"
+    ]
   }
 ' "${PROFILE_DIR}/policy.json" >/dev/null 2>&1; then
   pass 'formal execution-only policy is installed'
@@ -259,6 +273,7 @@ fi
 for required in \
   '--network paperclip-execution' \
   '--read-only' \
+  '--group-add 985 ' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
   '--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700' \
   '--cap-drop ALL' \
@@ -267,6 +282,11 @@ for required in \
   '--cap-add SETGID' \
   '--cap-add SETUID' \
   '--security-opt no-new-privileges:true' \
+  '--env GIT_CONFIG_COUNT=2 ' \
+  '--env GIT_CONFIG_KEY_0=safe.directory ' \
+  '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/controlled-swarm-plugin ' \
+  '--env GIT_CONFIG_KEY_1=safe.directory ' \
+  '--env GIT_CONFIG_VALUE_1=/opt/data/workspace/gloops-paperclip-plugin ' \
   '--memory 2048m' \
   '--cpus 2.0' \
   '--pids-limit 512' \
@@ -331,9 +351,34 @@ if [[ "${MODE}" == '--live' ]]; then
   else
     live_env="$(mktemp)"
     live_mounts="$(mktemp)"
-    trap 'rm -f "${live_env}" "${live_mounts}"' EXIT
+    paperclip_owned_probe="${WORKSPACE}/.gloops-paperclip-owned-write-probe"
+    trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
+    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == $'/opt/data/workspace/repos/induct\n/opt/data/workspace/controlled-swarm-plugin\n/opt/data/workspace/gloops-paperclip-plugin' ]] \
+      && docker exec --user 10000:10000 "${CONTAINER}" \
+        git -C /opt/data/workspace/controlled-swarm-plugin status --short >/dev/null; then
+      pass 'live Git trust is limited to the three declared shared repositories'
+    else
+      fail 'live Git trust is missing, over-broad, or unusable for the shared repository'
+    fi
+    if [[ "$(docker inspect --format '{{json .HostConfig.GroupAdd}}' "${CONTAINER}")" == '["985"]' ]] \
+      && docker exec --user 10000:10000 "${CONTAINER}" /usr/bin/id -G \
+        | tr ' ' '\n' | grep -Fxq '985'; then
+      pass 'live Hermes identity holds only the declared Paperclip workspace supplemental group'
+    else
+      fail 'live Hermes identity is missing or drifted from supplemental workspace gid 985'
+    fi
+    install -o 995 -g 985 -m 0664 /dev/null "${paperclip_owned_probe}"
+    if docker exec --user 10000:10000 "${CONTAINER}" \
+      /opt/hermes/.venv/bin/python -c \
+      'from pathlib import Path; p=Path("/opt/data/workspace/.gloops-paperclip-owned-write-probe"); p.write_text("hermes-ok"); raise SystemExit(0 if p.read_text() == "hermes-ok" else 1)' \
+      && [[ "$(stat -c '%u:%g:%a' "${paperclip_owned_probe}")" == '995:985:664' ]]; then
+      pass 'live Hermes identity can update a Paperclip-owned group-writable workspace file'
+    else
+      fail 'live Hermes identity cannot update the Paperclip-owned shared workspace path'
+    fi
+    rm -f "${paperclip_owned_probe}"
     if systemctl is-active --quiet paperclip-github-push-broker.service \
       && [[ "$(stat -c '%a:%u:%g' "${GITHUB_BROKER_SOCKET}" 2>/dev/null || true)" == '660:0:10000' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" /usr/local/bin/node -e \

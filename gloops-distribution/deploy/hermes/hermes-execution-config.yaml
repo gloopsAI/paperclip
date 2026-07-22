@@ -6,7 +6,10 @@ cron:
 kanban:
   dispatch_in_gateway: false
 agent:
-  max_turns: 8
+  # Outer host safety ceiling only. Paperclip remains the per-task authority:
+  # the default provider envelope is 8 turns and explicit envelopes may widen
+  # only up to this formally declared ceiling.
+  max_turns: 32
   verify_on_stop: true
 security:
   redact_secrets: true

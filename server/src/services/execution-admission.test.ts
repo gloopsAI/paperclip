@@ -346,6 +346,18 @@ describe("execution admission", () => {
     });
   });
 
+  it("caps explicit turn envelopes at the Hermes host safety ceiling", () => {
+    const global = policy();
+    const resolved = resolveExecutionAdmissionPolicyForResourceBudgetChain(global, [{
+      maxTurnsPerInvocation: 33,
+    }]);
+
+    expect(resolved).toMatchObject({
+      enabled: true,
+      maxTurnsPerInvocation: 32,
+    });
+  });
+
   it("locks the first admitted effective policy for an epoch", () => {
     const global = policy();
     const admitted = resolveEffectiveExecutionAdmissionPolicy(global, {

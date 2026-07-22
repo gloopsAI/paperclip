@@ -6,6 +6,12 @@ export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v2
 export const EXECUTION_ADMISSION_CONTEXT_KEY = "gloopsExecutionAdmission" as const;
 export const EXECUTION_ADMISSION_RESET_CONTEXT_KEY = "gloopsExecutionBudgetResetId" as const;
 
+/**
+ * Hermes' execution-only profile uses 32 as its outer host safety ceiling.
+ * Paperclip must never hand that runtime a larger structural turn envelope.
+ */
+export const MAX_EXPLICIT_TURNS_PER_INVOCATION = 32;
+
 /** Bootstrap class may declare generous bounded capacity for tool/input provisioning. */
 export const BOOTSTRAP_EXECUTION_DEFAULTS = {
   maxRunsPerTask: 2,
@@ -472,15 +478,18 @@ export function resolveEffectiveExecutionAdmissionPolicy(
         )
         : validateLimitNumber(field, globalPolicy[field]))
       : validateLimitNumber(field, requestBudget[field]);
-    if (parentPolicy == null) return requested;
+    const hostBoundedRequest = field === "maxTurnsPerInvocation"
+      ? Math.min(requested, MAX_EXPLICIT_TURNS_PER_INVOCATION)
+      : requested;
+    if (parentPolicy == null) return hostBoundedRequest;
     if (isBootstrap && parentPolicy.executionClass === "bootstrap") {
-      return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+      return Math.min(hostBoundedRequest, validateLimitNumber(field, parentPolicy[field]));
     }
     if (isBootstrap && parentPolicy.executionClass !== "bootstrap") {
       // Bootstrap child under non-bootstrap parent: allow request up to parent.
-      return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+      return Math.min(hostBoundedRequest, validateLimitNumber(field, parentPolicy[field]));
     }
-    return Math.min(requested, validateLimitNumber(field, parentPolicy[field]));
+    return Math.min(hostBoundedRequest, validateLimitNumber(field, parentPolicy[field]));
   };
 
   const values: ExecutionAdmissionPolicyLimits = {
