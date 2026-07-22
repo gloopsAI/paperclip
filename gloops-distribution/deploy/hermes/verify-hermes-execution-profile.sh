@@ -359,12 +359,18 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
-    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == '/opt/data/workspace/*' ]] \
+    if docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory \
+        | awk '
+          $0 == "/opt/data/workspace/*" { dynamic=1; next }
+          index($0, "/opt/data/workspace/") == 1 { next }
+          { invalid=1 }
+          END { exit !(dynamic && !invalid) }
+        ' \
       && docker exec --user 10000:10000 "${CONTAINER}" \
         git -C /opt/data/workspace/controlled-swarm-plugin status --short >/dev/null; then
       pass 'live Git trust covers dynamically realized repositories under the dedicated workspace root'
     else
-      fail 'live Git trust is missing, over-broad, or unusable for the shared repository'
+      fail 'live Git trust is missing, outside the dedicated workspace root, or unusable for the shared repository'
     fi
     if [[ "$(docker inspect --format '{{json .HostConfig.GroupAdd}}' "${CONTAINER}")" == '["985"]' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" /usr/bin/id -G \
