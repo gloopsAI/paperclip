@@ -225,6 +225,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
@@ -240,6 +241,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  // Grok's native project discovery writes Agents.md and .claude/skills into
+  // the execution cwd. A process or host crash can prevent the normal finally
+  // cleanup, so those run-owned files must never be staged into a shared
+  // project-primary checkout. Realized git worktrees are disposable and keep
+  // this native context isolated from later agents.
+  if (workspaceSource === "project_primary" && workspaceStrategy !== "git_worktree") {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "execution_workspace.grok_isolation_required",
+      errorMessage:
+        "Grok native workspace context requires an isolated git worktree; shared project-primary staging is denied.",
+      clearSession: true,
+      providerInvocationAttempted: false,
+    };
+  }
 
   const grokSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGrokSkillNames = resolvePaperclipDesiredSkillNames(config, grokSkillEntries);

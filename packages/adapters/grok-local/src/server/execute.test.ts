@@ -108,6 +108,49 @@ describe("grok_local execute", () => {
     expect(runProcessMock).not.toHaveBeenCalled();
   });
 
+  it("refuses shared project-primary workspaces before staging native Grok context", async () => {
+    const root = await makeTempRoot();
+    const instructionsPath = path.join(root, "managed", "AGENTS.md");
+    await fs.mkdir(path.dirname(instructionsPath), { recursive: true });
+    await fs.writeFile(instructionsPath, "You are Grok.\n", "utf8");
+
+    const result = await execute({
+      runId: "run-shared-workspace-denied",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { cwd: root, instructionsFilePath: instructionsPath },
+      context: {
+        paperclipWorkspace: {
+          cwd: root,
+          source: "project_primary",
+          strategy: "project_primary",
+        },
+      },
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "execution_workspace.grok_isolation_required",
+      providerInvocationAttempted: false,
+    });
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
+    expect(await pathExists(path.join(root, ".claude"))).toBe(false);
+  });
+
   it("stages Grok-native instructions and skills into the workspace for the run and cleans them up afterward", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");
