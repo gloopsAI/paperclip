@@ -89,7 +89,7 @@ assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
-assert d["agent"]["max_turns"] == 8 and d["agent"]["verify_on_stop"] is True
+assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
     "tirith_enabled": True,
@@ -259,6 +259,7 @@ fi
 for required in \
   '--network paperclip-execution' \
   '--read-only' \
+  '--group-add 985' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
   '--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700' \
   '--cap-drop ALL' \
