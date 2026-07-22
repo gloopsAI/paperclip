@@ -35,6 +35,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { buildSubscriptionRouteAttemptEvidence } from "@paperclipai/adapter-utils/execution-envelope";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
@@ -44,6 +45,35 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 const execFileAsync = promisify(execFile);
+
+function codexRouteOverrides(issueId: string) {
+  const observedAt = new Date().toISOString();
+  return {
+    providerRouteEvidence: {
+      schemaVersion: "gloops.subscription-route-evidence.v1" as const,
+      attempts: [
+        buildSubscriptionRouteAttemptEvidence({
+          provider: "ollama",
+          transport: "subscription_cli",
+          disposition: "attempted_failed",
+          reason: "capability_floor",
+          runId: randomUUID(),
+          issueId,
+          observedAt,
+        }),
+        buildSubscriptionRouteAttemptEvidence({
+          provider: "grok",
+          transport: "cli",
+          disposition: "attempted_failed",
+          reason: "capability_floor",
+          runId: randomUUID(),
+          issueId,
+          observedAt,
+        }),
+      ],
+    },
+  };
+}
 
 function stableStringifyForTest(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((entry) => stableStringifyForTest(entry)).join(",")}]`;
@@ -491,6 +521,7 @@ async function seedBranchContainmentRun(
       workMode: "standard",
       priority: "medium",
       assigneeAgentId: agentId,
+      assigneeAdapterOverrides: codexRouteOverrides(sourceIssueId),
       checkoutRunId: runId,
       executionRunId: runId,
       executionAgentNameKey: "codexcoder",

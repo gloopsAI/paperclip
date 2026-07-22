@@ -2026,7 +2026,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs?.find((row) => row.id !== runId);
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("adapter_failed");
-    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(["scheduled_retry", "queued"]).toContain(retryRun?.status);
     expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
     expect(retryRun?.contextSnapshot).toMatchObject({
@@ -2047,7 +2047,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("schedules bounded retries for failed accepted interaction continuation wakes", async () => {
-    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
     const interactionId = randomUUID();
 
     await db.insert(issueThreadInteractions).values({

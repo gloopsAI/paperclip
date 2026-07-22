@@ -33,12 +33,45 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { PAPERCLIP_EXECUTION_CONTEXT_KEY, readBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  buildSubscriptionRouteAttemptEvidence,
+  readBoundExecutionContext,
+} from "@paperclipai/adapter-utils/execution-envelope";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
+
+function codexRouteOverrides(issueId: string) {
+  const observedAt = new Date().toISOString();
+  return {
+    providerRouteEvidence: {
+      schemaVersion: "gloops.subscription-route-evidence.v1" as const,
+      attempts: [
+        buildSubscriptionRouteAttemptEvidence({
+          provider: "ollama",
+          transport: "subscription_cli",
+          disposition: "attempted_failed",
+          reason: "capability_floor",
+          runId: randomUUID(),
+          issueId,
+          observedAt,
+        }),
+        buildSubscriptionRouteAttemptEvidence({
+          provider: "grok",
+          transport: "cli",
+          disposition: "attempted_failed",
+          reason: "capability_floor",
+          runId: randomUUID(),
+          issueId,
+          observedAt,
+        }),
+      ],
+    },
+  };
+}
 
 const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
@@ -513,6 +546,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       priority: "medium",
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
+      assigneeAdapterOverrides: codexRouteOverrides(issueId),
       identifier: "PAP-9122",
       executionWorkspaceId: sharedExecutionWorkspaceId,
       executionWorkspaceSettings: {
@@ -678,6 +712,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       priority: "medium",
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
+      assigneeAdapterOverrides: codexRouteOverrides(sourceIssueId),
       identifier: "PAP-1584",
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
@@ -772,6 +807,14 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     const exactWorkspaceChildIssueId = decomposition.childIssueIds[1];
     expect(childIssueId).toBeTruthy();
     expect(exactWorkspaceChildIssueId).toBeTruthy();
+    await db
+      .update(issues)
+      .set({ assigneeAdapterOverrides: codexRouteOverrides(childIssueId!) })
+      .where(eq(issues.id, childIssueId!));
+    await db
+      .update(issues)
+      .set({ assigneeAdapterOverrides: codexRouteOverrides(exactWorkspaceChildIssueId!) })
+      .where(eq(issues.id, exactWorkspaceChildIssueId!));
 
     const childBeforeRun = await db
       .select({
@@ -1000,6 +1043,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         priority: "medium",
         responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
+        assigneeAdapterOverrides: codexRouteOverrides(issueId),
         identifier: "PAP-9301",
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -1159,6 +1203,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         priority: "medium",
         responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
+        assigneeAdapterOverrides: codexRouteOverrides(issueId),
         identifier: "PAP-9401",
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -1318,6 +1363,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       priority: "medium",
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
+      assigneeAdapterOverrides: codexRouteOverrides(issueId),
       identifier: "PAP-9303",
       createdAt: new Date(),
       updatedAt: new Date(),

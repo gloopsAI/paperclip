@@ -111,7 +111,7 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
         name: `SwarmAgent${index}`,
         role: "engineer",
         status: "active",
-        adapterType: "codex_local",
+        adapterType: "process",
         adapterConfig: {},
         runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns } },
         permissions: {},
