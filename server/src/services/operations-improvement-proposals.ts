@@ -105,8 +105,33 @@ export function buildOperationsImprovementProposal(input: {
   return {
     title: `[Ops Proposal] ${input.candidate.reason} on ${sourceLabel}`,
     workMode: "ask" as const,
+    executionWorkspacePreference: "agent_default" as const,
+    assigneeAdapterOverrides: {
+      useProjectWorkspace: false,
+      adapterConfig: { worktreeMode: false },
+    },
+    executionPolicy: {
+      mode: "normal" as const,
+      completionProfile: "direct" as const,
+      commentRequired: true,
+      stages: [],
+      resourceBudget: {
+        maxRunsPerTask: 1,
+        maxRetriesPerTask: 0,
+        maxInputTokensPerTask: 50_000,
+        maxOutputTokensPerTask: 4_000,
+        maxWallMsPerTask: 180_000,
+        maxInputTokensPerInvocation: 50_000,
+        maxOutputTokensPerInvocation: 4_000,
+        maxTurnsPerInvocation: 4,
+        maxToolCallsPerInvocation: 3,
+        executionClass: "proven" as const,
+      },
+    },
     description: [
       "Advisory-only operations improvement proposal generated from terminal execution evidence.",
+      "Use only the evidence in this issue. Do not inspect the repository, invoke tools, create children, or dispatch work.",
+      "Return one concise recommendation with priority and bounded acceptance criteria, then close this issue.",
       "",
       `Source issue: ${sourceLabel} — ${input.sourceIssue.title}`,
       `Source run: ${input.run.id}`,
