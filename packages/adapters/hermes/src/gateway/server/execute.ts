@@ -135,6 +135,28 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function requestedModelMatchesResolvedModel(
+  requestedModel: string,
+  resolvedModel: string,
+  resolvedProvider: string,
+): boolean {
+  const resolvedAliases = new Set([
+    resolvedModel,
+    resolvedModel.split("/").at(-1),
+  ]);
+  if (resolvedAliases.has(requestedModel)) return true;
+
+  // Hermes API model routes expose operator-facing aliases such as
+  // `minimax-m3:cloud`, while authoritative provider terminal evidence
+  // reports the canonical Ollama model (`minimax-m3`). Treat only this
+  // explicit Ollama Cloud suffix as equivalent, and only when the signed
+  // terminal provider is Ollama Cloud. Everything else remains fail-closed.
+  if (resolvedProvider === "ollama-cloud" && requestedModel.endsWith(":cloud")) {
+    return resolvedAliases.has(requestedModel.slice(0, -":cloud".length));
+  }
+  return false;
+}
+
 function parseNonNegativeNumber(value: unknown, fallback: number): number {
   const parsed = typeof value === "number"
     ? value
@@ -1590,8 +1612,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
   const requestedModel = nonEmpty(body.model);
   const resolvedModel = terminalEvidence.resolvedModel;
-  const resolvedModelAlias = resolvedModel.split("/").at(-1);
-  if (requestedModel && requestedModel !== resolvedModel && requestedModel !== resolvedModelAlias) {
+  if (
+    requestedModel &&
+    !requestedModelMatchesResolvedModel(
+      requestedModel,
+      resolvedModel,
+      terminalEvidence.resolvedProvider,
+    )
+  ) {
     result.exitCode = 1;
     result.errorCode = "execution_route.model_mismatch";
     result.errorMessage = `Hermes resolved model ${resolvedModel} does not match requested model ${requestedModel}`;

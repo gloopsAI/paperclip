@@ -83,6 +83,7 @@ function terminalEnvelope(input: {
   requestBody: string;
   payload: Record<string, unknown>;
   transportClass?: string;
+  resolvedProvider?: string;
   turnTotal?: number;
   toolCallTotal?: number;
 }) {
@@ -95,17 +96,18 @@ function terminalEnvelope(input: {
   const model = typeof input.payload.model === "string"
     ? input.payload.model
     : "qwen3-coder";
+  const resolvedProvider = input.resolvedProvider ?? "ollama-cloud";
   const projection = {
     schemaVersion: "gloops.hermes-terminal-evidence.v1",
     hermesRunId: input.runId,
     requestByteLength: Buffer.byteLength(input.requestBody, "utf8"),
     requestSha256: createHash("sha256").update(input.requestBody, "utf8").digest("hex"),
-    resolvedProvider: "ollama-cloud",
+    resolvedProvider,
     resolvedModel: model,
     transportClass: input.transportClass ?? "openai_chat_completions",
     billingClass: "subscription_included",
     fallbackPath: [{
-      provider: "ollama-cloud",
+      provider: resolvedProvider,
       model,
       transportClass: input.transportClass ?? "openai_chat_completions",
       billingClass: "subscription_included",
@@ -129,6 +131,7 @@ function stubEvidencedFetch(
   fetchMock: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   transportClass?: string,
   terminalTotals?: { turnTotal: number; toolCallTotal: number },
+  resolvedProvider?: string,
 ): void {
   let requestBody = "";
   let runId = "";
@@ -156,6 +159,7 @@ function stubEvidencedFetch(
           requestBody,
           payload,
           transportClass,
+          resolvedProvider,
           ...terminalTotals,
         });
         return `data: ${JSON.stringify({ ...payload, run_id: runId, ...frozenEnvelope })}`;
@@ -175,6 +179,7 @@ function stubEvidencedFetch(
       requestBody,
       payload,
       transportClass,
+      resolvedProvider,
       ...terminalTotals,
     });
     return new Response(JSON.stringify({ ...payload, run_id: runId, ...envelope }), {
@@ -885,6 +890,118 @@ describe("execute", () => {
     expect(result.exitCode).toBe(0);
     expect(result.errorCode).toBeUndefined();
     expect(result.model).toBe("ollama/minimax-m2.7");
+  });
+
+  it("accepts an Ollama Cloud route alias when terminal evidence reports the canonical model", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-ollama-cloud-alias" }), { status: 200 });
+      }
+      const payload = {
+        status: "completed",
+        output: "done",
+        model: "minimax-m3",
+        usage: { input_tokens: 17, output_tokens: 5 },
+      };
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(`event: run.completed\ndata: ${JSON.stringify(payload)}\n\n`),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      model: "minimax-m3:cloud",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.provider).toBe("ollama-cloud");
+    expect(result.model).toBe("minimax-m3");
+    expect(result.resultJson?.execution_route).toMatchObject({
+      provider_id: "ollama",
+      observed_provider_id: "ollama-cloud",
+      model_id: "minimax-m3",
+      fallback_occurred: false,
+    });
+  });
+
+  it("rejects a cloud route alias when terminal evidence reports a non-Ollama provider", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-non-ollama-cloud-alias" }), { status: 200 });
+      }
+      const payload = {
+        status: "completed",
+        output: "done",
+        model: "minimax-m3",
+        usage: { input_tokens: 17, output_tokens: 5 },
+      };
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(`event: run.completed\ndata: ${JSON.stringify(payload)}\n\n`),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock, undefined, undefined, "openai");
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      model: "minimax-m3:cloud",
+    }));
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "execution_route.model_mismatch",
+      provider: "openai",
+      model: "minimax-m3",
+    });
+  });
+
+  it("rejects a cloud route alias when the canonical Ollama model differs", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-different-ollama-cloud-model" }), { status: 200 });
+      }
+      const payload = {
+        status: "completed",
+        output: "done",
+        model: "kimi-k2.7-code",
+        usage: { input_tokens: 17, output_tokens: 5 },
+      };
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(`event: run.completed\ndata: ${JSON.stringify(payload)}\n\n`),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      model: "minimax-m3:cloud",
+    }));
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "execution_route.model_mismatch",
+      provider: "ollama-cloud",
+      model: "kimi-k2.7-code",
+    });
   });
 
   it("fails closed when the signed resolved model differs from the request", async () => {
