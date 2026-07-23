@@ -94,6 +94,35 @@ assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
 assert d["platform_toolsets"] == {"api_server": ["terminal", "skills"]}
+assert d["platforms"] == {
+    "api_server": {
+        "enabled": True,
+        "extra": {
+            "model_routes": {
+                "kimi-k2.7-code:cloud": {
+                    "model": "kimi-k2.7-code",
+                    "provider": "ollama-cloud",
+                },
+                "minimax-m3:cloud": {
+                    "model": "minimax-m3",
+                    "provider": "ollama-cloud",
+                },
+                "glm-5.2:cloud": {
+                    "model": "glm-5.2",
+                    "provider": "ollama-cloud",
+                },
+                "deepseek-v4-flash:cloud": {
+                    "model": "deepseek-v4-flash",
+                    "provider": "ollama-cloud",
+                },
+                "qwen3.5:cloud": {
+                    "model": "qwen3.5",
+                    "provider": "ollama-cloud",
+                },
+            }
+        },
+    }
+}
 assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
@@ -101,10 +130,10 @@ assert d["security"] == {
     "tirith_path": "/opt/data/bin/tirith",
     "tirith_fail_open": False,
 }
-assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
+assert not any(key in d for key in ("plugins", "slack", "moa"))
 PY
 then
-  pass 'model, tool, turn, verification, and channel policy is exact'
+  pass 'model routes, tools, turns, verification, and channel policy are exact'
 else
   fail 'Hermes execution configuration violates the allowlist'
 fi
