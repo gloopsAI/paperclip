@@ -646,7 +646,11 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.summary).toBe("done");
-    expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(result.usage).toEqual({
+      inputTokens: 3,
+      outputTokens: 2,
+      provenance: "measured",
+    });
 
     const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
     const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
@@ -694,7 +698,7 @@ describe("execute", () => {
     expect(result).toMatchObject({
       exitCode: 0,
       providerInvocationAttempted: true,
-      usage: { inputTokens: 17, outputTokens: 5 },
+      usage: { inputTokens: 17, outputTokens: 5, provenance: "measured" },
       usageBasis: "per_run",
       model: "ollama/qwen3-coder",
     });

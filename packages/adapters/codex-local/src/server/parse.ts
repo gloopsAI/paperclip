@@ -22,6 +22,7 @@ export function parseCodexJsonl(stdout: string) {
     cachedInputTokens: 0,
     outputTokens: 0,
   };
+  let usageProvenance: "measured" | "unknown" = "unknown";
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -56,6 +57,7 @@ export function parseCodexJsonl(stdout: string) {
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
       usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
+      usageProvenance = "measured";
       continue;
     }
 
@@ -69,7 +71,10 @@ export function parseCodexJsonl(stdout: string) {
   return {
     sessionId,
     summary: finalMessage?.trim() ?? "",
-    usage,
+    usage: {
+      ...usage,
+      provenance: usageProvenance,
+    },
     errorMessage,
   };
 }

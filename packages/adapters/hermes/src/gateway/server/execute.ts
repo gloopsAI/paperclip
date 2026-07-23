@@ -1575,6 +1575,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(terminalEvidence.cachedUsage.value > 0
       ? { cachedInputTokens: terminalEvidence.cachedUsage.value }
       : {}),
+    provenance:
+      terminalEvidence.inputUsage.present
+      && terminalEvidence.outputUsage.present
+      && terminalEvidence.cachedUsage.present
+      && terminalEvidence.usageSource === "provider_response_aggregate"
+        ? "measured"
+        : "unknown",
   };
   result.usageBasis = "per_run";
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
