@@ -1,6 +1,16 @@
 import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
+import {
+  documents,
+  externalObjectMentions,
+  externalObjects,
+  heartbeatRuns,
+  issueComments,
+  issueDocuments,
+  issues,
+  plugins,
+} from "@paperclipai/db";
+import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
 import {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalUrl,
@@ -17,8 +27,13 @@ import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
+import { resolveIssueExecutionCompletionProfile } from "./issue-execution-policy.js";
 import { publishLiveEvent } from "./live-events.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  buildTerminalIssueLifecyclePatch,
+  decideMergedPullRequestIssueReconciliation,
+} from "./terminal-issue-reconciliation.js";
 
 export interface ExternalObjectSourceContext {
   companyId: string;
@@ -768,6 +783,173 @@ export function externalObjectService(
     return summarizeObjectPayloads(objects, 25);
   }
 
+  async function reconcileMergedPullRequestObject(
+    object: ExternalObjectRecord,
+    now: Date,
+  ) {
+    if (
+      object.providerKey !== "github" ||
+      object.objectType !== "pull_request" ||
+      object.statusKey !== "merged"
+    ) {
+      return { projected: 0 };
+    }
+    const data = object.data && typeof object.data === "object" && !Array.isArray(object.data)
+      ? object.data as Record<string, unknown>
+      : {};
+    const headSha = typeof data.headSha === "string" ? data.headSha : null;
+    const mentionedIssues = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        executionPolicy: issues.executionPolicy,
+        workMode: issues.workMode,
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+        completedAt: issues.completedAt,
+      })
+      .from(externalObjectMentions)
+      .innerJoin(issues, eq(externalObjectMentions.sourceIssueId, issues.id))
+      .where(and(
+        eq(externalObjectMentions.companyId, object.companyId),
+        eq(externalObjectMentions.objectId, object.id),
+        eq(issues.status, "in_review"),
+      ));
+
+    let projected = 0;
+    for (const issue of mentionedIssues) {
+      const currentRunId = issue.executionRunId ?? issue.checkoutRunId;
+      if (!currentRunId) continue;
+      const run = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, currentRunId),
+          eq(heartbeatRuns.companyId, object.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!run) continue;
+
+      const decision = decideMergedPullRequestIssueReconciliation({
+        completionProfile: resolveIssueExecutionCompletionProfile({
+          executionPolicy: issue.executionPolicy,
+          workMode: issue.workMode,
+        }),
+        issue,
+        run,
+        pullRequest: {
+          provider: "github",
+          merged: true,
+          headSha,
+        },
+      });
+      if (decision.kind !== "project") continue;
+
+      const changed = await db.transaction(async (tx) => {
+        const [currentIssue, currentRun] = await Promise.all([
+          tx.select({
+            id: issues.id,
+            identifier: issues.identifier,
+            status: issues.status,
+            executionPolicy: issues.executionPolicy,
+            workMode: issues.workMode,
+            executionRunId: issues.executionRunId,
+            checkoutRunId: issues.checkoutRunId,
+            completedAt: issues.completedAt,
+          })
+            .from(issues)
+            .where(and(
+              eq(issues.id, issue.id),
+              eq(issues.companyId, object.companyId),
+            ))
+            .then((rows) => rows[0] ?? null),
+          tx.select({
+            id: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, run.id),
+              eq(heartbeatRuns.companyId, object.companyId),
+            ))
+            .then((rows) => rows[0] ?? null),
+        ]);
+        if (!currentIssue || currentIssue.status !== "in_review" || !currentRun) return false;
+        const currentDecision = decideMergedPullRequestIssueReconciliation({
+          completionProfile: resolveIssueExecutionCompletionProfile({
+            executionPolicy: currentIssue.executionPolicy,
+            workMode: currentIssue.workMode,
+          }),
+          issue: currentIssue,
+          run: currentRun,
+          pullRequest: {
+            provider: "github",
+            merged: true,
+            headSha,
+          },
+        });
+        if (currentDecision.kind !== "project") return false;
+        const runContext = currentRun.contextSnapshot &&
+          typeof currentRun.contextSnapshot === "object" &&
+          !Array.isArray(currentRun.contextSnapshot)
+          ? currentRun.contextSnapshot as Record<string, unknown>
+          : {};
+        await tx.update(heartbeatRuns)
+          .set({
+            contextSnapshot: {
+              ...runContext,
+              [PAPERCLIP_EXECUTION_RECEIPT_KEY]: currentDecision.receipt,
+            },
+            updatedAt: now,
+          })
+          .where(and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.companyId, object.companyId),
+          ));
+        const updated = await tx.update(issues)
+          .set(buildTerminalIssueLifecyclePatch({
+            currentCompletedAt: currentIssue.completedAt,
+            targetStatus: "done",
+            now,
+          }))
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, object.companyId),
+            eq(issues.status, "in_review"),
+          ))
+          .returning({ id: issues.id });
+        return updated.length === 1;
+      });
+      if (!changed) continue;
+      projected += 1;
+      await logActivity(db, {
+        companyId: object.companyId,
+        actorType: "system",
+        actorId: "external-object-resolver",
+        agentId: null,
+        runId: run.id,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "done",
+          source: "github_merged_exact_head",
+          externalObjectId: object.id,
+          headSha,
+          _previous: { status: "in_review" },
+        },
+      });
+    }
+    return { projected };
+  }
+
   async function refreshObject(
     objectId: string,
     input: {
@@ -856,6 +1038,7 @@ export function externalObjectService(
       .where(and(eq(externalObjects.id, object.id), eq(externalObjects.companyId, object.companyId)))
       .returning();
     const next = updated ?? object;
+    await reconcileMergedPullRequestObject(next, now);
     if (objectChanged(object, next) && input.actor) {
       await logActivity(db, {
         companyId: object.companyId,

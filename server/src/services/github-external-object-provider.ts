@@ -195,7 +195,9 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
   const authorLogin = asNestedString(body, "user", "login");
   const headRef = asNestedString(body, "head", "ref");
+  const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
+  const mergeCommitSha = asString(body.merge_commit_sha);
   const reviewDecision = asString(body.review_decision);
 
   let statusKey = state;
@@ -252,7 +254,9 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       draft,
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
+      ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
+      ...(mergeCommitSha ? { mergeCommitSha } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
     },
   };

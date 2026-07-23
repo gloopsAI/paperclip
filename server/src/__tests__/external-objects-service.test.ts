@@ -1,12 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   companies,
   createDb,
   activityLog,
+  agents,
   externalObjectMentions,
   externalObjects,
+  heartbeatRuns,
   issueComments,
   issues,
   plugins,
@@ -23,6 +25,7 @@ import {
 } from "../services/external-objects.js";
 import { canonicalizeExternalObjectUrl } from "@paperclipai/shared/external-objects-server";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
 
@@ -364,7 +367,9 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await db.delete(externalObjectMentions);
     await db.delete(externalObjects);
     await db.delete(issueComments);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);
     vi.restoreAllMocks();
@@ -583,6 +588,104 @@ describeEmbeddedPostgres("externalObjectService", () => {
 
     expect(refreshed).toEqual([]);
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("projects a merged exact-head implementation issue to done once", async () => {
+    const { companyId, issueId } = await createIssue();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const headSha = "a".repeat(40);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Implementer",
+      adapterType: "hermes_gateway",
+    });
+    const receiptBody = {
+      schemaVersion: "gloops.execution-truth.operator-receipt.v2",
+      work: { id: await db.select({ identifier: issues.identifier }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!.identifier) },
+      budget: { exhausted: [] },
+      route: { observedPathIds: ["ollama-cloud-cli"], prohibitedPathObserved: false },
+      continuation: { required: false, valid: true },
+      verification: {
+        exactHeadAligned: true,
+        exactHeadSha: headSha,
+        allChecksPassed: true,
+      },
+      authority: { humanRequired: false },
+      status: "built",
+    };
+    const stable = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(stable);
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, stable(entry)]));
+    };
+    const receipt = {
+      ...receiptBody,
+      digest: `sha256:${createHash("sha256").update(JSON.stringify(stable(receiptBody))).digest("hex")}`,
+    };
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt },
+    });
+    await db.update(issues).set({
+      status: "in_review",
+      workMode: "execution",
+      executionPolicy: { completionProfile: "verified_change" },
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      checkoutRunId: runId,
+    }).where(eq(issues.id, issueId));
+
+    const svc = externalObjectService(db, {
+      github: {
+        fetch: vi.fn(async () => new Response(JSON.stringify({
+            state: "closed",
+            merged: true,
+            draft: false,
+            title: "Merged implementation",
+            head: { ref: "feature", sha: headSha },
+            base: { ref: "main" },
+            updated_at: "2026-07-23T01:02:03Z",
+          }), {
+            status: 200,
+            headers: { "content-type": "application/json", etag: '"merged-head"' },
+          })),
+        tokenProvider: null,
+      },
+    });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    const refreshed = await svc.refreshObject(object.id, { companyId, force: true });
+    expect(refreshed).toMatchObject({ refreshed: true, reason: "resolved" });
+    expect(refreshed.object).toMatchObject({
+      providerKey: "github",
+      objectType: "pull_request",
+      statusKey: "merged",
+      data: { headSha },
+    });
+    await svc.refreshObject(object.id, { companyId, force: true });
+
+    const [projectedIssue, projectedRun, activities] = await Promise.all([
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!),
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!),
+      db.select().from(activityLog).where(eq(activityLog.entityId, issueId)),
+    ]);
+    expect(projectedIssue.status).toBe("done");
+    expect(projectedIssue.completedAt).toBeInstanceOf(Date);
+    expect((projectedRun.contextSnapshot as any)[PAPERCLIP_EXECUTION_RECEIPT_KEY]).toMatchObject({
+      status: "operational",
+      verification: {
+        review: { status: "accepted", headSha, source: "github_merge" },
+      },
+    });
+    expect(activities.filter((entry) => entry.action === "issue.updated")).toHaveLength(1);
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {

@@ -40,6 +40,7 @@ import {
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
+  externalObjectService,
   heartbeatService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
@@ -859,6 +860,7 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
+    const externalObjects = externalObjectService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
@@ -924,6 +926,22 @@ export async function startServer(): Promise<StartedServer> {
             { ...issueGraphReconciled },
             "startup issue-graph liveness reconciliation changed issue graph state",
           );
+        }
+
+        const terminalAgentsReconciled = await heartbeat.reconcileTerminalAgentTruth();
+        if (terminalAgentsReconciled.cleared > 0) {
+          logger.warn(
+            { ...terminalAgentsReconciled },
+            "startup terminal-agent truth reconciliation cleared stale error state",
+          );
+        }
+
+        const activeCompanyIds = await db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.status, "active"));
+        for (const company of activeCompanyIds) {
+          await externalObjects.refreshDueObjects(company.id);
         }
 
         const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
@@ -1064,10 +1082,33 @@ export async function startServer(): Promise<StartedServer> {
               logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
             }
           })
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileTerminalAgentTruth();
+            if (reconciled.cleared > 0) {
+              logger.warn(
+                { ...reconciled },
+                "periodic terminal-agent truth reconciliation cleared stale error state",
+              );
+            }
+          })
           .catch((err) => {
             logger.error({ err }, "periodic heartbeat recovery failed");
           }));
       }
+
+      trackHeartbeatSchedulerWork(
+        db.select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.status, "active"))
+          .then(async (activeCompanies) => {
+            for (const company of activeCompanies) {
+              await externalObjects.refreshDueObjects(company.id);
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic external-object truth refresh failed");
+          }),
+      );
       })();
     }, config.heartbeatSchedulerIntervalMs);
   }

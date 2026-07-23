@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -144,6 +144,7 @@ import {
   decideTerminalIssueReconciliation,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
+import { decideTerminalAgentTruth } from "./terminal-agent-reconciliation.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
@@ -234,7 +235,9 @@ import {
 import {
   WORK_PREPARATION_CONTEXT_KEY,
   WORK_PREPARATION_DENIED_CODE,
+  WORK_PREPARATION_SPLIT_CODE,
   assessWorkPreparation,
+  resolveWorkPreparationCapabilities,
 } from "./work-preparation.js";
 import {
   buildOperationsImprovementStewardWake,
@@ -12010,6 +12013,116 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getExecutionIssueCreatedAtGte() });
   }
 
+  async function reconcileTerminalAgentTruth(opts?: { companyId?: string | null }) {
+    const candidates = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        status: agents.status,
+        errorReason: agents.errorReason,
+      })
+      .from(agents)
+      .where(and(
+        eq(agents.status, "error"),
+        isNull(agents.errorReason),
+        opts?.companyId ? eq(agents.companyId, opts.companyId) : undefined,
+      ));
+    const clearedAgentIds: string[] = [];
+
+    for (const candidate of candidates) {
+      const [activeRuns, activeAssignments, latestRun] = await Promise.all([
+        db.select({ count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.agentId, candidate.id),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          ))
+          .then((rows) => rows[0]?.count ?? 0),
+        db.select({ count: sql<number>`count(*)::int` })
+          .from(issues)
+          .where(and(
+            eq(issues.assigneeAgentId, candidate.id),
+            inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+          ))
+          .then((rows) => rows[0]?.count ?? 0),
+        db.select({
+          status: heartbeatRuns.status,
+          issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+        })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, candidate.id))
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+      ]);
+      const latestRunIssueStatus = latestRun?.issueId
+        ? await db.select({ status: issues.status })
+            .from(issues)
+            .where(and(
+              eq(issues.id, latestRun.issueId),
+              eq(issues.companyId, candidate.companyId),
+            ))
+            .then((rows) => rows[0]?.status ?? null)
+        : null;
+      const decision = decideTerminalAgentTruth({
+        agentStatus: candidate.status,
+        errorReason: candidate.errorReason,
+        activeRunCount: activeRuns,
+        activeAssignmentCount: activeAssignments,
+        latestRunStatus: latestRun?.status ?? null,
+        latestRunIssueStatus,
+      });
+      if (decision.kind !== "clear_error") continue;
+
+      const updated = await db.update(agents)
+        .set({
+          status: "idle",
+          errorReason: null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(agents.id, candidate.id),
+          eq(agents.status, "error"),
+          isNull(agents.errorReason),
+          notExists(
+            db.select({ id: heartbeatRuns.id })
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.agentId, candidate.id),
+                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              )),
+          ),
+          notExists(
+            db.select({ id: issues.id })
+              .from(issues)
+              .where(and(
+                eq(issues.assigneeAgentId, candidate.id),
+                inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+              )),
+          ),
+        ))
+        .returning({ id: agents.id });
+      if (updated.length !== 1) continue;
+      clearedAgentIds.push(candidate.id);
+      publishLiveEvent({
+        companyId: candidate.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: candidate.id,
+          status: "idle",
+          outcome: "terminal_truth_reconciled",
+          reason: decision.reason,
+        },
+      });
+    }
+
+    return {
+      checked: candidates.length,
+      cleared: clearedAgentIds.length,
+      clearedAgentIds,
+    };
+  }
+
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
   }
@@ -14104,6 +14217,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
+      const completionProfile = issueRef
+        ? resolveIssueExecutionCompletionProfile({
+          executionPolicy: issueContext?.executionPolicy,
+          workMode: issueRef.workMode,
+        })
+        : null;
+      const implementationAssignment = Boolean(
+        issueRef &&
+        completionProfile !== "direct" &&
+        !["ask", "planning", "skill_test"].includes(issueRef.workMode ?? "") &&
+        (
+          completionProfile === "verified_change" ||
+          executionWorkspace.repoUrl ||
+          executionWorkspace.strategy === "git_worktree"
+        ),
+      );
+      const preparationCapabilities = resolveWorkPreparationCapabilities({
+        adapterType: agent.adapterType,
+        runtimeConfig,
+        issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+        implementation: implementationAssignment,
+      });
+      const workPreparationRequired =
+        issueRef != null &&
+        (
+          issueAssigneeOverrides?.adapterConfig?.paperclipWorkPreparationRequired === true ||
+          runtimeConfig.paperclipWorkPreparationRequired === true
+        );
       const workPreparation = assessWorkPreparation({
         runId: run.id,
         issueId: issueRef?.id ?? null,
@@ -14111,7 +14252,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: agent.id,
         adapterType: agent.adapterType,
         model: configuredModel,
-        required: Boolean(issueRef),
+        required: workPreparationRequired,
         executionContext: context[PAPERCLIP_EXECUTION_CONTEXT_KEY],
         invocationBudget,
         workspace: {
@@ -14119,10 +14260,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           cwd: executionWorkspace.cwd,
           repoUrl: executionWorkspace.repoUrl,
           repoRef: executionWorkspace.repoRef,
+          writable: implementationAssignment ? true : null,
+        },
+        assignment: {
+          implementation: implementationAssignment,
+          splitAllowed: preparationCapabilities.splitAllowed,
         },
         skills: {
           mentionedKeys: runScopedMentionedSkillKeys,
           runtimeEntries: runtimeSkillEntries,
+        },
+        tools: {
+          mentionedKeys: preparationCapabilities.requiredTools,
+          runtimeEntries: preparationCapabilities.availableTools.map((key) => ({
+            key,
+            sourceStatus: "available" as const,
+          })),
+        },
+        capacity: {
+          modelContextTokens: preparationCapabilities.modelContextTokens ??
+            (invocationBudget
+              ? invocationBudget.maxInputTokens + invocationBudget.maxOutputTokens
+              : null),
+        },
+        packetLimits: {
+          maxBytes: 16_000,
         },
       });
       await db
@@ -14142,13 +14304,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? "reconciled"
             : "unsupported"
         : null;
-      if (workPreparation.decision === "denied") {
+      if (workPreparation.decision === "denied" || workPreparation.decision === "split") {
+        const isSplit = workPreparation.decision === "split";
         adapterResult = {
           exitCode: 1,
           signal: null,
           timedOut: false,
-          errorCode: WORK_PREPARATION_DENIED_CODE,
-          errorMessage: `Work preparation denied provider execution: ${workPreparation.fatalReasons.join(", ")}`,
+          errorCode: isSplit ? WORK_PREPARATION_SPLIT_CODE : WORK_PREPARATION_DENIED_CODE,
+          errorMessage: isSplit
+            ? `Work preparation deferred for decomposition: ${workPreparation.splitReasons.join(", ")}`
+            : `Work preparation denied provider execution: ${workPreparation.fatalReasons.join(", ")}`,
           clearSession: true,
           providerInvocationAttempted: false,
           resultJson: { workPreparation },
@@ -18289,6 +18454,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileTerminalAgentTruth,
 
     sweepStaleIssueLocks,
 

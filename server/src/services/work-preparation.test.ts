@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildBoundExecutionContext,
   buildCanonicalContinuationPacket,
+  buildExecutionPhaseBudgetPlan,
   type ExecutionInvocationBudget,
 } from "@paperclipai/adapter-utils/execution-envelope";
-import { assessWorkPreparation } from "./work-preparation.js";
+import {
+  assessWorkPreparation,
+  resolveWorkPreparationCapabilities,
+} from "./work-preparation.js";
 
 function context() {
   return buildBoundExecutionContext(buildCanonicalContinuationPacket({
@@ -40,12 +44,16 @@ describe("assessWorkPreparation", () => {
       adapterType: "hermes_gateway",
       model: "kimi-k2.7-code",
       executionContext: context(),
-      invocationBudget: budget(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      assignment: { implementation: true },
       workspace: {
         required: true,
         cwd: "/workspace",
         repoUrl: "https://github.com/gloopsAI/paperclip.git",
         repoRef: "abc123",
+        writable: true,
       },
       evaluatedAt: new Date("2026-07-22T12:00:00.000Z"),
     });
@@ -106,7 +114,9 @@ describe("assessWorkPreparation", () => {
       agentId: "agent-1",
       adapterType: "hermes_gateway",
       executionContext: context(),
-      invocationBudget: budget(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
       workspace: { required: false, cwd: "/workspace" },
       skills: {
         mentionedKeys: ["company/git-ops", "company/sql-agent"],
@@ -133,7 +143,9 @@ describe("assessWorkPreparation", () => {
       agentId: "agent-1",
       adapterType: "hermes_gateway",
       executionContext: context(),
-      invocationBudget: budget(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
       workspace: { required: false, cwd: "/workspace" },
       skills: {
         mentionedKeys: ["company/git-ops", "company/sql-agent"],
@@ -151,6 +163,271 @@ describe("assessWorkPreparation", () => {
       available: ["company/git-ops"],
       missing: ["company/sql-agent"],
       ready: false,
+    });
+  });
+
+  // New tests for GLO-1368
+
+  it("splits when packet + overhead exceeds model context but no fatal defects exist", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-split-capacity",
+      issueId: "issue-1",
+      issueIdentifier: "GLO-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      assignment: { implementation: true },
+      workspace: {
+        required: true,
+        cwd: "/workspace",
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "abc123",
+        writable: true,
+      },
+      capacity: {
+        // totalRequired = packetTokens + overheadTokens + 4000 min discretionary
+        // budget fixedOverheadInputTokens = 2000, so overheadTokens = 2000
+        // set context window to something tiny so totalRequired > modelContextTokens
+        modelContextTokens: 100,
+      },
+    });
+
+    expect(receipt.decision).toBe("split");
+    expect(receipt.fatalReasons).toEqual([]);
+    expect(receipt.splitReasons).toContain("model_context_capacity_insufficient");
+    expect(receipt.capacity.fits).toBe(false);
+  });
+
+  it("denies (not splits) when capacity is exceeded AND a required tool is missing", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-deny-over-split",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      assignment: { implementation: true },
+      workspace: {
+        required: true,
+        cwd: "/workspace",
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "abc123",
+        writable: true,
+      },
+      tools: {
+        mentionedKeys: ["company/missing-tool"],
+        runtimeEntries: [
+          { key: "company/missing-tool", sourceStatus: "missing" },
+        ],
+      },
+      capacity: {
+        modelContextTokens: 100,
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("required_tool_unavailable");
+    expect(receipt.splitReasons).toContain("model_context_capacity_insufficient");
+  });
+
+  it("denies when a required tool is not available", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-tool-missing",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      workspace: { required: false, cwd: "/workspace" },
+      tools: {
+        mentionedKeys: ["company/code-search", "company/browser"],
+        runtimeEntries: [
+          { key: "company/code-search", sourceStatus: "available" },
+          { key: "company/browser", sourceStatus: "missing" },
+        ],
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("required_tool_unavailable");
+    expect(receipt.tools).toEqual({
+      required: ["company/browser", "company/code-search"],
+      available: ["company/code-search"],
+      missing: ["company/browser"],
+      ready: false,
+    });
+  });
+
+  it("denies when workspace is explicitly marked not-writable and required", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-not-writable",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      assignment: { implementation: true },
+      workspace: {
+        required: true,
+        cwd: "/workspace",
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "abc123",
+        writable: false,
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("workspace_not_writable");
+  });
+
+  it("denies when phase budget plan is missing for an issue-backed run", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-no-phase-plan",
+      issueId: "issue-1",
+      issueIdentifier: "GLO-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget(), // no phasePlan
+      assignment: { implementation: true },
+      workspace: {
+        required: true,
+        cwd: "/workspace",
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "abc123",
+        writable: true,
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("phase_budget_plan_missing");
+    expect(receipt.phaseBudget.present).toBe(false);
+    expect(receipt.phaseBudget.ready).toBe(false);
+  });
+
+  it("denies when a phase budget has zero turns", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-zero-turns",
+      issueId: "issue-1",
+      issueIdentifier: "GLO-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 0, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      assignment: { implementation: true },
+      workspace: {
+        required: true,
+        cwd: "/workspace",
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "abc123",
+        writable: true,
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("phase_budget_insufficient");
+    expect(receipt.phaseBudget.present).toBe(true);
+    expect(receipt.phaseBudget.ready).toBe(false);
+  });
+
+  it("denies when packet exceeds configured byte limit", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-byte-limit",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      workspace: { required: false, cwd: "/workspace" },
+      packetLimits: {
+        maxBytes: 1, // impossibly small
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("packet_byte_limit_exceeded");
+  });
+
+  it("admits when phase plan is present and all phases are sufficient", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-phase-ok",
+      issueId: "issue-1",
+      issueIdentifier: "GLO-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget({
+        phasePlan: buildExecutionPhaseBudgetPlan({ inputTokens: 20_000, outputTokens: 4_000, turns: 10, toolCalls: 20, wallMs: 300_000 }),
+      }),
+      assignment: { implementation: true },
+      workspace: {
+        required: true,
+        cwd: "/workspace",
+        repoUrl: "https://github.com/gloopsAI/paperclip.git",
+        repoRef: "abc123",
+        writable: true,
+      },
+    });
+
+    expect(receipt.decision).toBe("ready");
+    expect(receipt.fatalReasons).toEqual([]);
+    expect(receipt.phaseBudget.present).toBe(true);
+    expect(receipt.phaseBudget.ready).toBe(true);
+  });
+
+  it("defaults implementation work to file and terminal tools on unrestricted Hermes", () => {
+    expect(resolveWorkPreparationCapabilities({
+      adapterType: "hermes_gateway",
+      runtimeConfig: {},
+      implementation: true,
+    })).toEqual({
+      requiredTools: ["file", "terminal"],
+      availableTools: [
+        "terminal",
+        "file",
+        "web",
+        "browser",
+        "code_execution",
+        "vision",
+        "mcp",
+        "creative",
+        "productivity",
+      ],
+      modelContextTokens: null,
+      splitAllowed: true,
+    });
+  });
+
+  it("detects a restricted Hermes toolset and explicit model context ceiling", () => {
+    expect(resolveWorkPreparationCapabilities({
+      adapterType: "hermes_gateway",
+      runtimeConfig: {
+        toolsets: "web,file",
+        modelContextTokens: 16_000,
+      },
+      issueAdapterConfig: {
+        paperclipRequiredToolsets: ["file", "terminal"],
+        paperclipSplitOversizedAssignments: false,
+      },
+      implementation: true,
+    })).toEqual({
+      requiredTools: ["file", "terminal"],
+      availableTools: ["file", "web"],
+      modelContextTokens: 16_000,
+      splitAllowed: false,
     });
   });
 });
