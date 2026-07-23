@@ -235,7 +235,7 @@ export async function runDailyEconomicsReport(env = process.env) {
       token,
       {
         method: "POST",
-        body: JSON.stringify({ body: receipt.markdown, authorType: "system" }),
+        body: JSON.stringify({ body: receipt.markdown }),
       },
     );
   }
