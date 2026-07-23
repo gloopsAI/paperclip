@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.719.0-gloops.29",
+    "version": "2026.723.0-gloops.30",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:c6cace2d01b45ee22275f4648155c75b72ec7cb0c7c361ddb1a9c48e9db7caa1"
+    "digest": "sha256:78ba2560c089c51ba92e48dc8c1b635951c5d06f62a8fc7e0a1d5826821566cf"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.719.0-gloops.29.json"
+    "vex": "gloops-distribution/security/vex-2026.723.0-gloops.30.json"
   },
   "patches": [
     {
