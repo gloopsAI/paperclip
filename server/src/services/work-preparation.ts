@@ -14,7 +14,8 @@ export type WorkPreparationReason =
   | "workspace_repo_url_missing"
   | "workspace_repo_ref_missing"
   | "input_reservation_missing"
-  | "input_reservation_insufficient";
+  | "input_reservation_insufficient"
+  | "required_skill_unavailable";
 
 export type WorkPreparationReceipt = {
   schemaVersion: "gloops.work-preparation-receipt.v1";
@@ -46,6 +47,12 @@ export type WorkPreparationReceipt = {
     fixedOverheadInputTokens: number | null;
     discretionaryInputTokens: number | null;
     minimumDiscretionaryInputTokens: number;
+    ready: boolean;
+  };
+  skills: {
+    required: string[];
+    available: string[];
+    missing: string[];
     ready: boolean;
   };
   evaluatedAt: string;
@@ -87,6 +94,13 @@ export function assessWorkPreparation(input: {
     repoUrl?: string | null;
     repoRef?: string | null;
   };
+  skills?: {
+    mentionedKeys: string[];
+    runtimeEntries: Array<{
+      key: string;
+      sourceStatus?: "available" | "missing";
+    }>;
+  };
   minimumDiscretionaryInputTokens?: number;
   evaluatedAt?: Date;
 }): WorkPreparationReceipt {
@@ -124,6 +138,22 @@ export function assessWorkPreparation(input: {
     fatalReasons.push("input_reservation_insufficient");
   }
 
+  const requiredSkillKeys = Array.from(new Set(
+    (input.skills?.mentionedKeys ?? [])
+      .map((key) => key.trim())
+      .filter(Boolean),
+  )).sort();
+  const availableSkillKeys = new Set(
+    (input.skills?.runtimeEntries ?? [])
+      .filter((entry) => entry.sourceStatus === "available")
+      .map((entry) => entry.key),
+  );
+  const availableSkills = requiredSkillKeys.filter((key) => availableSkillKeys.has(key));
+  const missingSkills = requiredSkillKeys.filter((key) => !availableSkillKeys.has(key));
+  if (required && missingSkills.length > 0) {
+    fatalReasons.push("required_skill_unavailable");
+  }
+
   const workspaceReady = Boolean(
     cwd && (!input.workspace.required || (repoUrl && repoRef)),
   );
@@ -158,6 +188,12 @@ export function assessWorkPreparation(input: {
       discretionaryInputTokens: discretionary,
       minimumDiscretionaryInputTokens,
       ready: reservationReady,
+    },
+    skills: {
+      required: requiredSkillKeys,
+      available: availableSkills,
+      missing: missingSkills,
+      ready: missingSkills.length === 0,
     },
     evaluatedAt: (input.evaluatedAt ?? new Date()).toISOString(),
   };

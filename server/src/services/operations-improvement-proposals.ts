@@ -5,6 +5,7 @@ import { issues } from "@paperclipai/db";
 import { issueService } from "./issues.js";
 
 export const OPERATIONS_IMPROVEMENT_ORIGIN_KIND = "operations_improvement_proposal" as const;
+export const OPERATIONS_IMPROVEMENT_WAKE_REASON = "issue_assigned" as const;
 
 export type OperationsAnomalyReason =
   | "work_preparation_denied"
@@ -175,4 +176,33 @@ export async function projectOperationsImprovementProposal(input: {
     originFingerprint: fingerprint,
   });
   return { kind: "created" as const, issueId: created.id };
+}
+
+export function buildOperationsImprovementStewardWake(input: {
+  proposalResult: Awaited<ReturnType<typeof projectOperationsImprovementProposal>> | null;
+  stewardAgentId: string | null;
+}) {
+  if (input.proposalResult?.kind !== "created" || !input.stewardAgentId) return null;
+  const issueId = input.proposalResult.issueId;
+  return {
+    agentId: input.stewardAgentId,
+    options: {
+      source: "assignment" as const,
+      triggerDetail: "system" as const,
+      reason: OPERATIONS_IMPROVEMENT_WAKE_REASON,
+      payload: {
+        issueId,
+        source: OPERATIONS_IMPROVEMENT_ORIGIN_KIND,
+      },
+      requestedByActorType: "system" as const,
+      requestedByActorId: OPERATIONS_IMPROVEMENT_ORIGIN_KIND,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: OPERATIONS_IMPROVEMENT_WAKE_REASON,
+        source: OPERATIONS_IMPROVEMENT_ORIGIN_KIND,
+      },
+      idempotencyKey: `operations-improvement-proposal:${issueId}`,
+    },
+  };
 }

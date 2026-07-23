@@ -235,7 +235,10 @@ import {
   WORK_PREPARATION_DENIED_CODE,
   assessWorkPreparation,
 } from "./work-preparation.js";
-import { projectOperationsImprovementProposal } from "./operations-improvement-proposals.js";
+import {
+  buildOperationsImprovementStewardWake,
+  projectOperationsImprovementProposal,
+} from "./operations-improvement-proposals.js";
 
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -14108,6 +14111,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           repoUrl: executionWorkspace.repoUrl,
           repoRef: executionWorkspace.repoRef,
         },
+        skills: {
+          mentionedKeys: runScopedMentionedSkillKeys,
+          runtimeEntries: runtimeSkillEntries,
+        },
       });
       await db
         .update(heartbeatRuns)
@@ -14749,17 +14756,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (persistedRun) {
-        await projectOperationsImprovementProposal({
+        const stewardAgentId = readNonEmptyString(
+          runtimeEnv.PAPERCLIP_OPERATIONS_IMPROVEMENT_STEWARD_AGENT_ID,
+        );
+        const proposalResult = await projectOperationsImprovementProposal({
           db,
           run: persistedRun,
           sourceIssue: issueRef,
-          assigneeAgentId: readNonEmptyString(runtimeEnv.PAPERCLIP_OPERATIONS_IMPROVEMENT_STEWARD_AGENT_ID),
+          assigneeAgentId: stewardAgentId,
         }).catch((proposalError) => {
           logger.warn(
             { err: proposalError, runId: persistedRun?.id, issueId },
             "failed to project advisory operations improvement proposal",
           );
+          return null;
         });
+        const stewardWake = buildOperationsImprovementStewardWake({
+          proposalResult,
+          stewardAgentId,
+        });
+        if (stewardWake) {
+          await enqueueWakeup(stewardWake.agentId, stewardWake.options).catch((wakeError) => {
+            logger.warn(
+              { err: wakeError, proposalIssueId: proposalResult?.issueId },
+              "failed to enqueue steward wake for advisory operations improvement proposal",
+            );
+          });
+        }
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOperationsImprovementStewardWake,
   buildOperationsImprovementProposal,
   classifyOperationsAnomaly,
   operationsImprovementFingerprint,
@@ -48,5 +49,31 @@ describe("operations improvement proposals", () => {
       ...input,
       reason: "execution_budget_exhausted",
     }));
+  });
+
+  it("builds one stable steward wake only for a newly created assigned proposal", () => {
+    const wake = buildOperationsImprovementStewardWake({
+      proposalResult: { kind: "created", issueId: "proposal-1" },
+      stewardAgentId: "steward-1",
+    });
+
+    expect(wake).toMatchObject({
+      agentId: "steward-1",
+      options: {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: "proposal-1" },
+        idempotencyKey: "operations-improvement-proposal:proposal-1",
+      },
+    });
+    expect(buildOperationsImprovementStewardWake({
+      proposalResult: { kind: "existing", issueId: "proposal-1" },
+      stewardAgentId: "steward-1",
+    })).toBeNull();
+    expect(buildOperationsImprovementStewardWake({
+      proposalResult: { kind: "created", issueId: "proposal-1" },
+      stewardAgentId: null,
+    })).toBeNull();
   });
 });
