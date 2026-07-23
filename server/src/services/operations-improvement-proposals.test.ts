@@ -36,6 +36,22 @@ describe("operations improvement proposals", () => {
     });
     expect(proposal.title).toContain("work_preparation_denied");
     expect(proposal.workMode).toBe("ask");
+    expect(proposal.executionWorkspacePreference).toBe("agent_default");
+    expect(proposal.assigneeAdapterOverrides).toMatchObject({
+      useProjectWorkspace: false,
+      adapterConfig: { worktreeMode: false },
+    });
+    expect(proposal.executionPolicy).toMatchObject({
+      completionProfile: "direct",
+      resourceBudget: {
+        maxRunsPerTask: 1,
+        maxRetriesPerTask: 0,
+        maxInputTokensPerInvocation: 50_000,
+        maxTurnsPerInvocation: 4,
+        maxToolCallsPerInvocation: 3,
+      },
+    });
+    expect(proposal.description).toContain("Use only the evidence in this issue");
     expect(proposal.description).toContain("Do not modify code");
   });
 
