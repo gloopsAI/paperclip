@@ -7,11 +7,13 @@ kanban:
   dispatch_in_gateway: false
 platform_toolsets:
   # Paperclip supplies the task, workspace, authority, and completion helpers.
-  # Keep the execution-only API surface to the one toolset required to invoke
-  # those helpers; the default Hermes catalog repeats large unrelated schemas
-  # on every provider turn and can exhaust a bounded task before useful work.
+  # Expose only the execution helpers and Hermes' progressively disclosed skill
+  # loader. The loader makes the image's pinned GitHub and engineering workflows
+  # available on demand without repeating the full default tool catalog on every
+  # provider turn.
   api_server:
     - terminal
+    - skills
 agent:
   # Outer host safety ceiling only. Paperclip remains the per-task authority:
   # the default provider envelope is 8 turns and explicit envelopes may widen
@@ -23,4 +25,4 @@ security:
   tirith_enabled: true
   tirith_path: /opt/data/bin/tirith
   tirith_fail_open: false
-_config_version: 35
+_config_version: 36
