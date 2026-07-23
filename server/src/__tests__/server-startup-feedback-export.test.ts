@@ -14,6 +14,8 @@ const {
   deriveAuthTrustedOriginsMock,
   environmentCustomImagesServiceMock,
   environmentCustomImagesServiceFactoryMock,
+  externalObjectServiceFactoryMock,
+  externalObjectServiceMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
@@ -63,6 +65,7 @@ const {
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
+    reconcileTerminalAgentTruth: vi.fn(async () => ({ reconciled: 0, agentIds: [] })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
@@ -71,6 +74,11 @@ const {
     cleanupExpiredSetupSessions: vi.fn(async () => ({ scanned: 0, timedOut: 0, failed: 0 })),
   };
   const environmentCustomImagesServiceFactoryMock = vi.fn(() => environmentCustomImagesServiceMock);
+  const externalObjectServiceMock = {
+    refreshDueObjects: vi.fn(async () => ({ refreshed: 0, failed: 0 })),
+    refreshDueObjectsForActiveCompanies: vi.fn(async () => []),
+  };
+  const externalObjectServiceFactoryMock = vi.fn(() => externalObjectServiceMock);
   const routineServiceMock = {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
@@ -123,6 +131,8 @@ const {
     deriveAuthTrustedOriginsMock,
     environmentCustomImagesServiceMock,
     environmentCustomImagesServiceFactoryMock,
+    externalObjectServiceFactoryMock,
+    externalObjectServiceMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
@@ -239,6 +249,7 @@ vi.mock("../services/index.js", () => ({
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: bootstrapExecutionPolicyFromEnvMock,
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
+  externalObjectService: externalObjectServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({

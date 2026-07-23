@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-envelope";
 import {
   buildTerminalIssueLifecyclePatch,
+  decideMergedPullRequestIssueReconciliation,
   decideTerminalIssueReconciliation,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
@@ -256,5 +257,85 @@ describe("decideTerminalIssueReconciliation", () => {
       currentCompletedAt: completedAt,
       targetStatus: "done",
     })).toBe(false);
+  });
+});
+
+describe("decideMergedPullRequestIssueReconciliation", () => {
+  it("projects an implementation-ready issue to done only for its merged exact head", () => {
+    const receipt = verifiedReceipt();
+    const decision = decideMergedPullRequestIssueReconciliation({
+      completionProfile: "verified_change",
+      issue: {
+        id: issueId,
+        identifier: "GLO-1329",
+        status: "in_review",
+        executionRunId: runId,
+        checkoutRunId: runId,
+      },
+      run: {
+        id: runId,
+        status: "succeeded",
+        contextSnapshot: {
+          [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt,
+        },
+      },
+      pullRequest: {
+        provider: "github",
+        merged: true,
+        headSha,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      kind: "project",
+      status: "done",
+      reason: "merged_exact_head",
+      receipt: {
+        status: "operational",
+        verification: {
+          review: {
+            status: "accepted",
+            headSha,
+            unresolvedThreads: 0,
+            source: "github_merge",
+          },
+        },
+      },
+    });
+  });
+
+  it("preserves state for a different PR head or a non-current run", () => {
+    const base = {
+      completionProfile: "verified_change" as const,
+      issue: {
+        id: issueId,
+        identifier: "GLO-1329",
+        status: "in_review",
+        executionRunId: runId,
+        checkoutRunId: runId,
+      },
+      run: {
+        id: runId,
+        status: "succeeded",
+        contextSnapshot: {
+          [PAPERCLIP_EXECUTION_RECEIPT_KEY]: verifiedReceipt(),
+        },
+      },
+      pullRequest: {
+        provider: "github",
+        merged: true,
+        headSha: "c".repeat(40),
+      },
+    };
+    expect(decideMergedPullRequestIssueReconciliation(base))
+      .toEqual({ kind: "preserve", reason: "exact_head_mismatch" });
+    expect(decideMergedPullRequestIssueReconciliation({
+      ...base,
+      issue: {
+        ...base.issue,
+        executionRunId: "77777777-7777-4777-8777-777777777777",
+        checkoutRunId: null,
+      },
+    })).toEqual({ kind: "preserve", reason: "run_not_current" });
   });
 });
