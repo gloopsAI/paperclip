@@ -13,6 +13,8 @@ export type OperationsAnomalyReason =
   | "terminal_usage_missing"
   | "execution_budget_exhausted";
 
+export type OperationsImprovementOwner = "capacity" | "token_economics";
+
 export type OperationsImprovementCandidate = {
   reason: OperationsAnomalyReason;
   severity: "medium" | "high";
@@ -83,6 +85,33 @@ export function classifyOperationsAnomaly(
     };
   }
   return null;
+}
+
+export function operationsImprovementOwnerForReason(
+  reason: OperationsAnomalyReason,
+): OperationsImprovementOwner {
+  switch (reason) {
+    case "work_preparation_denied":
+    case "provider_run_failed":
+      return "capacity";
+    case "terminal_usage_missing":
+    case "execution_budget_exhausted":
+      return "token_economics";
+  }
+}
+
+export function selectOperationsImprovementStewardAgentId(input: {
+  run: TerminalRunEvidence;
+  capacityManagerAgentId?: string | null;
+  tokenEconomicsStewardAgentId?: string | null;
+  legacyStewardAgentId?: string | null;
+}) {
+  const candidate = classifyOperationsAnomaly(input.run);
+  if (!candidate) return null;
+  const owner = operationsImprovementOwnerForReason(candidate.reason);
+  return owner === "capacity"
+    ? input.capacityManagerAgentId ?? input.legacyStewardAgentId ?? null
+    : input.tokenEconomicsStewardAgentId ?? input.legacyStewardAgentId ?? null;
 }
 
 export function operationsImprovementFingerprint(input: {

@@ -3,7 +3,9 @@ import {
   buildOperationsImprovementStewardWake,
   buildOperationsImprovementProposal,
   classifyOperationsAnomaly,
+  operationsImprovementOwnerForReason,
   operationsImprovementFingerprint,
+  selectOperationsImprovementStewardAgentId,
 } from "./operations-improvement-proposals.js";
 
 describe("operations improvement proposals", () => {
@@ -67,6 +69,49 @@ describe("operations improvement proposals", () => {
       ...input,
       reason: "execution_budget_exhausted",
     }));
+  });
+
+  it("routes capacity failures and token-economics defects to distinct event owners", () => {
+    expect(operationsImprovementOwnerForReason("work_preparation_denied")).toBe("capacity");
+    expect(operationsImprovementOwnerForReason("provider_run_failed")).toBe("capacity");
+    expect(operationsImprovementOwnerForReason("terminal_usage_missing")).toBe("token_economics");
+    expect(operationsImprovementOwnerForReason("execution_budget_exhausted")).toBe("token_economics");
+
+    expect(selectOperationsImprovementStewardAgentId({
+      run: {
+        id: "run-capacity",
+        companyId: "company-1",
+        status: "failed",
+        errorCode: "work_preparation.denied",
+      },
+      capacityManagerAgentId: "capacity-manager",
+      tokenEconomicsStewardAgentId: "token-steward",
+      legacyStewardAgentId: "legacy-steward",
+    })).toBe("capacity-manager");
+
+    expect(selectOperationsImprovementStewardAgentId({
+      run: {
+        id: "run-token",
+        companyId: "company-1",
+        status: "failed",
+        errorCode: "max_input_tokens_exceeded",
+      },
+      capacityManagerAgentId: "capacity-manager",
+      tokenEconomicsStewardAgentId: "token-steward",
+      legacyStewardAgentId: "legacy-steward",
+    })).toBe("token-steward");
+  });
+
+  it("preserves the generic steward as a backwards-compatible fallback", () => {
+    expect(selectOperationsImprovementStewardAgentId({
+      run: {
+        id: "run-legacy",
+        companyId: "company-1",
+        status: "failed",
+        errorCode: "max_turns_exceeded",
+      },
+      legacyStewardAgentId: "legacy-steward",
+    })).toBe("legacy-steward");
   });
 
   it("builds one stable steward wake only for a newly created assigned proposal", () => {
