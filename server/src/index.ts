@@ -40,6 +40,7 @@ import {
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
+  externalObjectService,
   heartbeatService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
@@ -859,6 +860,7 @@ export async function startServer(): Promise<StartedServer> {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
+    const externalObjects = externalObjectService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
@@ -925,6 +927,16 @@ export async function startServer(): Promise<StartedServer> {
             "startup issue-graph liveness reconciliation changed issue graph state",
           );
         }
+
+        const terminalAgentsReconciled = await heartbeat.reconcileTerminalAgentTruth();
+        if (terminalAgentsReconciled.cleared > 0) {
+          logger.warn(
+            { ...terminalAgentsReconciled },
+            "startup terminal-agent truth reconciliation cleared stale error state",
+          );
+        }
+
+        await externalObjects.refreshDueObjectsForActiveCompanies();
 
         const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
         if (taskWatchdogsReconciled.triggered > 0) {
@@ -1064,10 +1076,26 @@ export async function startServer(): Promise<StartedServer> {
               logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
             }
           })
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileTerminalAgentTruth();
+            if (reconciled.cleared > 0) {
+              logger.warn(
+                { ...reconciled },
+                "periodic terminal-agent truth reconciliation cleared stale error state",
+              );
+            }
+          })
           .catch((err) => {
             logger.error({ err }, "periodic heartbeat recovery failed");
           }));
       }
+
+      trackHeartbeatSchedulerWork(
+        externalObjects.refreshDueObjectsForActiveCompanies()
+          .catch((err) => {
+            logger.error({ err }, "periodic external-object truth refresh failed");
+          }),
+      );
       })();
     }, config.heartbeatSchedulerIntervalMs);
   }

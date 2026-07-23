@@ -35,6 +35,27 @@ export type TerminalIssueReconciliationDecision =
         | "execution_truth_rejected";
     };
 
+export type MergedPullRequestIssueDecision =
+  | {
+      kind: "project";
+      status: "done";
+      receipt: Record<string, unknown>;
+      reason: "merged_exact_head";
+    }
+  | {
+      kind: "preserve";
+      reason:
+        | "unsupported_completion_profile"
+        | "issue_not_in_review"
+        | "run_not_succeeded"
+        | "run_not_current"
+        | "pull_request_not_merged"
+        | "missing_pull_request_head"
+        | "missing_execution_truth"
+        | "exact_head_mismatch"
+        | "execution_truth_rejected";
+    };
+
 type IssueInput = {
   id: string;
   identifier: string | null;
@@ -302,6 +323,89 @@ export function decideTerminalIssueReconciliation(input: {
     status: "done",
     receipt,
     reason: "direct_terminal_evidence",
+  };
+}
+
+export function decideMergedPullRequestIssueReconciliation(input: {
+  completionProfile: IssueExecutionCompletionProfile | null | undefined;
+  issue: Pick<IssueInput, "id" | "identifier" | "status" | "executionRunId" | "checkoutRunId">;
+  run: Pick<RunInput, "id" | "status" | "contextSnapshot">;
+  pullRequest: {
+    provider: string | null;
+    merged: boolean;
+    headSha: string | null;
+  };
+}): MergedPullRequestIssueDecision {
+  if (input.completionProfile !== "verified_change") {
+    return { kind: "preserve", reason: "unsupported_completion_profile" };
+  }
+  if (input.issue.status !== "in_review") {
+    return { kind: "preserve", reason: "issue_not_in_review" };
+  }
+  if (input.run.status !== "succeeded") {
+    return { kind: "preserve", reason: "run_not_succeeded" };
+  }
+  if (
+    input.issue.executionRunId !== input.run.id &&
+    input.issue.checkoutRunId !== input.run.id
+  ) {
+    return { kind: "preserve", reason: "run_not_current" };
+  }
+  if (input.pullRequest.provider !== "github" || !input.pullRequest.merged) {
+    return { kind: "preserve", reason: "pull_request_not_merged" };
+  }
+  const headSha = input.pullRequest.headSha?.trim().toLowerCase() ?? null;
+  if (!headSha || !SHA.test(headSha)) {
+    return { kind: "preserve", reason: "missing_pull_request_head" };
+  }
+
+  const existingReceipt = record(
+    (input.run.contextSnapshot ?? {})[PAPERCLIP_EXECUTION_RECEIPT_KEY],
+  );
+  if (Object.keys(existingReceipt).length === 0) {
+    return { kind: "preserve", reason: "missing_execution_truth" };
+  }
+  const workId = input.issue.identifier ?? input.issue.id;
+  const verification = record(existingReceipt.verification);
+  const receiptHeadSha = string(verification.exactHeadSha)?.toLowerCase() ?? null;
+  if (receiptHeadSha !== headSha) {
+    return { kind: "preserve", reason: "exact_head_mismatch" };
+  }
+  if (!implementationReady({ workId, receipt: existingReceipt, exactHeadSha: headSha })) {
+    return { kind: "preserve", reason: "execution_truth_rejected" };
+  }
+
+  const receiptBody = {
+    ...existingReceipt,
+    verification: {
+      ...verification,
+      review: {
+        status: "accepted",
+        headSha,
+        unresolvedThreads: 0,
+        source: "github_merge",
+      },
+    },
+    status: "operational",
+  };
+  delete (receiptBody as Record<string, unknown>).digest;
+  const receipt = {
+    ...receiptBody,
+    digest: digest(receiptBody),
+  };
+  const completed = evaluateExecutionTruthTransition({
+    transition: "completed",
+    workId,
+    receipt,
+  });
+  if (!completed.allowed) {
+    return { kind: "preserve", reason: "execution_truth_rejected" };
+  }
+  return {
+    kind: "project",
+    status: "done",
+    receipt,
+    reason: "merged_exact_head",
   };
 }
 
