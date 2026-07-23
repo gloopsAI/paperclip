@@ -3,6 +3,7 @@ import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  resolveIssueExecutionCompletionProfile,
   stripMonitorFromExecutionPolicy,
 } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
@@ -176,6 +177,29 @@ describe("normalizeIssueExecutionPolicy", () => {
         externalRef: "[redacted]",
       },
     });
+  });
+});
+
+describe("resolveIssueExecutionCompletionProfile", () => {
+  it("defaults ask-mode work to direct terminal reconciliation", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: null,
+      workMode: "ask",
+    })).toBe("direct");
+  });
+
+  it("preserves an explicit completion profile over the work-mode default", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: { completionProfile: "verified_change" },
+      workMode: "ask",
+    })).toBe("verified_change");
+  });
+
+  it("does not infer terminal reconciliation for standard work", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: null,
+      workMode: "standard",
+    })).toBeNull();
   });
 });
 
