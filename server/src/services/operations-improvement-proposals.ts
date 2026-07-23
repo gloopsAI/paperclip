@@ -106,6 +106,7 @@ export function buildOperationsImprovementProposal(input: {
     title: `[Ops Proposal] ${input.candidate.reason} on ${sourceLabel}`,
     workMode: "ask" as const,
     executionWorkspacePreference: "agent_default" as const,
+    executionWorkspaceSettings: { mode: "agent_default" as const },
     assigneeAdapterOverrides: {
       useProjectWorkspace: false,
       adapterConfig: { worktreeMode: false },
@@ -124,7 +125,7 @@ export function buildOperationsImprovementProposal(input: {
         maxInputTokensPerInvocation: 50_000,
         maxOutputTokensPerInvocation: 4_000,
         maxTurnsPerInvocation: 4,
-        maxToolCallsPerInvocation: 3,
+        maxToolCallsPerInvocation: 5,
         executionClass: "proven" as const,
       },
     },
