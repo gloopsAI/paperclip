@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { buildInput, execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { buildInput, buildRunBody, execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { canonicalJsonBytes } from "./provider-evidence.js";
 import { testEnvironment } from "./test.js";
 import { buildBoundExecutionContext } from "@paperclipai/adapter-utils/execution-envelope";
@@ -325,6 +325,17 @@ describe("buildInput", () => {
     expect(input).toContain("/opt/data/bin/apply_patch --diff -");
     expect(input).toContain(
       "use one update-status call with --comment instead of separate comment and status calls");
+  });
+});
+
+describe("buildRunBody", () => {
+  it("sends the configured model and gives it precedence over the payload template", () => {
+    const ctx = makeCtx({
+      model: "minimax-m2.7",
+      payloadTemplate: { model: "kimi-k2.7-code" },
+    });
+
+    expect(buildRunBody(ctx, null).model).toBe("minimax-m2.7");
   });
 });
 
@@ -843,6 +854,77 @@ describe("execute", () => {
         execution_profile: "execution-only",
       },
     });
+  });
+
+  it("accepts a provider-qualified alias for the requested model", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-model-alias" }), { status: 200 });
+      const payload = {
+        status: "completed",
+        output: "done",
+        model: "ollama/minimax-m2.7",
+        usage: { input_tokens: 17, output_tokens: 5 },
+      };
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(`event: run.completed\ndata: ${JSON.stringify(payload)}\n\n`),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      model: "minimax-m2.7",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.model).toBe("ollama/minimax-m2.7");
+  });
+
+  it("fails closed when the signed resolved model differs from the request", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-model-mismatch" }), { status: 200 });
+      const payload = {
+        status: "completed",
+        output: "done",
+        model: "kimi-k2.7-code",
+        usage: { input_tokens: 17, output_tokens: 5 },
+      };
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(`event: run.completed\ndata: ${JSON.stringify(payload)}\n\n`),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(payload), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      model: "minimax-m2.7",
+    }));
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "execution_route.model_mismatch",
+      model: "kimi-k2.7-code",
+      usage: { inputTokens: 17, outputTokens: 5, provenance: "measured" },
+      resultJson: {
+        status: "failed",
+        requested_model: "minimax-m2.7",
+        resolved_model: "kimi-k2.7-code",
+      },
+    });
+    expect(result.providerIoTerminalEvidence).toBeDefined();
   });
 
   it.each(["openai_responses", "anthropic_messages"])(
