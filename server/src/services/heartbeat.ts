@@ -139,6 +139,11 @@ import {
 } from "./issue-execution-policy.js";
 import { compileExecutionVerification } from "./execution-context-verification.js";
 import {
+  buildTerminalIssueLifecyclePatch,
+  decideTerminalIssueReconciliation,
+  terminalIssueLifecycleNeedsUpdate,
+} from "./terminal-issue-reconciliation.js";
+import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -5350,6 +5355,145 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     options.heartbeatRunSettlementHooks,
   );
   const repositoryMutationReceipts = repositoryMutationReceiptService(db);
+
+  async function readTerminalWorkspaceHeadSha(cwd: string | null | undefined) {
+    const normalized = readNonEmptyString(cwd);
+    if (!normalized) return null;
+    const head = await execFile("git", ["rev-parse", "HEAD"], { cwd: normalized })
+      .then(({ stdout }) => stdout.trim().toLowerCase())
+      .catch(() => null);
+    return head && /^[0-9a-f]{40}$/.test(head) ? head : null;
+  }
+
+  async function reconcileTerminalIssueFromTrustedEvidence(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string | null;
+    providerTerminalEvidence: boolean;
+    workspaceFinalized: boolean;
+    workspaceCwd: string | null;
+    budgetExceeded: string[];
+    routePathIds: string[];
+  }) {
+    if (!input.issueId) return { changed: false, status: null, reason: "missing_issue" };
+    const workspaceHeadSha = await readTerminalWorkspaceHeadSha(input.workspaceCwd);
+
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select id from heartbeat_runs
+        where id = ${input.run.id} and company_id = ${input.run.companyId}
+        for update
+      `);
+      await tx.execute(sql`
+        select id from issues
+        where id = ${input.issueId} and company_id = ${input.run.companyId}
+        for update
+      `);
+      const [currentRun, currentIssue] = await Promise.all([
+        tx.select().from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, input.run.id),
+            eq(heartbeatRuns.companyId, input.run.companyId),
+          ))
+          .then((rows) => rows[0] ?? null),
+        tx.select().from(issues)
+          .where(and(
+            eq(issues.id, input.issueId!),
+            eq(issues.companyId, input.run.companyId),
+          ))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (!currentRun || !currentIssue) {
+        return { changed: false, status: null, reason: "missing_bound_record" };
+      }
+
+      const decision = decideTerminalIssueReconciliation({
+        completionProfile: normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null)?.completionProfile,
+        issue: {
+          id: currentIssue.id,
+          identifier: currentIssue.identifier,
+          companyId: currentIssue.companyId,
+          status: currentIssue.status,
+          assigneeAgentId: currentIssue.assigneeAgentId,
+          projectWorkspaceId: currentIssue.projectWorkspaceId,
+          executionRunId: currentIssue.executionRunId,
+          checkoutRunId: currentIssue.checkoutRunId,
+        },
+        run: {
+          id: currentRun.id,
+          companyId: currentRun.companyId,
+          agentId: currentRun.agentId,
+          status: currentRun.status,
+          contextSnapshot: currentRun.contextSnapshot,
+        },
+        providerTerminalEvidence: input.providerTerminalEvidence,
+        workspaceFinalized: input.workspaceFinalized,
+        workspaceCwd: input.workspaceCwd,
+        workspaceHeadSha,
+        budgetExceeded: input.budgetExceeded,
+        routePathIds: input.routePathIds,
+      });
+      if (decision.kind === "preserve") {
+        return { changed: false, status: null, reason: decision.reason };
+      }
+
+      const runContext = parseObject(currentRun.contextSnapshot);
+      const existingReceipt = parseObject(runContext[PAPERCLIP_EXECUTION_RECEIPT_KEY]);
+      const receiptChanged = existingReceipt.digest !== decision.receipt.digest;
+      if (receiptChanged) {
+        await tx.update(heartbeatRuns)
+          .set({
+            contextSnapshot: {
+              ...runContext,
+              [PAPERCLIP_EXECUTION_RECEIPT_KEY]: decision.receipt,
+            },
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(heartbeatRuns.id, currentRun.id),
+            eq(heartbeatRuns.companyId, currentRun.companyId),
+            eq(heartbeatRuns.agentId, currentRun.agentId),
+          ));
+      }
+
+      const eligibleCurrentStatuses = decision.status === "done"
+        ? ["in_progress", "in_review", "done"]
+        : ["in_progress", "in_review"];
+      const issueLifecycleChanged = terminalIssueLifecycleNeedsUpdate({
+        currentStatus: currentIssue.status,
+        currentCompletedAt: currentIssue.completedAt,
+        targetStatus: decision.status,
+      });
+      if (issueLifecycleChanged) {
+        const now = new Date();
+        const updated = await tx.update(issues)
+          .set(buildTerminalIssueLifecyclePatch({
+            currentCompletedAt: currentIssue.completedAt,
+            targetStatus: decision.status,
+            now,
+          }))
+          .where(and(
+            eq(issues.id, currentIssue.id),
+            eq(issues.companyId, currentIssue.companyId),
+            eq(issues.assigneeAgentId, currentRun.agentId),
+            or(
+              eq(issues.executionRunId, currentRun.id),
+              eq(issues.checkoutRunId, currentRun.id),
+            ),
+            inArray(issues.status, eligibleCurrentStatuses),
+          ))
+          .returning({ id: issues.id });
+        if (updated.length !== 1) {
+          throw new Error("Terminal issue reconciliation lost its bound issue ownership");
+        }
+      }
+
+      return {
+        changed: receiptChanged || issueLifecycleChanged,
+        status: decision.status,
+        reason: decision.reason,
+      };
+    });
+  }
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -14513,19 +14657,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updated: !atomicSettlement.replayed,
           }
         : await setRunStatusIfRunning(run.id, status, terminalRunPatch);
+      let persistedRun = persistedRunWrite.run;
+      const terminalRoutePathIds = [
+        readNonEmptyString(adapterExecutionRoute.path_id),
+        readNonEmptyString(
+          adapterResult.providerIoTerminalEvidence?.terminalEvidence.resolvedProvider,
+        ),
+      ].filter((value): value is string => Boolean(value));
+      const terminalIssueReconciliation = persistedRun
+        ? await reconcileTerminalIssueFromTrustedEvidence({
+            run: persistedRun,
+            issueId,
+            providerTerminalEvidence: Boolean(adapterResult.providerIoTerminalEvidence),
+            workspaceFinalized: adapterFinalizeOutcome === "succeeded",
+            workspaceCwd: executionWorkspace.cwd,
+            budgetExceeded: terminalExceeded,
+            routePathIds: terminalRoutePathIds,
+          })
+        : { changed: false, status: null, reason: "missing_terminal_run" };
       if (!persistedRunWrite.updated) {
         logger.info(
           {
             runId: run.id,
             attemptedStatus: status,
             currentStatus: persistedRunWrite.run?.status ?? null,
+            terminalIssueReconciliation,
           },
           "skipping late run finalization because the run already left running state",
         );
+        if (terminalIssueReconciliation.changed && persistedRun) {
+          persistedRun = await getRun(run.id) ?? persistedRun;
+          await releaseIssueExecutionAndPromote(persistedRun);
+        }
         return;
       }
 
-      let persistedRun = persistedRunWrite.run;
+      if (terminalIssueReconciliation.changed && persistedRun) {
+        persistedRun = await getRun(run.id) ?? persistedRun;
+      }
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
