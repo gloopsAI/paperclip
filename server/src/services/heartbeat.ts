@@ -230,6 +230,12 @@ import {
   readSubscriptionRouteEvidence,
   type SubscriptionRouteProvider,
 } from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  WORK_PREPARATION_CONTEXT_KEY,
+  WORK_PREPARATION_DENIED_CODE,
+  assessWorkPreparation,
+} from "./work-preparation.js";
+import { projectOperationsImprovementProposal } from "./operations-improvement-proposals.js";
 
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -5939,6 +5945,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         priority: issues.priority,
         projectId: issues.projectId,
         goalId: issues.goalId,
+        billingCode: issues.billingCode,
         projectWorkspaceId: issues.projectWorkspaceId,
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -12474,6 +12481,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectId: issueContext.projectId,
           goalId: issueContext.goalId,
           parentId: issueContext.parentId,
+          billingCode: issueContext.billingCode,
+          originKind: issueContext.originKind,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
@@ -14083,6 +14092,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
+      const workPreparation = assessWorkPreparation({
+        runId: run.id,
+        issueId: issueRef?.id ?? null,
+        issueIdentifier: issueRef?.identifier ?? null,
+        agentId: agent.id,
+        adapterType: agent.adapterType,
+        model: configuredModel,
+        required: Boolean(issueRef),
+        executionContext: context[PAPERCLIP_EXECUTION_CONTEXT_KEY],
+        invocationBudget,
+        workspace: {
+          required: Boolean(executionWorkspace.repoUrl || executionWorkspace.strategy === "git_worktree"),
+          cwd: executionWorkspace.cwd,
+          repoUrl: executionWorkspace.repoUrl,
+          repoRef: executionWorkspace.repoRef,
+        },
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            ...context,
+            [WORK_PREPARATION_CONTEXT_KEY]: workPreparation,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id));
       const executionBudgetMode = invocationBudget
         ? adapter.supportsExecutionBudget === true
           ? "strict"
@@ -14090,7 +14126,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? "reconciled"
             : "unsupported"
         : null;
-      if (!subscriptionRouteAdmission.allowed) {
+      if (workPreparation.decision === "denied") {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: WORK_PREPARATION_DENIED_CODE,
+          errorMessage: `Work preparation denied provider execution: ${workPreparation.fatalReasons.join(", ")}`,
+          clearSession: true,
+          providerInvocationAttempted: false,
+          resultJson: { workPreparation },
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else if (!subscriptionRouteAdmission.allowed) {
         adapterResult = {
           exitCode: 1,
           signal: null,
@@ -14549,6 +14597,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: {
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
+                workPreparation,
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
@@ -14697,6 +14746,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
+      }
+
+      if (persistedRun) {
+        await projectOperationsImprovementProposal({
+          db,
+          run: persistedRun,
+          sourceIssue: issueRef,
+          assigneeAgentId: readNonEmptyString(runtimeEnv.PAPERCLIP_OPERATIONS_IMPROVEMENT_STEWARD_AGENT_ID),
+        }).catch((proposalError) => {
+          logger.warn(
+            { err: proposalError, runId: persistedRun?.id, issueId },
+            "failed to project advisory operations improvement proposal",
+          );
+        });
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
