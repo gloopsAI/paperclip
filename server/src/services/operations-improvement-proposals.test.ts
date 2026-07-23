@@ -37,6 +37,7 @@ describe("operations improvement proposals", () => {
     expect(proposal.title).toContain("work_preparation_denied");
     expect(proposal.workMode).toBe("ask");
     expect(proposal.executionWorkspacePreference).toBe("agent_default");
+    expect(proposal.executionWorkspaceSettings).toMatchObject({ mode: "agent_default" });
     expect(proposal.assigneeAdapterOverrides).toMatchObject({
       useProjectWorkspace: false,
       adapterConfig: { worktreeMode: false },
@@ -48,7 +49,7 @@ describe("operations improvement proposals", () => {
         maxRetriesPerTask: 0,
         maxInputTokensPerInvocation: 50_000,
         maxTurnsPerInvocation: 4,
-        maxToolCallsPerInvocation: 3,
+        maxToolCallsPerInvocation: 5,
       },
     });
     expect(proposal.description).toContain("Use only the evidence in this issue");
