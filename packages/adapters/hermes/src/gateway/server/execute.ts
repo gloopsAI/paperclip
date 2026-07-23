@@ -466,8 +466,10 @@ export function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | 
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
     "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  const model = nonEmpty(ctx.config.model) ?? nonEmpty(payloadTemplate.model);
   return {
     ...payloadTemplate,
+    ...(model ? { model } : {}),
     input,
     instructions,
     ...(ctx.executionBudget ? { execution_budget: ctx.executionBudget } : {}),
@@ -1586,6 +1588,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   result.usageBasis = "per_run";
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
+  const requestedModel = nonEmpty(body.model);
+  const resolvedModel = terminalEvidence.resolvedModel;
+  const resolvedModelAlias = resolvedModel.split("/").at(-1);
+  if (requestedModel && requestedModel !== resolvedModel && requestedModel !== resolvedModelAlias) {
+    result.exitCode = 1;
+    result.errorCode = "execution_route.model_mismatch";
+    result.errorMessage = `Hermes resolved model ${resolvedModel} does not match requested model ${requestedModel}`;
+    result.resultJson = {
+      ...parseObject(result.resultJson),
+      status: "failed",
+      requested_model: requestedModel,
+      resolved_model: resolvedModel,
+    };
+    return result;
+  }
   const authoritativeExceeded = ctx.executionBudget
     ? terminalEvidence.toolCallTotal > ctx.executionBudget.maxToolCalls
       ? "tool_calls"
