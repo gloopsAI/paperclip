@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   IssueExecutionDecision,
+  IssueExecutionCompletionProfile,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
@@ -428,6 +429,15 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
     ...(resourceBudget ? { resourceBudget } : {}),
   };
+}
+
+export function resolveIssueExecutionCompletionProfile(input: {
+  executionPolicy: unknown;
+  workMode?: string | null;
+}): IssueExecutionCompletionProfile | null {
+  const explicit = normalizeIssueExecutionPolicy(input.executionPolicy)?.completionProfile;
+  if (explicit) return explicit;
+  return input.workMode === "ask" ? "direct" : null;
 }
 
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {

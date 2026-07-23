@@ -136,6 +136,7 @@ import {
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  resolveIssueExecutionCompletionProfile,
 } from "./issue-execution-policy.js";
 import { compileExecutionVerification } from "./execution-context-verification.js";
 import {
@@ -5416,7 +5417,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const decision = decideTerminalIssueReconciliation({
-        completionProfile: normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null)?.completionProfile,
+        completionProfile: resolveIssueExecutionCompletionProfile({
+          executionPolicy: currentIssue.executionPolicy,
+          workMode: currentIssue.workMode,
+        }),
         issue: {
           id: currentIssue.id,
           identifier: currentIssue.identifier,
@@ -13488,7 +13492,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runId: run.id,
         },
         verification: compileExecutionVerification({
-          completionProfile: normalizeIssueExecutionPolicy(issueContext?.executionPolicy ?? null)?.completionProfile,
+          completionProfile: resolveIssueExecutionCompletionProfile({
+            executionPolicy: issueContext?.executionPolicy,
+            workMode: issueRef.workMode,
+          }),
           exactHeadSha: executionWorkspace.baseRefSha ?? executionWorkspace.repoRef,
         }),
         continuation: {
