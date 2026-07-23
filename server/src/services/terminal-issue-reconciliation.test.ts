@@ -1,0 +1,209 @@
+import { createHash } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  buildBoundExecutionContext,
+  buildCanonicalContinuationPacket,
+} from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  buildTerminalIssueLifecyclePatch,
+  decideTerminalIssueReconciliation,
+  terminalIssueLifecycleNeedsUpdate,
+} from "./terminal-issue-reconciliation.js";
+
+const issueId = "11111111-1111-4111-8111-111111111111";
+const companyId = "22222222-2222-4222-8222-222222222222";
+const agentId = "33333333-3333-4333-8333-333333333333";
+const runId = "44444444-4444-4444-8444-444444444444";
+const projectWorkspaceId = "55555555-5555-4555-8555-555555555555";
+const cwd = "/opt/data/workspace/paperclip/.paperclip/worktrees/GLO-1329";
+const headSha = "a".repeat(40);
+
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, stable(entry)]),
+  );
+}
+
+function verifiedReceipt(options: { reviewed?: boolean; checksPassed?: boolean; head?: string } = {}) {
+  const exactHeadSha = options.head ?? headSha;
+  const body = {
+    schemaVersion: "gloops.execution-truth.operator-receipt.v2",
+    work: { id: "GLO-1329" },
+    budget: { exhausted: [] },
+    route: { observedPathIds: ["ollama-cloud-cli"], prohibitedPathObserved: false },
+    continuation: { required: false, valid: true },
+    verification: {
+      exactHeadAligned: true,
+      exactHeadSha,
+      allChecksPassed: options.checksPassed ?? true,
+      ...(options.reviewed
+        ? { review: { status: "accepted", headSha: exactHeadSha, unresolvedThreads: 0 } }
+        : {}),
+    },
+    authority: { humanRequired: false },
+    status: "built",
+  };
+  const digest = `sha256:${createHash("sha256").update(JSON.stringify(stable(body))).digest("hex")}`;
+  return { ...body, digest };
+}
+
+function boundContext() {
+  return buildBoundExecutionContext(buildCanonicalContinuationPacket({
+    issue: {
+      id: issueId,
+      identifier: "GLO-1329",
+      title: "Bounded edit-test-commit completion",
+    },
+    repoRef: {
+      repoRef: "b".repeat(40),
+      cwd,
+      workspaceId: projectWorkspaceId,
+    },
+    authority: {
+      companyId,
+      assigneeAgentId: agentId,
+      runId,
+    },
+  }));
+}
+
+function input(overrides: Record<string, unknown> = {}) {
+  const {
+    issue: rawIssueOverrides,
+    run: rawRunOverrides,
+    contextSnapshot: rawContextOverrides,
+    ...rootOverrides
+  } = overrides;
+  const issueOverrides = rawIssueOverrides as Record<string, unknown> | undefined;
+  const runOverrides = rawRunOverrides as Record<string, unknown> | undefined;
+  const contextOverrides = rawContextOverrides as Record<string, unknown> | undefined;
+  const contextSnapshot = {
+    [PAPERCLIP_EXECUTION_CONTEXT_KEY]: boundContext(),
+    ...contextOverrides,
+  };
+  return {
+    completionProfile: "direct" as const,
+    issue: {
+      id: issueId,
+      identifier: "GLO-1329",
+      companyId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      projectWorkspaceId,
+      executionRunId: runId,
+      checkoutRunId: runId,
+      ...issueOverrides,
+    },
+    run: {
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot,
+      ...runOverrides,
+    },
+    providerTerminalEvidence: true,
+    workspaceFinalized: true,
+    workspaceCwd: cwd,
+    workspaceHeadSha: headSha,
+    budgetExceeded: [] as string[],
+    routePathIds: ["ollama-cloud-cli"],
+    ...rootOverrides,
+  };
+}
+
+describe("decideTerminalIssueReconciliation", () => {
+  it("projects the GLO-1329 direct pattern to done with one deterministic receipt", () => {
+    const first = decideTerminalIssueReconciliation(input());
+    const replay = decideTerminalIssueReconciliation(input());
+
+    expect(first).toMatchObject({ kind: "project", status: "done", reason: "direct_terminal_evidence" });
+    expect(replay).toEqual(first);
+    expect(first.kind === "project" && first.receipt.digest).toBe(
+      replay.kind === "project" ? replay.receipt.digest : null,
+    );
+  });
+
+  it("projects verified implementation evidence to in_review without self-accepting it", () => {
+    const receipt = verifiedReceipt();
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt },
+    }))).toMatchObject({ kind: "project", status: "in_review", reason: "implementation_ready" });
+  });
+
+  it("preserves failure for missing checks and exact binding mismatches", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: verifiedReceipt({ checksPassed: false }) },
+    }))).toEqual({ kind: "preserve", reason: "execution_truth_rejected" });
+
+    expect(decideTerminalIssueReconciliation(input({
+      issue: { assigneeAgentId: "66666666-6666-4666-8666-666666666666" },
+    }))).toEqual({ kind: "preserve", reason: "context_binding_mismatch" });
+  });
+
+  it("requires accepted exact-head review before verified change reaches done", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: verifiedReceipt({ reviewed: true }) },
+    }))).toMatchObject({ kind: "project", status: "done", reason: "review_accepted" });
+
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      contextSnapshot: {
+        [PAPERCLIP_EXECUTION_RECEIPT_KEY]: verifiedReceipt({ reviewed: true, head: "c".repeat(40) }),
+      },
+    }))).toEqual({ kind: "preserve", reason: "execution_truth_rejected" });
+  });
+
+  it("does not let late budget exhaustion erase already valid verified evidence", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: verifiedReceipt() },
+      budgetExceeded: ["turns"],
+    }))).toMatchObject({ kind: "project", status: "in_review" });
+
+    expect(decideTerminalIssueReconciliation(input({ budgetExceeded: ["turns"] })))
+      .toEqual({ kind: "preserve", reason: "budget_exhausted" });
+  });
+
+  it("requires durable provider terminal evidence and preserves an explicit blocked state", () => {
+    expect(decideTerminalIssueReconciliation(input({ providerTerminalEvidence: false })))
+      .toEqual({ kind: "preserve", reason: "missing_provider_terminal_evidence" });
+
+    expect(decideTerminalIssueReconciliation(input({ issue: { status: "blocked" } })))
+      .toEqual({ kind: "preserve", reason: "terminal_issue_blocked" });
+  });
+
+  it("sets completion metadata exactly once when projecting done", () => {
+    const now = new Date("2026-07-23T00:00:00.000Z");
+    const completedAt = new Date("2026-07-22T23:00:00.000Z");
+    expect(buildTerminalIssueLifecyclePatch({
+      currentCompletedAt: null,
+      targetStatus: "done",
+      now,
+    })).toEqual({ status: "done", completedAt: now, updatedAt: now });
+    expect(buildTerminalIssueLifecyclePatch({
+      currentCompletedAt: completedAt,
+      targetStatus: "done",
+      now,
+    })).toEqual({ status: "done", completedAt, updatedAt: now });
+    expect(terminalIssueLifecycleNeedsUpdate({
+      currentStatus: "done",
+      currentCompletedAt: null,
+      targetStatus: "done",
+    })).toBe(true);
+    expect(terminalIssueLifecycleNeedsUpdate({
+      currentStatus: "done",
+      currentCompletedAt: completedAt,
+      targetStatus: "done",
+    })).toBe(false);
+  });
+});
