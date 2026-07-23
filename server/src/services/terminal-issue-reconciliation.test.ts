@@ -118,6 +118,26 @@ function input(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function boundContextAgentDefault() {
+  return buildBoundExecutionContext(buildCanonicalContinuationPacket({
+    issue: {
+      id: issueId,
+      identifier: "GLO-1329",
+      title: "Bounded edit-test-commit completion",
+    },
+    repoRef: {
+      repoRef: "b".repeat(40),
+      cwd,
+      workspaceId: undefined,
+    },
+    authority: {
+      companyId,
+      assigneeAgentId: agentId,
+      runId,
+    },
+  }));
+}
+
 describe("decideTerminalIssueReconciliation", () => {
   it("projects the GLO-1329 direct pattern to done with one deterministic receipt", () => {
     const first = decideTerminalIssueReconciliation(input());
@@ -180,6 +200,37 @@ describe("decideTerminalIssueReconciliation", () => {
 
     expect(decideTerminalIssueReconciliation(input({ issue: { status: "blocked" } })))
       .toEqual({ kind: "preserve", reason: "terminal_issue_blocked" });
+  });
+
+  describe("agent_default workspace mode", () => {
+    it("reconciles when mode is agent_default, issue has projectWorkspaceId, and bound workspaceId is null", () => {
+      const agentDefaultContext = boundContextAgentDefault();
+      expect(decideTerminalIssueReconciliation({
+        ...input({
+          issue: { projectWorkspaceId },
+          run: {
+            contextSnapshot: {
+              [PAPERCLIP_EXECUTION_CONTEXT_KEY]: agentDefaultContext,
+            },
+          },
+        }),
+        executionWorkspaceMode: "agent_default",
+      })).toMatchObject({ kind: "project", status: "done", reason: "direct_terminal_evidence" });
+    });
+
+    it("rejects the same mismatch when mode is not agent_default", () => {
+      const agentDefaultContext = boundContextAgentDefault();
+      expect(decideTerminalIssueReconciliation({
+        ...input({
+          issue: { projectWorkspaceId },
+          run: {
+            contextSnapshot: {
+              [PAPERCLIP_EXECUTION_CONTEXT_KEY]: agentDefaultContext,
+            },
+          },
+        }),
+      })).toEqual({ kind: "preserve", reason: "context_binding_mismatch" });
+    });
   });
 
   it("sets completion metadata exactly once when projecting done", () => {

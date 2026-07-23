@@ -5383,6 +5383,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     workspaceCwd: string | null;
     budgetExceeded: string[];
     routePathIds: string[];
+    executionWorkspaceMode?: string | null;
   }) {
     if (!input.issueId) return { changed: false, status: null, reason: "missing_issue" };
     const workspaceHeadSha = await readTerminalWorkspaceHeadSha(input.workspaceCwd);
@@ -5444,6 +5445,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workspaceHeadSha,
         budgetExceeded: input.budgetExceeded,
         routePathIds: input.routePathIds,
+        executionWorkspaceMode: input.executionWorkspaceMode,
       });
       if (decision.kind === "preserve") {
         return { changed: false, status: null, reason: decision.reason };
@@ -14736,6 +14738,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             workspaceCwd: executionWorkspace.cwd,
             budgetExceeded: terminalExceeded,
             routePathIds: terminalRoutePathIds,
+            executionWorkspaceMode: persistedExecutionWorkspace
+              ? issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode)
+              : null,
           })
         : { changed: false, status: null, reason: "missing_terminal_run" };
       if (!persistedRunWrite.updated) {

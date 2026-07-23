@@ -149,6 +149,7 @@ function bindingMatches(input: {
   run: RunInput;
   rawBinding: unknown;
   workspaceCwd: string | null;
+  executionWorkspaceMode?: string | null;
 }) {
   const binding = readBoundExecutionContext(input.rawBinding);
   if (!binding) return { binding: null, matches: false };
@@ -171,7 +172,9 @@ function bindingMatches(input: {
     string(authority.runId) === input.run.id &&
     input.issue.assigneeAgentId === input.run.agentId &&
     input.run.companyId === input.issue.companyId &&
-    (expectedWorkspaceId ? boundWorkspaceId === expectedWorkspaceId : boundWorkspaceId === null) &&
+    (input.executionWorkspaceMode === "agent_default"
+      ? boundWorkspaceId === null
+      : (expectedWorkspaceId ? boundWorkspaceId === expectedWorkspaceId : boundWorkspaceId === null)) &&
     (input.workspaceCwd ? boundCwd === input.workspaceCwd : boundCwd === null);
   return { binding, matches };
 }
@@ -184,6 +187,7 @@ export function decideTerminalIssueReconciliation(input: {
   workspaceFinalized: boolean;
   workspaceCwd: string | null;
   workspaceHeadSha: string | null;
+  executionWorkspaceMode?: string | null;
   budgetExceeded: string[];
   routePathIds: string[];
 }): TerminalIssueReconciliationDecision {
@@ -218,6 +222,7 @@ export function decideTerminalIssueReconciliation(input: {
     run: input.run,
     rawBinding: context.paperclipExecutionContext,
     workspaceCwd: input.workspaceCwd,
+    executionWorkspaceMode: input.executionWorkspaceMode,
   });
   if (!bindingResult.binding) {
     return { kind: "preserve", reason: "invalid_context_binding" };
