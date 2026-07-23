@@ -104,6 +104,7 @@ export function buildOperationsImprovementProposal(input: {
   const sourceLabel = input.sourceIssue.identifier ?? input.sourceIssue.id;
   return {
     title: `[Ops Proposal] ${input.candidate.reason} on ${sourceLabel}`,
+    workMode: "ask" as const,
     description: [
       "Advisory-only operations improvement proposal generated from terminal execution evidence.",
       "",

@@ -35,6 +35,7 @@ describe("operations improvement proposals", () => {
       candidate: candidate!,
     });
     expect(proposal.title).toContain("work_preparation_denied");
+    expect(proposal.workMode).toBe("ask");
     expect(proposal.description).toContain("Do not modify code");
   });
 
