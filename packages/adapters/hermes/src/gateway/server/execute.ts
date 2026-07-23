@@ -379,6 +379,9 @@ function renderGatewayRuntimeIdentity(
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "- Hermes Gateway tool shells do not inherit PAPERCLIP_RUN_ID.",
     `- If /opt/data/bin/github-push-tool.bundle.cjs is available, invoke it as: node /opt/data/bin/github-push-tool.bundle.cjs client --run-id ${ctx.runId}`,
+    `- If /opt/data/bin/paperclip-task.mjs is available, use it to comment on and complete the assigned issue; pass --run-id ${ctx.runId} on every mutation.`,
+    "- For repository edits, use the declared non-interactive workspace primitive: /opt/data/bin/apply_patch --diff -",
+    "- When reporting a result and completing the task, use one update-status call with --comment instead of separate comment and status calls.",
   ].join("\n");
 }
 
@@ -400,7 +403,7 @@ export function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string
       "",
       "Execution contract:",
       "- Continue only the bound work packet below.",
-      "- Preserve its authority, exact-head, verification, and continuation constraints.",
+      "- Preserve only the authority, verification, and continuation constraints declared in that packet; do not invent exact-head, code-review, test, or publication work that it does not require.",
       "- Do not reconstruct or request legacy transcript/task context.",
       "- Leave a terminal execution-truth receipt or an explicitly bounded continuation.",
       ...(renderExecutionPhaseBudgetPlan(ctx.executionBudget)
@@ -1572,12 +1575,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(terminalEvidence.cachedUsage.value > 0
       ? { cachedInputTokens: terminalEvidence.cachedUsage.value }
       : {}),
+    provenance:
+      terminalEvidence.inputUsage.present
+      && terminalEvidence.outputUsage.present
+      && terminalEvidence.cachedUsage.present
+      && terminalEvidence.usageSource === "provider_response_aggregate"
+        ? "measured"
+        : "unknown",
   };
   result.usageBasis = "per_run";
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
   const normalizedTransport = normalizedObservedTransport(terminalEvidence.transportClass);
   result.resultJson = {
     ...parseObject(result.resultJson),
+    // Hermes' signed terminal projection is the authoritative definition of a
+    // model turn/tool call. The SSE stream is transport progress only and can
+    // split one provider turn into several UI events.
+    execution_metrics: {
+      turns: terminalEvidence.turnTotal,
+      tool_calls: terminalEvidence.toolCallTotal,
+    },
     execution_route: {
       provider_id: normalizedObservedProviderId(terminalEvidence.resolvedProvider),
       observed_provider_id: terminalEvidence.resolvedProvider,

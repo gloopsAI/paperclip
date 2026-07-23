@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: apply_patch [--diff -]
+
+Read a unified diff from stdin, verify it with git apply, and apply it to the
+current Paperclip workspace repository.
+EOF
+}
+
+if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "$#" -ne 0 && ! ( "$#" -eq 2 && "$1" == '--diff' && "$2" == '-' ) ]]; then
+  usage >&2
+  exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo 'apply_patch: current directory is not inside a Git repository' >&2
+  exit 2
+}
+repo_root="$(cd "${repo_root}" && pwd -P)"
+case "${repo_root}" in
+  /opt/data/workspace/*) ;;
+  *)
+    echo 'apply_patch: repository is outside the assigned Paperclip workspace' >&2
+    exit 2
+    ;;
+esac
+
+patch_file="$(mktemp /tmp/paperclip-apply-patch.XXXXXX)"
+trap 'rm -f "${patch_file}"' EXIT
+cat >"${patch_file}"
+[[ -s "${patch_file}" ]] || {
+  echo 'apply_patch: empty patch' >&2
+  exit 2
+}
+
+git -C "${repo_root}" apply --check --recount --whitespace=nowarn "${patch_file}"
+git -C "${repo_root}" apply --recount --whitespace=nowarn "${patch_file}"

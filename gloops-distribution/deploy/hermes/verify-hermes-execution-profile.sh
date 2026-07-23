@@ -17,6 +17,10 @@ readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
 readonly GITHUB_BROKER_SOCKET='/run/paperclip-github-broker/broker.sock'
 readonly GITHUB_BROKER_TOOL='/usr/local/lib/paperclip-gloops/tools/github-push-tool.bundle.cjs'
+readonly PAPERCLIP_TASK_TOOL='/usr/local/lib/paperclip-gloops/tools/paperclip-task.mjs'
+readonly APPLY_PATCH_TOOL='/usr/local/lib/paperclip-gloops/tools/apply_patch'
+readonly FOCUSED_TEST_TOOL='/usr/local/lib/paperclip-gloops/tools/focused_test'
+readonly FOCUSED_TEST_PREFLIGHT='/usr/local/lib/paperclip-gloops/verify-focused-test-runtime.sh'
 readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
@@ -47,8 +51,8 @@ fi
 [[ -f "${RUNTIME_ENV}" ]] || fail 'dedicated credential environment is missing'
 if [[ -f "${RUNTIME_ENV}" ]]; then
   mapfile -t env_keys < <(sed -nE 's/^([A-Z][A-Z0-9_]*)=.*/\1/p' "${RUNTIME_ENV}" | sort -u)
-  if [[ "${env_keys[*]}" == 'API_SERVER_ENABLED API_SERVER_HOST API_SERVER_KEY API_SERVER_PORT OLLAMA_API_KEY' ]]; then
-    pass 'dedicated environment contains only the API boundary and Ollama credential'
+  if [[ "${env_keys[*]}" == 'API_SERVER_ENABLED API_SERVER_HOST API_SERVER_KEY API_SERVER_PORT OLLAMA_API_KEY PAPERCLIP_AGENT_ID PAPERCLIP_API_URL PAPERCLIP_BRIDGE_API_KEY PAPERCLIP_COMPANY_ID' ]]; then
+    pass 'dedicated environment contains only the API boundary, Ollama credential, and scoped Paperclip task bridge'
   else
     fail "unexpected dedicated environment keys: ${env_keys[*]:-none}"
   fi
@@ -89,6 +93,7 @@ assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
+assert d["platform_toolsets"] == {"api_server": ["terminal"]}
 assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
@@ -99,7 +104,7 @@ assert d["security"] == {
 assert not any(key in d for key in ("plugins", "slack", "platforms", "moa"))
 PY
 then
-  pass 'model, turn, verification, and channel policy is exact'
+  pass 'model, tool, turn, verification, and channel policy is exact'
 else
   fail 'Hermes execution configuration violates the allowlist'
 fi
@@ -263,6 +268,25 @@ if [[ ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh" && ! -e "${PROFILE_DIR}
 else
   fail 'legacy GitHub write authority remains in the Hermes profile'
 fi
+if [[ "$(stat -c '%a:%U:%G' "${PAPERCLIP_TASK_TOOL}" 2>/dev/null || true)" == '555:root:root' ]]; then
+  pass 'Hermes receives an immutable Paperclip task helper'
+else
+  fail 'Paperclip task helper is absent or mutable'
+fi
+if [[ "$(stat -c '%a:%U:%G' "${APPLY_PATCH_TOOL}" 2>/dev/null || true)" == '555:root:root' ]] \
+  && "${APPLY_PATCH_TOOL}" --help | grep -Fq 'usage: apply_patch [--diff -]'; then
+  pass 'Hermes receives one immutable non-interactive workspace edit primitive'
+else
+  fail 'Hermes workspace edit primitive is absent, mutable, or unusable'
+fi
+if [[ "$(stat -c '%a:%U:%G' "${FOCUSED_TEST_TOOL}" 2>/dev/null || true)" == '555:root:root' ]] \
+  && "${FOCUSED_TEST_TOOL}" --help | grep -Fq 'usage: focused_test --check' \
+  && [[ "$(stat -c '%a:%U:%G' "${FOCUSED_TEST_PREFLIGHT}" 2>/dev/null || true)" == '755:root:root' ]] \
+  && grep -Fq 'ExecStartPre=/usr/local/lib/paperclip-gloops/verify-focused-test-runtime.sh' "${UNIT}"; then
+  pass 'Hermes receives one immutable non-installing focused-test primitive with activation preflight'
+else
+  fail 'Hermes focused-test primitive or activation preflight is absent, mutable, or unusable'
+fi
 
 if grep -Fq '/opt/paperclip/hermes-home' "${UNIT}" \
   || grep -Eq -- '--publish|-p[ =]' "${UNIT}"; then
@@ -282,11 +306,9 @@ for required in \
   '--cap-add SETGID' \
   '--cap-add SETUID' \
   '--security-opt no-new-privileges:true' \
-  '--env GIT_CONFIG_COUNT=2 ' \
+  '--env GIT_CONFIG_COUNT=1 ' \
   '--env GIT_CONFIG_KEY_0=safe.directory ' \
-  '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/controlled-swarm-plugin ' \
-  '--env GIT_CONFIG_KEY_1=safe.directory ' \
-  '--env GIT_CONFIG_VALUE_1=/opt/data/workspace/gloops-paperclip-plugin ' \
+  '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/* ' \
   '--memory 2048m' \
   '--cpus 2.0' \
   '--pids-limit 512' \
@@ -355,12 +377,18 @@ if [[ "${MODE}" == '--live' ]]; then
     trap 'rm -f "${live_env}" "${live_mounts}" "${paperclip_owned_probe}"' EXIT
     docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" >"${live_env}"
     docker inspect --format '{{json .Mounts}}' "${CONTAINER}" >"${live_mounts}"
-    if [[ "$(docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory)" == $'/opt/data/workspace/repos/induct\n/opt/data/workspace/controlled-swarm-plugin\n/opt/data/workspace/gloops-paperclip-plugin' ]] \
+    if docker exec --user 10000:10000 "${CONTAINER}" git config --get-all safe.directory \
+        | awk '
+          $0 == "/opt/data/workspace/*" { dynamic=1; next }
+          index($0, "/opt/data/workspace/") == 1 { next }
+          { invalid=1 }
+          END { exit !(dynamic && !invalid) }
+        ' \
       && docker exec --user 10000:10000 "${CONTAINER}" \
         git -C /opt/data/workspace/controlled-swarm-plugin status --short >/dev/null; then
-      pass 'live Git trust is limited to the three declared shared repositories'
+      pass 'live Git trust covers dynamically realized repositories under the dedicated workspace root'
     else
-      fail 'live Git trust is missing, over-broad, or unusable for the shared repository'
+      fail 'live Git trust is missing, outside the dedicated workspace root, or unusable for the shared repository'
     fi
     if [[ "$(docker inspect --format '{{json .HostConfig.GroupAdd}}' "${CONTAINER}")" == '["985"]' ]] \
       && docker exec --user 10000:10000 "${CONTAINER}" /usr/bin/id -G \
@@ -424,10 +452,19 @@ if [[ "${MODE}" == '--live' ]]; then
         )
       ' "${live_mounts}" >/dev/null \
       && docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/tirith --version \
-        | grep -Fq "${TIRITH_VERSION}"; then
+        | grep -Fq "${TIRITH_VERSION}" \
+      && docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/apply_patch --help \
+        | grep -Fq 'usage: apply_patch [--diff -]'; then
       pass 'live Tirith scanner is the exact read-only pre-provisioned binary'
+      pass 'live workspace edit primitive is exact and read-only'
     else
-      fail 'live Tirith scanner is missing, writable, inexact, or unusable'
+      fail 'live Tirith scanner or workspace edit primitive is missing, writable, inexact, or unusable'
+    fi
+    if docker exec --user 10000:10000 "${CONTAINER}" /opt/data/bin/focused_test --help \
+      | grep -Fq 'usage: focused_test --check'; then
+      pass 'live focused-test primitive is exact and read-only'
+    else
+      fail 'live focused-test primitive is missing, writable, inexact, or unusable'
     fi
     live_state_mounts_valid=1
     for path in cache logs memories sessions; do

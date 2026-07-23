@@ -6,6 +6,7 @@ import {
   ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES,
   ISSUE_EXECUTION_MONITOR_STATE_STATUSES,
   ISSUE_EXECUTION_POLICY_MODES,
+  ISSUE_EXECUTION_COMPLETION_PROFILES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
   ISSUE_COMMENT_AUTHOR_TYPES,
@@ -252,6 +253,7 @@ const issueExecutionResourceBudgetSchema = z
 
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
+  completionProfile: z.enum(ISSUE_EXECUTION_COMPLETION_PROFILES).optional(),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),

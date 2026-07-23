@@ -10,6 +10,7 @@ import type {
   IssueExecutionDecisionOutcome,
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
+  IssueExecutionCompletionProfile,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
@@ -648,6 +649,7 @@ export interface IssueExecutionResourceBudget {
 
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
+  completionProfile?: IssueExecutionCompletionProfile;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
