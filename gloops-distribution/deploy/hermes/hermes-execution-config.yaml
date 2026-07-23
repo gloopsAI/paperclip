@@ -14,6 +14,30 @@ platform_toolsets:
   api_server:
     - terminal
     - skills
+platforms:
+  api_server:
+    enabled: true
+    extra:
+      # Hermes' API server treats the incoming model value as a client alias.
+      # Only aliases present here select a non-default model; an unknown alias
+      # continues to resolve to the global Kimi default and is rejected by
+      # Paperclip's requested-versus-resolved route receipt.
+      model_routes:
+        kimi-k2.7-code:cloud:
+          model: kimi-k2.7-code
+          provider: ollama-cloud
+        minimax-m3:cloud:
+          model: minimax-m3
+          provider: ollama-cloud
+        glm-5.2:cloud:
+          model: glm-5.2
+          provider: ollama-cloud
+        deepseek-v4-flash:cloud:
+          model: deepseek-v4-flash
+          provider: ollama-cloud
+        qwen3.5:cloud:
+          model: qwen3.5
+          provider: ollama-cloud
 agent:
   # Outer host safety ceiling only. Paperclip remains the per-task authority:
   # the default provider envelope is 8 turns and explicit envelopes may widen
@@ -25,4 +49,4 @@ security:
   tirith_enabled: true
   tirith_path: /opt/data/bin/tirith
   tirith_fail_open: false
-_config_version: 36
+_config_version: 37

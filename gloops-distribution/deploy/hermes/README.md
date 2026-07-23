@@ -212,8 +212,12 @@ the gateway-native route fields, a required per-agent secret reference, and the
 compact charter, removing legacy payload templates, token aliases, unused model
 claims, and instruction-bundle paths. The gateway route is bound to the
 execution-only Hermes sidecar; commissioning verifies the exact installed
-sidecar config and policy digests that pin Ollama Cloud and
-`kimi-k2.7-code`. Grok/Codex burst identities remain excluded. The image binds
+sidecar config and policy digests that pin Ollama Cloud, use
+`kimi-k2.7-code` as the fail-closed default, and explicitly route the five
+measured aliases (`kimi-k2.7-code:cloud`, `minimax-m3:cloud`,
+`glm-5.2:cloud`, `deepseek-v4-flash:cloud`, and `qwen3.5:cloud`) through
+Hermes' native API-server `model_routes`. Grok/Codex burst identities remain
+excluded. The image binds
 those charters and route evidence. Before the first adapter
 mutation, commissioning durably journals every prior adapter configuration in a
 root-owned `0600` transaction file, fsyncs the file and parent directory, and
