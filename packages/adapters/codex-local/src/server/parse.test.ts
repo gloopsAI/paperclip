@@ -29,6 +29,7 @@ describe("parseCodexJsonl", () => {
         inputTokens: 10,
         cachedInputTokens: 2,
         outputTokens: 4,
+        provenance: "measured",
       },
       errorMessage: "resume failed",
     });
@@ -62,8 +63,26 @@ describe("parseCodexJsonl", () => {
         inputTokens: 10,
         cachedInputTokens: 2,
         outputTokens: 4,
+        provenance: "measured",
       },
       errorMessage: null,
+    });
+  });
+
+  it("keeps usage provenance unknown when Codex emits no native usage event", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Stopped before completion" },
+      }),
+    ].join("\n");
+
+    expect(parseCodexJsonl(stdout).usage).toEqual({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      provenance: "unknown",
     });
   });
 });

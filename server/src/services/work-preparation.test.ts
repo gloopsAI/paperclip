@@ -55,6 +55,12 @@ describe("assessWorkPreparation", () => {
     expect(receipt.packet.valid).toBe(true);
     expect(receipt.workspace.ready).toBe(true);
     expect(receipt.reservation.ready).toBe(true);
+    expect(receipt.skills).toEqual({
+      required: [],
+      available: [],
+      missing: [],
+      ready: true,
+    });
   });
 
   it("denies before provider execution when packet, workspace, and reservation are invalid", () => {
@@ -91,5 +97,60 @@ describe("assessWorkPreparation", () => {
     expect(receipt.decision).toBe("ready");
     expect(receipt.required).toBe(false);
     expect(receipt.fatalReasons).toEqual([]);
+  });
+
+  it("admits explicitly required skills only when their runtime sources are available", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-skills-ready",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget(),
+      workspace: { required: false, cwd: "/workspace" },
+      skills: {
+        mentionedKeys: ["company/git-ops", "company/sql-agent"],
+        runtimeEntries: [
+          { key: "company/git-ops", sourceStatus: "available" },
+          { key: "company/sql-agent", sourceStatus: "available" },
+        ],
+      },
+    });
+
+    expect(receipt.decision).toBe("ready");
+    expect(receipt.skills).toEqual({
+      required: ["company/git-ops", "company/sql-agent"],
+      available: ["company/git-ops", "company/sql-agent"],
+      missing: [],
+      ready: true,
+    });
+  });
+
+  it("denies provider execution when an explicitly required skill is unavailable", () => {
+    const receipt = assessWorkPreparation({
+      runId: "run-skills-missing",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      adapterType: "hermes_gateway",
+      executionContext: context(),
+      invocationBudget: budget(),
+      workspace: { required: false, cwd: "/workspace" },
+      skills: {
+        mentionedKeys: ["company/git-ops", "company/sql-agent"],
+        runtimeEntries: [
+          { key: "company/git-ops", sourceStatus: "available" },
+          { key: "company/sql-agent", sourceStatus: "missing" },
+        ],
+      },
+    });
+
+    expect(receipt.decision).toBe("denied");
+    expect(receipt.fatalReasons).toContain("required_skill_unavailable");
+    expect(receipt.skills).toEqual({
+      required: ["company/git-ops", "company/sql-agent"],
+      available: ["company/git-ops"],
+      missing: ["company/sql-agent"],
+      ready: false,
+    });
   });
 });
