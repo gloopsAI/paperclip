@@ -721,8 +721,9 @@ async function handleEvent(
   }
 
   const budget = ctx.executionBudget;
+  const isTerminalEvent = Boolean(status && TERMINAL_STATUSES.has(status));
   const estimatedOutputTokens = Math.ceil(state.outputBytes / 4);
-  const exceeded = budget
+  const exceeded = !isTerminalEvent && budget
     ? state.toolCallCount > budget.maxToolCalls
       ? "tool_calls"
       : state.turnCount > budget.maxTurns
@@ -1585,6 +1586,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   result.usageBasis = "per_run";
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
+  const authoritativeExceeded = ctx.executionBudget
+    ? terminalEvidence.toolCallTotal > ctx.executionBudget.maxToolCalls
+      ? "tool_calls"
+      : terminalEvidence.turnTotal > ctx.executionBudget.maxTurns
+        ? "turns"
+        : terminalEvidence.outputUsage.value > ctx.executionBudget.maxOutputTokens
+          ? "output_tokens"
+          : null
+    : null;
+  if (authoritativeExceeded) {
+    result.exitCode = 1;
+    result.errorCode = "execution_admission.provider_budget_exceeded";
+    result.errorMessage = `Hermes run exceeded reserved ${authoritativeExceeded}`;
+    result.resultJson = {
+      ...parseObject(result.resultJson),
+      status: "failed",
+      exceeded: authoritativeExceeded,
+      execution_metrics: {
+        turns: terminalEvidence.turnTotal,
+        tool_calls: terminalEvidence.toolCallTotal,
+      },
+    };
+    return result;
+  }
   const normalizedTransport = normalizedObservedTransport(terminalEvidence.transportClass);
   result.resultJson = {
     ...parseObject(result.resultJson),
