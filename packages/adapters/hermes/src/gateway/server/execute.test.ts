@@ -128,6 +128,7 @@ function terminalEnvelope(input: {
 function stubEvidencedFetch(
   fetchMock: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   transportClass?: string,
+  terminalTotals?: { turnTotal: number; toolCallTotal: number },
 ): void {
   let requestBody = "";
   let runId = "";
@@ -150,7 +151,13 @@ function stubEvidencedFetch(
         const payload = JSON.parse(line.slice("data: ".length)) as Record<string, unknown>;
         const status = typeof payload.status === "string" ? payload.status : null;
         if (!status || !["completed", "failed", "cancelled", "canceled"].includes(status)) return line;
-        frozenEnvelope = terminalEnvelope({ runId, requestBody, payload, transportClass });
+        frozenEnvelope = terminalEnvelope({
+          runId,
+          requestBody,
+          payload,
+          transportClass,
+          ...terminalTotals,
+        });
         return `data: ${JSON.stringify({ ...payload, run_id: runId, ...frozenEnvelope })}`;
       }).join("\n");
       return new Response(sseStream(evidenced), {
@@ -163,7 +170,13 @@ function stubEvidencedFetch(
     if (!status || !["completed", "failed", "cancelled", "canceled"].includes(status)) {
       return new Response(JSON.stringify(payload), { status: response.status, headers: response.headers });
     }
-    const envelope = frozenEnvelope ?? terminalEnvelope({ runId, requestBody, payload, transportClass });
+    const envelope = frozenEnvelope ?? terminalEnvelope({
+      runId,
+      requestBody,
+      payload,
+      transportClass,
+      ...terminalTotals,
+    });
     return new Response(JSON.stringify({ ...payload, run_id: runId, ...envelope }), {
       status: response.status,
       headers: response.headers,
@@ -551,6 +564,118 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.resultJson?.execution_metrics).toEqual({ turns: 1, tool_calls: 0 });
+  });
+
+  it("accepts authoritative terminal usage exactly at the reservation", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "terminal-at-limit" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-1\"}",
+          "",
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-2\"}",
+          "",
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-3\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-3\"}",
+          "",
+          "event: tool.started",
+          "data: {\"tool_call_id\":\"call-4\"}",
+          "",
+          "event: tool.completed",
+          "data: {\"tool_call_id\":\"call-4\"}",
+          "",
+          "event: run.completed",
+          "data: {\"status\":\"completed\",\"output\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}",
+          "",
+        ].join("\n")), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: "done",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock, undefined, { turnTotal: 4, toolCallTotal: 4 });
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-terminal-at-limit",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 5,
+      maxTurns: 4,
+      maxToolCalls: 4,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 4, tool_calls: 4 });
+  });
+
+  it("rejects authoritative terminal usage above the reservation", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "terminal-over-limit" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          "event: run.completed",
+          "data: {\"status\":\"completed\",\"output\":\"done\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}",
+          "",
+        ].join("\n")), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: "done",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock, undefined, { turnTotal: 5, toolCallTotal: 4 });
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-terminal-over-limit",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 5,
+      maxTurns: 4,
+      maxToolCalls: 4,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("execution_admission.provider_budget_exceeded");
+    expect(result.resultJson?.exceeded).toBe("turns");
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 5, tool_calls: 4 });
+    expect(result.providerIoTerminalEvidence?.terminalEvidence.turnTotal).toBe(5);
   });
 
   it("stops the remote run when distinct model turns exceed the reservation", async () => {
