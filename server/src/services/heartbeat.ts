@@ -242,6 +242,7 @@ import {
 import {
   buildOperationsImprovementStewardWake,
   projectOperationsImprovementProposal,
+  selectOperationsImprovementStewardAgentId,
 } from "./operations-improvement-proposals.js";
 
 import {
@@ -14933,9 +14934,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (persistedRun) {
-        const stewardAgentId = readNonEmptyString(
-          runtimeEnv.PAPERCLIP_OPERATIONS_IMPROVEMENT_STEWARD_AGENT_ID,
-        );
+        const stewardAgentId = selectOperationsImprovementStewardAgentId({
+          run: persistedRun,
+          capacityManagerAgentId: readNonEmptyString(
+            runtimeEnv.PAPERCLIP_CAPACITY_MANAGER_AGENT_ID,
+          ),
+          tokenEconomicsStewardAgentId: readNonEmptyString(
+            runtimeEnv.PAPERCLIP_TOKEN_ECONOMICS_STEWARD_AGENT_ID,
+          ),
+          legacyStewardAgentId: readNonEmptyString(
+            runtimeEnv.PAPERCLIP_OPERATIONS_IMPROVEMENT_STEWARD_AGENT_ID,
+          ),
+        });
         const proposalResult = await projectOperationsImprovementProposal({
           db,
           run: persistedRun,
