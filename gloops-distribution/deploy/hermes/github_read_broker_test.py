@@ -358,6 +358,10 @@ class GitHubReadBrokerTests(unittest.TestCase):
         self.assertEqual(captured_args[0][1], "prs")
         self.assertEqual(captured_args[0][2], "dependency upgrade")
         self.assertEqual(captured_args[0][3:5], ["--repo", "InductAI/induct"])
+        search_fields = captured_args[0][captured_args[0].index("--json") + 1].split(",")
+        self.assertIn("repository", search_fields)
+        self.assertNotIn("headRefName", search_fields)
+        self.assertNotIn("baseRefName", search_fields)
 
     def test_get_pr_status_returns_selected_fields(self):
         full_pr = {

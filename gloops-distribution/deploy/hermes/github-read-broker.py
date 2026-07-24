@@ -110,6 +110,10 @@ LIST_PR_FIELDS = (
     "number", "title", "state", "isDraft", "createdAt", "updatedAt", "author", "url",
     "headRefName", "baseRefName",
 )
+SEARCH_PR_FIELDS = (
+    "number", "title", "state", "isDraft", "createdAt", "updatedAt", "author", "url",
+    "repository",
+)
 
 SEARCH_RESULT_LIMIT = 30
 LIST_LIMIT = 30
@@ -358,7 +362,7 @@ def op_search_prs(params: dict[str, Any]) -> Any:
         "search", "prs",
         q,
         "--repo", repo,
-        "--json", ",".join(LIST_PR_FIELDS),
+        "--json", ",".join(SEARCH_PR_FIELDS),
         "--limit", str(limit),
     ]
     raw = run_gh(args)
@@ -366,7 +370,7 @@ def op_search_prs(params: dict[str, Any]) -> Any:
         data = json.loads(raw) if raw.strip() else []
     except json.JSONDecodeError:
         raise BrokerError("gh search returned malformed JSON")
-    return select_fields(data, LIST_PR_FIELDS)
+    return select_fields(data, SEARCH_PR_FIELDS)
 
 
 def op_list_prs(params: dict[str, Any]) -> Any:
