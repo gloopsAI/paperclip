@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -85,6 +86,24 @@ class GitHubReadBrokerTests(unittest.TestCase):
                     "repo": "InductAI/induct-knowledge",
                 })
                 self.assertTrue(result["ok"])
+
+    def test_search_issues_rejects_injected_repo_scope(self):
+        with self.paths():
+            with self.assertRaisesRegex(broker.BrokerError, "scope qualifiers"):
+                broker.process_request({
+                    "operation": "search-issues",
+                    "repo": "InductAI/induct",
+                    "query": "repo:InductAI/other-private-repo day 0",
+                })
+
+    def test_search_prs_rejects_injected_org_scope(self):
+        with self.paths():
+            with self.assertRaisesRegex(broker.BrokerError, "scope qualifiers"):
+                broker.process_request({
+                    "operation": "search-prs",
+                    "repo": "InductAI/induct",
+                    "query": "OR org:InductAI is:open",
+                })
 
     # -------------------------------------------------------------------------
     # Malformed requests
@@ -379,6 +398,14 @@ class GitHubReadBrokerTests(unittest.TestCase):
         self.assertFalse(parsed.get("truncated", False))
         self.assertEqual(parsed["data"], [{"number": 1}])
 
+    def test_bounded_output_never_slices_json(self):
+        response = {"ok": True, "data": {"body": "x" * 10000}}
+        raw = broker.bound_output(response, max_bytes=256)
+        self.assertLessEqual(len(raw), 256)
+        parsed = json.loads(raw)
+        self.assertFalse(parsed["ok"])
+        self.assertTrue(parsed["truncated"])
+
     def test_limit_is_capped(self):
         captured_args = []
 
@@ -496,6 +523,21 @@ class GitHubReadBrokerTests(unittest.TestCase):
     # -------------------------------------------------------------------------
     # Socket protocol
     # -------------------------------------------------------------------------
+
+    def test_verify_peer_accepts_expected_hermes_uid(self):
+        client = MagicMock()
+        client.getsockopt.return_value = struct.pack(
+            "iII", 1234, broker.EXPECTED_HERMES_UID, broker.HERMES_GID
+        )
+        with patch.object(broker, "TEST_MODE", False):
+            broker.verify_peer(client)
+
+    def test_verify_peer_rejects_other_uid(self):
+        client = MagicMock()
+        client.getsockopt.return_value = struct.pack("iII", 1234, 1001, 1001)
+        with patch.object(broker, "TEST_MODE", False):
+            with self.assertRaisesRegex(broker.BrokerError, "not authorized"):
+                broker.verify_peer(client)
 
     def test_socket_serve_and_request(self):
         """Integration test: start the broker server and send a request."""
