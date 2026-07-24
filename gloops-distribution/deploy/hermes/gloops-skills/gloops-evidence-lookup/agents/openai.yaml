@@ -1,0 +1,4 @@
+interface:
+  display_name: "GLoops Evidence Lookup"
+  short_description: "Answer exact read-only evidence questions"
+  default_prompt: "Perform an exact, cited, read-only evidence lookup."

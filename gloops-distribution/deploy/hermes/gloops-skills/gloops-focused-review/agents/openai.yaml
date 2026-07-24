@@ -1,0 +1,4 @@
+interface:
+  display_name: "GLoops Focused Review"
+  short_description: "Review one exact change for material defects"
+  default_prompt: "Review this exact change for material defects."

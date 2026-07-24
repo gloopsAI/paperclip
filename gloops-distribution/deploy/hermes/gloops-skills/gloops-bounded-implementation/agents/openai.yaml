@@ -1,0 +1,4 @@
+interface:
+  display_name: "GLoops Bounded Implementation"
+  short_description: "Implement one prepared and verified change"
+  default_prompt: "Implement this prepared bounded change and verify it."

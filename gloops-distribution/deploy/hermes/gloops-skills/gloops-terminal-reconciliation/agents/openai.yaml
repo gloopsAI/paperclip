@@ -1,0 +1,4 @@
+interface:
+  display_name: "GLoops Terminal Reconciliation"
+  short_description: "Reconcile execution evidence to terminal truth"
+  default_prompt: "Reconcile this run to an evidence-backed terminal state."
