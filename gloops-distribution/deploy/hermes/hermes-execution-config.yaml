@@ -61,10 +61,9 @@ platforms:
           model: ollama-build
           provider: moa
 agent:
-  # Outer host safety ceiling only. Paperclip remains the per-task authority:
-  # the default provider envelope is 8 turns and explicit envelopes may widen
-  # only up to this formally declared ceiling.
-  max_turns: 32
+  # Match the upstream Hermes completion envelope. Paperclip remains the
+  # per-task authority and may issue a smaller task-specific turn budget.
+  max_turns: 90
   verify_on_stop: true
 security:
   redact_secrets: true

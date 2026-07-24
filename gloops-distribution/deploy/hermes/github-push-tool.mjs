@@ -57,6 +57,74 @@ function parseArgs(argv) {
   return args;
 }
 
+async function resolveHeadOid(gitdir, headFile) {
+  const head = fs.readFileSync(headFile, "utf8").trim();
+  if (OID_PATTERN.test(head)) return head;
+  const match = /^ref: (refs\/heads\/[A-Za-z0-9._/-]+)$/.exec(head);
+  if (!match || match[1].includes("..") || match[1].endsWith("/")) {
+    fail("repository HEAD is malformed");
+  }
+  return git.resolveRef({ fs, gitdir, ref: match[1] });
+}
+
+async function resolveRepositoryGitContext(repoDir) {
+  const dotGit = path.join(repoDir, ".git");
+  const dotGitStat = fs.lstatSync(dotGit);
+  if (dotGitStat.isSymbolicLink()) fail("repository .git boundary must not be a symlink");
+  if (dotGitStat.isDirectory()) {
+    const gitdir = fs.realpathSync(dotGit);
+    return { gitdir, headOid: await resolveHeadOid(gitdir, path.join(gitdir, "HEAD")) };
+  }
+  if (!dotGitStat.isFile() || dotGitStat.size > 4096) {
+    fail("repository does not contain a supported .git boundary");
+  }
+
+  const match = /^gitdir: ([^\r\n]+)\n?$/.exec(fs.readFileSync(dotGit, "utf8"));
+  if (!match) fail("repository worktree .git boundary is malformed");
+  const resolvedGitdir = fs.realpathSync(path.resolve(repoDir, match[1]));
+  const gitdirStat = fs.lstatSync(resolvedGitdir);
+  if (!gitdirStat.isDirectory() || gitdirStat.isSymbolicLink()) {
+    fail("repository worktree gitdir must be a real directory");
+  }
+
+  const worktreeMarker = `${path.sep}.paperclip${path.sep}worktrees${path.sep}`;
+  const markerIndex = repoDir.indexOf(worktreeMarker);
+  if (markerIndex <= 0) fail("repository worktree is outside the Paperclip worktree boundary");
+  const projectRoot = repoDir.slice(0, markerIndex);
+  const expectedCommonGitdir = fs.realpathSync(path.join(projectRoot, ".git"));
+  const expectedGitdirParent = fs.realpathSync(path.join(expectedCommonGitdir, "worktrees"));
+  if (path.dirname(resolvedGitdir) !== expectedGitdirParent) {
+    fail("repository worktree gitdir is outside the project Git boundary");
+  }
+
+  const backpointer = path.join(resolvedGitdir, "gitdir");
+  const backpointerStat = fs.lstatSync(backpointer);
+  if (!backpointerStat.isFile() || backpointerStat.isSymbolicLink() || backpointerStat.size > 4096) {
+    fail("repository worktree gitdir backpointer is unavailable");
+  }
+  const resolvedBackpointer = fs.realpathSync(
+    path.resolve(resolvedGitdir, fs.readFileSync(backpointer, "utf8").trim()),
+  );
+  if (resolvedBackpointer !== fs.realpathSync(dotGit)) {
+    fail("repository worktree gitdir backpointer does not match the assigned worktree");
+  }
+  const commondir = path.join(resolvedGitdir, "commondir");
+  const commondirStat = fs.lstatSync(commondir);
+  if (!commondirStat.isFile() || commondirStat.isSymbolicLink() || commondirStat.size > 4096) {
+    fail("repository worktree common Git boundary is unavailable");
+  }
+  const resolvedCommonGitdir = fs.realpathSync(
+    path.resolve(resolvedGitdir, fs.readFileSync(commondir, "utf8").trim()),
+  );
+  if (resolvedCommonGitdir !== expectedCommonGitdir) {
+    fail("repository worktree common Git boundary does not match the project");
+  }
+  return {
+    gitdir: resolvedCommonGitdir,
+    headOid: await resolveHeadOid(resolvedCommonGitdir, path.join(resolvedGitdir, "HEAD")),
+  };
+}
+
 async function collectTreeObjects(gitdir, treeOid, output) {
   if (output.has(treeOid)) return;
   output.add(treeOid);
@@ -136,12 +204,7 @@ async function clientCommand(args) {
   if (!RUN_ID_PATTERN.test(runId)) fail("a canonical Paperclip run id is required");
   const repoStat = fs.lstatSync(repoDir);
   if (!repoStat.isDirectory() || repoStat.isSymbolicLink()) fail("repository path must be a real directory");
-  const gitdir = path.join(repoDir, ".git");
-  const gitdirStat = fs.lstatSync(gitdir);
-  if (!gitdirStat.isDirectory() || gitdirStat.isSymbolicLink()) {
-    fail("repository does not contain a real .git directory");
-  }
-  const newOid = await git.resolveRef({ fs, gitdir, ref: "HEAD" });
+  const { gitdir, headOid: newOid } = await resolveRepositoryGitContext(repoDir);
   if (!OID_PATTERN.test(newOid)) fail("repository HEAD is not a SHA-1 commit");
   await git.readCommit({ fs, gitdir, oid: newOid });
   const objectOids = await collectCommitClosure(gitdir, newOid);
