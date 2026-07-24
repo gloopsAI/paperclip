@@ -434,8 +434,15 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 export function resolveIssueExecutionCompletionProfile(input: {
   executionPolicy: unknown;
   workMode?: string | null;
+  repositoryBacked?: boolean;
 }): IssueExecutionCompletionProfile | null {
   const explicit = normalizeIssueExecutionPolicy(input.executionPolicy)?.completionProfile;
+  // Standard work attached to a repository is implementation work. Treating
+  // it as direct lets an agent self-report "done" without an exact-head
+  // verification receipt. Read-only repository work should use ask/planning.
+  if (input.workMode === "standard" && input.repositoryBacked && explicit === "direct") {
+    return "verified_change";
+  }
   if (explicit) return explicit;
   return input.workMode === "ask" ? "direct" : null;
 }

@@ -201,6 +201,14 @@ describe("resolveIssueExecutionCompletionProfile", () => {
       workMode: "standard",
     })).toBeNull();
   });
+
+  it("requires verified change receipts for repository-backed standard work", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: { completionProfile: "direct" },
+      workMode: "standard",
+      repositoryBacked: true,
+    })).toBe("verified_change");
+  });
 });
 
 describe("parseIssueExecutionState", () => {

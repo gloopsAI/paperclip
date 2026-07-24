@@ -171,6 +171,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
+  resolveIssueExecutionCompletionProfile,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
@@ -7656,7 +7657,11 @@ export function issueRoutes(
         const trustedRun = await trustedExecutionTruthRunForAgent(req, existing);
         const directCompletionAllowed =
           transition === "completed" &&
-          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null)?.completionProfile === "direct" &&
+          resolveIssueExecutionCompletionProfile({
+            executionPolicy: existing.executionPolicy,
+            workMode: existing.workMode,
+            repositoryBacked: Boolean(existing.projectWorkspaceId || existing.executionWorkspaceId),
+          }) === "direct" &&
           trustedRun.status === "running" &&
           typeof commentBody === "string" &&
           commentBody.trim().length > 0;
