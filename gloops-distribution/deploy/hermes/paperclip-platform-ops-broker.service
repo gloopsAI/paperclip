@@ -1,0 +1,34 @@
+[Unit]
+Description=Paperclip root-owned platform operations broker
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/root
+ExecStartPre=/usr/local/lib/paperclip-gloops/platform-ops-broker.py check
+ExecStart=/usr/local/lib/paperclip-gloops/platform-ops-broker.py serve
+ExecStartPre=-/bin/rm -f /run/paperclip-platform-ops-broker/broker.sock
+RuntimeDirectory=paperclip-platform-ops-broker
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run/paperclip-platform-ops-broker /var/lib/paperclip-gloops/platform-ops-broker /etc/paperclip-gloops
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_ADMIN
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
