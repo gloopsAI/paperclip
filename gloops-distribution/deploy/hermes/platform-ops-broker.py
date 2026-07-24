@@ -354,7 +354,7 @@ def create_receipt(
     if existing:
         if existing["receipt_id"] != receipt_id:
             raise BrokerError("idempotency key is already consumed by a different action")
-        return dict(existing)
+        return _to_receipt_dict(existing)
     now = timestamp()
     receipt = {
         "receiptId": receipt_id,
@@ -408,17 +408,12 @@ def complete_receipt(
     row = connection.execute(
         "SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,)
     ).fetchone()
-    return dict(row)
+    return _to_receipt_dict(row)
 
 
-def get_receipt(connection: sqlite3.Connection, receipt_id: str) -> dict[str, Any] | None:
-    row = connection.execute(
-        "SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,)
-    ).fetchone()
-    if row is None:
-        return None
+def _to_receipt_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
-    result["evidence"] = json.loads(result.pop("evidence_json"))
+    result["evidence"] = json.loads(result.pop("evidence_json", "{}"))
     result["receiptId"] = result.pop("receipt_id")
     result["idempotencyKey"] = result.pop("idempotency_key")
     result["commandClass"] = result.pop("command_class")
@@ -427,21 +422,20 @@ def get_receipt(connection: sqlite3.Connection, receipt_id: str) -> dict[str, An
     return result
 
 
+def get_receipt(connection: sqlite3.Connection, receipt_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return _to_receipt_dict(row)
+
+
 def list_receipts(connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
     rows = connection.execute(
         "SELECT * FROM receipts ORDER BY created_at DESC LIMIT ?", (limit,)
     ).fetchall()
-    results = []
-    for row in rows:
-        result = dict(row)
-        result["evidence"] = json.loads(result.pop("evidence_json"))
-        result["receiptId"] = result.pop("receipt_id")
-        result["idempotencyKey"] = result.pop("idempotency_key")
-        result["commandClass"] = result.pop("command_class")
-        result["createdAt"] = result.pop("created_at")
-        result["updatedAt"] = result.pop("updated_at")
-        results.append(result)
-    return results
+    return [_to_receipt_dict(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -513,14 +507,14 @@ def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
         raise BrokerError("service must be a valid systemd unit name ending in .service")
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
-    receipt_id = f"restart-{service}-{int(time.time())}"
+    receipt_id = f"restart-{service}-{int(time.time())}-{idempotency_key[:16]}"
     receipt = create_receipt(
         connection, receipt_id, "service-restart", service,
         idempotency_key, actor, "restart_named_service",
     )
     if receipt["state"] != "initiated":
         # Idempotent replay
-        return {"receiptId": receipt_id, "state": receipt["state"], "replayed": True}
+        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
     # Pre-restart health
     pre_health = _check_service_active(service)
     # Execute restart
@@ -648,13 +642,13 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
         )
         if returncode == 0 and stdout.strip():
             pre_size = int(stdout.strip().split()[0])
-    receipt_id = f"reclaim-{cache_name}-{int(time.time())}"
+    receipt_id = f"reclaim-{cache_name}-{int(time.time())}-{idempotency_key[:16]}"
     receipt = create_receipt(
         connection, receipt_id, "cache-reclaim", cache_name,
         idempotency_key, actor, "reclaim_disposable_cache",
     )
     if receipt["state"] != "initiated":
-        return {"receiptId": receipt_id, "state": receipt["state"], "replayed": True}
+        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
     # Reclaim: remove contents but not the directory itself
     if cache_path.exists():
         returncode, stdout, stderr = run_command(
@@ -704,13 +698,13 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     container = service_config.get("container")
     if not container:
         raise BrokerError(f"service {service} has no container for deployment")
-    receipt_id = f"deploy-{service}-{int(time.time())}"
+    receipt_id = f"deploy-{service}-{int(time.time())}-{idempotency_key[:16]}"
     receipt = create_receipt(
         connection, receipt_id, "deploy-pinned-image", service,
         idempotency_key, actor, "deploy_pinned_image",
     )
     if receipt["state"] != "initiated":
-        return {"receiptId": receipt_id, "state": receipt["state"], "replayed": True}
+        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
     # Pull the pinned image
     returncode, stdout, stderr = run_command(
         ["docker", "pull", image], timeout=COMMAND_TIMEOUT_SECONDS,
@@ -763,13 +757,13 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
         raise BrokerError("service must be a valid systemd unit name ending in .service")
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
-    receipt_id = f"rollback-rehearsal-{service}-{int(time.time())}"
+    receipt_id = f"rollback-rehearsal-{service}-{int(time.time())}-{idempotency_key[:16]}"
     receipt = create_receipt(
         connection, receipt_id, "rollback-rehearsal", service,
         idempotency_key, actor, "rollback_rehearsal",
     )
     if receipt["state"] != "initiated":
-        return {"receiptId": receipt_id, "state": receipt["state"], "replayed": True}
+        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
     # A rollback rehearsal only checks that the backup exists and the
     # rollback script is executable.  It does not perform the actual rollback.
     rollback_script = Path("/usr/local/lib/paperclip-gloops/rollback.sh")
