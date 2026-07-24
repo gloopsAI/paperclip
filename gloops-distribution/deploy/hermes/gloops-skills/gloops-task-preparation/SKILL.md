@@ -18,6 +18,7 @@ Prepare the smallest complete packet that gives the selected agent a fair chance
    - available tools and one verification command;
    - explicit non-goals;
    - measured input, output, turn, tool, and wall-time budgets.
+   Count every required `skill_view` as a tool call when sizing the tool budget.
 4. For a write task, verify before provider dispatch:
    - the exact workspace exists;
    - the expected repository and ref are present;
