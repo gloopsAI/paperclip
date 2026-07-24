@@ -38,19 +38,10 @@ function runTool(args, cwd, env = {}) {
   });
 }
 
-test("client emits a content-addressed commit closure without retaining ingress files", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-"));
-  const repo = path.join(root, "repo");
+async function runClientAgainstBroker(repo, root) {
   const ingress = path.join(root, "ingress");
   const socket = path.join(root, "broker.sock");
-  fs.mkdirSync(repo);
   fs.mkdirSync(ingress);
-  git(repo, "init");
-  git(repo, "config", "user.name", "Calibration");
-  git(repo, "config", "user.email", "calibration@example.com");
-  fs.writeFileSync(path.join(repo, "proof.txt"), "one owner, one run, one push\n");
-  git(repo, "add", "proof.txt");
-  git(repo, "commit", "-m", "calibration proof");
   const head = git(repo, "rev-parse", "HEAD");
 
   let resolveObserved;
@@ -60,34 +51,34 @@ test("client emits a content-addressed commit closure without retaining ingress 
     rejectObserved = reject;
   });
   const server = net.createServer((client) => {
-      let input = "";
-      client.setEncoding("utf8");
-      client.on("data", (chunk) => { input += chunk; });
-      client.on("end", () => {
-        try {
-          const request = JSON.parse(input);
-          const manifest = JSON.parse(
-            fs.readFileSync(path.join(ingress, request.manifestName), "utf8"),
-          );
-          const pack = fs.readFileSync(path.join(ingress, manifest.packName));
-          assert.equal(request.expectedNewOid, head);
-          assert.equal(manifest.expectedNewOid, head);
-          assert.equal(manifest.objectCount, manifest.objectOids.length);
-          assert.ok(manifest.objectOids.includes(head));
-          assert.equal(manifest.packBytes, pack.length);
-          client.end(JSON.stringify({
-            ok: true,
-            schemaVersion: "gloops.github-push-client-response.v1",
-            heartbeatRunId: runId,
-            branchRef: `refs/heads/paperclip/${runId}/calibration`,
-            remoteNewOid: head,
-            brokerReceiptDigest: `sha256:${"a".repeat(64)}`,
-          }));
-          server.close(() => resolveObserved(manifest));
-        } catch (error) {
-          rejectObserved(error);
-        }
-      });
+    let input = "";
+    client.setEncoding("utf8");
+    client.on("data", (chunk) => { input += chunk; });
+    client.on("end", () => {
+      try {
+        const request = JSON.parse(input);
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(ingress, request.manifestName), "utf8"),
+        );
+        const pack = fs.readFileSync(path.join(ingress, manifest.packName));
+        assert.equal(request.expectedNewOid, head);
+        assert.equal(manifest.expectedNewOid, head);
+        assert.equal(manifest.objectCount, manifest.objectOids.length);
+        assert.ok(manifest.objectOids.includes(head));
+        assert.equal(manifest.packBytes, pack.length);
+        client.end(JSON.stringify({
+          ok: true,
+          schemaVersion: "gloops.github-push-client-response.v1",
+          heartbeatRunId: runId,
+          branchRef: `refs/heads/paperclip/${runId}/calibration`,
+          remoteNewOid: head,
+          brokerReceiptDigest: `sha256:${"a".repeat(64)}`,
+        }));
+        server.close(() => resolveObserved(manifest));
+      } catch (error) {
+        rejectObserved(error);
+      }
+    });
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -111,6 +102,42 @@ test("client emits a content-addressed commit closure without retaining ingress 
   assert.equal(JSON.parse(result.stdout).remoteNewOid, head);
   assert.deepEqual(fs.readdirSync(ingress), []);
   assert.ok(manifest.objectCount >= 3);
+  return manifest;
+}
+
+test("client emits a content-addressed commit closure without retaining ingress files", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "proof.txt"), "one owner, one run, one push\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "calibration proof");
+  await runClientAgainstBroker(repo, root);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("client emits a commit closure from a Paperclip-managed git worktree", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worktree-"));
+  const repo = path.join(root, "repo");
+  const worktreeParent = path.join(repo, ".paperclip", "worktrees");
+  const worktree = path.join(worktreeParent, "run");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "proof.txt"), "base\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "base");
+  fs.mkdirSync(worktreeParent, { recursive: true });
+  git(repo, "worktree", "add", "-b", "paperclip-run", worktree, "HEAD");
+  fs.writeFileSync(path.join(worktree, "proof.txt"), "worktree proof\n");
+  git(worktree, "add", "proof.txt");
+  git(worktree, "commit", "-m", "worktree proof");
+
+  await runClientAgainstBroker(worktree, root);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
