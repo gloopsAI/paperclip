@@ -283,7 +283,8 @@ def op_search_issues(params: dict[str, Any]) -> Any:
     # Use gh search issues with JSON output
     args = [
         "search", "issues",
-        f"repo:{repo} {q}",
+        q,
+        "--repo", repo,
         "--json", ",".join(LIST_ISSUE_FIELDS),
         "--limit", str(limit),
     ]
@@ -355,7 +356,8 @@ def op_search_prs(params: dict[str, Any]) -> Any:
     limit = min(int(params.get("limit", SEARCH_RESULT_LIMIT)), SEARCH_RESULT_LIMIT)
     args = [
         "search", "prs",
-        f"repo:{repo} {q}",
+        q,
+        "--repo", repo,
         "--json", ",".join(LIST_PR_FIELDS),
         "--limit", str(limit),
     ]
