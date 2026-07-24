@@ -257,6 +257,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  parseFinalGovernedLifecycleReceipt,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -5421,11 +5422,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { changed: false, status: null, reason: "missing_bound_record" };
       }
 
+      const lifecycleReceipt = parseFinalGovernedLifecycleReceipt(currentRun);
+      const terminalReceipt =
+        lifecycleReceipt?.action === "operations_complete" || lifecycleReceipt?.action === "blocked"
+          ? lifecycleReceipt
+          : null;
       const decision = decideTerminalIssueReconciliation({
         completionProfile: resolveIssueExecutionCompletionProfile({
           executionPolicy: currentIssue.executionPolicy,
           workMode: currentIssue.workMode,
         }),
+        terminalReceipt,
         issue: {
           id: currentIssue.id,
           identifier: currentIssue.identifier,

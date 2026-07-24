@@ -57,8 +57,11 @@ export {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   isSuccessfulRunHandoffRequiredNoticeBody,
+  parseFinalGovernedLifecycleReceipt,
 } from "./successful-run-handoff.js";
 export type {
+  GovernedLifecycleReceipt,
+  GovernedTerminalLifecycleReceipt,
   SuccessfulRunHandoffNotice,
   SuccessfulRunHandoffDecision,
 } from "./successful-run-handoff.js";

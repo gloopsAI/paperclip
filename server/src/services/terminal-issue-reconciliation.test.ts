@@ -151,6 +151,80 @@ describe("decideTerminalIssueReconciliation", () => {
     );
   });
 
+  it("lets an explicit operations receipt complete an otherwise unprofiled direct task", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: null,
+      terminalReceipt: {
+        action: "operations_complete",
+        summary: "Read-only verification completed",
+      },
+      workspaceHeadSha: "b".repeat(40),
+    }))).toMatchObject({
+      kind: "project",
+      status: "done",
+      reason: "direct_terminal_evidence",
+    });
+  });
+
+  it("does not let an unprofiled operations receipt hide a workspace head change", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: null,
+      terminalReceipt: {
+        action: "operations_complete",
+        summary: "Implementation completed",
+      },
+    }))).toEqual({ kind: "preserve", reason: "execution_truth_rejected" });
+  });
+
+  it("does not let operations_complete bypass verified-change review", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      terminalReceipt: {
+        action: "operations_complete",
+        summary: "Implementation completed",
+      },
+    }))).toEqual({ kind: "preserve", reason: "missing_execution_truth" });
+  });
+
+  it("projects a bound agent-reported blocker with an auditable receipt", () => {
+    const decision = decideTerminalIssueReconciliation(input({
+      completionProfile: null,
+      terminalReceipt: {
+        action: "blocked",
+        reason: "Required repository credential is unavailable",
+      },
+    }));
+    expect(decision).toMatchObject({
+      kind: "project",
+      status: "blocked",
+      reason: "agent_reported_blocker",
+      receipt: {
+        status: "blocked",
+        verification: {
+          mode: "blocked",
+          blockerReason: "Required repository credential is unavailable",
+        },
+      },
+    });
+  });
+
+  it("requires trusted terminal gates before honoring agent terminal receipts", () => {
+    const terminalReceipt = {
+      action: "operations_complete" as const,
+      summary: "Read-only verification completed",
+    };
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: null,
+      terminalReceipt,
+      providerTerminalEvidence: false,
+    }))).toEqual({ kind: "preserve", reason: "missing_provider_terminal_evidence" });
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: null,
+      terminalReceipt,
+      issue: { executionRunId: "stale-run", checkoutRunId: "stale-run" },
+    }))).toEqual({ kind: "preserve", reason: "run_not_current" });
+  });
+
   it("projects verified implementation evidence to in_review without self-accepting it", () => {
     const receipt = verifiedReceipt();
     expect(decideTerminalIssueReconciliation(input({
