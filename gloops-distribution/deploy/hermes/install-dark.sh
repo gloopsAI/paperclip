@@ -45,7 +45,7 @@ fi
   exit 1
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing installation while ${unit} is active" >&2
     exit 1
@@ -72,6 +72,7 @@ install -d -m 0700 -o root -g root "${CONFIG_DIR}"
 install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/github-push-broker
+install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/github-read-broker
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 rm -f \
   "${CONFIG_DIR}/ACTIVATION_APPROVED" \
@@ -133,6 +134,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/provision-tirith.sh" "${LIB_DIR}/
 install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer.sh" "${LIB_DIR}/restore-hermes-workspace-observer.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-broker.py" "${LIB_DIR}/github-push-broker.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/github-read-broker.py" "${LIB_DIR}/github-read-broker.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-hermes-execution.py" "${LIB_DIR}/stop-hermes-execution.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-lifecycle-history.py" "${LIB_DIR}/verify-lifecycle-history.py"
 rm -rf "${LIB_DIR}/hermes-cron-disabled"
@@ -150,6 +152,7 @@ install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-handshake-resolv.conf" "${
 rm -f "${LIB_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gh-config.yml"
 install -d -m 0555 -o root -g root "${LIB_DIR}/tools"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-tool.bundle.cjs" "${LIB_DIR}/tools/github-push-tool.bundle.cjs"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/github-read-tool.mjs" "${LIB_DIR}/tools/github-read-tool.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/../../../packages/adapters/hermes/skills/paperclip-task-bridge/paperclip-task.mjs" "${LIB_DIR}/tools/paperclip-task.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/apply_patch" "${LIB_DIR}/tools/apply_patch"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/focused_test" "${LIB_DIR}/tools/focused_test"
@@ -169,6 +172,7 @@ install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/lo
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-handshake.service" /usr/local/lib/systemd/system/paperclip-gloops-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-push-broker.service" /usr/local/lib/systemd/system/paperclip-github-push-broker.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-read-broker.service" /usr/local/lib/systemd/system/paperclip-github-read-broker.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
@@ -188,12 +192,13 @@ systemctl disable --now paperclip-gloops.service 2>/dev/null || true
 systemctl disable --now paperclip-gloops-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
 systemctl disable --now paperclip-github-push-broker.service 2>/dev/null || true
+systemctl disable --now paperclip-github-read-broker.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
-systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
+systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.
