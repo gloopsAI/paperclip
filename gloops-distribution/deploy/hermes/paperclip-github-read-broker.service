@@ -1,0 +1,23 @@
+[Unit]
+Description=Paperclip GitHub read-only evidence broker (root-owned, read-only)
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/paperclip-gloops/github-read-broker.py serve
+ExecStartPre=-/bin/rm -f /run/paperclip-github-read-broker/broker.sock
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run/paperclip-github-read-broker /var/lib/paperclip-gloops/github-read-broker
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

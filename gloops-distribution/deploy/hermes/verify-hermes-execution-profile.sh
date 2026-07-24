@@ -17,6 +17,8 @@ readonly APP_KEY='/etc/paperclip-gloops/github-app/private-key.pem'
 readonly HERMES_TOKEN='/var/lib/paperclip-gloops/credential-runtime/hermes-github-token'
 readonly GITHUB_BROKER_SOCKET='/run/paperclip-github-broker/broker.sock'
 readonly GITHUB_BROKER_TOOL='/usr/local/lib/paperclip-gloops/tools/github-push-tool.bundle.cjs'
+readonly GITHUB_READ_BROKER_SOCKET='/run/paperclip-github-read-broker/broker.sock'
+readonly GITHUB_READ_BROKER_TOOL='/usr/local/lib/paperclip-gloops/tools/github-read-tool.mjs'
 readonly PAPERCLIP_TASK_TOOL='/usr/local/lib/paperclip-gloops/tools/paperclip-task.mjs'
 readonly APPLY_PATCH_TOOL='/usr/local/lib/paperclip-gloops/tools/apply_patch'
 readonly FOCUSED_TEST_TOOL='/usr/local/lib/paperclip-gloops/tools/focused_test'
@@ -297,6 +299,11 @@ if [[ ! -e "${HERMES_TOKEN}" && ! -e "${PROFILE_DIR}/gh" && ! -e "${PROFILE_DIR}
 else
   fail 'legacy GitHub write authority remains in the Hermes profile'
 fi
+if [[ "$(stat -c '%a:%U:%G' "${GITHUB_READ_BROKER_TOOL}" 2>/dev/null || true)" == '555:root:root' ]]; then
+  pass 'Hermes receives an immutable read-only GitHub evidence client'
+else
+  fail 'read-only GitHub evidence client is absent or mutable'
+fi
 if [[ "$(stat -c '%a:%U:%G' "${PAPERCLIP_TASK_TOOL}" 2>/dev/null || true)" == '555:root:root' ]]; then
   pass 'Hermes receives an immutable Paperclip task helper'
 else
@@ -346,7 +353,8 @@ for required in \
 done
 for required_credential_mount in \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly' \
-  '--mount type=bind,src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker'; do
+  '--mount type=bind,src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker' \
+  '--mount type=bind,src=/run/paperclip-github-read-broker,dst=/run/paperclip-github-read-broker'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
 grep -Fq -- '--mount type=bind,src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly' "${UNIT}" \
@@ -444,6 +452,14 @@ if [[ "${MODE}" == '--live' ]]; then
       pass 'live Hermes can reach only the authenticated broker socket and observes no GitHub token'
     else
       fail 'live GitHub broker socket boundary is missing, inaccessible, or credential-leaking'
+    fi
+    if systemctl is-active --quiet paperclip-github-read-broker.service \
+      && [[ "$(stat -c '%a:%u:%g' "${GITHUB_READ_BROKER_SOCKET}" 2>/dev/null || true)" == '660:0:10000' ]] \
+      && docker exec --user 10000:10000 "${CONTAINER}" /usr/local/bin/node -e \
+        "const fs=require('fs'); process.exit(fs.statSync('${GITHUB_READ_BROKER_SOCKET}').isSocket()?0:1)"; then
+      pass 'live Hermes can reach the read-only GitHub evidence broker socket'
+    else
+      fail 'live read-only GitHub evidence broker socket boundary is missing or inaccessible'
     fi
     if grep -Eq '^(ANTHROPIC|OPENROUTER|XAI|GROK|SLACK|AGENTMAIL|SMTP|DISCORD|TELEGRAM)_' "${live_env}"; then
       fail 'forbidden live environment key is present'
