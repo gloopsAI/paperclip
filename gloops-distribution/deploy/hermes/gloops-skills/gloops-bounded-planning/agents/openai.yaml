@@ -1,0 +1,4 @@
+interface:
+  display_name: "GLoops Bounded Planning"
+  short_description: "Create a concise execution-ready plan"
+  default_prompt: "Create a bounded execution-ready plan."

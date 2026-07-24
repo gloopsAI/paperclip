@@ -12,3 +12,7 @@ RUN python /tmp/route-receipt/apply-hermes-route-receipt.py \
   && rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz \
   && rm -f /opt/hermes/hermes_cli/__pycache__/banner*.pyc \
   && rm -f /opt/hermes/tools/__pycache__/tirith_security*.pyc
+
+# Native Hermes skills are the runtime source of truth. Paperclip's
+# hermes_gateway adapter does not currently synchronize company skills.
+COPY gloops-skills/ /opt/hermes/skills/

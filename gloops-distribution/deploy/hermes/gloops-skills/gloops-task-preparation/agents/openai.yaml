@@ -1,0 +1,4 @@
+interface:
+  display_name: "GLoops Task Preparation"
+  short_description: "Prepare bounded work for the right Hermes model"
+  default_prompt: "Prepare this task for bounded Hermes execution."
