@@ -49,6 +49,9 @@ ALLOWED_REPOSITORIES = frozenset({
 })
 
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+REPOSITORY_SCOPE_QUALIFIER_PATTERN = re.compile(
+    r"(?i)(?:^|\s)(?:repo|org|user):"
+)
 
 ALLOWED_OPERATIONS = frozenset({
     "search-issues",
@@ -67,6 +70,9 @@ MAX_GH_OUTPUT_BYTES = 512 * 1024
 GH_TIMEOUT_SECONDS = 30
 EXPECTED_HERMES_UID = 10_000
 HERMES_GID = 10_000
+# Linux SO_PEERCRED. The fallback keeps deterministic tests portable; the
+# production service runs on Linux.
+SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 TEST_MODE = os.environ.get("GLOOPS_GITHUB_READ_BROKER_TEST_MODE") == "1"
 
 # Fields stripped from every GitHub API response to avoid leaking credentials
@@ -146,7 +152,7 @@ def strip_credentials(value: Any) -> Any:
 
 
 def bound_output(data: Any, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
-    """Serialise to JSON and truncate if it exceeds the byte ceiling."""
+    """Serialise to valid, bounded JSON without ever slicing encoded JSON."""
     raw = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(raw) <= max_bytes:
         return raw
@@ -171,7 +177,17 @@ def bound_output(data: Any, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
             {**data, "data": items[:lo], "truncated": True, "totalReturned": lo, "totalAvailable": len(items)},
             sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
-    return raw[:max_bytes]
+        if len(raw) <= max_bytes:
+            return raw
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "GitHub response exceeds the bounded-response ceiling",
+            "truncated": True,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -249,10 +265,17 @@ def select_fields(items: Any, fields: tuple[str, ...]) -> Any:
     return items
 
 
+def validate_search_query(query: str) -> None:
+    """Keep repository scope solely under the broker's allowlisted repo field."""
+    if REPOSITORY_SCOPE_QUALIFIER_PATTERN.search(query):
+        raise BrokerError("query may not contain repository-scope qualifiers")
+
+
 def op_search_issues(params: dict[str, Any]) -> Any:
     q = params.get("query")
     if not isinstance(q, str) or not q.strip():
         raise BrokerError("query is required for search-issues")
+    validate_search_query(q)
     repo = params.get("repo")
     if not isinstance(repo, str) or not REPOSITORY_PATTERN.match(repo):
         raise BrokerError("repo is required and must be owner/repo")
@@ -325,6 +348,7 @@ def op_search_prs(params: dict[str, Any]) -> Any:
     q = params.get("query")
     if not isinstance(q, str) or not q.strip():
         raise BrokerError("query is required for search-prs")
+    validate_search_query(q)
     repo = params.get("repo")
     if not isinstance(repo, str) or not REPOSITORY_PATTERN.match(repo):
         raise BrokerError("repo is required and must be owner/repo")
@@ -504,17 +528,19 @@ def verify_peer(client: socket.socket) -> None:
         return
     try:
         cred = client.getsockopt(
-            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+            socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize("iII")
         )
-    except (AttributeError, OSError):
-        return
-    # struct ucred: pid, uid, gid
-    return
+    except (AttributeError, OSError) as error:
+        raise BrokerError("unable to verify peer identity") from error
+    _pid, uid, _gid = struct.unpack("iII", cred)
+    if uid != EXPECTED_HERMES_UID:
+        raise BrokerError("peer identity is not authorized")
 
 
 def handle_connection(client: socket.socket) -> None:
     response: dict[str, Any]
     try:
+        verify_peer(client)
         request = read_request(client)
         response = process_request(request)
     except BrokerError as error:
