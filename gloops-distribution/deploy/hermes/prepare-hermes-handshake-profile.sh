@@ -6,7 +6,7 @@ readonly PROFILE_DIR='/opt/paperclip/hermes-handshake-profile'
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly RUNTIME_ENV="${CONFIG_DIR}/hermes-execution.env"
-readonly IMAGE='sha256:7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488'
+readonly IMAGE='sha256:210427ae7dc5b61f37aad0c0df5083018bb9c1de04cf9affde645a74988d64ab'
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
 for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
