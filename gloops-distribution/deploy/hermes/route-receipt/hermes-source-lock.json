@@ -15,7 +15,7 @@
   },
   "overlay": {
     "patch": "hermes-agent-9de9c25-route-receipt.patch",
-    "patchSha256": "b81ae468334b94b165cf25d6e0c19363a7bf42f12e25883cae0cfe2838a497af",
+    "patchSha256": "7d69207bbd233028648a84d48d85cf992a194cc05931277515a53bac25eefb78",
     "owner": "GLoops Platform",
     "distributionRepositoryVisibility": "public",
     "retirementCondition": "Remove only after the selected upstream Hermes release provides an equivalent fail-closed /v1/runs terminal route receipt with exact received-request byte evidence, actual executed provider/model/fallback facts, explicit usage presence, domain-separated semantic digest equality across SSE and final status, and the GLoops offline negative matrix passes against that upstream implementation."
@@ -23,7 +23,7 @@
   "files": {
     "agent/conversation_loop.py": {
       "preimageSha256": "9b8d8b98e65a67e6a489b69479fb96614d57f3a28cf7ef427de1a66130aeab50",
-      "postimageSha256": "ddd6f8a141019e77da3355928eee9a268353d5a524c2dae42d71e31275a529fb"
+      "postimageSha256": "d6f76bc04fddfc82c1769feccba2d73067ba7e9a0987e9a41d737139473e138f"
     },
     "agent/usage_pricing.py": {
       "preimageSha256": "84dbc9fa3d220c2378fcfc045ae1a34901ab1336316a6dd0adac2d95937db3e0",
@@ -51,7 +51,7 @@
     },
     "tests/run_agent/test_run_evidence_capture.py": {
       "preimage": "absent",
-      "postimageSha256": "fad9ebbb3f560196e91e29732b9ae2842338d6fad721feae42a6549f8db86527"
+      "postimageSha256": "f9cf6729bcc03b7a05c2de8e31f3e2391e458766d6dd9585b82b3f0fc383e00c"
     }
   }
 }
