@@ -5,18 +5,23 @@ import {
   evaluateExecutionTruthTransition,
   readBoundExecutionContext,
 } from "@paperclipai/adapter-utils/execution-envelope";
+import type { GovernedTerminalLifecycleReceipt } from "./recovery/successful-run-handoff.js";
 
 const SHA = /^[0-9a-f]{40}$/;
 const GROK_API_PATH = /(^|[^a-z])(grok|xai|x\.ai)([^a-z]|$)/i;
 
-type TerminalIssueStatus = "in_review" | "done";
+type TerminalIssueStatus = "blocked" | "in_review" | "done";
 
 export type TerminalIssueReconciliationDecision =
   | {
       kind: "project";
       status: TerminalIssueStatus;
       receipt: Record<string, unknown>;
-      reason: "direct_terminal_evidence" | "implementation_ready" | "review_accepted";
+      reason:
+        | "agent_reported_blocker"
+        | "direct_terminal_evidence"
+        | "implementation_ready"
+        | "review_accepted";
     }
   | {
       kind: "preserve";
@@ -144,6 +149,53 @@ function buildDirectReceipt(input: {
   return { ...body, digest: digest(body) };
 }
 
+function buildBlockedReceipt(input: {
+  workId: string;
+  issueId: string;
+  runId: string;
+  agentId: string;
+  workspaceId: string | null;
+  contextDigest: string;
+  routePathIds: string[];
+  budgetExceeded: string[];
+  reason: string;
+  exactHeadSha: string | null;
+}) {
+  const routePathIds = [...new Set(input.routePathIds.map((entry) => entry.trim()).filter(Boolean))];
+  const body = {
+    schemaVersion: "gloops.execution-truth.operator-receipt.v2",
+    work: { id: input.workId },
+    budget: { exhausted: [...input.budgetExceeded] },
+    route: {
+      observedPathIds: routePathIds,
+      prohibitedPathObserved: routePathIds.some(
+        (routePath) => routePath !== "grok-build-cli" && GROK_API_PATH.test(routePath),
+      ),
+    },
+    continuation: { required: true, valid: true },
+    verification: {
+      mode: "blocked",
+      workspaceFinalized: true,
+      blockerReason: input.reason,
+      ...(input.exactHeadSha && SHA.test(input.exactHeadSha)
+        ? { exactHeadSha: input.exactHeadSha }
+        : {}),
+    },
+    authority: { humanRequired: false },
+    status: "blocked",
+    projection: {
+      source: "paperclip-control-plane",
+      purpose: "terminal_issue_reconciliation",
+      issueId: input.issueId,
+      runId: input.runId,
+      agentId: input.agentId,
+      workspaceId: input.workspaceId,
+      contextDigest: input.contextDigest,
+    },
+  };
+  return { ...body, digest: digest(body) };
+}
+
 function implementationReady(input: {
   workId: string;
   receipt: unknown;
@@ -202,6 +254,7 @@ function bindingMatches(input: {
 
 export function decideTerminalIssueReconciliation(input: {
   completionProfile: IssueExecutionCompletionProfile | null | undefined;
+  terminalReceipt?: GovernedTerminalLifecycleReceipt | null;
   issue: IssueInput;
   run: RunInput;
   providerTerminalEvidence: boolean;
@@ -212,7 +265,10 @@ export function decideTerminalIssueReconciliation(input: {
   budgetExceeded: string[];
   routePathIds: string[];
 }): TerminalIssueReconciliationDecision {
-  if (input.completionProfile !== "direct" && input.completionProfile !== "verified_change") {
+  const terminalReceipt = input.terminalReceipt ?? null;
+  const supportedCompletionProfile =
+    input.completionProfile === "direct" || input.completionProfile === "verified_change";
+  if (!supportedCompletionProfile && terminalReceipt === null) {
     return { kind: "preserve", reason: "unsupported_completion_profile" };
   }
   if (input.run.status !== "succeeded") {
@@ -254,6 +310,41 @@ export function decideTerminalIssueReconciliation(input: {
 
   const workId = input.issue.identifier ?? input.issue.id;
   const existingReceipt = context[PAPERCLIP_EXECUTION_RECEIPT_KEY];
+  if (
+    !supportedCompletionProfile &&
+    terminalReceipt?.action === "operations_complete" &&
+    input.workspaceCwd !== null
+  ) {
+    const boundRepoRef = string(record(bindingResult.binding.packet.repoRef).repoRef);
+    if (
+      !boundRepoRef ||
+      !SHA.test(boundRepoRef) ||
+      !input.workspaceHeadSha ||
+      !SHA.test(input.workspaceHeadSha) ||
+      boundRepoRef !== input.workspaceHeadSha
+    ) {
+      return { kind: "preserve", reason: "execution_truth_rejected" };
+    }
+  }
+  if (terminalReceipt?.action === "blocked") {
+    return {
+      kind: "project",
+      status: "blocked",
+      receipt: buildBlockedReceipt({
+        workId,
+        issueId: input.issue.id,
+        runId: input.run.id,
+        agentId: input.run.agentId,
+        workspaceId: input.issue.projectWorkspaceId,
+        contextDigest: bindingResult.binding.digest,
+        routePathIds: input.routePathIds,
+        budgetExceeded: input.budgetExceeded,
+        reason: terminalReceipt.reason,
+        exactHeadSha: input.workspaceHeadSha,
+      }),
+      reason: "agent_reported_blocker",
+    };
+  }
   if (input.completionProfile === "verified_change") {
     if (!existingReceipt) {
       return { kind: "preserve", reason: "missing_execution_truth" };

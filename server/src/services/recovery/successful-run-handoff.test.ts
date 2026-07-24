@@ -11,6 +11,7 @@ import {
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
+  parseFinalGovernedLifecycleReceipt,
 } from "./successful-run-handoff.js";
 import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
@@ -111,6 +112,37 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "governed terminal lifecycle receipt owns the next action",
     });
+  });
+
+  it("parses the native operations terminal receipt and preserves strict framing", () => {
+    const valid = {
+      resultJson: {
+        output: [
+          "Read-only verification completed.",
+          'PAPERCLIP_SWARM_V1:{"action":"operations_complete","summary":"Verified six native skills"}',
+        ].join("\n"),
+      },
+    } as any;
+    expect(parseFinalGovernedLifecycleReceipt(valid)).toEqual({
+      action: "operations_complete",
+      summary: "Verified six native skills",
+    });
+
+    const invalidOutputs = [
+      'PAPERCLIP_SWARM_V1:{"action":"operations_complete"}',
+      'PAPERCLIP_SWARM_V1:{"action":"operations_complete","summary":"Done","extra":true}',
+      [
+        'PAPERCLIP_SWARM_V1:{"action":"operations_complete","summary":"Not final"}',
+        "Trailing prose.",
+      ].join("\n"),
+      [
+        'PAPERCLIP_SWARM_V1:{"action":"operations_complete","summary":"First"}',
+        'PAPERCLIP_SWARM_V1:{"action":"operations_complete","summary":"Second"}',
+      ].join("\n"),
+    ];
+    for (const output of invalidOutputs) {
+      expect(parseFinalGovernedLifecycleReceipt({ resultJson: { output } } as any)).toBeNull();
+    }
   });
 
   it("does not let malformed, non-final, or ambiguous markers suppress recovery", () => {

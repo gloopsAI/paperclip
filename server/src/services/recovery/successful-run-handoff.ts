@@ -284,9 +284,30 @@ const GOVERNED_LIFECYCLE_ACTION_FIELDS = {
   review_ready: ["action", "headSha", "summary"],
   accepted: ["action", "headSha", "summary"],
   changes_requested: ["action", "headSha", "summary"],
+  operations_complete: ["action", "summary"],
   blocked: ["action", "reason"],
   repair_proposal: ["action", "repository", "component", "title", "negativeTest", "summary"],
 } as const;
+
+export type GovernedTerminalLifecycleReceipt =
+  | { action: "operations_complete"; summary: string }
+  | { action: "blocked"; reason: string };
+
+export type GovernedLifecycleReceipt =
+  | GovernedTerminalLifecycleReceipt
+  | {
+      action: "review_ready" | "accepted" | "changes_requested";
+      headSha: string;
+      summary: string;
+    }
+  | {
+      action: "repair_proposal";
+      repository: string;
+      component: string;
+      title: string;
+      negativeTest: string;
+      summary: string;
+    };
 
 function isBoundedLifecycleText(value: unknown, maxLength: number) {
   return typeof value === "string" &&
@@ -299,7 +320,7 @@ function hasExactFields(value: Record<string, unknown>, fields: readonly string[
   return Object.keys(value).sort().join("\0") === [...fields].sort().join("\0");
 }
 
-function isValidGovernedLifecycleMarker(value: unknown) {
+function isValidGovernedLifecycleMarker(value: unknown): value is GovernedLifecycleReceipt {
   const marker = readRecord(value);
   const action = readString(marker.action);
   if (!action || !(action in GOVERNED_LIFECYCLE_ACTION_FIELDS)) return false;
@@ -313,6 +334,7 @@ function isValidGovernedLifecycleMarker(value: unknown) {
       isBoundedLifecycleText(marker.summary, 180);
   }
   if (action === "blocked") return isBoundedLifecycleText(marker.reason, 240);
+  if (action === "operations_complete") return isBoundedLifecycleText(marker.summary, 500);
   return isBoundedLifecycleText(marker.repository, 200) &&
     isBoundedLifecycleText(marker.component, 200) &&
     isBoundedLifecycleText(marker.title, 200) &&
@@ -320,21 +342,27 @@ function isValidGovernedLifecycleMarker(value: unknown) {
     isBoundedLifecycleText(marker.summary, 500);
 }
 
-function hasValidFinalGovernedLifecycleReceipt(run: HeartbeatRunRow) {
+export function parseFinalGovernedLifecycleReceipt(
+  run: Pick<HeartbeatRunRow, "resultJson">,
+): GovernedLifecycleReceipt | null {
   const output = readRecord(run.resultJson).output;
-  if (typeof output !== "string" || output.length === 0 || output.length > 1_000_000) return false;
+  if (typeof output !== "string" || output.length === 0 || output.length > 1_000_000) return null;
   const occurrences = output.split(GOVERNED_LIFECYCLE_MARKER_PREFIX).length - 1;
-  if (occurrences !== 1) return false;
+  if (occurrences !== 1) return null;
   const finalLine = output.trimEnd().split(/\r?\n/).at(-1)?.trim() ?? "";
-  if (!finalLine.startsWith(GOVERNED_LIFECYCLE_MARKER_PREFIX)) return false;
+  if (!finalLine.startsWith(GOVERNED_LIFECYCLE_MARKER_PREFIX)) return null;
   const encoded = finalLine.slice(GOVERNED_LIFECYCLE_MARKER_PREFIX.length);
   try {
-    return isValidGovernedLifecycleMarker(JSON.parse(encoded));
+    const marker: unknown = JSON.parse(encoded);
+    return isValidGovernedLifecycleMarker(marker) ? marker : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+function hasValidFinalGovernedLifecycleReceipt(run: HeartbeatRunRow) {
+  return parseFinalGovernedLifecycleReceipt(run) !== null;
+}
 function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
