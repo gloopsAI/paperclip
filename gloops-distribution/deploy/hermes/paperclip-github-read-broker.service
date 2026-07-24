@@ -6,6 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
 ExecStart=/usr/local/lib/paperclip-gloops/github-read-broker.py serve
 ExecStartPre=-/bin/rm -f /run/paperclip-github-read-broker/broker.sock
 RuntimeDirectory=paperclip-github-read-broker

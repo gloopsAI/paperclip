@@ -110,6 +110,10 @@ LIST_PR_FIELDS = (
     "number", "title", "state", "isDraft", "createdAt", "updatedAt", "author", "url",
     "headRefName", "baseRefName",
 )
+SEARCH_PR_FIELDS = (
+    "number", "title", "state", "isDraft", "createdAt", "updatedAt", "author", "url",
+    "repository",
+)
 
 SEARCH_RESULT_LIMIT = 30
 LIST_LIMIT = 30
@@ -283,7 +287,8 @@ def op_search_issues(params: dict[str, Any]) -> Any:
     # Use gh search issues with JSON output
     args = [
         "search", "issues",
-        f"repo:{repo} {q}",
+        q,
+        "--repo", repo,
         "--json", ",".join(LIST_ISSUE_FIELDS),
         "--limit", str(limit),
     ]
@@ -355,8 +360,9 @@ def op_search_prs(params: dict[str, Any]) -> Any:
     limit = min(int(params.get("limit", SEARCH_RESULT_LIMIT)), SEARCH_RESULT_LIMIT)
     args = [
         "search", "prs",
-        f"repo:{repo} {q}",
-        "--json", ",".join(LIST_PR_FIELDS),
+        q,
+        "--repo", repo,
+        "--json", ",".join(SEARCH_PR_FIELDS),
         "--limit", str(limit),
     ]
     raw = run_gh(args)
@@ -364,7 +370,7 @@ def op_search_prs(params: dict[str, Any]) -> Any:
         data = json.loads(raw) if raw.strip() else []
     except json.JSONDecodeError:
         raise BrokerError("gh search returned malformed JSON")
-    return select_fields(data, LIST_PR_FIELDS)
+    return select_fields(data, SEARCH_PR_FIELDS)
 
 
 def op_list_prs(params: dict[str, Any]) -> Any:

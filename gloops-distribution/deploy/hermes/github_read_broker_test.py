@@ -336,6 +336,8 @@ class GitHubReadBrokerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(captured_args[0][0], "search")
         self.assertEqual(captured_args[0][1], "issues")
+        self.assertEqual(captured_args[0][2], "crash in title")
+        self.assertEqual(captured_args[0][3:5], ["--repo", "InductAI/induct"])
 
     def test_search_prs_passes_query(self):
         captured_args = []
@@ -354,6 +356,12 @@ class GitHubReadBrokerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(captured_args[0][0], "search")
         self.assertEqual(captured_args[0][1], "prs")
+        self.assertEqual(captured_args[0][2], "dependency upgrade")
+        self.assertEqual(captured_args[0][3:5], ["--repo", "InductAI/induct"])
+        search_fields = captured_args[0][captured_args[0].index("--json") + 1].split(",")
+        self.assertIn("repository", search_fields)
+        self.assertNotIn("headRefName", search_fields)
+        self.assertNotIn("baseRefName", search_fields)
 
     def test_get_pr_status_returns_selected_fields(self):
         full_pr = {
