@@ -39,11 +39,11 @@
     "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
   },
   "runtime": {
-    "image": "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca",
+    "image": "sha256:7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488",
     "imageAcquisition": "root-only-content-addressed-archive",
     "imageArchive": {
-      "path": "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
-      "sha256": "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"
+      "path": "/opt/paperclip/release-artifacts/hermes-execution-7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488.tar.zst",
+      "sha256": "9e3236b846e19642f14f7d708d07901a532ba24c4ea34a9ae6f28bfe67f183b0"
     },
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
