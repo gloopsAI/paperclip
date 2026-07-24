@@ -346,15 +346,27 @@ describe("execution admission", () => {
     });
   });
 
-  it("caps explicit turn envelopes at the Hermes host safety ceiling", () => {
+  it("allows an explicit calibration envelope above the conservative default", () => {
     const global = policy();
     const resolved = resolveExecutionAdmissionPolicyForResourceBudgetChain(global, [{
-      maxTurnsPerInvocation: 33,
+      maxTurnsPerInvocation: 96,
     }]);
 
     expect(resolved).toMatchObject({
       enabled: true,
-      maxTurnsPerInvocation: 32,
+      maxTurnsPerInvocation: 96,
+    });
+  });
+
+  it("still caps explicit turn envelopes at the bounded outer ceiling", () => {
+    const global = policy();
+    const resolved = resolveExecutionAdmissionPolicyForResourceBudgetChain(global, [{
+      maxTurnsPerInvocation: 256,
+    }]);
+
+    expect(resolved).toMatchObject({
+      enabled: true,
+      maxTurnsPerInvocation: 128,
     });
   });
 

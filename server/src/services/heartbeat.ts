@@ -5431,6 +5431,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         completionProfile: resolveIssueExecutionCompletionProfile({
           executionPolicy: currentIssue.executionPolicy,
           workMode: currentIssue.workMode,
+          repositoryBacked: Boolean(
+            currentIssue.projectWorkspaceId || currentIssue.executionWorkspaceId
+          ),
         }),
         terminalReceipt,
         issue: {
@@ -13618,6 +13621,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           completionProfile: resolveIssueExecutionCompletionProfile({
             executionPolicy: issueContext?.executionPolicy,
             workMode: issueRef.workMode,
+            repositoryBacked: Boolean(
+              executionWorkspace.repoUrl || executionWorkspace.strategy === "git_worktree"
+            ),
           }),
           exactHeadSha: executionWorkspace.baseRefSha ?? executionWorkspace.repoRef,
         }),
@@ -14229,6 +14235,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? resolveIssueExecutionCompletionProfile({
           executionPolicy: issueContext?.executionPolicy,
           workMode: issueRef.workMode,
+          repositoryBacked: Boolean(
+            executionWorkspace.repoUrl || executionWorkspace.strategy === "git_worktree"
+          ),
         })
         : null;
       const implementationAssignment = Boolean(

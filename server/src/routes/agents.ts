@@ -38,6 +38,7 @@ import {
   PAPERCLIP_EXECUTION_CONTEXT_KEY,
   buildBoundExecutionContext,
 } from "@paperclipai/adapter-utils/execution-envelope";
+import { EXECUTION_ADMISSION_RESET_CONTEXT_KEY } from "../services/execution-admission.js";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
@@ -3499,6 +3500,9 @@ export function agentRoutes(
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true || Boolean(boundExecutionContext),
+        ...(req.body.executionBudgetResetId
+          ? { [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: req.body.executionBudgetResetId }
+          : {}),
         ...(boundExecutionContext ? { [PAPERCLIP_EXECUTION_CONTEXT_KEY]: boundExecutionContext } : {}),
       },
     });
@@ -3569,6 +3573,7 @@ export function agentRoutes(
       forceFreshSession: unknown;
       triggerDetail: unknown;
       executionContextPacket: unknown;
+      executionBudgetResetId: unknown;
     }>;
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
@@ -3576,6 +3581,9 @@ export function agentRoutes(
     };
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
+    }
+    if (typeof body.executionBudgetResetId === "string" && body.executionBudgetResetId.length > 0) {
+      contextSnapshot[EXECUTION_ADMISSION_RESET_CONTEXT_KEY] = body.executionBudgetResetId;
     }
     const packet = body.executionContextPacket ??
       (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)

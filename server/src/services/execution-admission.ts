@@ -8,10 +8,12 @@ export const EXECUTION_ADMISSION_CONTEXT_KEY = "gloopsExecutionAdmission" as con
 export const EXECUTION_ADMISSION_RESET_CONTEXT_KEY = "gloopsExecutionBudgetResetId" as const;
 
 /**
- * Hermes' execution-only profile uses 32 as its outer host safety ceiling.
- * Paperclip must never hand that runtime a larger structural turn envelope.
+ * Explicit task policy may request a larger calibration envelope than the
+ * conservative environment default. Keep a bounded outer ceiling, but do not
+ * make the default itself the maximum: meaningful repository work has been
+ * observed to require more than 32 Hermes turns before reaching execution.
  */
-export const MAX_EXPLICIT_TURNS_PER_INVOCATION = 32;
+export const MAX_EXPLICIT_TURNS_PER_INVOCATION = 128;
 
 /** Bootstrap class may declare generous bounded capacity for tool/input provisioning. */
 export const BOOTSTRAP_EXECUTION_DEFAULTS = {

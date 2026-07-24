@@ -624,6 +624,27 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("passes a board-authorized execution budget reset through the modern wake route", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          source: "on_demand",
+          executionBudgetResetId: "operator-20260724-v1",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      requestedByActorType: "user",
+      contextSnapshot: expect.objectContaining({
+        triggeredBy: "board",
+        gloopsExecutionBudgetResetId: "operator-20260724-v1",
+      }),
+    }));
+  });
+
   it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
     const res = await requestApp(
       await createApp(),

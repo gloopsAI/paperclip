@@ -195,6 +195,13 @@ export const wakeAgentSchema = z.object({
   reason: z.string().optional().nullable(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   executionContextPacket: z.record(z.string(), z.unknown()).optional().nullable(),
+  executionBudgetResetId: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_-]+$/, "Execution budget reset id must be URL-safe")
+    .optional()
+    .nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
