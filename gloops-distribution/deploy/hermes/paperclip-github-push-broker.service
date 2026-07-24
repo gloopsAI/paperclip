@@ -31,7 +31,11 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+# The broker authenticates its fixed uid-10000 socket peer by reading that
+# process's /proc/<pid>/{exe,cmdline,root}. Linux ptrace access checks apply
+# even to root once systemd bounds capabilities, so retain only the additional
+# inspection capability required by that existing authentication contract.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_PTRACE
 AmbientCapabilities=
 ReadWritePaths=/var/lib/paperclip-gloops/github-push-broker /run/paperclip-github-broker
 MemoryMax=384M
