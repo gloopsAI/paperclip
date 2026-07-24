@@ -1,6 +1,14 @@
 --- agent/conversation_loop.py
 +++ agent/conversation_loop.py
-@@ -65,7 +65,8 @@ from agent.retry_utils import (
+@@ -25,6 +25,7 @@
+ import threading
+ import time
+ import uuid
++from types import SimpleNamespace
+ from typing import Any, Dict, List, Optional
+ 
+ from agent.codex_responses_adapter import _summarize_user_message_for_log
+@@ -65,7 +66,8 @@
      zai_coding_overload_retry_ceiling,
  )
  from agent.trajectory import has_incomplete_scratchpad
@@ -10,13 +18,65 @@
  from hermes_constants import PARTIAL_STREAM_STUB_ID
  from hermes_logging import set_session_context
  from tools.skill_provenance import set_current_write_origin
-@@ -79,6 +80,104 @@ logger = logging.getLogger(__name__)
+@@ -77,8 +79,185 @@
+ # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
+ # to treat it as cancellation metadata rather than assistant prose.
  INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
- 
- 
++
++
++def _run_evidence_moa_route(agent: Any) -> dict[str, str]:
++    """Resolve a native MoA preset to its acting Ollama subscription route.
++
++    Hermes exposes MoA as a virtual provider, but every real provider call is
++    defined by the preset's reference and aggregator slots. Receipt-governed
++    execution accepts the virtual route only when every slot remains inside
++    Ollama Cloud and the aggregator is the acting model.
++    """
++
++    from hermes_cli.config import load_config
++    from hermes_cli.moa_config import resolve_moa_preset
++
++    preset_name = str(agent.model or "").strip()
++    preset = resolve_moa_preset(load_config().get("moa") or {}, preset_name)
++    aggregator = preset.get("aggregator") or {}
++    slots = [*(preset.get("reference_models") or []), aggregator]
++    if not preset.get("enabled", True) or not preset_name or not aggregator or not slots:
++        raise RuntimeError("receipt-governed MoA route has no enabled acting preset")
++
++    resolved_slots = [
++        resolve_billing_route(
++            str(slot.get("model") or "").strip(),
++            provider=str(slot.get("provider") or "").strip(),
++            base_url=str(slot.get("base_url") or "").strip() or None,
++        )
++        for slot in slots
++    ]
++    if any(
++        not route.model
++        or route.provider != "ollama-cloud"
++        or route.billing_mode != "subscription_included"
++        for route in resolved_slots
++    ):
++        raise RuntimeError(
++            "receipt-governed MoA route refused: every reference and acting "
++            "model must use the Ollama Cloud subscription"
++        )
++
++    acting = resolved_slots[-1]
++    return {
++        "provider": acting.provider,
++        "model": acting.model,
++        "transport_class": "openai_chat_completions",
++        "billing_class": acting.billing_mode,
++    }
++
++
 +def _run_evidence_route(agent: Any, api_kwargs: Optional[Dict[str, Any]]) -> dict[str, str]:
-+    model = str((api_kwargs or {}).get("model") or agent.model or "").strip()
 +    configured_provider = str(agent.provider or "").strip()
++    if configured_provider == "moa":
++        return _run_evidence_moa_route(agent)
++
++    model = str((api_kwargs or {}).get("model") or agent.model or "").strip()
 +    transport_class = transport_class_for_api_mode(agent.api_mode)
 +    billing = resolve_billing_route(
 +        model,
@@ -99,13 +159,42 @@
 +        response_model = str(getattr(response, "model", "") or "").strip()
 +        if not response_model:
 +            raise RuntimeError("provider response omitted authoritative model")
++        evidence_response = response
++        if str(agent.provider or "").strip() == "moa":
++            # Native Hermes accounts reference usage separately from the raw
++            # acting-model response, then folds it into the run total. Mirror
++            # that existing accounting without consuming/resetting it so the
++            # normal session and gateway totals remain unchanged.
++            completions = getattr(
++                getattr(getattr(agent, "client", None), "chat", None),
++                "completions",
++                None,
++            )
++            reference_usage = getattr(completions, "_pending_reference_usage", None)
++            if reference_usage is not None:
++                acting_usage = normalize_usage(
++                    getattr(response, "usage", None),
++                    provider=route["provider"],
++                    api_mode=route["transport_class"],
++                )
++                combined_usage = acting_usage + reference_usage
++                evidence_response = SimpleNamespace(
++                    model=response_model,
++                    usage=SimpleNamespace(
++                        prompt_tokens=combined_usage.prompt_tokens,
++                        completion_tokens=combined_usage.output_tokens,
++                        prompt_tokens_details=SimpleNamespace(
++                            cached_tokens=combined_usage.cache_read_tokens
++                        ),
++                    ),
++                )
 +        evidence.record_provider_response(
-+            response=response,
++            response=evidence_response,
 +            tool_call_count=tool_call_count,
 +            **route,
 +        )
-+
-+
+ 
+ 
 +def _run_evidence_payload_observers_allowed(agent: Any) -> bool:
 +    """Gate raw request/response observers for receipt-governed runs."""
 +
@@ -115,7 +204,7 @@
  def _image_error_max_dimension(error: Exception) -> Optional[int]:
      """Extract a provider-reported image dimension ceiling, if present."""
      parts = []
-@@ -1171,35 +1270,49 @@ def run_conversation(
+@@ -1171,35 +1350,49 @@
                      _xh["x-initiator"] = "user"
                      api_kwargs["extra_headers"] = _xh
                      agent._is_user_initiated_turn = False
@@ -168,12 +257,12 @@
 +                    except Exception:
 +                        _original_api_kwargs = dict(api_kwargs)
 +                        _llm_middleware_trace = []
-+
+ 
 +                # Gate 2.25 evidence is a direct, fail-closed execution seam.
 +                # Unlike optional plugin hooks, failures here must abort the
 +                # run rather than silently publish configured route claims.
 +                _validate_run_evidence_route(agent, api_kwargs)
- 
++
                  try:
                      from hermes_cli.plugins import (
                          has_hook,
@@ -187,7 +276,7 @@
                          request_messages = api_kwargs.get("messages")
                          if not isinstance(request_messages, list):
                              request_messages = api_kwargs.get("input")
-@@ -1251,7 +1364,10 @@ def run_conversation(
+@@ -1251,7 +1444,10 @@
                  except Exception:
                      pass
  
@@ -199,7 +288,7 @@
                      agent._dump_api_request_debug(api_kwargs, reason="preflight")
  
                  # Always prefer the streaming path — even without stream
-@@ -1317,21 +1433,25 @@ def run_conversation(
+@@ -1317,21 +1513,25 @@
  
                  from hermes_cli.middleware import run_llm_execution_middleware
  
@@ -238,7 +327,7 @@
                  )
                  
                  api_duration = time.time() - api_start_time
-@@ -3725,7 +3845,10 @@ def run_conversation(
+@@ -3725,7 +3925,10 @@
                          compression_attempts = 0
                          _retry.primary_recovery_attempted = False
                          continue
@@ -250,7 +339,7 @@
                          agent._dump_api_request_debug(
                              api_kwargs, reason="non_retryable_client_error", error=api_error,
                          )
-@@ -4041,7 +4164,10 @@ def run_conversation(
+@@ -4041,7 +4244,10 @@
                          agent.log_prefix, max_retries, _final_summary,
                          _provider, _model, len(api_messages), f"{approx_tokens:,}",
                      )
@@ -262,7 +351,7 @@
                          agent._dump_api_request_debug(
                              api_kwargs, reason="max_retries_exhausted", error=api_error,
                          )
-@@ -4253,12 +4379,22 @@ def run_conversation(
+@@ -4253,12 +4459,22 @@
                  else:
                      assistant_message.content = str(raw)
  
@@ -288,7 +377,7 @@
                      )
 --- agent/usage_pricing.py
 +++ agent/usage_pricing.py
-@@ -596,6 +596,10 @@ def resolve_billing_route(
+@@ -596,6 +596,10 @@
  
      if provider_name == "openai-codex":
          return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
@@ -301,7 +390,7 @@
      if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
 --- gateway/platforms/api_server.py
 +++ gateway/platforms/api_server.py
-@@ -60,6 +60,7 @@ from gateway.platforms.base import (
+@@ -60,6 +60,7 @@
      is_network_accessible,
      validate_media_delivery_path,
  )
@@ -309,10 +398,12 @@
  from agent.redact import redact_sensitive_text
  
  logger = logging.getLogger(__name__)
-@@ -109,6 +110,65 @@ _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
+@@ -107,7 +108,66 @@
+ 
+ _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
  _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
- 
- 
++
++
 +class _RequestBodyTooLargeError(ValueError):
 +    pass
 +
@@ -350,7 +441,7 @@
 +                raise _RequestBodyTooLargeError("request body exceeds limit")
 +            digest.update(chunk)
 +            raw.extend(chunk)
-+
+ 
 +        byte_length = len(raw)
 +        entity_sha256 = digest.hexdigest()
 +        decoded = raw.decode("utf-8", errors="strict")
@@ -371,11 +462,10 @@
 +        raw.clear()
 +        decoded = None
 +
-+
+ 
  def _coerce_request_bool(value: Any, default: bool = False) -> bool:
      """Normalize boolean-like API payload values.
- 
-@@ -4182,9 +4242,20 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -4182,9 +4242,20 @@
          if limited is not None:
              return limited
  
@@ -398,7 +488,7 @@
              return web.json_response(_openai_error("Invalid JSON"), status=400)
  
          raw_input = body.get("input")
-@@ -4243,6 +4314,11 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -4243,6 +4314,11 @@
                      conversation_history.append({"role": msg["role"], "content": str(content)})
  
          run_id = f"run_{uuid.uuid4().hex}"
@@ -410,7 +500,7 @@
          session_id = body.get("session_id") or stored_session_id or run_id
          # Approval queues gate host-side tool execution and must be isolated
          # per API run.  Client-provided session IDs and memory session keys are
-@@ -4296,6 +4372,7 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -4296,6 +4372,7 @@
                      gateway_session_key=gateway_session_key,
                      route=route,
                  )
@@ -418,7 +508,7 @@
                  self._active_run_agents[run_id] = agent
  
                  def _approval_notify(approval_data: Dict[str, Any]) -> None:
-@@ -4377,56 +4454,89 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -4377,56 +4454,89 @@
                  # block below never fires — issue #15561).
                  if isinstance(result, dict) and result.get("failed"):
                      error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
@@ -522,7 +612,7 @@
                  )
                  try:
                      q.put_nowait({
-@@ -4434,6 +4544,7 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -4434,6 +4544,7 @@
                          "run_id": run_id,
                          "timestamp": time.time(),
                          "error": _redact_api_error_text(exc),
@@ -532,22 +622,28 @@
                      pass
 --- tests/agent/test_usage_pricing.py
 +++ tests/agent/test_usage_pricing.py
-@@ -145,6 +145,30 @@ def test_estimate_usage_cost_marks_subscription_routes_included():
-     assert float(result.amount_usd) == 0.0
- 
- 
-+def test_estimate_usage_cost_marks_exact_ollama_cloud_route_included():
-+    result = estimate_usage_cost(
-+        "qwen3-coder",
-+        CanonicalUsage(input_tokens=1000, output_tokens=500),
-+        provider="ollama-cloud",
-+        base_url="https://ollama.com/v1",
+@@ -139,12 +139,36 @@
+         CanonicalUsage(input_tokens=1000, output_tokens=500),
+         provider="openai-codex",
+         base_url="https://chatgpt.com/backend-api/codex",
 +    )
 +
 +    assert result.status == "included"
 +    assert float(result.amount_usd) == 0.0
 +
 +
++def test_estimate_usage_cost_marks_exact_ollama_cloud_route_included():
++    result = estimate_usage_cost(
++        "qwen3-coder",
++        CanonicalUsage(input_tokens=1000, output_tokens=500),
++        provider="ollama-cloud",
++        base_url="https://ollama.com/v1",
+     )
+ 
+     assert result.status == "included"
+     assert float(result.amount_usd) == 0.0
+ 
+ 
 +def test_ollama_provider_label_cannot_mark_a_different_endpoint_included():
 +    result = estimate_usage_cost(
 +        "qwen3-coder",
@@ -565,7 +661,7 @@
          "agent.usage_pricing.fetch_model_metadata",
 --- tests/gateway/test_api_server_runs.py
 +++ tests/gateway/test_api_server_runs.py
-@@ -9,7 +9,10 @@ Covers:
+@@ -9,7 +9,10 @@
  """
  
  import asyncio
@@ -576,7 +672,7 @@
  from unittest.mock import MagicMock, patch
  
  import pytest
-@@ -19,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
+@@ -19,6 +22,7 @@
  from gateway.config import PlatformConfig
  from gateway.platforms.api_server import (
      APIServerAdapter,
@@ -584,7 +680,7 @@
      cors_middleware,
      security_headers_middleware,
  )
-@@ -84,6 +88,55 @@ def _make_slow_agent(**kwargs):
+@@ -84,6 +88,55 @@
      return mock_agent, ready, interrupted
  
  
@@ -640,7 +736,7 @@
  @pytest.fixture
  def adapter():
      return _make_adapter()
-@@ -105,11 +158,7 @@ class TestStartRun:
+@@ -105,11 +158,7 @@
          app = _create_runs_app(adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(adapter, "_create_agent") as mock_create:
@@ -653,11 +749,10 @@
                  mock_create.return_value = mock_agent
  
                  resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -136,6 +185,61 @@ class TestStartRun:
-             )
+@@ -137,6 +186,61 @@
          assert resp.status == 400
  
-+    @pytest.mark.asyncio
+     @pytest.mark.asyncio
 +    async def test_start_invalid_utf8_and_duplicate_keys_return_400_before_allocation(self, adapter):
 +        app = _create_runs_app(adapter)
 +        async with TestClient(TestServer(app)) as cli:
@@ -712,10 +807,11 @@
 +        assert response.status == 415
 +        assert adapter._run_streams == {}
 +
-     @pytest.mark.asyncio
++    @pytest.mark.asyncio
      async def test_start_missing_input_returns_400(self, adapter):
          app = _create_runs_app(adapter)
-@@ -176,11 +280,7 @@ class TestStartRun:
+         async with TestClient(TestServer(app)) as cli:
+@@ -176,11 +280,7 @@
          app = _create_runs_app(auth_adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(auth_adapter, "_create_agent") as mock_create:
@@ -728,7 +824,7 @@
                  mock_create.return_value = mock_agent
  
                  resp = await cli.post(
-@@ -202,11 +302,7 @@ class TestRunStatus:
+@@ -202,11 +302,7 @@
          app = _create_runs_app(adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(adapter, "_create_agent") as mock_create:
@@ -741,7 +837,7 @@
                  mock_create.return_value = mock_agent
  
                  resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -231,11 +327,7 @@ class TestRunStatus:
+@@ -231,11 +327,7 @@
          app = _create_runs_app(adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(adapter, "_create_agent") as mock_create:
@@ -754,10 +850,11 @@
                  mock_create.return_value = mock_agent
  
                  resp = await cli.post(
-@@ -270,6 +362,54 @@ class TestRunStatus:
+@@ -269,8 +361,56 @@
+         async with TestClient(TestServer(app)) as cli:
              resp = await cli.get("/v1/runs/run_any")
          assert resp.status == 401
- 
++
 +    @pytest.mark.asyncio
 +    async def test_status_receipt_hashes_exact_received_entity_bytes(self, adapter):
 +        app = _create_runs_app(adapter)
@@ -800,16 +897,17 @@
 +                    if status["status"] in {"completed", "failed"}:
 +                        break
 +                    await asyncio.sleep(0.05)
-+
+ 
 +        assert status["status"] == "failed"
 +        assert status["terminalEvidence"]["terminalStatus"] == "failed"
 +        assert status["terminalEvidence"]["inputUsage"]["present"] is False
 +        assert "lacks authoritative evidence" in status["error"]
-+
  
++
  # ---------------------------------------------------------------------------
  # GET /v1/runs/{run_id}/events — SSE event stream
-@@ -283,11 +423,7 @@ class TestRunEvents:
+ # ---------------------------------------------------------------------------
+@@ -283,11 +423,7 @@
          app = _create_runs_app(adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(adapter, "_create_agent") as mock_create:
@@ -822,7 +920,7 @@
                  mock_create.return_value = mock_agent
  
                  # Start run
-@@ -304,6 +440,17 @@ class TestRunEvents:
+@@ -304,6 +440,17 @@
                  # Should contain run.completed
                  assert "run.completed" in body
                  assert "Hello!" in body
@@ -840,7 +938,7 @@
  
  
  
-@@ -312,11 +459,7 @@ class TestRunEvents:
+@@ -312,11 +459,7 @@
          app = _create_runs_app(adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(adapter, "_create_agent") as mock_create:
@@ -853,7 +951,7 @@
                  mock_create.return_value = mock_agent
  
                  resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -510,11 +653,7 @@ class TestStopRun:
+@@ -510,11 +653,7 @@
          app = _create_runs_app(adapter)
          async with TestClient(TestServer(app)) as cli:
              with patch.object(adapter, "_create_agent") as mock_create:
@@ -1518,7 +1616,7 @@
 +            canonical_projection_bytes(projection)
 --- /dev/null
 +++ tests/run_agent/test_run_evidence_capture.py
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,287 @@
 +from types import SimpleNamespace
 +
 +import pytest
@@ -1528,6 +1626,7 @@
 +    _record_run_evidence_response,
 +    _run_evidence_payload_observers_allowed,
 +)
++from agent.usage_pricing import CanonicalUsage
 +from gateway.run_evidence import RunEvidenceAccumulator
 +
 +
@@ -1594,6 +1693,121 @@
 +
 +def test_payload_observers_remain_available_for_unreceipted_runs():
 +    assert _run_evidence_payload_observers_allowed(SimpleNamespace()) is True
++
++
++def test_native_moa_route_accepts_only_all_ollama_subscription_slots(monkeypatch):
++    monkeypatch.setattr(
++        "hermes_cli.config.load_config",
++        lambda: {
++            "moa": {
++                "presets": {
++                    "ollama-build": {
++                        "enabled": True,
++                        "reference_models": [
++                            {"provider": "ollama-cloud", "model": "kimi-k2.7-code"}
++                        ],
++                        "aggregator": {
++                            "provider": "ollama-cloud",
++                            "model": "glm-5.2",
++                        },
++                    }
++                }
++            }
++        },
++    )
++    evidence = RunEvidenceAccumulator(
++        run_id="run_moa",
++        request_byte_length=2,
++        request_sha256="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e6f15fc2f9f7f57c15e3fcb",
++    )
++    completions = SimpleNamespace(
++        _pending_reference_usage=CanonicalUsage(
++            input_tokens=7,
++            output_tokens=3,
++            cache_read_tokens=2,
++        )
++    )
++    agent = SimpleNamespace(
++        provider="moa",
++        model="ollama-build",
++        api_mode="chat_completions",
++        base_url=None,
++        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
++        _gloops_run_evidence=evidence,
++    )
++    response = _invoke_provider_with_run_evidence_gate(
++        agent,
++        {"model": "ollama-build"},
++        lambda _kwargs: SimpleNamespace(
++            model="glm-5.2",
++            usage=SimpleNamespace(
++                prompt_tokens=10,
++                completion_tokens=2,
++                prompt_tokens_details=SimpleNamespace(cached_tokens=1),
++            ),
++        ),
++        middleware_runner=lambda *_args, **_kwargs: None,
++        middleware_kwargs={},
++    )
++    _record_run_evidence_response(
++        agent,
++        {"model": "ollama-build"},
++        response,
++        tool_call_count=1,
++    )
++
++    projection = evidence.finalize("completed")["terminalEvidence"]
++    assert projection["resolvedProvider"] == "ollama-cloud"
++    assert projection["resolvedModel"] == "glm-5.2"
++    assert projection["inputUsage"] == {"present": True, "value": 19}
++    assert projection["outputUsage"] == {"present": True, "value": 5}
++    assert projection["cachedUsage"] == {"present": True, "value": 3}
++    assert completions._pending_reference_usage.input_tokens == 7
++
++
++def test_native_moa_route_rejects_any_non_ollama_slot(monkeypatch):
++    monkeypatch.setattr(
++        "hermes_cli.config.load_config",
++        lambda: {
++            "moa": {
++                "presets": {
++                    "mixed": {
++                        "enabled": True,
++                        "reference_models": [
++                            {"provider": "openai", "model": "gpt-5"}
++                        ],
++                        "aggregator": {
++                            "provider": "ollama-cloud",
++                            "model": "glm-5.2",
++                        },
++                    }
++                }
++            }
++        },
++    )
++    evidence = RunEvidenceAccumulator(
++        run_id="run_mixed_moa",
++        request_byte_length=2,
++        request_sha256="4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e6f15fc2f9f7f57c15e3fcb",
++    )
++    agent = SimpleNamespace(
++        provider="moa",
++        model="mixed",
++        api_mode="chat_completions",
++        base_url=None,
++        _gloops_run_evidence=evidence,
++    )
++
++    with pytest.raises(RuntimeError, match="every reference and acting model"):
++        _invoke_provider_with_run_evidence_gate(
++            agent,
++            {"model": "mixed"},
++            lambda _kwargs: pytest.fail("mixed MoA route reached provider"),
++            middleware_runner=lambda *_args, **_kwargs: None,
++            middleware_kwargs={},
++        )
++
++    assert evidence.finalize("failed")["terminalEvidence"]["fallbackPath"] == []
 +
 +
 +def test_non_subscription_route_is_rejected_before_attempt_and_provider_call():
