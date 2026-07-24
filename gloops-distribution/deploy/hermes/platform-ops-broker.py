@@ -50,6 +50,8 @@ STATE_DIR = Path(os.environ.get("GLOOPS_PLATFORM_OPS_BROKER_STATE_DIR", "/var/li
 COMMAND_LOCK = Path(os.environ.get("GLOOPS_PLATFORM_OPS_BROKER_LOCK", str(STATE_DIR / "command.lock")))
 ALLOWLIST_PATH = CONFIG_DIR / "platform-ops-allowlist.json"
 DATABASE = STATE_DIR / "broker.sqlite3"
+ROLLBACK_SCRIPT = Path(os.environ.get("GLOOPS_PLATFORM_OPS_BROKER_ROLLBACK_SCRIPT", "/usr/local/lib/paperclip-gloops/rollback.sh"))
+BACKUP_DIR = Path(os.environ.get("GLOOPS_PLATFORM_OPS_BROKER_BACKUP_DIR", "/opt/paperclip/backups"))
 
 MAX_REQUEST_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
@@ -500,6 +502,12 @@ def op_service_health(params: dict[str, Any]) -> Any:
     return result
 
 
+def derive_receipt_id(command_class: str, target: str, idempotency_key: str) -> str:
+    """Return a deterministic receipt id from command class, target and key."""
+    base = f"{command_class}:{target}:{idempotency_key}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
+
+
 def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
                        actor: str, idempotency_key: str) -> Any:
     service = params.get("service")
@@ -507,7 +515,7 @@ def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
         raise BrokerError("service must be a valid systemd unit name ending in .service")
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
-    receipt_id = f"restart-{service}-{int(time.time())}-{idempotency_key[:16]}"
+    receipt_id = derive_receipt_id("restart_named_service", service, idempotency_key)
     receipt = create_receipt(
         connection, receipt_id, "service-restart", service,
         idempotency_key, actor, "restart_named_service",
@@ -642,7 +650,7 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
         )
         if returncode == 0 and stdout.strip():
             pre_size = int(stdout.strip().split()[0])
-    receipt_id = f"reclaim-{cache_name}-{int(time.time())}-{idempotency_key[:16]}"
+    receipt_id = derive_receipt_id("reclaim_disposable_cache", cache_name, idempotency_key)
     receipt = create_receipt(
         connection, receipt_id, "cache-reclaim", cache_name,
         idempotency_key, actor, "reclaim_disposable_cache",
@@ -698,7 +706,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     container = service_config.get("container")
     if not container:
         raise BrokerError(f"service {service} has no container for deployment")
-    receipt_id = f"deploy-{service}-{int(time.time())}-{idempotency_key[:16]}"
+    receipt_id = derive_receipt_id("deploy_pinned_image", service, idempotency_key)
     receipt = create_receipt(
         connection, receipt_id, "deploy-pinned-image", service,
         idempotency_key, actor, "deploy_pinned_image",
@@ -757,7 +765,7 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
         raise BrokerError("service must be a valid systemd unit name ending in .service")
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
-    receipt_id = f"rollback-rehearsal-{service}-{int(time.time())}-{idempotency_key[:16]}"
+    receipt_id = derive_receipt_id("rollback_rehearsal", service, idempotency_key)
     receipt = create_receipt(
         connection, receipt_id, "rollback-rehearsal", service,
         idempotency_key, actor, "rollback_rehearsal",
@@ -766,8 +774,8 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
         return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
     # A rollback rehearsal only checks that the backup exists and the
     # rollback script is executable.  It does not perform the actual rollback.
-    rollback_script = Path("/usr/local/lib/paperclip-gloops/rollback.sh")
-    backup_dir = Path("/opt/paperclip/backups")
+    rollback_script = ROLLBACK_SCRIPT
+    backup_dir = BACKUP_DIR
     evidence = {
         "service": service,
         "rollbackScriptExists": rollback_script.exists(),

@@ -89,11 +89,16 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.db_path = self.state / "broker.sqlite3"
         self.allowlist_path = self.config / "platform-ops-allowlist.json"
         self.allowlist_path.write_text(json.dumps(TEST_ALLOWLIST))
+        # Create config/runtime.env so deploy-pinned-image tests can read it
+        (self.config / "runtime.env").write_text("\n")
+        # Preload allowlist before the cache Path.exists mock in cache-inspect tests
         broker._allowlist_cache = None
+        with self.paths():
+            broker.load_allowlist()
 
     def tearDown(self):
-        self.tempdir.cleanup()
         broker._allowlist_cache = None
+        self.tempdir.cleanup()
 
     def paths(self):
         return patch.multiple(
@@ -433,7 +438,10 @@ class PlatformOpsBrokerTests(unittest.TestCase):
     def test_rollback_rehearsal_creates_receipt(self):
         with self.paths():
             connection = broker.connect_database()
-            with patch.object(Path, "exists", return_value=True):
+            backup_dir = self.dir / "backups"
+            backup_dir.mkdir(parents=True)
+            (backup_dir / "2026-01-01").mkdir()
+            with patch.object(broker, "BACKUP_DIR", backup_dir), patch.object(Path, "exists", return_value=True):
                 with patch("os.access", return_value=True):
                     result = broker.process_request({
                         "operation": "rollback-rehearsal",
@@ -526,16 +534,17 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 (0, "active\n", ""),
             ]
             with patch.object(broker, "run_command", side_effect=mock_results):
-                broker.process_request({
+                result = broker.process_request({
                     "operation": "service-restart",
                     "service": "paperclip-gloops.service",
                     "actor": "wren-agent",
                     "idempotencyKey": "journal-002",
                 }, connection=connection)
-            # Tamper with a journal entry
+            # Tamper with the returned receiptId in the journal
+            receipt_id = result["data"]["receiptId"]
             connection.execute(
                 "UPDATE journal SET payload_json = ? WHERE receipt_id = ?",
-                (json.dumps({"tampered": True}), "restart-paperclip-gloops.service-" + str(int(__import__("time").time()))),
+                (json.dumps({"tampered": True}), receipt_id),
             )
             connection.commit()
             with self.assertRaisesRegex(broker.BrokerError, "hash chain is invalid"):
