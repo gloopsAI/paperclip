@@ -27,7 +27,7 @@ readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
 readonly TIRITH_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'
-readonly HERMES_IMAGE='sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca'
+readonly HERMES_IMAGE='sha256:7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488'
 readonly COMMAND_SECURITY_VERIFIER='/usr/local/lib/paperclip-gloops/verify-hermes-command-security-image.sh'
 failed=0
 
@@ -87,7 +87,7 @@ fi
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
-  'sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca' \
+  'sha256:7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488' \
   - /config.yaml <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -197,11 +197,11 @@ if jq -e '
   .network.apiPort == 8642 and
   .network.apiAuthentication == "bearer-key-required" and
   .network.publishedPorts == [] and
-  .runtime.image == "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca" and
+  .runtime.image == "sha256:7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488" and
   .runtime.imageAcquisition == "root-only-content-addressed-archive" and
   .runtime.imageArchive == {
-    "path": "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
-    "sha256": "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"
+    "path": "/opt/paperclip/release-artifacts/hermes-execution-7e94fdbd276710806b772ba0fdc03a4a2682a870f7786e5e27cac9fa767a9488.tar.zst",
+    "sha256": "9e3236b846e19642f14f7d708d07901a532ba24c4ea34a9ae6f28bfe67f183b0"
   } and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
