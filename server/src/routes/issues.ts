@@ -1729,10 +1729,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   ) {
     return false;
   }
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Terminal work is observational by default. A comment alone must never
+  // regress done/cancelled work or wake its assignee; those transitions require
+  // the route's explicit reopen/resume intent. Human comments may still recover
+  // assigned blocked work without a separate status mutation.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
