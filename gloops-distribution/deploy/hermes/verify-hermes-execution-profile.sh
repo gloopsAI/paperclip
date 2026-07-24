@@ -119,9 +119,35 @@ assert d["platforms"] == {
                     "model": "qwen3.5",
                     "provider": "ollama-cloud",
                 },
+                "ollama-build": {
+                    "model": "ollama-build",
+                    "provider": "moa",
+                },
             }
         },
     }
+}
+assert d["moa"] == {
+    "default_preset": "ollama-build",
+    "privacy_filter": "full",
+    "presets": {
+        "ollama-build": {
+            "reference_models": [{
+                "provider": "ollama-cloud",
+                "model": "kimi-k2.7-code",
+                "reasoning_effort": "low",
+            }],
+            "aggregator": {
+                "provider": "ollama-cloud",
+                "model": "glm-5.2",
+                "reasoning_effort": "medium",
+            },
+            "reference_max_tokens": 600,
+            "fanout": "user_turn",
+            "max_tokens": 16384,
+            "enabled": True,
+        },
+    },
 }
 assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
@@ -130,7 +156,7 @@ assert d["security"] == {
     "tirith_path": "/opt/data/bin/tirith",
     "tirith_fail_open": False,
 }
-assert not any(key in d for key in ("plugins", "slack", "moa"))
+assert not any(key in d for key in ("plugins", "slack"))
 PY
 then
   pass 'model routes, tools, turns, verification, and channel policy are exact'

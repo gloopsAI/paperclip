@@ -1,6 +1,25 @@
 model:
   provider: ollama-cloud
   default: kimi-k2.7-code
+moa:
+  default_preset: ollama-build
+  privacy_filter: full
+  presets:
+    ollama-build:
+      # Advisor runs once per user turn; GLM remains the acting Hermes agent
+      # and owns implementation, tool use, and verification.
+      reference_models:
+        - provider: ollama-cloud
+          model: kimi-k2.7-code
+          reasoning_effort: low
+      aggregator:
+        provider: ollama-cloud
+        model: glm-5.2
+        reasoning_effort: medium
+      reference_max_tokens: 600
+      fanout: user_turn
+      max_tokens: 16384
+      enabled: true
 cron:
   provider: disabled
 kanban:
@@ -38,6 +57,9 @@ platforms:
         qwen3.5:cloud:
           model: qwen3.5
           provider: ollama-cloud
+        ollama-build:
+          model: ollama-build
+          provider: moa
 agent:
   # Outer host safety ceiling only. Paperclip remains the per-task authority:
   # the default provider envelope is 8 turns and explicit envelopes may widen
