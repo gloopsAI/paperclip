@@ -1090,11 +1090,11 @@ for (const [surface, content, required] of [
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property Type=exec"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property RuntimeMaxSec=2"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "result}\" == 'timeout'"],
-  ["Hermes image loader", loadHermesExecutionImage, "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"],
+  ["Hermes image loader", loadHermesExecutionImage, "94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637"],
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
   ["dark installer", installDark, '"${SCRIPT_DIR}/route-receipt/hermes-source-lock.json" "${LIB_DIR}/route-receipt/hermes-source-lock.json"'],
-  ["cold rollback backup", backupDark, "hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst"],
+  ["cold rollback backup", backupDark, "hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
   ["cold rollback backup transaction guard", backupDark, "refuse_unresolved_commissioning"],
   ["cold rollback backup transaction journal", backupDark, "commissioning-rollback.json"],
@@ -1257,7 +1257,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca";
+  "sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v2") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -1328,8 +1328,8 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addre
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
   JSON.stringify({
-    path: "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
-    sha256: "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2",
+    path: "/opt/paperclip/release-artifacts/hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst",
+    sha256: "94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637",
   })
 ) {
   fail("Hermes execution image archive must be content-addressed and exact");
@@ -1385,9 +1385,19 @@ if (
 ) {
   fail("Hermes background execution and command-security policy must be exact");
 }
-for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "moa", "plugins"]) {
+for (const forbidden of ["anthropic", "openrouter", "xai", "grok", "slack", "agentmail", "smtp", "discord", "telegram", "plugins"]) {
   if (hermesExecutionConfig.toLowerCase().includes(forbidden)) {
     fail(`Hermes execution configuration must not include ${forbidden}`);
+  }
+}
+for (const required of [
+  "default_preset: ollama-build",
+  "provider: moa",
+  "model: ollama-build",
+  "max_turns: 90",
+]) {
+  if (!hermesExecutionConfig.includes(required)) {
+    fail(`Hermes execution configuration is missing ${required}`);
   }
 }
 if (
@@ -2268,13 +2278,19 @@ for (const providerConfigPath of [
 const approvedImage = `${distribution.image}@${distribution.digest}`;
 for (const [label, contents] of [
   ["install-dark.sh", installDark],
-  ["preflight.sh", preflight],
   ["verify-dark.sh", verifyDark],
 ]) {
   const imageRefs = contents.match(/ghcr\.io\/gloopsai\/paperclip-gloops@sha256:[0-9a-f]{64}/g) ?? [];
   if (imageRefs.length !== 1 || imageRefs[0] !== approvedImage) {
     fail(`${label} must pin exactly the manifest-approved image digest`);
   }
+}
+if (
+  !preflight.includes("readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'") ||
+  !preflight.includes('readonly EXPECTED_IMAGE="$(tr -d') ||
+  !preflight.includes('[[ "${PAPERCLIP_IMAGE:-}" == "${EXPECTED_IMAGE}" ]]')
+) {
+  fail("preflight.sh must bind the runtime image to the root-owned approved-image receipt");
 }
 for (const [label, contents] of [
   ["paperclip-gloops.service", service],
