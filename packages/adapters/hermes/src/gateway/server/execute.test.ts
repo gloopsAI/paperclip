@@ -649,7 +649,7 @@ describe("execute", () => {
     expect(result.resultJson?.execution_metrics).toEqual({ turns: 4, tool_calls: 4 });
   });
 
-  it("rejects authoritative terminal usage above the reservation", async () => {
+  it("rejects non-Ollama authoritative terminal usage above the reservation", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
@@ -668,7 +668,7 @@ describe("execute", () => {
         usage: { input_tokens: 10, output_tokens: 5 },
       }), { status: 200 });
     });
-    stubEvidencedFetch(fetchMock, undefined, { turnTotal: 5, toolCallTotal: 4 });
+    stubEvidencedFetch(fetchMock, undefined, { turnTotal: 5, toolCallTotal: 4 }, "openai");
     const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
       apiKey: "secret-key",
@@ -692,6 +692,59 @@ describe("execute", () => {
     expect(result.resultJson?.exceeded).toBe("turns");
     expect(result.resultJson?.execution_metrics).toEqual({ turns: 5, tool_calls: 4 });
     expect(result.providerIoTerminalEvidence?.terminalEvidence.turnTotal).toBe(5);
+  });
+
+  it("preserves completed Ollama Cloud work above the advisory reservation", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "ollama-terminal-over-limit" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(sseStream([
+          "event: run.completed",
+          "data: {\"status\":\"completed\",\"output\":\"done\",\"model\":\"qwen3-coder\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}",
+          "",
+        ].join("\n")), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        status: "completed",
+        output: "done",
+        model: "qwen3-coder",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock, undefined, { turnTotal: 5, toolCallTotal: 4 });
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      model: "qwen3-coder:cloud",
+      timeoutSec: 5,
+    });
+    ctx.executionBudget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1",
+      budgetId: "budget-ollama-terminal-over",
+      reservationId: "e".repeat(64),
+      maxInputTokens: 2_000,
+      maxOutputTokens: 4,
+      maxTurns: 4,
+      maxToolCalls: 3,
+      maxWallMs: 60_000,
+    };
+
+    const result = await execute(ctx);
+    const createCall = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .find(([input]) => String(input).endsWith("/v1/runs"));
+    const requestBody = JSON.parse(String(createCall?.[1]?.body));
+
+    expect(requestBody.execution_budget).toBeUndefined();
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.resultJson?.budget_warning).toEqual({
+      code: "execution_admission.ollama_cloud_budget_exceeded",
+      exceeded: "tool_calls",
+    });
+    expect(result.resultJson?.execution_metrics).toEqual({ turns: 5, tool_calls: 4 });
   });
 
   it("stops the remote run when distinct model turns exceed the reservation", async () => {
@@ -968,7 +1021,7 @@ describe("execute", () => {
     });
   });
 
-  it("rejects a cloud route alias when the canonical Ollama model differs", async () => {
+  it("preserves completed Ollama Cloud work when the cloud model is substituted", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/v1/runs")) {
@@ -997,11 +1050,26 @@ describe("execute", () => {
     }));
 
     expect(result).toMatchObject({
-      exitCode: 1,
-      errorCode: "execution_route.model_mismatch",
+      exitCode: 0,
       provider: "ollama-cloud",
       model: "kimi-k2.7-code",
+      resultJson: {
+        requested_model: "minimax-m3:cloud",
+        resolved_model: "kimi-k2.7-code",
+        route_warning: {
+          code: "execution_route.ollama_cloud_model_substituted",
+          requested_model: "minimax-m3:cloud",
+          resolved_model: "kimi-k2.7-code",
+        },
+        execution_route: {
+          provider_id: "ollama",
+          observed_provider_id: "ollama-cloud",
+          model_id: "kimi-k2.7-code",
+          fallback_occurred: false,
+        },
+      },
     });
+    expect(result.errorCode).toBeUndefined();
   });
 
   it("fails closed when the signed resolved model differs from the request", async () => {

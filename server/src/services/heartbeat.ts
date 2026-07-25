@@ -14549,6 +14549,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode: adapterResult.errorCode,
         reservation: invocationBudget,
       });
+      const completedOnOllamaCloud =
+        outcome === "succeeded" &&
+        (
+          readNonEmptyString(
+            adapterResult.providerIoTerminalEvidence?.terminalEvidence.resolvedProvider,
+          ) === "ollama-cloud" ||
+          readNonEmptyString(adapterResult.provider) === "ollama-cloud"
+        );
       if (invocationBudget && effectiveProviderInvocationAttempted && !normalizedUsage) {
         // Missing provider usage cannot be treated as zero. Charge the full
         // reservation to the task budget so a failed/malformed adapter cannot
@@ -14562,7 +14570,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           outputTokens: invocationBudget.maxOutputTokens,
         };
         const providerCompletedNominally = outcome === "succeeded";
-        if (providerCompletedNominally) outcome = "failed";
+        if (providerCompletedNominally && !completedOnOllamaCloud) outcome = "failed";
         const exceededDimensions = adapterReportedExceeded.length > 0
           ? adapterReportedExceeded
           : reservationUsage && !reservationUsage.compliant
@@ -14570,7 +14578,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : ["usage_missing"];
         adapterResult = {
           ...adapterResult,
-          ...(providerCompletedNominally
+          ...(providerCompletedNominally && !completedOnOllamaCloud
             ? {
                 errorCode: exceededDimensions.includes("usage_missing")
                   ? "execution_admission.usage_missing"
@@ -14590,7 +14598,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               reservation: invocationBudget,
               enforcementMode: executionBudgetMode,
               accounting: "reservation_fallback",
-              originalOutcomePreserved: !providerCompletedNominally,
+              originalOutcomePreserved: !providerCompletedNominally || completedOnOllamaCloud,
+              ...(completedOnOllamaCloud ? { advisoryOnly: true } : {}),
               ...(reportedTurns != null || reportedToolCalls != null
                 ? {
                     observed: {
@@ -14613,12 +14622,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           previousLegacySessionId: runtimeForAdapter.sessionId,
         });
       } else if (reservationUsage && !reservationUsage.compliant) {
-        outcome = "failed";
+        if (!completedOnOllamaCloud) outcome = "failed";
         adapterResult = {
           ...adapterResult,
-          errorCode: "execution_admission.reservation_exceeded",
-          errorMessage: `Provider usage exceeded its reserved execution envelope (${reservationUsage.exceeded.join(", ")})`,
-          clearSession: true,
+          ...(!completedOnOllamaCloud
+            ? {
+                errorCode: "execution_admission.reservation_exceeded",
+                errorMessage: `Provider usage exceeded its reserved execution envelope (${reservationUsage.exceeded.join(", ")})`,
+                clearSession: true,
+              }
+            : {}),
           resultJson: {
             ...adapterResultJson,
             executionReservation: {
@@ -14626,6 +14639,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               exceeded: reservationUsage.exceeded,
               reservation: invocationBudget,
               enforcementMode: executionBudgetMode,
+              ...(completedOnOllamaCloud ? { advisoryOnly: true } : {}),
               observed: {
                 ...(normalizedUsage
                   ? {
@@ -14689,7 +14703,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "timed_out"
               : "failed";
 
-      const terminalExceeded =
+      const observedTerminalExceeded =
         reservationUsage && !reservationUsage.compliant
           ? reservationUsage.exceeded
           : effectiveProviderInvocationAttempted && !normalizedUsage
@@ -14697,6 +14711,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? adapterReportedExceeded
               : ["usage_missing"])
             : [];
+      // Keep economic truth visible while allowing completed Ollama Cloud work
+      // to reach its terminal issue state. Subscription-budget overages are
+      // advisory for this lane; they are not a reason to strand finished work.
+      const terminalExceeded = completedOnOllamaCloud ? [] : observedTerminalExceeded;
       const terminalInputAccounting = effectiveProviderInvocationAttempted === false
         ? { fixedOverheadInputTokens: 0, discretionaryInputTokens: 0 }
         : splitInputTokenAccounting({
@@ -14773,7 +14791,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   enforcementMode: executionBudgetMode,
                   compliant: reservationUsage?.compliant
                     ?? (effectiveProviderInvocationAttempted && !normalizedUsage ? false : null),
-                  exceeded: terminalExceeded,
+                  exceeded: observedTerminalExceeded,
+                  ...(completedOnOllamaCloud ? { advisoryOnly: true } : {}),
                   ...(reportedTurns != null || reportedToolCalls != null || observedWallMs > 0
                     ? {
                         observed: {

@@ -546,6 +546,35 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("records Ollama Cloud reservation overage without failing completed work", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "ollama-cloud",
+      model: "qwen3-coder",
+      usage: { inputTokens: 1_000_001, cachedInputTokens: 0, outputTokens: 100 },
+    };
+    const { agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.errorCode).toBeNull();
+    expect(persisted?.usageJson).toMatchObject({
+      executionReservation: {
+        enforcementMode: "strict",
+        compliant: false,
+        exceeded: ["input_tokens"],
+        advisoryOnly: true,
+      },
+    });
+  });
+
   it("fails closed when a supported adapter completes without usage reconciliation", async () => {
     mockAdapterState.includeUsage = false;
     const { agentId } = await seedDirectAgent();
