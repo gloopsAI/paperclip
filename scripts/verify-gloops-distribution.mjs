@@ -2270,11 +2270,25 @@ for (const [label, contents] of [
   ["install-dark.sh", installDark],
   ["preflight.sh", preflight],
   ["verify-dark.sh", verifyDark],
-  ["paperclip-gloops.service", service],
 ]) {
   const imageRefs = contents.match(/ghcr\.io\/gloopsai\/paperclip-gloops@sha256:[0-9a-f]{64}/g) ?? [];
   if (imageRefs.length !== 1 || imageRefs[0] !== approvedImage) {
     fail(`${label} must pin exactly the manifest-approved image digest`);
+  }
+}
+for (const [label, contents] of [
+  ["paperclip-gloops.service", service],
+  ["paperclip-gloops-handshake.service", handshakeService],
+]) {
+  if (!contents.includes("EnvironmentFile=/etc/paperclip-gloops/runtime.env")) {
+    fail(`${label} must load the root-owned runtime environment`);
+  }
+  if (!contents.includes("${PAPERCLIP_IMAGE}")) {
+    fail(`${label} must launch the image selected by the root-owned runtime environment`);
+  }
+  const imageRefs = contents.match(/ghcr\.io\/gloopsai\/paperclip-gloops@sha256:[0-9a-f]{64}/g) ?? [];
+  if (imageRefs.length !== 0) {
+    fail(`${label} must not override the runtime-selected immutable image`);
   }
 }
 
