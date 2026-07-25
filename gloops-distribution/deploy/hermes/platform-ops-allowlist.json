@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "gloops.platform-ops-allowlist.v1",
+  "allowedServices": {
+    "paperclip-gloops.service": {
+      "healthUrl": "http://127.0.0.1:3100/api/health",
+      "container": "paperclip-gloops",
+      "imageEnv": "PAPERCLIP_IMAGE"
+    },
+    "paperclip-hermes-execution.service": {
+      "healthUrl": null,
+      "container": "paperclip-hermes-execution",
+      "imageEnv": "HERMES_EXECUTION_IMAGE"
+    },
+    "paperclip-hermes-handshake.service": {
+      "healthUrl": null,
+      "container": "paperclip-hermes-handshake",
+      "imageEnv": "HERMES_HANDSHAKE_IMAGE"
+    },
+    "paperclip-github-push-broker.service": {
+      "healthUrl": null,
+      "container": null,
+      "imageEnv": null
+    },
+    "paperclip-github-read-broker.service": {
+      "healthUrl": null,
+      "container": null,
+      "imageEnv": null
+    },
+    "paperclip-campaign-deadman.service": {
+      "healthUrl": null,
+      "container": null,
+      "imageEnv": null
+    }
+  },
+  "allowedCachePaths": {
+    "hermes-cache": "/opt/paperclip/hermes-execution-state/cache",
+    "hermes-logs": "/opt/paperclip/hermes-execution-state/logs",
+    "docker-build-cache": "/var/lib/paperclip-gloops/build-cache"
+  },
+  "cacheThresholdPercent": 85,
+  "maxReceiptAgeDays": 30
+}

@@ -1,0 +1,138 @@
+# Platform Operations Broker
+
+Root-owned Unix-socket broker for governed host operations: deploy, restart,
+health, capacity, and rollback.  No generic shell, SSH, sudo, path, service,
+or image-tag inputs are accepted.
+
+## Architecture
+
+```
+Hermes agent (uid 10000)
+  |
+  | Unix socket /run/paperclip-platform-ops-broker/broker.sock
+  |
+  v
+platform-ops-broker.py (root, pid 1 child)
+  |
+  +-- allowlist: /etc/paperclip-gloops/platform-ops-allowlist.json
+  +-- state:    /var/lib/paperclip-gloops/platform-ops-broker/broker.sqlite3
+  +-- commands: systemctl, docker, df, free, uptime, du, find, curl
+```
+
+The broker enforces:
+1. **Allowlist** - only predeclared service names, cache paths, and disk paths
+2. **Pinned images** - deploy requires `registry/path@sha256:64hex`, never tags
+3. **Idempotent receipts** - every mutating action writes a durable, hash-chained receipt
+4. **Credential-free** - no tokens, keys, or secrets in any response
+5. **Peer authentication** - socket verifies `SO_PEERCRED` uid 10000 (Hermes)
+
+## Installation
+
+The broker is installed by `install-dark.sh` alongside the existing GitHub
+brokers:
+
+```sh
+install -m 0555 -o root -g root platform-ops-broker.py /usr/local/lib/paperclip-glops/
+install -m 0644 -o root -g root platform-ops-allowlist.json /etc/paperclip-gloops/
+install -m 0644 -o root -g root paperclip-platform-ops-broker.service /usr/local/lib/systemd/system/
+install -m 0555 -o root -g root platform-ops-tool.mjs /usr/local/lib/paperclip-gloops/tools/
+install -m 0555 -o root -g root verify-platform-ops-broker.py /usr/local/lib/paperclip-gloops/
+install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/platform-ops-broker
+systemctl daemon-reload
+systemctl enable --now paperclip-platform-ops-broker.service
+```
+
+## Hermes Profile Wiring
+
+Add to the Hermes execution profile mount list so the socket is available
+inside the Hermes container:
+
+```
+--mount type=bind,src=/run/paperclip-platform-ops-broker,dst=/run/paperclip-platform-ops-broker
+```
+
+And install the client tool at `/opt/data/bin/platform-ops-tool.mjs` (read-only,
+root-owned, mode 0555).
+
+## Allowlist Schema
+
+```json
+{
+  "schemaVersion": "gloops.platform-ops-allowlist.v1",
+  "allowedServices": {
+    "<unit.service>": {
+      "healthUrl": "http://... or null",
+      "container": "docker-name or null",
+      "imageEnv": "ENV_VAR or null"
+    }
+  },
+  "allowedCachePaths": {
+    "<cache-name>": "/absolute/path"
+  },
+  "cacheThresholdPercent": 85,
+  "maxReceiptAgeDays": 30
+}
+```
+
+## Operations
+
+### Read-only
+
+| Operation | Parameters | Description |
+|---|---|---|
+| `service-status` | `service` | systemctl show for one allowed unit |
+| `service-health` | `service` | active state + optional HTTP health |
+| `disk-usage` | `path` (optional, default `/`) | df for allowed paths only |
+| `memory-usage` | none | free -m |
+| `cpu-usage` | none | uptime |
+| `cache-inspect` | `cache` | du -sb for one allowed cache path |
+| `list-receipts` | `limit` (optional) | recent receipt entries |
+| `get-receipt` | `receiptId` | single receipt with evidence |
+
+### Mutating (require `actor` and `idempotencyKey`)
+
+| Operation | Parameters | Description |
+|---|---|---|
+| `service-restart` | `service` | systemctl restart + pre/post health receipt |
+| `cache-reclaim` | `cache` | find -delete on cache contents + before/after size |
+| `deploy-pinned-image` | `service`, `image` | docker pull + systemctl restart |
+| `rollback-rehearsal` | `service` | verify rollback script and backups exist |
+
+## Client Usage
+
+```sh
+# Read-only
+node /opt/data/bin/platform-ops-tool.mjs --operation service-status --service paperclip-gloops.service
+node /opt/data/bin/platform-ops-tool.mjs --operation disk-usage --path /
+node /opt/data/bin/platform-ops-tool.mjs --operation cache-inspect --cache hermes-cache
+
+# Mutating (idempotent)
+node /opt/data/bin/platform-ops-tool.mjs --operation service-restart \
+  --service paperclip-gloops.service --actor wren-agent --idempotencyKey restart-001
+
+node /opt/data/bin/platform-ops-tool.mjs --operation deploy-pinned-image \
+  --service paperclip-glops.service \
+  --image ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
+  --actor wren-agent --idempotencyKey deploy-001
+```
+
+## Verification
+
+```sh
+# Verify broker configuration
+python3 /usr/local/lib/paperclip-gloops/verify-platform-ops-broker.py
+
+# Run focused tests
+python3 /usr/local/lib/paperclip-gloops/platform_ops_broker_test.py
+```
+
+## Security Boundary
+
+- The broker rejects any service name, cache name, or path not in the allowlist.
+- Image deployment requires a pinned SHA-256 digest; tags are rejected.
+- Disk usage is limited to `/`, `/opt`, `/var`, `/tmp`, `/opt/paperclip`.
+- No shell injection: all commands use `subprocess.run` with argument lists,
+  never `shell=True`.
+- Receipts are hash-chained: tampering with any journal entry breaks the chain.
+- The socket verifies `SO_PEERCRED` to ensure only uid 10000 (Hermes) can
+  connect.

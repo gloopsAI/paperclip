@@ -45,7 +45,7 @@ fi
   exit 1
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing installation while ${unit} is active" >&2
     exit 1
@@ -73,6 +73,7 @@ install -d -m 0755 -o root -g root "${LIB_DIR}"
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/github-push-broker
 install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/github-read-broker
+install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/platform-ops-broker
 install -d -m 0755 -o root -g root /usr/local/lib/systemd/system
 rm -f \
   "${CONFIG_DIR}/ACTIVATION_APPROVED" \
@@ -135,6 +136,9 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/restore-hermes-workspace-observer
 install -m 0755 -o root -g root "${SCRIPT_DIR}/github-app-credentials.py" "${LIB_DIR}/github-app-credentials.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-broker.py" "${LIB_DIR}/github-push-broker.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-read-broker.py" "${LIB_DIR}/github-read-broker.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/platform-ops-broker.py" "${LIB_DIR}/platform-ops-broker.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-platform-ops-broker.py" "${LIB_DIR}/verify-platform-ops-broker.py"
+install -m 0644 -o root -g root "${SCRIPT_DIR}/platform-ops-allowlist.json" "${CONFIG_DIR}/platform-ops-allowlist.json"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/stop-hermes-execution.py" "${LIB_DIR}/stop-hermes-execution.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-lifecycle-history.py" "${LIB_DIR}/verify-lifecycle-history.py"
 rm -rf "${LIB_DIR}/hermes-cron-disabled"
@@ -153,6 +157,7 @@ rm -f "${LIB_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gh-co
 install -d -m 0555 -o root -g root "${LIB_DIR}/tools"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-tool.bundle.cjs" "${LIB_DIR}/tools/github-push-tool.bundle.cjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-read-tool.mjs" "${LIB_DIR}/tools/github-read-tool.mjs"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/platform-ops-tool.mjs" "${LIB_DIR}/tools/platform-ops-tool.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/../../../packages/adapters/hermes/skills/paperclip-task-bridge/paperclip-task.mjs" "${LIB_DIR}/tools/paperclip-task.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/apply_patch" "${LIB_DIR}/tools/apply_patch"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/focused_test" "${LIB_DIR}/tools/focused_test"

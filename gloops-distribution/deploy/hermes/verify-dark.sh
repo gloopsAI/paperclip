@@ -465,13 +465,13 @@ if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloop
   && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-18T23:12:22.000Z' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=50000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=16000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=3600000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION=30000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=8000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=8' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=32' /etc/paperclip-gloops/runtime.env; then
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=8000000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=256000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=7200000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION=4000000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=128000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=64' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=240' /etc/paperclip-gloops/runtime.env; then
   echo "PASS source-only controlled-swarm envelope is installed dark with the release-pin interlock engaged"
 else
   echo "FAIL exact controlled-swarm execution envelope is missing or has drifted" >&2
