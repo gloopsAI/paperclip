@@ -90,7 +90,14 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.allowlist_path = self.config / "platform-ops-allowlist.json"
         self.allowlist_path.write_text(json.dumps(TEST_ALLOWLIST))
         # Create config/runtime.env so deploy-pinned-image tests can read it
-        (self.config / "runtime.env").write_text("\n")
+        (self.config / "runtime.env").write_text(
+            "PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:"
+            + "1" * 64
+            + "\n"
+        )
+        (self.config / "approved-image").write_text(
+            "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "1" * 64 + "\n"
+        )
         # Preload allowlist before the cache Path.exists mock in cache-inspect tests
         broker._allowlist_cache = None
         with self.paths():
@@ -406,19 +413,47 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 (0, "active\n", ""),  # post-health
             ]
             with patch.object(broker, "run_command", side_effect=mock_results):
-                with patch("builtins.open", create=True) as mock_open:
-                    mock_open.return_value.__enter__ = MagicMock(return_value=MagicMock())
-                    mock_open.return_value.__exit__ = MagicMock(return_value=False)
-                    with patch.object(Path, "exists", return_value=True):
-                        result = broker.process_request({
-                            "operation": "deploy-pinned-image",
-                            "service": "paperclip-gloops.service",
-                            "image": image,
-                            "actor": "wren-agent",
-                            "idempotencyKey": "deploy-002",
-                        }, connection=connection)
+                result = broker.process_request({
+                    "operation": "deploy-pinned-image",
+                    "service": "paperclip-gloops.service",
+                    "image": image,
+                    "actor": "wren-agent",
+                    "idempotencyKey": "deploy-002",
+                }, connection=connection)
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["state"], "completed")
+        self.assertEqual(
+            (self.config / "runtime.env").read_text(),
+            f"PAPERCLIP_IMAGE={image}\n",
+        )
+        self.assertEqual((self.config / "approved-image").read_text(), image + "\n")
+        connection.close()
+
+    def test_deploy_restart_failure_restores_previous_release_pin(self):
+        with self.paths():
+            connection = broker.connect_database()
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            previous_env = (self.config / "runtime.env").read_text()
+            previous_pin = (self.config / "approved-image").read_text()
+            mock_results = [
+                (0, "", ""),  # docker pull
+                (1, "", "new release failed"),  # systemctl restart
+                (0, "", ""),  # rollback restart
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with self.assertRaisesRegex(
+                    broker.BrokerError,
+                    "service restart after deploy failed",
+                ):
+                    broker.process_request({
+                        "operation": "deploy-pinned-image",
+                        "service": "paperclip-gloops.service",
+                        "image": image,
+                        "actor": "wren-agent",
+                        "idempotencyKey": "deploy-rollback-001",
+                    }, connection=connection)
+        self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+        self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
         connection.close()
 
     def test_deploy_pinned_image_rejects_service_without_image_env(self):
@@ -714,6 +749,80 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     "service": "paperclip-gloops.service",
                 })
             self.assertIs(broker._allowlist_cache, cache)
+
+
+class PlatformOpsDeploymentWiringTests(unittest.TestCase):
+    """Prevent a tested broker from shipping without live Hermes wiring."""
+
+    def test_installer_installs_and_dark_masks_broker_unit(self):
+        installer = MODULE_PATH.with_name("install-dark.sh").read_text()
+        self.assertIn(
+            '"${SCRIPT_DIR}/paperclip-platform-ops-broker.service" '
+            "/usr/local/lib/systemd/system/paperclip-platform-ops-broker.service",
+            installer,
+        )
+        self.assertIn(
+            "systemctl disable --now paperclip-platform-ops-broker.service",
+            installer,
+        )
+        self.assertIn(
+            "systemctl mask paperclip-gloops.service "
+            "paperclip-gloops-handshake.service",
+            installer,
+        )
+        self.assertIn("paperclip-platform-ops-broker.service", installer)
+
+    def test_hermes_unit_binds_broker_lifecycle_and_socket(self):
+        unit = MODULE_PATH.with_name("paperclip-hermes-execution.service").read_text()
+        self.assertIn(
+            "Requires=docker.service paperclip-campaign-deadman.service "
+            "paperclip-github-push-broker.service "
+            "paperclip-github-read-broker.service "
+            "paperclip-platform-ops-broker.service",
+            unit,
+        )
+        self.assertIn(
+            "--mount type=bind,src=/run/paperclip-platform-ops-broker,"
+            "dst=/run/paperclip-platform-ops-broker",
+            unit,
+        )
+
+    def test_paperclip_units_source_the_install_bound_release_pin(self):
+        installer = MODULE_PATH.with_name("install-dark.sh").read_text()
+        service = MODULE_PATH.with_name("paperclip-gloops.service").read_text()
+        handshake = MODULE_PATH.with_name(
+            "paperclip-gloops-handshake.service"
+        ).read_text()
+        self.assertIn(
+            "printf 'PAPERCLIP_IMAGE=%s\\n' \"${IMAGE}\" "
+            '>>"${CONFIG_DIR}/runtime.env"',
+            installer,
+        )
+        self.assertNotIn("Environment=PAPERCLIP_IMAGE=", service)
+        self.assertNotIn("Environment=PAPERCLIP_IMAGE=", handshake)
+        self.assertIn(
+            "EnvironmentFile=/etc/paperclip-gloops/runtime.env",
+            service,
+        )
+        self.assertIn(
+            "EnvironmentFile=/etc/paperclip-gloops/runtime.env",
+            handshake,
+        )
+
+    def test_controlled_swarm_activates_and_stops_broker(self):
+        activate = MODULE_PATH.with_name("activate-controlled-swarm.sh").read_text()
+        stop = MODULE_PATH.with_name("stop-controlled-swarm.sh").read_text()
+        self.assertIn(
+            "readonly PLATFORM_OPS_BROKER='paperclip-platform-ops-broker.service'",
+            activate,
+        )
+        self.assertIn('systemctl start "${PLATFORM_OPS_BROKER}"', activate)
+        self.assertIn('systemctl is-active --quiet "${PLATFORM_OPS_BROKER}"', activate)
+        self.assertIn(
+            "systemctl stop paperclip-platform-ops-broker.service",
+            stop,
+        )
+        self.assertIn("paperclip-platform-ops-broker.service", stop)
 
 
 if __name__ == "__main__":

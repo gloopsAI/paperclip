@@ -91,6 +91,8 @@ rm -f \
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 rm -f /run/paperclip-campaign/deadman.sock
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
+sed -i '/^PAPERCLIP_IMAGE=/d' "${CONFIG_DIR}/runtime.env"
+printf 'PAPERCLIP_IMAGE=%s\n' "${IMAGE}" >>"${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/wait-paperclip-control-plane.sh" "${LIB_DIR}/wait-paperclip-control-plane.sh"
@@ -178,6 +180,7 @@ install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-handshake.servic
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-push-broker.service" /usr/local/lib/systemd/system/paperclip-github-push-broker.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-read-broker.service" /usr/local/lib/systemd/system/paperclip-github-read-broker.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-platform-ops-broker.service" /usr/local/lib/systemd/system/paperclip-platform-ops-broker.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress.service" /usr/local/lib/systemd/system/paperclip-hermes-handshake-egress.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
@@ -198,12 +201,13 @@ systemctl disable --now paperclip-gloops-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-execution.service 2>/dev/null || true
 systemctl disable --now paperclip-github-push-broker.service 2>/dev/null || true
 systemctl disable --now paperclip-github-read-broker.service 2>/dev/null || true
+systemctl disable --now paperclip-platform-ops-broker.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
-systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
+systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before
 # the first new lifecycle establishes its history baseline. No token is minted.

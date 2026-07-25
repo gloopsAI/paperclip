@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   check_inactive "${unit}"
 done
 
@@ -120,6 +120,12 @@ else
   echo "FAIL paperclip-github-push-broker.service is not masked" >&2
   failed=1
 fi
+if [[ "$(systemctl is-enabled paperclip-platform-ops-broker.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-platform-ops-broker.service is masked"
+else
+  echo "FAIL paperclip-platform-ops-broker.service is not masked" >&2
+  failed=1
+fi
 
 if [[ ! -S /run/paperclip-github-broker/broker.sock ]] \
   && [[ ! -e /etc/paperclip-gloops/github-push-authorization.json ]] \
@@ -127,6 +133,12 @@ if [[ ! -S /run/paperclip-github-broker/broker.sock ]] \
   echo "PASS GitHub push socket and replayable root authorization are absent while dark"
 else
   echo "FAIL GitHub push socket or root authorization remains while dark" >&2
+  failed=1
+fi
+if [[ ! -S /run/paperclip-platform-ops-broker/broker.sock ]]; then
+  echo "PASS no platform operations broker socket is projected while dark"
+else
+  echo "FAIL platform operations broker socket remains projected while dark" >&2
   failed=1
 fi
 
