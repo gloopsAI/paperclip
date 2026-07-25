@@ -39,11 +39,11 @@
     "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
   },
   "runtime": {
-    "image": "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca",
+    "image": "sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
     "imageAcquisition": "root-only-content-addressed-archive",
     "imageArchive": {
-      "path": "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
-      "sha256": "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"
+      "path": "/opt/paperclip/release-artifacts/hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst",
+      "sha256": "94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637"
     },
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
@@ -81,10 +81,10 @@
       "maxWallMs": 3600000
     },
     "agentHostTurnCeiling": {
-      "maxTurns": 32,
+      "maxTurns": 90,
       "authority": "outer-safety-ceiling-only",
       "taskBudgetAuthority": "paperclip-execution-admission",
-      "explicitTaskEnvelopeMustNotExceed": 32
+      "explicitTaskEnvelopeMustNotExceed": 90
     },
     "gitSafeDirectories": {
       "source": "pinned-image-plus-environment-no-credential-config",

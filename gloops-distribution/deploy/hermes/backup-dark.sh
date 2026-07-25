@@ -5,7 +5,7 @@ readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly DATABASE_DIR="${STATE_DIR}/instances/default/db"
 readonly BACKUP_ROOT='/opt/paperclip/backups'
 readonly SERVICE_FILE='/etc/systemd/system/paperclip.service'
-readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst'
+readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst'
 readonly COMMISSIONING_ROLLBACK_JOURNAL='/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json'
 
 refuse_unresolved_commissioning() {

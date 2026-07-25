@@ -27,7 +27,7 @@ readonly CRON_PROVIDER="${PROFILE_DIR}/cron-disabled/__init__.py"
 readonly TIRITH='/usr/local/lib/paperclip-gloops/tools/tirith'
 readonly TIRITH_VERSION='0.3.3'
 readonly TIRITH_SHA256='55a15bbcc726a9021c41be0e823878597560c23fec458ced3b804d1cbce19afe'
-readonly HERMES_IMAGE='sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca'
+readonly HERMES_IMAGE='sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b'
 readonly COMMAND_SECURITY_VERIFIER='/usr/local/lib/paperclip-gloops/verify-hermes-command-security-image.sh'
 failed=0
 
@@ -87,7 +87,7 @@ fi
 if docker run --rm --pull never --network none --read-only -i \
   --entrypoint /opt/hermes/.venv/bin/python \
   --mount "type=bind,src=${PROFILE_DIR}/config.yaml,dst=/config.yaml,readonly" \
-  'sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca' \
+  'sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b' \
   - /config.yaml <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
@@ -95,7 +95,7 @@ assert d["model"] == {"provider": "ollama-cloud", "default": "kimi-k2.7-code"}
 assert "fallback_providers" not in d
 assert d["cron"] == {"provider": "disabled"}
 assert d["kanban"] == {"dispatch_in_gateway": False}
-assert d["platform_toolsets"] == {"api_server": ["terminal", "skills"]}
+assert d["platform_toolsets"] == {"api_server": ["terminal", "file", "skills"]}
 assert d["platforms"] == {
     "api_server": {
         "enabled": True,
@@ -121,18 +121,44 @@ assert d["platforms"] == {
                     "model": "qwen3.5",
                     "provider": "ollama-cloud",
                 },
+                "ollama-build": {
+                    "model": "ollama-build",
+                    "provider": "moa",
+                },
             }
         },
     }
 }
-assert d["agent"]["max_turns"] == 32 and d["agent"]["verify_on_stop"] is True
+assert d["moa"] == {
+    "default_preset": "ollama-build",
+    "privacy_filter": "full",
+    "presets": {
+        "ollama-build": {
+            "reference_models": [{
+                "provider": "ollama-cloud",
+                "model": "kimi-k2.7-code",
+                "reasoning_effort": "low",
+            }],
+            "aggregator": {
+                "provider": "ollama-cloud",
+                "model": "glm-5.2",
+                "reasoning_effort": "medium",
+            },
+            "reference_max_tokens": 600,
+            "fanout": "user_turn",
+            "max_tokens": 16384,
+            "enabled": True,
+        },
+    },
+}
+assert d["agent"]["max_turns"] == 90 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
     "tirith_enabled": True,
     "tirith_path": "/opt/data/bin/tirith",
     "tirith_fail_open": False,
 }
-assert not any(key in d for key in ("plugins", "slack", "moa"))
+assert not any(key in d for key in ("plugins", "slack"))
 PY
 then
   pass 'model routes, tools, turns, verification, and channel policy are exact'
@@ -171,11 +197,11 @@ if jq -e '
   .network.apiPort == 8642 and
   .network.apiAuthentication == "bearer-key-required" and
   .network.publishedPorts == [] and
-  .runtime.image == "sha256:153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca" and
+  .runtime.image == "sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b" and
   .runtime.imageAcquisition == "root-only-content-addressed-archive" and
   .runtime.imageArchive == {
-    "path": "/opt/paperclip/release-artifacts/hermes-execution-153a30048d122dfe84bc69d7710d9de77544eac7a1073caca77bdaac1e824aca.tar.zst",
-    "sha256": "3cc435332944f18ef2e4ad043c152dfb86eaac560b9be4886876450b2e21d4d2"
+    "path": "/opt/paperclip/release-artifacts/hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst",
+    "sha256": "94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637"
   } and
   .runtime.broadHomeMounted == false and
   .runtime.broadEnvironmentSourcedAtRuntime == false and
@@ -211,10 +237,10 @@ if jq -e '
     "maxWallMs": 3600000
   } and
   .runtime.agentHostTurnCeiling == {
-    "maxTurns": 32,
+    "maxTurns": 90,
     "authority": "outer-safety-ceiling-only",
     "taskBudgetAuthority": "paperclip-execution-admission",
-    "explicitTaskEnvelopeMustNotExceed": 32
+    "explicitTaskEnvelopeMustNotExceed": 90
   } and
   .runtime.gitSafeDirectories == {
     "source": "pinned-image-plus-environment-no-credential-config",

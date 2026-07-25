@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly EXPECTED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:aa09f78bb6299bc6dc0015e18d06e9e9c667853101103d5f9bdb4b651661643e'
+readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly EXECUTION_MARKER='/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED'
 readonly HANDSHAKE_ACTIVE='/run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE'
@@ -18,6 +18,15 @@ readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
   exit 1
 }
 
+[[ -r "${APPROVED_IMAGE_FILE}" ]] || {
+  echo "approved immutable image receipt is missing" >&2
+  exit 1
+}
+readonly EXPECTED_IMAGE="$(tr -d '\r\n' < "${APPROVED_IMAGE_FILE}")"
+[[ "${EXPECTED_IMAGE}" == ghcr.io/gloopsai/paperclip-gloops@sha256:* ]] || {
+  echo "approved image receipt is not a GLoops Paperclip digest" >&2
+  exit 1
+}
 [[ "${PAPERCLIP_IMAGE:-}" == "${EXPECTED_IMAGE}" ]] || {
   echo "service image does not match the approved immutable digest" >&2
   exit 1
