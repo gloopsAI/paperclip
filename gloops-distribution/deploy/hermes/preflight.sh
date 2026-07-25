@@ -157,6 +157,14 @@ else
     echo "the root-owned GitHub push broker must be active before Hermes execution" >&2
     exit 1
   }
+  systemctl is-active --quiet paperclip-platform-ops-broker.service || {
+    echo "the root-owned platform operations broker must be active before Hermes execution" >&2
+    exit 1
+  }
+  [[ -S /run/paperclip-platform-ops-broker/broker.sock ]] || {
+    echo "the root-owned platform operations broker socket is unavailable" >&2
+    exit 1
+  }
   [[ -S /run/paperclip-github-broker/broker.sock ]] || {
     echo "the root-owned GitHub push broker socket is unavailable" >&2
     exit 1

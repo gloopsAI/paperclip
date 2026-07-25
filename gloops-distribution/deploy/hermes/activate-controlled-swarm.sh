@@ -11,6 +11,7 @@ readonly LOCK='/run/lock/paperclip-controlled-swarm.lock'
 readonly DEADMAN='paperclip-campaign-deadman.service'
 readonly HERMES='paperclip-hermes-execution.service'
 readonly GITHUB_BROKER='paperclip-github-push-broker.service'
+readonly PLATFORM_OPS_BROKER='paperclip-platform-ops-broker.service'
 readonly PAPERCLIP='paperclip-gloops.service'
 readonly COMMISSIONING_RECOVERY='paperclip-controlled-swarm-commissioning-recovery.service'
 
@@ -147,15 +148,15 @@ cleanup() {
     "${CONFIG_DIR}/github-push-authorization.sha256" \
     "${APPROVAL}" \
     "${approval_in_progress}"
-  systemctl stop "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
-  systemctl mask "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
-  systemctl reset-failed "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl stop "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl mask "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl reset-failed "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
   "${LIB_DIR}/verify-dark.sh"
   exit "${status}"
 }
 trap cleanup EXIT
 
-systemctl unmask "${DEADMAN}" "${GITHUB_BROKER}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
+systemctl unmask "${DEADMAN}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
 systemctl daemon-reload
 systemctl enable "${COMMISSIONING_RECOVERY}"
 systemctl start "${DEADMAN}"
@@ -165,11 +166,13 @@ systemctl start "${DEADMAN}"
   --require-status unarmed
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 systemctl start "${GITHUB_BROKER}"
+systemctl start "${PLATFORM_OPS_BROKER}"
 systemctl start "${HERMES}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
 systemctl start "${PAPERCLIP}"
 systemctl is-active --quiet "${DEADMAN}"
 systemctl is-active --quiet "${GITHUB_BROKER}"
+systemctl is-active --quiet "${PLATFORM_OPS_BROKER}"
 systemctl is-active --quiet "${HERMES}"
 systemctl is-active --quiet "${PAPERCLIP}"
 curl --fail --silent --show-error --max-time 5 \
@@ -207,6 +210,7 @@ receipt = {
         "paperclip": "active",
         "hermes": "active",
         "githubPushBroker": "active",
+        "platformOpsBroker": "active",
         "campaignDeadman": "active",
     },
     "campaignEpochState": "unarmed",

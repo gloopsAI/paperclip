@@ -354,7 +354,8 @@ done
 for required_credential_mount in \
   '--mount type=bind,src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly' \
   '--mount type=bind,src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker' \
-  '--mount type=bind,src=/run/paperclip-github-read-broker,dst=/run/paperclip-github-read-broker'; do
+  '--mount type=bind,src=/run/paperclip-github-read-broker,dst=/run/paperclip-github-read-broker' \
+  '--mount type=bind,src=/run/paperclip-platform-ops-broker,dst=/run/paperclip-platform-ops-broker'; do
   grep -Fq -- "${required_credential_mount}" "${UNIT}" || fail "unit is missing: ${required_credential_mount}"
 done
 grep -Fq -- '--mount type=bind,src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly' "${UNIT}" \

@@ -722,28 +722,46 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "image": image, "stderr": stderr,
         }, "failure")
         raise BrokerError(f"docker pull failed: {stderr}")
-    # Restart the service with the new image
+    # Bind both the service environment and the preflight release pin before
+    # restart. Both files are restored if the new release cannot start.
     env_file = CONFIG_DIR / "runtime.env"
-    if env_file.exists():
-        content = env_file.read_text()
-        lines = content.splitlines()
-        updated = False
-        new_lines = []
-        for line in lines:
-            if line.startswith(f"{image_env}="):
-                new_lines.append(f"{image_env}={image}")
-                updated = True
-            else:
-                new_lines.append(line)
-        if not updated:
-            new_lines.append(f"{image_env}={image}")
-        env_file.write_text("\n".join(new_lines) + "\n")
+    approved_image_file = CONFIG_DIR / "approved-image"
+    if not env_file.exists() or not approved_image_file.exists():
+        complete_receipt(connection, receipt_id, "failed", {
+            "image": image,
+            "configurationComplete": False,
+        }, "failure")
+        raise BrokerError("runtime.env and approved-image must exist before deployment")
+    previous_env = env_file.read_text(encoding="utf-8")
+    previous_approved_image = approved_image_file.read_text(encoding="utf-8")
+    previous_image = previous_approved_image.strip()
+    lines = previous_env.splitlines()
+    new_lines = [
+        line for line in lines if not line.startswith(f"{image_env}=")
+    ]
+    new_lines.append(f"{image_env}={image}")
+    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    os.chmod(env_file, 0o600)
+    approved_image_file.write_text(image + "\n", encoding="utf-8")
+    os.chmod(approved_image_file, 0o600)
     returncode, stdout, stderr = run_command(
         ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
     )
     if returncode != 0:
+        env_file.write_text(previous_env, encoding="utf-8")
+        os.chmod(env_file, 0o600)
+        approved_image_file.write_text(previous_approved_image, encoding="utf-8")
+        os.chmod(approved_image_file, 0o600)
+        rollback_code, _, rollback_stderr = run_command(
+            ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
+        )
         complete_receipt(connection, receipt_id, "failed", {
-            "image": image, "stderr": stderr,
+            "image": image,
+            "previousImage": previous_image,
+            "stderr": stderr,
+            "configurationRestored": True,
+            "rollbackRestartSucceeded": rollback_code == 0,
+            "rollbackStderr": rollback_stderr,
         }, "failure")
         raise BrokerError(f"service restart after deploy failed: {stderr}")
     time.sleep(2)
@@ -751,6 +769,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     evidence = {
         "service": service,
         "image": image,
+        "previousImage": previous_image,
         "container": container,
         "postHealth": post_health,
     }
