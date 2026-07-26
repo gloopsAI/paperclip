@@ -489,14 +489,21 @@ export function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | 
     nonEmpty(payloadTemplate.instructions) ??
     "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
   const model = nonEmpty(ctx.config.model) ?? nonEmpty(payloadTemplate.model);
+  const executionBudget = model?.endsWith(":cloud") ? undefined : ctx.executionBudget;
   return {
     ...payloadTemplate,
     ...(model ? { model } : {}),
     input,
     instructions,
-    ...(ctx.executionBudget ? { execution_budget: ctx.executionBudget } : {}),
+    ...(executionBudget ? { execution_budget: executionBudget } : {}),
     ...(sessionKey ? { session_id: sessionKey } : {}),
   };
+}
+
+function isOllamaCloudRequest(ctx: AdapterExecutionContext): boolean {
+  const payloadTemplate = parseObject(ctx.config.payloadTemplate);
+  const model = nonEmpty(ctx.config.model) ?? nonEmpty(payloadTemplate.model);
+  return model?.endsWith(":cloud") ?? false;
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
@@ -747,7 +754,7 @@ async function handleEvent(
   const budget = ctx.executionBudget;
   const isTerminalEvent = Boolean(status && TERMINAL_STATUSES.has(status));
   const estimatedOutputTokens = Math.ceil(state.outputBytes / 4);
-  const exceeded = !isTerminalEvent && budget
+  const exceeded = !isTerminalEvent && budget && !isOllamaCloudRequest(ctx)
     ? state.toolCallCount > budget.maxToolCalls
       ? "tool_calls"
       : state.turnCount > budget.maxTurns
@@ -1612,24 +1619,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   result.providerIoTerminalEvidence = providerIoTerminalEvidence;
   const requestedModel = nonEmpty(body.model);
   const resolvedModel = terminalEvidence.resolvedModel;
-  if (
-    requestedModel &&
-    !requestedModelMatchesResolvedModel(
+  if (requestedModel) {
+    const modelMatches = requestedModelMatchesResolvedModel(
       requestedModel,
       resolvedModel,
       terminalEvidence.resolvedProvider,
-    )
-  ) {
-    result.exitCode = 1;
-    result.errorCode = "execution_route.model_mismatch";
-    result.errorMessage = `Hermes resolved model ${resolvedModel} does not match requested model ${requestedModel}`;
-    result.resultJson = {
-      ...parseObject(result.resultJson),
-      status: "failed",
-      requested_model: requestedModel,
-      resolved_model: resolvedModel,
-    };
-    return result;
+    );
+    if (!modelMatches) {
+      // Ollama Cloud may substitute another cloud model while preserving the
+      // requested subscription/provider boundary. That is useful execution,
+      // not an infrastructure failure. Keep the substitution visible in the
+      // terminal receipt so routing quality can be improved without turning a
+      // completed run red. Provider changes and exact non-cloud model
+      // mismatches remain fail-closed below.
+      if (
+        terminalEvidence.resolvedProvider === "ollama-cloud"
+        && requestedModel.endsWith(":cloud")
+      ) {
+        result.resultJson = {
+          ...parseObject(result.resultJson),
+          requested_model: requestedModel,
+          resolved_model: resolvedModel,
+          route_warning: {
+            code: "execution_route.ollama_cloud_model_substituted",
+            requested_model: requestedModel,
+            resolved_model: resolvedModel,
+          },
+        };
+      } else {
+        result.exitCode = 1;
+        result.errorCode = "execution_route.model_mismatch";
+        result.errorMessage = `Hermes resolved model ${resolvedModel} does not match requested model ${requestedModel}`;
+        result.resultJson = {
+          ...parseObject(result.resultJson),
+          status: "failed",
+          requested_model: requestedModel,
+          resolved_model: resolvedModel,
+        };
+        return result;
+      }
+    }
   }
   const authoritativeExceeded = ctx.executionBudget
     ? terminalEvidence.toolCallTotal > ctx.executionBudget.maxToolCalls
@@ -1640,7 +1669,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "output_tokens"
           : null
     : null;
-  if (authoritativeExceeded) {
+  if (authoritativeExceeded && terminalEvidence.resolvedProvider !== "ollama-cloud") {
     result.exitCode = 1;
     result.errorCode = "execution_admission.provider_budget_exceeded";
     result.errorMessage = `Hermes run exceeded reserved ${authoritativeExceeded}`;
@@ -1658,6 +1687,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const normalizedTransport = normalizedObservedTransport(terminalEvidence.transportClass);
   result.resultJson = {
     ...parseObject(result.resultJson),
+    ...(authoritativeExceeded
+      ? {
+          budget_warning: {
+            code: "execution_admission.ollama_cloud_budget_exceeded",
+            exceeded: authoritativeExceeded,
+          },
+        }
+      : {}),
     // Hermes' signed terminal projection is the authoritative definition of a
     // model turn/tool call. The SSE stream is transport progress only and can
     // split one provider turn into several UI events.
