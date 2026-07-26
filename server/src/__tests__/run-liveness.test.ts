@@ -58,6 +58,43 @@ describe("run liveness classifier", () => {
     expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
   });
 
+  it("does not let a prior-run continuation blocker override current durable success", () => {
+    const latestEvidenceAt = new Date("2026-07-26T17:57:20Z");
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issueCommentBodies: [
+        "Induct is a recruiting workflow product. The next product decision is to validate the bounded-context migration.",
+      ],
+      continuationSummaryBody: [
+        "Latest run ended with failed; inspect the error before continuing.",
+        "Blockers / Decisions: workspace validation failed.",
+      ].join("\n"),
+      evidence: {
+        issueCommentsCreated: 1,
+        latestEvidenceAt,
+      },
+    });
+
+    expect(classification.livenessState).toBe("advanced");
+    expect(classification.actionability).toBe("runnable");
+    expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
+  });
+
+  it("still honors an explicit blocker produced by the current run", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      issueCommentBodies: ["I cannot proceed because the required repository credential is unavailable."],
+      continuationSummaryBody: "The previous run expected this task to be ready.",
+      evidence: {
+        issueCommentsCreated: 1,
+        latestEvidenceAt: new Date("2026-07-26T17:57:20Z"),
+      },
+    });
+
+    expect(classification.livenessState).toBe("blocked");
+    expect(classification.actionability).toBe("blocked_external");
+  });
+
   it("does not treat workspace operations alone as concrete progress", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

@@ -131,11 +131,17 @@ function resultRawText(resultJson: Record<string, unknown> | null | undefined) {
 }
 
 function highSignalSources(input: RunLivenessClassificationInput) {
-  return [
+  const currentRunSources = [
     ...(input.issueCommentBodies ?? []).map(readText),
     readText(resultFinalText(input.resultJson)),
-    readText(input.continuationSummaryBody),
   ].filter((value): value is string => Boolean(value));
+  if (currentRunSources.length > 0) return currentRunSources;
+
+  // A continuation summary describes prior runs. It is useful only as a
+  // fallback when the current run produced no durable answer or final result;
+  // otherwise an earlier blocker can incorrectly override current success.
+  return [readText(input.continuationSummaryBody)]
+    .filter((value): value is string => Boolean(value));
 }
 
 function rawSources(input: RunLivenessClassificationInput) {
