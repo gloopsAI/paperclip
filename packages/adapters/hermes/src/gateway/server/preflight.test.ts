@@ -129,6 +129,31 @@ describe("buildPreDispatchReadinessReport", () => {
     expect(report.level).toBe("blocked");
   });
 
+  it("does not require git tooling for non-implementation work without a repository binding", async () => {
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k" });
+    ctx.context.paperclipWorkspace = { cwd: "/workspace/ask-mode" };
+    ctx.context.paperclipWorkPreparation = { implementation: false };
+    const gitHead = vi.fn(async () => ({ head: null, error: "not a git repository" }));
+    const report = await buildPreDispatchReadinessReport(ctx, {
+      fsStat: async () => ({ exists: true, writable: true, isDirectory: true }),
+      gitHead,
+      probeHermesWrite: async () => ({ ok: true, reason: "ok" }),
+      probeTestRuntime: async () => ({ ok: true, reason: "ok" }),
+    });
+
+    expect(gitHead).not.toHaveBeenCalled();
+    expect(report.level).toBe("ready");
+    expect(report.ready).toBe(true);
+    expect(report.checks.find((c) => c.capability === "git_tooling")).toMatchObject({
+      passed: true,
+      detail: expect.stringContaining("not required for non-implementation work"),
+    });
+    expect(report.checks.find((c) => c.capability === "workspace_aligned")).toMatchObject({
+      passed: true,
+      detail: expect.stringContaining("not required for non-implementation work"),
+    });
+  });
+
   it("marks degraded (not blocked) when only the optional test runtime is missing", async () => {
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k" });
     ctx.context.paperclipWorkspace = { cwd: "/workspace/paperclip" };
