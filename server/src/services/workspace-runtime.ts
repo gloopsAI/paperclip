@@ -89,6 +89,28 @@ export class WorkspaceRuntimeValidationFailure extends Error {
   }
 }
 
+export const WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed" as const;
+
+// Typed pre-model setup failure: workspace preparation (fetch, base-ref
+// resolution, worktree creation/verification) failed before any provider was
+// invoked. Carries `providerInvocationAttempted: false` so admission
+// accounting treats the run as preflight-exempt (no run/retry consumed, no
+// reservation-fallback token charge) and the caller can repair and retry.
+export class WorkspacePreparationFailure extends Error {
+  code = WORKSPACE_PREPARATION_FAILURE_CODE;
+  providerInvocationAttempted = false as const;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, workspacePreparation: Record<string, unknown>) {
+    super(message);
+    this.name = "WorkspacePreparationFailure";
+    this.resultJson = {
+      provider_invocation: { attempted: false },
+      workspacePreparation: { ...workspacePreparation, message },
+    };
+  }
+}
+
 export interface RuntimeServiceRef {
   id: string;
   companyId: string;
@@ -1965,7 +1987,12 @@ async function resolveAuthoritativeBaseRef(
     return { baseRef: await detectOrHead(), warnings, refreshed: false };
   }
 
-  if (parseRemoteTrackingRef(configured)) {
+  // Only treat "<name>/<branch>" as a remote-tracking ref when <name> is a
+  // configured remote. A plain branch name that happens to contain a slash
+  // (for example "fix/hermes-supervisor-reconciliation") must fall through to
+  // the fetch-before-resolve path below instead of being used verbatim.
+  const remoteTracking = parseRemoteTrackingRef(configured);
+  if (remoteTracking && await remoteExists(repoRoot, remoteTracking.remote)) {
     return { baseRef: configured, warnings, refreshed: false };
   }
 
@@ -1983,6 +2010,38 @@ async function resolveAuthoritativeBaseRef(
       );
     }
     return { baseRef: configured, warnings, refreshed: false };
+  }
+
+  // Fetch before resolve: the configured ref may exist only on the remote (a
+  // branch the base clone never fetched) or be a commit that is not yet local
+  // (for example an abbreviated SHA from a fresh push). A stale base clone
+  // must never surface as `git worktree add ... fatal: invalid reference`.
+  if (await resolveBaseRefSha(repoRoot, configured)) {
+    return { baseRef: configured, warnings, refreshed: false };
+  }
+  if (await remoteExists(repoRoot, "origin")) {
+    const remoteCandidate = `origin/${configured}`;
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
+      return { baseRef: remoteCandidate, warnings, refreshed: true };
+    }
+    // Targeted object fetch covers full SHAs and tags when the server allows
+    // it; the pruning fetch is the general fallback that makes any pushed
+    // branch or commit (including abbreviated SHAs) resolvable locally.
+    await runGit(["fetch", "origin", configured], repoRoot).catch(() => null);
+    if (!await resolveBaseRefSha(repoRoot, configured)) {
+      try {
+        await runGit(["fetch", "--prune", "origin"], repoRoot);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `Could not fetch from origin while resolving base ref "${configured}": ${message}`,
+        );
+      }
+    }
+    if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
+      return { baseRef: remoteCandidate, warnings, refreshed: true };
+    }
   }
 
   return { baseRef: configured, warnings, refreshed: false };
@@ -2822,10 +2881,29 @@ export async function realizeExecutionWorkspace(input: {
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
 
+  // Resolve-to-exact-SHA policy: never hand `git worktree add` a ref that was
+  // not verified against the freshly fetched base clone. An unresolvable base
+  // ref is a typed pre-model setup failure the caller can repair and retry
+  // without consuming the run's provider admission reservation.
+  if (!currentBaseRefSha) {
+    throw new WorkspacePreparationFailure(
+      `Cannot resolve base ref "${baseRef}" to a commit in base checkout "${repoRoot}" after fetching from origin. The requested ref may not exist on the remote.`,
+      {
+        reason: "base_ref_unresolvable",
+        repoRoot,
+        baseRef,
+        configuredBaseRef,
+        branchName,
+        worktreePath,
+      },
+    );
+  }
+
+  let attachedExistingBranch = false;
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+      args: ["worktree", "add", "-b", branchName, worktreePath, currentBaseRefSha],
       cwd: repoRoot,
       metadata: {
         repoRoot,
@@ -2859,6 +2937,7 @@ export async function realizeExecutionWorkspace(input: {
         successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
         failureLabel: `git worktree add ${worktreePath}`,
       });
+      attachedExistingBranch = true;
     } catch (attachError) {
       if (!gitErrorIncludes(attachError, "already checked out")) {
         throw attachError;
@@ -2869,6 +2948,23 @@ export async function realizeExecutionWorkspace(input: {
       }
       return await reuseExistingWorktree(reusablePath);
     }
+  }
+  // Verified disposable worktree: the checkout must exist and, for a freshly
+  // created task branch, point at the resolved base SHA before dispatch.
+  const worktreeHeadSha = await runGit(["rev-parse", "HEAD"], worktreePath).catch(() => null);
+  if (!worktreeHeadSha || (!attachedExistingBranch && worktreeHeadSha !== currentBaseRefSha)) {
+    throw new WorkspacePreparationFailure(
+      `Git worktree at "${worktreePath}" failed verification after creation: expected HEAD ${currentBaseRefSha}, found ${worktreeHeadSha ?? "no readable HEAD"}.`,
+      {
+        reason: "worktree_verification_failed",
+        repoRoot,
+        worktreePath,
+        branchName,
+        baseRef,
+        expectedHeadSha: currentBaseRefSha,
+        actualHeadSha: worktreeHeadSha,
+      },
+    );
   }
   await provisionExecutionWorktree({
     strategy: rawStrategy,

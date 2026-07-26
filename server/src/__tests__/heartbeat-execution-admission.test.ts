@@ -705,6 +705,86 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("releases the admission reservation for a pre-model workspace preparation failure", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Workspace preparation failed before dispatch",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `PREP-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+
+    const parsedPolicy = parseExecutionAdmissionPolicy(process.env);
+    if (!parsedPolicy.enabled) throw new Error("expected enabled execution policy");
+    const failedSetupEnvelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: `issue:${issueId}:default`, epoch: "default" },
+      policy: parsedPolicy,
+      decision: evaluateExecutionAdmission(parsedPolicy, []),
+      evaluatedAt: new Date("2026-07-24T00:00:00Z"),
+    });
+    // A stale-base-clone worktree failure: the run died in setup with no
+    // usage row, before any provider invocation.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "failed",
+      errorCode: "workspace_preparation_failed",
+      error: "Cannot resolve base ref \"fix/hermes-supervisor-reconciliation\" to a commit",
+      startedAt: new Date("2026-07-24T00:00:00Z"),
+      finishedAt: new Date("2026-07-24T00:00:05Z"),
+      usageJson: null,
+      resultJson: {
+        provider_invocation: { attempted: false },
+        workspacePreparation: { reason: "base_ref_unresolvable" },
+      },
+      contextSnapshot: {
+        issueId,
+        skipIssueComment: true,
+        gloopsExecutionAdmission: failedSetupEnvelope,
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("succeeded");
+    // The setup failure neither consumed the run/retry attempt nor charged
+    // the 30k/5k reservation fallback against the task budget.
+    expect(persisted?.contextSnapshot).toMatchObject({
+      gloopsExecutionAdmission: {
+        attempt: 1,
+        decision: "allowed",
+        reason: null,
+        observed: {
+          runCount: 0,
+          retryCount: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          preflightExemptRunCount: 1,
+        },
+        reservation: {
+          maxInputTokens: 30_000,
+          maxOutputTokens: 5_000,
+        },
+      },
+    });
+  });
+
   it("creates no recovery run when a one-run task fails", async () => {
     const previousMaxRuns = process.env.PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK;
     const previousMaxRetries = process.env.PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK;

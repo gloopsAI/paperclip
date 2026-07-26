@@ -125,6 +125,8 @@ import {
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
+  WORKSPACE_PREPARATION_FAILURE_CODE,
+  WorkspacePreparationFailure,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -543,7 +545,11 @@ function isSpawnLikeFailureMessage(value: unknown) {
 export function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
-  if (run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE || run.errorCode === "process_lost") {
+  if (
+    run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE ||
+    run.errorCode === WORKSPACE_PREPARATION_FAILURE_CODE ||
+    run.errorCode === "process_lost"
+  ) {
     return true;
   }
 
@@ -1366,7 +1372,13 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
-async function ensureManagedProjectWorkspace(input: {
+async function quarantineCorruptManagedWorkspace(cwd: string): Promise<string> {
+  const quarantinePath = `${cwd}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  await fs.rename(cwd, quarantinePath);
+  return quarantinePath;
+}
+
+export async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
   repoUrl: string | null;
@@ -1386,35 +1398,53 @@ async function ensureManagedProjectWorkspace(input: {
     return { cwd, warning: null };
   }
 
+  const cloneManagedCheckout = async () => {
+    try {
+      await execFile("git", ["clone", input.repoUrl!, cwd], {
+        env: sanitizeRuntimeServiceBaseEnv(process.env),
+        timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
+    }
+  };
+
+  // Fresh clone is a fallback only: a missing/corrupt/non-git managed base
+  // workspace is quarantined and re-cloned so the fetch→resolve→worktree
+  // path can proceed, instead of failing every run with
+  // "base workspace ... is not a git checkout".
   const gitDirExists = await fs
     .stat(path.resolve(cwd, ".git"))
     .then((entry) => entry.isDirectory())
     .catch(() => false);
   if (gitDirExists) {
-    return { cwd, warning: null };
+    if (await isGitCheckout(cwd)) {
+      return { cwd, warning: null };
+    }
+    const quarantinePath = await quarantineCorruptManagedWorkspace(cwd);
+    await cloneManagedCheckout();
+    return {
+      cwd,
+      warning: `Managed workspace at "${cwd}" was a corrupt git checkout; moved it to "${quarantinePath}" and re-cloned "${input.repoUrl}".`,
+    };
   }
 
   if (stats) {
     const entries = await fs.readdir(cwd).catch(() => []);
     if (entries.length > 0) {
+      const quarantinePath = await quarantineCorruptManagedWorkspace(cwd);
+      await cloneManagedCheckout();
       return {
         cwd,
-        warning: `Managed workspace path "${cwd}" already exists but is not a git checkout. Using it as-is.`,
+        warning: `Managed workspace path "${cwd}" existed but was not a git checkout; moved it to "${quarantinePath}" and re-cloned "${input.repoUrl}".`,
       };
     }
     await fs.rm(cwd, { recursive: true, force: true });
   }
 
-  try {
-    await execFile("git", ["clone", input.repoUrl, cwd], {
-      env: sanitizeRuntimeServiceBaseEnv(process.env),
-      timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
-    });
-    return { cwd, warning: null };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
-  }
+  await cloneManagedCheckout();
+  return { cwd, warning: null };
 }
 
 type WorkspaceValidationFailureLike = WorkspaceValidationFailure | {
@@ -1504,6 +1534,29 @@ export function isWorkspaceNotWritableFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
+}
+
+type WorkspacePreparationFailureLike = WorkspacePreparationFailure | {
+  code: typeof WORKSPACE_PREPARATION_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+};
+
+export function isWorkspacePreparationFailure(error: unknown): error is WorkspacePreparationFailureLike {
+  if (error instanceof WorkspacePreparationFailure) return true;
+  const maybe = error as { code?: unknown; resultJson?: unknown } | null;
+  return Boolean(
+    maybe &&
+      maybe.code === WORKSPACE_PREPARATION_FAILURE_CODE &&
+      maybe.resultJson &&
+      typeof maybe.resultJson === "object" &&
+      !Array.isArray(maybe.resultJson),
+  );
+}
+
+export function isWorkspacePreparationFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === WORKSPACE_PREPARATION_FAILURE_CODE;
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -13212,6 +13265,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             resolvedInstanceSettings.experimental.enableWorkspaceDirtyQuarantineRepair,
           recorder: workspaceOperationRecorder,
         }),
+      }).catch((error) => {
+        // Every failure while preparing the git workspace happens strictly
+        // before provider invocation. Preserve already-typed preflight
+        // failures and wrap anything else (for example a raw git error) as a
+        // typed pre-model workspace preparation failure so it cannot consume
+        // the run's admission reservation or run/retry budget.
+        if (
+          isWorkspaceValidationFailure(error) ||
+          isConfigurationIncompleteFailure(error) ||
+          isWorkspaceNotWritableFailure(error) ||
+          isWorkspacePreparationFailure(error)
+        ) {
+          throw error;
+        }
+        const cause = error instanceof Error ? error.message : String(error);
+        throw new WorkspacePreparationFailure(
+          `Execution workspace preparation failed before provider invocation: ${cause}`,
+          {
+            reason: "workspace_provisioning_failed",
+            runId: run.id,
+            issueId,
+            cause,
+          },
+        );
       });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
@@ -15321,12 +15398,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
           const workspaceNotWritableSetupFailure = isWorkspaceNotWritableFailure(outerErr) ? outerErr : null;
+          const workspacePreparationSetupFailure = isWorkspacePreparationFailure(outerErr) ? outerErr : null;
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
             workspaceNotWritableSetupFailure?.code ??
+            workspacePreparationSetupFailure?.code ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
@@ -15341,6 +15420,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorMessage: message,
                 resultJson:
                   workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ??
+                  workspacePreparationSetupFailure?.resultJson ??
                   (workspaceNotWritableSetupFailure
                     ? {
                         provider_invocation: { attempted: false },
@@ -15399,7 +15479,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               if (
                 !isWorkspaceValidationFailedRun(livenessRun) &&
                 !isConfigurationIncompleteFailedRun(livenessRun) &&
-                !isWorkspaceNotWritableFailedRun(livenessRun)
+                !isWorkspaceNotWritableFailedRun(livenessRun) &&
+                !isWorkspacePreparationFailedRun(livenessRun)
               ) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
