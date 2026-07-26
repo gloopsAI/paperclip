@@ -379,6 +379,61 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("passes the computed work-preparation receipt to the adapter execution context", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Answer a repository-free product question",
+      status: "todo",
+      workMode: "ask",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `ASK-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        paperclipWorkPreparation: expect.objectContaining({
+          decision: "ready",
+          implementation: false,
+          workspace: expect.objectContaining({
+            required: false,
+          }),
+        }),
+      }),
+    }));
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.contextSnapshot).toMatchObject({
+      paperclipWorkPreparation: {
+        decision: "ready",
+        implementation: false,
+        workspace: {
+          required: false,
+        },
+      },
+    });
+  });
+
   it("passes a larger explicit coding envelope through claim-time admission to the adapter", async () => {
     const { companyId, agentId } = await seedDirectAgent();
     const issueId = randomUUID();

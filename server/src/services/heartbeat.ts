@@ -14316,13 +14316,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           maxBytes: 16_000,
         },
       });
+      context[WORK_PREPARATION_CONTEXT_KEY] = workPreparation;
       await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: {
-            ...context,
-            [WORK_PREPARATION_CONTEXT_KEY]: workPreparation,
-          },
+          contextSnapshot: context,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
