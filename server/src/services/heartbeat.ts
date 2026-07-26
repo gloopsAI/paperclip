@@ -13586,11 +13586,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
+    const existingExecutionContext = readBoundExecutionContext(
+      context[PAPERCLIP_EXECUTION_CONTEXT_KEY],
+    );
+    const existingExecutionAuthority = parseObject(
+      existingExecutionContext?.packet.authority,
+    );
+    const retryCarriesStaleRunBinding =
+      Boolean(readNonEmptyString(context.retryOfRunId)) &&
+      readNonEmptyString(existingExecutionAuthority.runId) !== run.id;
     if (
       issueRef &&
-      (context[PAPERCLIP_EXECUTION_CONTEXT_KEY] === null ||
-        context[PAPERCLIP_EXECUTION_CONTEXT_KEY] === undefined)
+      (!existingExecutionContext || retryCarriesStaleRunBinding)
     ) {
+      // Retry rows intentionally inherit the prior run's context so they can
+      // continue the same task. The execution authority is the exception: it
+      // is run-scoped and must be rebound before dispatch, otherwise a
+      // successful retry cannot produce a trusted terminal receipt.
       const packet = buildCanonicalContinuationPacket({
         issue: {
           id: issueRef.id,

@@ -347,6 +347,47 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(serialized).not.toContain("paperclipSessionHandoffMarkdown");
     expect(serialized).not.toContain("resumedSessionTranscript");
     expect(serialized).not.toContain("paperclipContinuationSummary");
+
+    await db.update(issues).set({ status: "in_progress", updatedAt: new Date() }).where(eq(issues.id, issueId));
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        providerInvocationAttempted: false,
+        summary: "Compact packet retry binding test run.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const retryRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_retry",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        retryOfRunId: run!.id,
+        [PAPERCLIP_EXECUTION_CONTEXT_KEY]:
+          adapterInput.context[PAPERCLIP_EXECUTION_CONTEXT_KEY],
+      },
+    });
+
+    expect(retryRun).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(retryRun!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    const retryAdapterInput = adapterExecute.mock.calls[1]?.[0] as {
+      context: Record<string, unknown>;
+    };
+    const retryBinding = readBoundExecutionContext(
+      retryAdapterInput.context[PAPERCLIP_EXECUTION_CONTEXT_KEY],
+    );
+    expect(retryBinding?.packet.authority.runId).toBe(retryRun!.id);
   });
 
   async function seedAcceptedPlanClaim(args: {
