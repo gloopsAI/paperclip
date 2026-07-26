@@ -1067,18 +1067,23 @@ function preflightGateRefusal(input: {
   // capability and test runtime are informational and surface downstream via
   // the actual /v1/runs call. This mirrors the production guard contract:
   // a `blocked` readiness must mean the run cannot succeed structurally.
+  const workPreparation = asRecord(input.ctx.context.paperclipWorkPreparation);
+  const preparedWorkspace = asRecord(workPreparation?.workspace);
+  const workspaceRequired = preparedWorkspace?.required !== false;
   const blockingCapabilities = new Set([
-    "workspace_present",
-    "workspace_writable",
-    "workspace_aligned",
+    ...(workspaceRequired
+      ? ["workspace_present", "workspace_writable", "workspace_aligned"]
+      : []),
     "binding_valid",
   ]);
   const readinessHardBlocked = input.readiness.checks.some(
     (c) => !c.passed && blockingCapabilities.has(c.capability),
   );
-  const workspaceFailed = !input.workspace.clean
+  const workspaceFailed = workspaceRequired && (
+    !input.workspace.clean
     || (input.workspace.error
-      && !input.workspace.error.startsWith("Required tool missing"));
+      && !input.workspace.error.startsWith("Required tool missing"))
+  );
   if (!readinessHardBlocked && !workspaceFailed) return null;
   const reason = readinessHardBlocked
     ? "preflight_readiness_blocked"
