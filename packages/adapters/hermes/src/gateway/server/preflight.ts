@@ -604,6 +604,24 @@ export async function prepareWorkspaceBeforeDispatch(
     };
   }
   let writable = status.writable;
+  const workPreparation = asRecord(ctx.context.paperclipWorkPreparation);
+  const repoToolingRequired = workPreparation?.implementation !== false
+    || workspace.ref !== null
+    || workspace.repoUrl !== null
+    || expected !== null;
+  if (!repoToolingRequired) {
+    return {
+      schemaVersion: "gloops.hermes.workspace-preparation.v1",
+      expected: null,
+      actual: null,
+      clean: true,
+      writable,
+      testRuntimeOk: null,
+      applyPatchOk: null,
+      error: null,
+      observedAt,
+    };
+  }
   const head = await runProcess("git", ["rev-parse", "HEAD"]);
   if (head.exitCode !== 0) {
     return {

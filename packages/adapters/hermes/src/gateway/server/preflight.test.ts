@@ -375,6 +375,30 @@ describe("prepareWorkspaceBeforeDispatch", () => {
     expect(result.testRuntimeOk).toBe(true);
   });
 
+  it("skips repository preparation for non-implementation work without a repository binding", async () => {
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "k" });
+    ctx.context.paperclipWorkspace = { cwd: "/workspace/ask-mode" };
+    ctx.context.paperclipWorkPreparation = { implementation: false };
+    const runProcess = vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "not a git repository" }));
+    const result = await prepareWorkspaceBeforeDispatch(ctx, null, {
+      probe: {
+        fsStat: async () => ({ exists: true, writable: true, isDirectory: true }),
+        runProcess,
+      },
+    });
+
+    expect(runProcess).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      expected: null,
+      actual: null,
+      clean: true,
+      writable: true,
+      testRuntimeOk: null,
+      applyPatchOk: null,
+      error: null,
+    });
+  });
+
   it("passes workspace cwd to the default git probe", async () => {
     const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "key-1" });
     ctx.context.paperclipWorkspace = { cwd: "/workspace/paperclip" };
