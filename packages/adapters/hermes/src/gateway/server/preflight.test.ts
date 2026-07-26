@@ -261,6 +261,35 @@ describe("reconcileTerminalAcrossProjections", () => {
     expect(report.disposition).toBe("missing_run_evidence");
   });
 
+  it("returns unreconciled when both issue and pr projections are null", () => {
+    const run = buildRunEvidence();
+    const report = reconcileTerminalAcrossProjections({
+      runTerminalEvidence: run,
+      issueProjection: null,
+      prProjection: null,
+    });
+    expect(report.disposition).toBe("unreconciled");
+    expect(report.mismatches).toEqual([]);
+  });
+
+  it("digest is stable across replays even when observedAt differs", () => {
+    const run = buildRunEvidence();
+    const input = {
+      runTerminalEvidence: run,
+      issueProjection: {
+        issueId: "issue-1",
+        terminalEvidenceDigest: run.terminalEvidenceDigest,
+        terminalStatus: "completed",
+        hermesRunId: "run-1",
+      },
+      prProjection: null,
+    } as const;
+    const a = reconcileTerminalAcrossProjections(input);
+    const b = reconcileTerminalAcrossProjections(input);
+    expect(a.digest).toEqual(b.digest);
+    expect(a.observedAt).not.toEqual(b.observedAt);
+  });
+
   it("is idempotent for the same canonicalized inputs", () => {
     const run = buildRunEvidence();
     const a = reconcileTerminalAcrossProjections({
@@ -320,6 +349,29 @@ describe("prepareWorkspaceBeforeDispatch", () => {
     expect(result.writable).toBe(true);
     expect(result.applyPatchOk).toBe(true);
     expect(result.testRuntimeOk).toBe(true);
+  });
+
+  it("passes workspace cwd to the default git probe", async () => {
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "key-1" });
+    ctx.context.paperclipWorkspace = { cwd: "/workspace/paperclip" };
+    const result = await prepareWorkspaceBeforeDispatch(ctx, null, {
+      probe: {
+        fsStat: async () => ({ exists: true, writable: true, isDirectory: true }),
+        runProcess: async (command, args) => {
+          if (command === "git" && args[0] === "rev-parse") {
+            return { exitCode: 0, stdout: "a".repeat(40) + "\n", stderr: "" };
+          }
+          if (command === "git" && args[0] === "status") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      applyPatchPath: "/opt/data/bin/apply_patch",
+      focusedTestPath: "/opt/data/bin/focused_test",
+    });
+    expect(result.error).toBeNull();
+    expect(result.actual).toBe("a".repeat(40));
   });
 
   it("returns error when HEAD does not match the declared head", async () => {
@@ -396,6 +448,30 @@ describe("prepareWorkspaceBeforeDispatch", () => {
       focusedTestPath: "/opt/data/bin/focused_test",
     });
     expect(result.error).toMatch(/uncommitted/);
+  });
+
+  it("runs on exact-head path even when legacy verifyWorkspaceBeforeDispatch was skipped", async () => {
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "key-1" });
+    ctx.context.paperclipWorkspace = { cwd: "/workspace/paperclip" };
+    const result = await prepareWorkspaceBeforeDispatch(ctx, null, {
+      probe: {
+        fsStat: async () => ({ exists: true, writable: true, isDirectory: true }),
+        runProcess: async (command, args) => {
+          if (command === "git" && args[0] === "rev-parse") {
+            return { exitCode: 0, stdout: "a".repeat(40) + "\n", stderr: "" };
+          }
+          if (command === "git" && args[0] === "status") {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+      applyPatchPath: "/opt/data/bin/apply_patch",
+      focusedTestPath: "/opt/data/bin/focused_test",
+    });
+    expect(result.error).toBeNull();
+    expect(result.actual).toBe("a".repeat(40));
+    expect(result.clean).toBe(true);
   });
 });
 

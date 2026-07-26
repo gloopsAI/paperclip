@@ -1380,14 +1380,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Supervisor closure — preflight gate immediately before provider invocation.
   // Readiness + workspace preparation must succeed; pre-model rejection must
   // surface the released reservation so the supervisor can return the budget
-  // to the pool without consuming any model tokens. The gate only runs when
-  // a workspace cwd is configured AND the existing verifyWorkspaceBeforeDispatch
-  // did not already enforce a declared head. This keeps legacy test paths
-  // (no declared head, no workspace cwd) untouched.
+  // to the pool without consuming any model tokens. The gate runs whenever a
+  // workspace cwd is configured, even if verifyWorkspaceBeforeDispatch already
+  // validated the exact head, so the preflight summary is always available for
+  // the supervisor repair ladder.
   const workspaceForGate = asRecord(ctx.context.paperclipWorkspace);
   const gateCwd = nonEmpty(workspaceForGate?.cwd);
-  const gateActive = !!gateCwd && (!workspaceVerification || "clean" in workspaceVerification);
-  if (gateActive && !workspaceVerification) {
+  const gateActive = !!gateCwd;
+  if (gateActive) {
     const preflightReadiness = await buildPreDispatchReadinessReport(ctx);
     const preflightWorkspace = await prepareWorkspaceBeforeDispatch(ctx, binding);
     const preflightRefusal = preflightGateRefusal({
@@ -1613,6 +1613,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // at the existing reconciliation boundary. The terminal_reconciliation report
   // uses the run evidence digest so the supervisor can dedupe across runs.
   // The resume ledger records the terminal side effect to prevent replay.
+  // When there is no issue/pr projection, preserve null projections as
+  // unreconciled and produce an advisory-only repair ladder.
   const terminalReconciliation = reconcileTerminalAcrossProjections({
     runTerminalEvidence: providerIoTerminalEvidence,
     issueProjection: null,
@@ -1629,7 +1631,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     terminalReconciliation.digest,
   );
   const repairDecision = evaluateRepairLadder({
-    errorCode: null,
+    errorCode: terminalReconciliation.disposition === "unreconciled" ? null : terminalReconciliation.disposition,
     attempt: 0,
     observedAt: new Date().toISOString(),
   });

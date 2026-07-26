@@ -425,7 +425,7 @@ export function reconcileTerminalAcrossProjections(input: TerminalReconciliation
     return {
       schemaVersion: "gloops.hermes.terminal-reconciliation.v1",
       disposition: "missing_run_evidence",
-      digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, observedAt, kind: "missing-run" })),
+      digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, kind: "missing-run" })),
       observedAt,
       mismatches: ["run terminal evidence is missing or malformed"],
     };
@@ -434,7 +434,7 @@ export function reconcileTerminalAcrossProjections(input: TerminalReconciliation
     return {
       schemaVersion: "gloops.hermes.terminal-reconciliation.v1",
       disposition: "missing_issue_projection",
-      digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, observedAt, kind: "bad-issue" })),
+      digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, kind: "bad-issue" })),
       observedAt,
       mismatches: ["issue projection digest is malformed"],
     };
@@ -443,7 +443,7 @@ export function reconcileTerminalAcrossProjections(input: TerminalReconciliation
     return {
       schemaVersion: "gloops.hermes.terminal-reconciliation.v1",
       disposition: "missing_pr_evidence",
-      digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, observedAt, kind: "bad-pr" })),
+      digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, kind: "bad-pr" })),
       observedAt,
       mismatches: ["pr projection digest is malformed"],
     };
@@ -479,7 +479,7 @@ export function reconcileTerminalAcrossProjections(input: TerminalReconciliation
   return {
     schemaVersion: "gloops.hermes.terminal-reconciliation.v1",
     disposition,
-    digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, mismatches, observedAt })),
+    digest: sha256(stableStringify({ runDigest, issueDigest, prDigest, mismatches })),
     observedAt,
     mismatches,
   };
@@ -538,7 +538,7 @@ export async function prepareWorkspaceBeforeDispatch(
   });
   const runProcess = options.probe?.runProcess ?? (async (command: string, args: string[]) => {
     try {
-      const { stdout, stderr } = await execFileAsync(command, args);
+      const { stdout, stderr } = await execFileAsync(command, args, { cwd: workspace.cwd ?? undefined });
       return { exitCode: 0, stdout, stderr };
     } catch (error) {
       const e = error as { stdout?: string; stderr?: string; message?: string };
