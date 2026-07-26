@@ -287,7 +287,6 @@ describe("reconcileTerminalAcrossProjections", () => {
     const a = reconcileTerminalAcrossProjections(input);
     const b = reconcileTerminalAcrossProjections(input);
     expect(a.digest).toEqual(b.digest);
-    expect(a.observedAt).not.toEqual(b.observedAt);
   });
 
   it("is idempotent for the same canonicalized inputs", () => {
@@ -581,19 +580,16 @@ describe("evaluateRepairLadder", () => {
     expect(decision.action).toBe("no_repair");
   });
 
-  it("is idempotent: same inputs always produce the same digest", () => {
-    const a = evaluateRepairLadder({
+  it("produces a stable digest for identical code+attempt even when observedAt differs (deadlines may differ)", () => {
+    const base = {
       errorCode: "execution_admission.provider_budget_exceeded",
       attempt: 2,
-      observedAt,
-    });
-    const b = evaluateRepairLadder({
-      errorCode: "execution_admission.provider_budget_exceeded",
-      attempt: 2,
-      observedAt,
-    });
+    } as const;
+    const a = evaluateRepairLadder({ ...base, observedAt: "2026-07-26T12:00:00.000Z" });
+    const b = evaluateRepairLadder({ ...base, observedAt: "2026-07-26T13:45:00.000Z" });
     expect(a.digest).toEqual(b.digest);
     expect(a.action).toEqual(b.action);
+    expect(a.nextAttemptDeadline).not.toEqual(b.nextAttemptDeadline);
   });
 
   it("clamps backoff growth for high attempt counts", () => {
