@@ -1838,3 +1838,83 @@ describe("mapFinalResultForTest", () => {
     });
   });
 });
+
+describe("supervisor operational closure integration", () => {
+  it("surfaces a released_reservation in the preflight refusal when the workspace preparation fails", async () => {
+    const fetchMock = vi.fn();
+    stubEvidencedFetch(fetchMock);
+    const cwd = await mkdtemp(join(tmpdir(), "paperclip-hermes-preflight-"));
+    try {
+      const ctx = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "sk-secret-key",
+      });
+      // Point at an empty tempdir that is not a git repository — this triggers
+      // the workspace preparation failure path in preflight.ts.
+      ctx.context.paperclipWorkspace = { cwd };
+      ctx.executionBudget = {
+        schemaVersion: "paperclip.provider-invocation-budget.v1",
+        budgetId: "budget-preflight",
+        reservationId: "g".repeat(64),
+        maxInputTokens: 2_000,
+        maxOutputTokens: 500,
+        maxTurns: 5,
+        maxToolCalls: 20,
+        maxWallMs: 60_000,
+      };
+      const result = await execute(ctx);
+      expect(result.exitCode).toBe(1);
+      // The empty tempdir is not a git repository, so the readiness check
+      // reports workspace_aligned as failed (cannot verify alignment without
+      // git rev-parse) — that is a blocking readiness failure.
+      expect(result.errorCode).toBe("preflight_readiness_blocked");
+      expect(result.providerInvocationAttempted).toBe(false);
+      expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 });
+      // The provider was never dispatched: only the readiness health probe
+      // (fetchMock) is allowed to be called. /v1/runs must not be hit.
+      const v1RunsCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/v1/runs"));
+      expect(v1RunsCalls).toHaveLength(0);
+      const preflight = (result.resultJson as { preflight?: { releasedReservation?: { schemaVersion?: string; budgetId?: string; releasedInputTokens?: number } } }).preflight;
+      expect(preflight?.releasedReservation?.schemaVersion).toBe("gloops.hermes.budget-release.v1");
+      expect(preflight?.releasedReservation?.budgetId).toBe("budget-preflight");
+      expect(preflight?.releasedReservation?.releasedInputTokens).toBe(2_000);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("attaches terminal_reconciliation, resume_ledger, and repair_ladder on a successful run", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "integration-1" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock);
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "sk-secret-key",
+    }));
+    expect(result.exitCode).toBe(0);
+    const rj = result.resultJson as {
+      terminal_reconciliation?: { schemaVersion?: string; disposition?: string };
+      resume_ledger?: { schemaVersion?: string; entries?: Array<{ effect: string }> };
+      repair_ladder?: { schemaVersion?: string; action?: string };
+    };
+    expect(rj.terminal_reconciliation?.schemaVersion).toBe("gloops.hermes.terminal-reconciliation.v1");
+    expect(rj.terminal_reconciliation?.disposition).toBe("unreconciled");
+    expect(rj.resume_ledger?.schemaVersion).toBe("gloops.hermes.resume-ledger.v1");
+    const effectNames = (rj.resume_ledger?.entries ?? []).map((e) => e.effect);
+    expect(effectNames).toContain("terminal_event_observed");
+    expect(effectNames).toContain("terminal_reconciliation_succeeded");
+    expect(rj.repair_ladder?.schemaVersion).toBe("gloops.hermes.repair-ladder.v1");
+    expect(rj.repair_ladder?.action).toBe("no_repair");
+  });
+});

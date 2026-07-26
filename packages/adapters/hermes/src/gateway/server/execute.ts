@@ -41,6 +41,16 @@ import {
   reconcileProviderIoEvidence,
   type ParsedJsonEntity,
 } from "./provider-evidence.js";
+import {
+  buildPreDispatchReadinessReport,
+  buildPreflightSummary,
+  buildReleasedReservation,
+  prepareWorkspaceBeforeDispatch,
+  readResumeLedger,
+  recordResumeSideEffect,
+  reconcileTerminalAcrossProjections,
+  evaluateRepairLadder,
+} from "./preflight.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -1040,6 +1050,72 @@ function deterministicRefusal(input: {
   };
 }
 
+/**
+ * Supervisor closure — gate before provider invocation. Returns a refusal with
+ * a `released_reservation` block when either the readiness report is `blocked`
+ * or the workspace preparation reports an error. The reservation is included
+ * only when the budget was never consumed (pre-model failure).
+ */
+function preflightGateRefusal(input: {
+  ctx: AdapterExecutionContext;
+  readiness: Awaited<ReturnType<typeof buildPreDispatchReadinessReport>>;
+  workspace: Awaited<ReturnType<typeof prepareWorkspaceBeforeDispatch>>;
+  routeFacts: ConfiguredExecutionRouteFacts;
+  model: string | null;
+}): AdapterExecutionResult | null {
+  // The integration gate blocks only on workspace/binding failures; api write
+  // capability and test runtime are informational and surface downstream via
+  // the actual /v1/runs call. This mirrors the production guard contract:
+  // a `blocked` readiness must mean the run cannot succeed structurally.
+  const blockingCapabilities = new Set([
+    "workspace_present",
+    "workspace_writable",
+    "workspace_aligned",
+    "binding_valid",
+  ]);
+  const readinessHardBlocked = input.readiness.checks.some(
+    (c) => !c.passed && blockingCapabilities.has(c.capability),
+  );
+  const workspaceFailed = !input.workspace.clean
+    || (input.workspace.error
+      && !input.workspace.error.startsWith("Required tool missing"));
+  if (!readinessHardBlocked && !workspaceFailed) return null;
+  const reason = readinessHardBlocked
+    ? "preflight_readiness_blocked"
+    : `preflight_workspace_${input.workspace.clean ? "tooling_missing" : "preparation_failed"}`;
+  const errorCode = readinessHardBlocked
+    ? "preflight_readiness_blocked"
+    : !input.workspace.clean
+      ? "preflight_workspace_preparation_failed"
+      : "preflight_workspace_tooling_missing";
+  const releasedReservation = buildReleasedReservation(
+    input.ctx.executionBudget,
+    ZERO_USAGE,
+    { turnCount: 0, toolCallCount: 0, wallMs: 0 },
+    reason,
+  );
+  const resumeLedger = readResumeLedger(input.ctx, input.ctx.runId);
+  const summary = buildPreflightSummary({
+    runId: input.readiness.runId,
+    readiness: input.readiness,
+    workspacePreparation: input.workspace,
+    resumeLedger,
+    releasedReservation,
+  });
+  return deterministicRefusal({
+    errorCode,
+    errorMessage: readinessHardBlocked
+      ? `Readiness blocked: ${input.readiness.checks.filter((c) => !c.passed).map((c) => `${c.capability} (${c.detail})`).join("; ")}`
+      : `Workspace preparation failed: ${input.workspace.error ?? "workspace not clean"}`,
+    model: input.model,
+    routeFacts: input.routeFacts,
+    resultJson: {
+      preflight: summary,
+      ...(releasedReservation ? { released_reservation: releasedReservation } : {}),
+    },
+  });
+}
+
 function mergeTerminalPayload(
   terminal: TerminalState,
   finalStatus: Record<string, unknown> | null,
@@ -1377,6 +1453,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       routeFacts,
     });
   }
+  // Supervisor closure — preflight gate immediately before provider invocation.
+  // Readiness + workspace preparation must succeed; pre-model rejection must
+  // surface the released reservation so the supervisor can return the budget
+  // to the pool without consuming any model tokens. The gate runs whenever a
+  // workspace cwd is configured, even if verifyWorkspaceBeforeDispatch already
+  // validated the exact head, so the preflight summary is always available for
+  // the supervisor repair ladder.
+  const workspaceForGate = asRecord(ctx.context.paperclipWorkspace);
+  const gateCwd = nonEmpty(workspaceForGate?.cwd);
+  const gateActive = !!gateCwd;
+  if (gateActive) {
+    const preflightReadiness = await buildPreDispatchReadinessReport(ctx);
+    const preflightWorkspace = await prepareWorkspaceBeforeDispatch(ctx, binding);
+    const preflightRefusal = preflightGateRefusal({
+      ctx,
+      readiness: preflightReadiness,
+      workspace: preflightWorkspace,
+      routeFacts,
+      model: nonEmpty(parseObject(body).model),
+    });
+    if (preflightRefusal) {
+      return preflightRefusal;
+    }
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
   const serializedBody = JSON.stringify(body);
   const requestSha256 = `sha256:${createHash("sha256").update(serializedBody, "utf8").digest("hex")}`;
@@ -1585,6 +1685,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
     };
   }
+  // Supervisor closure — terminal reconciliation and resume ledger are wired
+  // at the existing reconciliation boundary. The terminal_reconciliation report
+  // uses the run evidence digest so the supervisor can dedupe across runs.
+  // The resume ledger records the terminal side effect to prevent replay.
+  // When there is no issue/pr projection, preserve null projections as
+  // unreconciled and produce an advisory-only repair ladder.
+  const terminalReconciliation = reconcileTerminalAcrossProjections({
+    runTerminalEvidence: providerIoTerminalEvidence,
+    issueProjection: null,
+    prProjection: null,
+  });
+  const resumeLedger = readResumeLedger(ctx, ctx.runId);
+  const ledgerWithTerminal = recordResumeSideEffect(
+    recordResumeSideEffect(
+      resumeLedger,
+      "terminal_event_observed",
+      providerIoTerminalEvidence.terminalEvidenceDigest,
+    ),
+    "terminal_reconciliation_succeeded",
+    terminalReconciliation.digest,
+  );
+  const repairDecision = evaluateRepairLadder({
+    errorCode: terminalReconciliation.disposition === "unreconciled" ? null : terminalReconciliation.disposition,
+    attempt: 0,
+    observedAt: new Date().toISOString(),
+  });
   const result = mapFinalResultForTest({
     terminal: mergeTerminalPayload(outcome, finalStatus.value),
     outputChunks: state.outputChunks,
@@ -1718,6 +1844,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     },
     ...(workspaceVerification ? { workspace: workspaceVerification } : {}),
     final_status_reconciled: true,
+    terminal_reconciliation: terminalReconciliation,
+    resume_ledger: ledgerWithTerminal,
+    repair_ladder: repairDecision,
   };
   return result;
 }
