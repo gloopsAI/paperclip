@@ -238,6 +238,11 @@ export async function buildPreDispatchReadinessReport(
 
   // 2) workspace_aligned + git_tooling
   const { expected, error: expectedError } = configuredExpectedHead(ctx, binding);
+  const workPreparation = asRecord(ctx.context.paperclipWorkPreparation);
+  const repoToolingRequired = workPreparation?.implementation !== false
+    || workspace.ref !== null
+    || workspace.repoUrl !== null
+    || expected !== null;
   if (expectedError) {
     checks.push({
       capability: "workspace_aligned",
@@ -248,6 +253,17 @@ export async function buildPreDispatchReadinessReport(
       capability: "git_tooling",
       passed: false,
       detail: "Skipped due to invalid expected head",
+    });
+  } else if (!repoToolingRequired) {
+    checks.push({
+      capability: "git_tooling",
+      passed: true,
+      detail: "Git tooling is not required for non-implementation work without a repository binding",
+    });
+    checks.push({
+      capability: "workspace_aligned",
+      passed: true,
+      detail: "Repository alignment is not required for non-implementation work without a repository binding",
     });
   } else if (!workspace.cwd) {
     checks.push({
