@@ -854,7 +854,7 @@ export function evaluateRepairLadder(input: RepairLadderInput): RepairLadderDeci
     schemaVersion: "gloops.hermes.repair-ladder.v1",
     action,
     reason,
-    digest: sha256(stableStringify({ code, attempt: input.attempt, observedAt })),
+    digest: sha256(stableStringify({ code, attempt: input.attempt })),
     nextAttemptDeadline,
   };
 }
