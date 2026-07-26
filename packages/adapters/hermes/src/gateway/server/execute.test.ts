@@ -1840,6 +1840,46 @@ describe("mapFinalResultForTest", () => {
 });
 
 describe("supervisor operational closure integration", () => {
+  it("does not require a workspace for repository-free non-implementation work", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "repo-free-ask-1" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"output\":\"done\"}\n\n"),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    stubEvidencedFetch(fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "sk-secret-key",
+    });
+    ctx.context.paperclipWorkspace = {
+      cwd: join(tmpdir(), `paperclip-repo-free-missing-${Date.now()}`),
+    };
+    ctx.context.paperclipWorkPreparation = {
+      implementation: false,
+      workspace: {
+        required: false,
+        ready: true,
+        repoRef: null,
+        repoUrl: null,
+      },
+    };
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.providerInvocationAttempted).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(true);
+  });
+
   it("surfaces a released_reservation in the preflight refusal when the workspace preparation fails", async () => {
     const fetchMock = vi.fn();
     stubEvidencedFetch(fetchMock);
