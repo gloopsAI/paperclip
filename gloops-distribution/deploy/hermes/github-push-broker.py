@@ -32,6 +32,7 @@ RUN_ID_PATTERN = re.compile(
 SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MANIFEST_PATTERN = re.compile(r"^[0-9a-f-]{36}-[0-9a-f]{32}\.json$")
+DRAFT_PR_TITLE_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ()\[\]:,._/-]{0,79}$")
 MAX_REQUEST_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
 MAX_PACK_BYTES = 64 * 1024 * 1024
@@ -320,31 +321,52 @@ def assert_quiescent(connection: sqlite3.Connection) -> None:
         )
 
 
-def load_authorization() -> tuple[dict[str, Any], str]:
-    authorization = exact_keys(
-        json.loads(read_root_secret(AUTHORIZATION, "GitHub push authorization")),
-        {
-            "schemaVersion",
-            "calibrationId",
-            "campaignId",
-            "companyId",
-            "paperclipRunId",
-            "issueId",
-            "agentId",
-            "projectId",
-            "projectWorkspaceId",
-            "repositoryId",
-            "repositoryFullName",
-            "defaultBranch",
-            "branchRef",
-            "deadline",
-            "mutationClass",
-            "maxLeases",
-            "maxMutations",
-            "expectedOldOid",
-        },
-        "root authorization",
+def draft_pull_request_authorization(authorization: dict[str, Any]) -> dict[str, Any] | None:
+    # Absent field means today's push-only behavior. The draft-PR step is
+    # enabled only by an explicit, digest-bound field in the root
+    # authorization, never by client input.
+    if "draftPullRequest" not in authorization:
+        return None
+    draft = exact_keys(
+        authorization["draftPullRequest"],
+        {"base", "titlePrefix"},
+        "draft pull request authorization",
     )
+    if (
+        not isinstance(draft["base"], str)
+        or draft["base"] != authorization["defaultBranch"]
+        or not isinstance(draft["titlePrefix"], str)
+        or not DRAFT_PR_TITLE_PREFIX_PATTERN.fullmatch(draft["titlePrefix"])
+    ):
+        raise BrokerError("draft pull request authorization violates the leased composite contract")
+    return draft
+
+
+def load_authorization() -> tuple[dict[str, Any], str]:
+    raw = json.loads(read_root_secret(AUTHORIZATION, "GitHub push authorization"))
+    base_keys = {
+        "schemaVersion",
+        "calibrationId",
+        "campaignId",
+        "companyId",
+        "paperclipRunId",
+        "issueId",
+        "agentId",
+        "projectId",
+        "projectWorkspaceId",
+        "repositoryId",
+        "repositoryFullName",
+        "defaultBranch",
+        "branchRef",
+        "deadline",
+        "mutationClass",
+        "maxLeases",
+        "maxMutations",
+        "expectedOldOid",
+    }
+    if isinstance(raw, dict) and "draftPullRequest" in raw:
+        base_keys = base_keys | {"draftPullRequest"}
+    authorization = exact_keys(raw, base_keys, "root authorization")
     authorization_digest = digest("gloops.github-push-authorization.v1", authorization)
     recorded_digest = read_root_secret(AUTHORIZATION_DIGEST, "GitHub push authorization digest")
     if recorded_digest != authorization_digest:
@@ -364,6 +386,7 @@ def load_authorization() -> tuple[dict[str, Any], str]:
         or parse_timestamp(str(authorization["deadline"])) <= datetime.now(timezone.utc)
     ):
         raise BrokerError("root authorization violates the one-run/one-push contract")
+    draft_pull_request_authorization(authorization)
     return authorization, authorization_digest
 
 
@@ -783,6 +806,18 @@ def mark_posted(connection: sqlite3.Connection, nonce: str, column: str) -> None
     fsync_database()
 
 
+def journal_event(
+    connection: sqlite3.Connection,
+    nonce: str,
+    state_value: str,
+    payload: dict[str, Any],
+) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    append_journal(connection, nonce, state_value, payload)
+    connection.commit()
+    fsync_database()
+
+
 def record_mint_intent(connection: sqlite3.Connection, nonce: str) -> None:
     started = datetime.now(timezone.utc)
     safe_after = started + timedelta(minutes=65)
@@ -946,6 +981,7 @@ def terminal_receipt(
     state_value: str,
     remote_old_oid: str,
     remote_new_oid: str,
+    draft_pull_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     projection = {
         **{key: value for key, value in prepared.items() if key != "state"},
@@ -954,10 +990,161 @@ def terminal_receipt(
         "remoteNewOid": remote_new_oid,
         "terminalAt": timestamp(),
     }
+    if draft_pull_request is not None:
+        projection["draftPullRequest"] = draft_pull_request
     return {
         **projection,
         "brokerReceiptDigest": digest("gloops.github-push-terminal-receipt.v1", projection),
     }
+
+
+def leased_head_branch(authorization: dict[str, Any]) -> str:
+    return str(authorization["branchRef"]).removeprefix("refs/heads/")
+
+
+def draft_pull_request_record(
+    authorization: dict[str, Any],
+    draft_authorization: dict[str, Any],
+    entry: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    number = entry.get("number")
+    head = entry.get("head")
+    base = entry.get("base")
+    head_ref = head.get("ref") if isinstance(head, dict) else None
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    if (
+        isinstance(number, int)
+        and number > 0
+        and entry.get("html_url")
+        == f"https://github.com/{authorization['repositoryFullName']}/pull/{number}"
+        and entry.get("draft") is True
+        and head_ref == leased_head_branch(authorization)
+        and base_ref == draft_authorization["base"]
+    ):
+        return {"disposition": "created", "prNumber": number, "prUrl": entry["html_url"]}
+    return None
+
+
+def list_draft_pull_request(
+    module: Any,
+    token: str,
+    authorization: dict[str, Any],
+    draft_authorization: dict[str, Any],
+) -> dict[str, Any]:
+    # Observation only: reconcile-never-replay. This is the single allowed
+    # way to resolve an uncertain draft-PR creation outcome.
+    owner = str(authorization["repositoryFullName"]).split("/", 1)[0]
+    query = urllib.parse.urlencode({
+        "head": f"{owner}:{leased_head_branch(authorization)}",
+        "base": draft_authorization["base"],
+        "state": "open",
+        "per_page": "10",
+    })
+    response = module.request_json(
+        "GET",
+        f"/repos/{authorization['repositoryFullName']}/pulls?{query}",
+        token,
+    )
+    if not isinstance(response, list):
+        raise BrokerError("GitHub pull request inventory is malformed")
+    records = [
+        record
+        for record in (
+            draft_pull_request_record(authorization, draft_authorization, entry)
+            for entry in response
+        )
+        if record is not None
+    ]
+    if len(records) > 1:
+        raise BrokerError("GitHub pull request inventory is ambiguous for the leased head")
+    return records[0] if records else {"disposition": "none"}
+
+
+def observe_draft_pull_request(
+    module: Any,
+    config: dict[str, Any],
+    authorization: dict[str, Any],
+    draft_authorization: dict[str, Any],
+) -> dict[str, Any]:
+    token, _expires_at, _permissions = module.mint(config, {"pull_requests": "read"})
+    try:
+        return list_draft_pull_request(module, token, authorization, draft_authorization)
+    finally:
+        module.revoke_value(token)
+
+
+def execute_draft_pull_request(
+    connection: sqlite3.Connection,
+    module: Any,
+    config: dict[str, Any],
+    authorization: dict[str, Any],
+    lease: dict[str, Any],
+    draft_authorization: dict[str, Any],
+) -> dict[str, Any]:
+    nonce = lease["nonce"]
+    # Title and body are lease-bound broker data, never arbitrary agent input.
+    title = f"{draft_authorization['titlePrefix']} {authorization['paperclipRunId']}"
+    body = (
+        "Draft pull request opened by the root GitHub push broker as the second "
+        "step of a single leased push+draft-PR composite.\n\n"
+        f"- Paperclip run: {authorization['paperclipRunId']}\n"
+        f"- Issue: {authorization['issueId']}\n"
+        f"- Head: {authorization['branchRef']}\n"
+        f"- Root authorization digest: {lease['rootAuthorizationDigest']}\n"
+        f"- Lease nonce: {nonce}\n"
+    )
+    # A separate mint scoped for the draft-PR step. The contents:write push
+    # token is never widened and never used against the pulls surface.
+    token, _expires_at, _permissions = module.mint(
+        config, {"contents": "read", "pull_requests": "write"}
+    )
+    try:
+        journal_event(connection, nonce, "reconciling", {
+            "event": "draft_pr_intent",
+            "headRef": authorization["branchRef"],
+            "base": draft_authorization["base"],
+        })
+        record: dict[str, Any] | None = None
+        ambiguous = False
+        try:
+            # Exactly one create attempt per lease. Ambiguity is resolved by
+            # listing, never by re-POSTing.
+            response = module.request_json(
+                "POST",
+                f"/repos/{authorization['repositoryFullName']}/pulls",
+                token,
+                {
+                    "title": title,
+                    "body": body,
+                    "head": leased_head_branch(authorization),
+                    "base": draft_authorization["base"],
+                    "draft": True,
+                    "maintainer_can_modify": False,
+                },
+            )
+            record = draft_pull_request_record(authorization, draft_authorization, response)
+            ambiguous = record is None
+        except module.GitHubAPIError as error:
+            # 5xx after send is uncertain; 422 may mean the pull request
+            # already exists. Both are observed, never replayed. Other 4xx
+            # responses are bounded rejections.
+            ambiguous = error.status >= 500 or error.status == 422
+        except module.CredentialError:
+            # Transport loss or timeout after send: the outcome is unknown.
+            ambiguous = True
+        if ambiguous:
+            record = list_draft_pull_request(module, token, authorization, draft_authorization)
+        if record is None:
+            record = {"disposition": "none"}
+        journal_event(connection, nonce, "reconciling", {
+            "event": "draft_pr_reconciled",
+            **record,
+        })
+        return record
+    finally:
+        module.revoke_value(token)
 
 
 def finalize(
@@ -998,6 +1185,7 @@ def finalize(
 
 def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> dict[str, Any]:
     authorization, authorization_digest = load_authorization()
+    draft_authorization = draft_pull_request_authorization(authorization)
     if (
         request["heartbeatRunId"] != authorization["paperclipRunId"]
         or request["expectedNewOid"] == authorization["expectedOldOid"]
@@ -1060,7 +1248,13 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
                 "validate",
             )
         except BrokerError:
-            receipt = terminal_receipt(prepared, "bounded_failure", ZERO_OID, ZERO_OID)
+            receipt = terminal_receipt(
+                prepared,
+                "bounded_failure",
+                ZERO_OID,
+                ZERO_OID,
+                {"disposition": "none"} if draft_authorization is not None else None,
+            )
             finalize(connection, lease["nonce"], "prepared", receipt)
             raise
         finally:
@@ -1139,7 +1333,22 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
                 state_value = "bounded_failure"
             else:
                 state_value = "conflict"
-            receipt = terminal_receipt(prepared, state_value, remote_before, remote_after)
+            draft_record: dict[str, Any] | None = None
+            if draft_authorization is not None:
+                if state_value == "reconciled_success":
+                    draft_record = execute_draft_pull_request(
+                        connection,
+                        module,
+                        config,
+                        authorization,
+                        lease,
+                        draft_authorization,
+                    )
+                else:
+                    draft_record = {"disposition": "none"}
+            receipt = terminal_receipt(
+                prepared, state_value, remote_before, remote_after, draft_record
+            )
             finalize(connection, lease["nonce"], "reconciling", receipt)
             if state_value != "reconciled_success":
                 raise worker_error or BrokerError(f"repository mutation ended as {state_value}")
@@ -1164,6 +1373,10 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
         "SELECT * FROM leases WHERE state IN ('prepared', 'token_minted', 'in_flight', 'reconciling')"
     ).fetchall():
         authorization = json.loads(row["authorization_json"])
+        draft_authorization = draft_pull_request_authorization(authorization)
+        no_draft_record = (
+            {"disposition": "none"} if draft_authorization is not None else None
+        )
         prepared = json.loads(row["prepared_receipt_json"])
         if not row["prepared_posted"]:
             try:
@@ -1176,7 +1389,9 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
                 and parse_timestamp(row["mint_safe_after"]) > datetime.now(timezone.utc)
             ):
                 continue
-            receipt = terminal_receipt(prepared, "bounded_failure", ZERO_OID, ZERO_OID)
+            receipt = terminal_receipt(
+                prepared, "bounded_failure", ZERO_OID, ZERO_OID, no_draft_record
+            )
             finalize(connection, row["nonce"], "prepared", receipt)
             continue
         if row["state"] == "token_minted":
@@ -1185,7 +1400,9 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
                 raise BrokerError("token-minted lease has no conservative expiry envelope")
             if parse_timestamp(recovery_after) > datetime.now(timezone.utc):
                 continue
-            receipt = terminal_receipt(prepared, "bounded_failure", ZERO_OID, ZERO_OID)
+            receipt = terminal_receipt(
+                prepared, "bounded_failure", ZERO_OID, ZERO_OID, no_draft_record
+            )
             finalize(connection, row["nonce"], "token_minted", receipt)
             continue
         recovery_after = row["token_expires_at"]
@@ -1214,7 +1431,18 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
                 if remote == ZERO_OID
                 else "conflict"
             )
-            receipt = terminal_receipt(prepared, state_value, ZERO_OID, remote)
+            draft_record: dict[str, Any] | None = None
+            if draft_authorization is not None:
+                if state_value == "reconciled_success":
+                    # Recovery never re-POSTs: the crashed process may or may
+                    # not have created the draft PR, so the outcome is read
+                    # from GitHub with a read-only pulls token.
+                    draft_record = observe_draft_pull_request(
+                        module, config, authorization, draft_authorization
+                    )
+                else:
+                    draft_record = {"disposition": "none"}
+            receipt = terminal_receipt(prepared, state_value, ZERO_OID, remote, draft_record)
             finalize(connection, row["nonce"], "reconciling", receipt)
         finally:
             module.revoke_value(reconciliation_token)

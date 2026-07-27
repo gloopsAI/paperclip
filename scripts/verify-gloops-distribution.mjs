@@ -1791,6 +1791,13 @@ for (const required of [
   "record_mint_intent",
   "reconcile_pending",
   "verify_journal",
+  "draft_pull_request_authorization",
+  'draft["base"] != authorization["defaultBranch"]',
+  '{"contents": "read", "pull_requests": "write"}',
+  '{"pull_requests": "read"}',
+  "draft_pr_intent",
+  "observe_draft_pull_request",
+  "list_draft_pull_request",
 ]) {
   if (!githubPushBroker.includes(required)) {
     fail(`root GitHub push broker is missing ${required}`);
@@ -2110,7 +2117,13 @@ for (const required of [
   '"pull_requests": "write"',
   '"pull_requests": "read"',
   'seconds < 2700 or seconds > 3900',
-  'installation.get("total_count") != 1',
+  'ALLOWED_REPOSITORIES = frozenset({',
+  '"gloopsAI/gloops-paperclip-plugin",',
+  '"gloopsAI/paperclip-gym",',
+  'if raw["repository"] not in ALLOWED_REPOSITORIES:',
+  'len(repositories) > len(ALLOWED_REPOSITORIES)',
+  'installation["total_count"] != len(repositories)',
+  'repository.get("full_name") not in ALLOWED_REPOSITORIES',
   'detail.get("private") is not True',
   'revoke_value(token)',
   'except CredentialRetentionError as error:',

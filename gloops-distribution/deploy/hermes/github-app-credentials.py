@@ -55,6 +55,13 @@ BROKER_TRANSITION_DISTRIBUTIONS = {
         "c3e3c602c7e7ef0c0b3fad384c1e5852aa7ab1a83e7f94488c551885294433a6"
     ),
 }
+# The fixed repository boundary. This is a frozen code constant on purpose:
+# it is not environment-configurable, and a config naming any repository
+# outside this set fails closed exactly like the previous single-repo pin.
+ALLOWED_REPOSITORIES = frozenset({
+    "gloopsAI/gloops-paperclip-plugin",
+    "gloopsAI/paperclip-gym",
+})
 
 WRITE_PERMISSIONS = {
     "checks": "read",
@@ -103,7 +110,7 @@ def load_config() -> dict[str, object]:
     }
     if set(raw) != required:
         raise CredentialError("GitHub App config keys do not match the allowlist")
-    if raw["repository"] != "gloopsAI/gloops-paperclip-plugin":
+    if raw["repository"] not in ALLOWED_REPOSITORIES:
         raise CredentialError("GitHub App repository boundary has drifted")
     for key in ("appId", "installationId", "repositoryId"):
         if not isinstance(raw[key], int) or raw[key] <= 0:
@@ -202,13 +209,26 @@ def mint(config: dict[str, object], permissions: dict[str, str]) -> tuple[str, s
 
 def verify_repository(config: dict[str, object], token: str) -> None:
     installation = request_json("GET", "/installation/repositories?per_page=100", token)
-    if not isinstance(installation, dict) or installation.get("total_count") != 1:
-        raise CredentialError("GitHub App installation is not restricted to exactly one repository")
+    if not isinstance(installation, dict) or not isinstance(installation.get("total_count"), int):
+        raise CredentialError("GitHub App installation inventory is malformed")
     repositories = installation.get("repositories")
-    if not isinstance(repositories, list) or len(repositories) != 1:
-        raise CredentialError("GitHub App repository inventory is malformed")
-    repository = repositories[0]
-    if not isinstance(repository, dict) or repository.get("id") != config["repositoryId"] or repository.get("full_name") != config["repository"]:
+    if (
+        not isinstance(repositories, list)
+        or not repositories
+        or len(repositories) > len(ALLOWED_REPOSITORIES)
+        or installation["total_count"] != len(repositories)
+    ):
+        raise CredentialError("GitHub App installation is not restricted to the fixed repository allowlist")
+    for repository in repositories:
+        if not isinstance(repository, dict) or repository.get("full_name") not in ALLOWED_REPOSITORIES:
+            raise CredentialError("GitHub App installation covers a repository outside the fixed allowlist")
+    matching = [
+        repository
+        for repository in repositories
+        if repository.get("id") == config["repositoryId"]
+        and repository.get("full_name") == config["repository"]
+    ]
+    if len(matching) != 1:
         raise CredentialError("GitHub App token repository does not match the configured boundary")
     detail = request_json("GET", f"/repos/{config['repository']}", token)
     if not isinstance(detail, dict) or detail.get("private") is not True or detail.get("id") != config["repositoryId"]:

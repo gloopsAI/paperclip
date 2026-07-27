@@ -41,6 +41,86 @@ class BrokerLifecycleTests(unittest.TestCase):
             EXPIRY_HISTORY_LOCK=root / "state/credential-expiry-history.lock",
         )
 
+    def test_repository_config_allowlist_is_fixed_and_fail_closed(self):
+        self.assertEqual(
+            broker.ALLOWED_REPOSITORIES,
+            frozenset({"gloopsAI/gloops-paperclip-plugin", "gloopsAI/paperclip-gym"}),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "github-app.json"
+            base = {
+                "appId": 1,
+                "installationId": 2,
+                "repositoryId": 3,
+                "repository": "gloopsAI/paperclip-gym",
+                "privateKeyPath": "/etc/paperclip-gloops/github-app/private-key.pem",
+                "boardTokenPath": "/etc/paperclip-gloops/operator-board-token",
+            }
+            with patch.object(broker, "CONFIG", config_path):
+                config_path.write_text(broker.json.dumps(base))
+                self.assertEqual(broker.load_config(), base)
+                for repository in (
+                    "gloopsAI/paperclip",
+                    "gloopsAI/gloops-paperclip-plugin-fork",
+                    "attacker/paperclip-gym",
+                ):
+                    config_path.write_text(broker.json.dumps({**base, "repository": repository}))
+                    with self.assertRaisesRegex(broker.CredentialError, "boundary has drifted"):
+                        broker.load_config()
+
+    def test_installation_inventory_must_stay_within_the_fixed_allowlist(self):
+        config = {
+            "appId": 1,
+            "installationId": 2,
+            "repositoryId": 3,
+            "repository": "gloopsAI/paperclip-gym",
+        }
+        detail = {"private": True, "id": 3}
+
+        def responses(repositories, total_count):
+            def request(_method, path, _token, _body=None):
+                if path.startswith("/installation/repositories"):
+                    return {"total_count": total_count, "repositories": repositories}
+                return detail
+            return request
+
+        both = [
+            {"id": 4, "full_name": "gloopsAI/gloops-paperclip-plugin"},
+            {"id": 3, "full_name": "gloopsAI/paperclip-gym"},
+        ]
+        with patch.object(broker, "request_json", side_effect=responses(both, 2)):
+            broker.verify_repository(config, "ghs_token")
+        with patch.object(
+            broker,
+            "request_json",
+            side_effect=responses([both[1]], 1),
+        ):
+            broker.verify_repository(config, "ghs_token")
+        with patch.object(
+            broker,
+            "request_json",
+            side_effect=responses(both + [{"id": 5, "full_name": "gloopsAI/other"}], 3),
+        ), self.assertRaisesRegex(broker.CredentialError, "not restricted to the fixed"):
+            broker.verify_repository(config, "ghs_token")
+        with patch.object(
+            broker,
+            "request_json",
+            side_effect=responses([both[0], {"id": 5, "full_name": "gloopsAI/other"}], 2),
+        ), self.assertRaisesRegex(broker.CredentialError, "outside the fixed allowlist"):
+            broker.verify_repository(config, "ghs_token")
+        with patch.object(
+            broker,
+            "request_json",
+            side_effect=responses(both, 3),
+        ), self.assertRaisesRegex(broker.CredentialError, "not restricted to the fixed"):
+            broker.verify_repository(config, "ghs_token")
+        with patch.object(
+            broker,
+            "request_json",
+            side_effect=responses([both[0]], 1),
+        ), self.assertRaisesRegex(broker.CredentialError, "does not match the configured boundary"):
+            broker.verify_repository(config, "ghs_token")
+
     def test_pre_mint_intent_is_durable_before_the_external_request(self):
         config = {"appId": 1, "installationId": 2, "repositoryId": 3, "repository": "gloopsAI/gloops-paperclip-plugin"}
         minted = ("ghs_durable_intent_token", "2026-07-15T10:00:00Z", {"contents": "write"})

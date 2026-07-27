@@ -72,7 +72,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
         }
 
     def install_authorization(self, authorization: dict[str, object]) -> None:
-        broker.CONFIG_DIR.mkdir(parents=True)
+        broker.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         broker.AUTHORIZATION.write_text(broker.canonical_json(authorization))
         broker.AUTHORIZATION_DIGEST.write_text(
             broker.digest("gloops.github-push-authorization.v1", authorization) + "\n"
@@ -490,6 +490,270 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 ).fetchone()["terminal_posted"],
                 1,
             )
+            connection.close()
+
+    def test_root_authorization_accepts_only_exact_draft_pull_request_field(self):
+        run_id = "12121212-1212-4121-8121-121212121212"
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            authorization = self.authorization(run_id)
+            authorization["draftPullRequest"] = {
+                "base": "main",
+                "titlePrefix": "feat(gym): leased calibration",
+            }
+            self.install_authorization(authorization)
+            with patch.object(
+                broker,
+                "read_root_secret",
+                side_effect=lambda path, _label: path.read_text().strip(),
+            ):
+                loaded, _digest = broker.load_authorization()
+            self.assertEqual(loaded, authorization)
+
+            for malformed in (
+                {"base": "release", "titlePrefix": "feat(gym): leased calibration"},
+                {"base": "main"},
+                {"base": "main", "titlePrefix": "feat", "extra": True},
+                {"base": "main", "titlePrefix": "bad\ntitle"},
+                {"base": "main", "titlePrefix": ""},
+                "main",
+            ):
+                authorization["draftPullRequest"] = malformed
+                self.install_authorization(authorization)
+                with patch.object(
+                    broker,
+                    "read_root_secret",
+                    side_effect=lambda path, _label: path.read_text().strip(),
+                ), self.assertRaises(broker.BrokerError):
+                    broker.load_authorization()
+
+    def test_terminal_receipt_binds_optional_draft_pull_request_evidence(self):
+        prepared = {"state": "prepared", "nonce": "a" * 64}
+        push_only = broker.terminal_receipt(prepared, "reconciled_success", "0" * 40, "b" * 40)
+        self.assertNotIn("draftPullRequest", push_only)
+        record = {
+            "disposition": "created",
+            "prNumber": 7,
+            "prUrl": "https://github.com/gloopsAI/paperclip-gym/pull/7",
+        }
+        receipt = broker.terminal_receipt(prepared, "reconciled_success", "0" * 40, "b" * 40, record)
+        self.assertEqual(receipt["draftPullRequest"], record)
+        projection = {key: value for key, value in receipt.items() if key != "brokerReceiptDigest"}
+        self.assertEqual(
+            receipt["brokerReceiptDigest"],
+            broker.digest("gloops.github-push-terminal-receipt.v1", projection),
+        )
+
+    def draft_pr_fixture(self, run_id: str, number: int = 12) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+        authorization = self.authorization(run_id)
+        authorization["draftPullRequest"] = {
+            "base": "main",
+            "titlePrefix": "feat(gym): leased calibration",
+        }
+        pull_request = {
+            "number": number,
+            "html_url": f"https://github.com/{authorization['repositoryFullName']}/pull/{number}",
+            "draft": True,
+            "head": {"ref": f"paperclip/{run_id}/calibration"},
+            "base": {"ref": "main"},
+        }
+        lease = {
+            "nonce": "e" * 64,
+            "rootAuthorizationDigest": broker.digest(
+                "gloops.github-push-authorization.v1", authorization
+            ),
+        }
+        return authorization, pull_request, lease
+
+    def test_draft_pr_step_mints_scoped_token_and_posts_exactly_once(self):
+        run_id = "13131313-1313-4131-8131-131313131313"
+        authorization, pull_request, lease = self.draft_pr_fixture(run_id)
+        test = self
+        calls: list[tuple[str, str, object]] = []
+        revoked: list[str] = []
+
+        class FakeModule:
+            class GitHubAPIError(Exception):
+                def __init__(self, status: int):
+                    self.status = status
+
+            class CredentialError(Exception):
+                pass
+
+            @staticmethod
+            def mint(_config, permissions):
+                test.assertEqual(permissions, {"contents": "read", "pull_requests": "write"})
+                return "ghs_draft_pr", "2099-01-01T00:00:00Z", {}
+
+            @staticmethod
+            def request_json(method, path, token, body=None):
+                test.assertEqual(token, "ghs_draft_pr")
+                calls.append((method, path, body))
+                return pull_request
+
+            @staticmethod
+            def revoke_value(token):
+                revoked.append(token)
+
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            record = broker.execute_draft_pull_request(
+                connection,
+                FakeModule,
+                {},
+                authorization,
+                lease,
+                authorization["draftPullRequest"],
+            )
+            self.assertEqual(record, {
+                "disposition": "created",
+                "prNumber": pull_request["number"],
+                "prUrl": pull_request["html_url"],
+            })
+            self.assertEqual(len(calls), 1)
+            method, path, body = calls[0]
+            self.assertEqual(method, "POST")
+            self.assertEqual(path, f"/repos/{authorization['repositoryFullName']}/pulls")
+            self.assertEqual(body["draft"], True)
+            self.assertEqual(body["head"], f"paperclip/{run_id}/calibration")
+            self.assertEqual(body["base"], "main")
+            self.assertEqual(body["title"], f"feat(gym): leased calibration {run_id}")
+            self.assertIn(lease["rootAuthorizationDigest"], body["body"])
+            self.assertEqual(revoked, ["ghs_draft_pr"])
+            broker.verify_journal(connection)
+            events = [
+                json.loads(row["payload_json"]).get("event")
+                for row in connection.execute("SELECT * FROM journal ORDER BY sequence")
+            ]
+            self.assertEqual(events, ["draft_pr_intent", "draft_pr_reconciled"])
+            connection.close()
+
+    def test_draft_pr_ambiguity_is_resolved_by_listing_and_never_reposted(self):
+        run_id = "14141414-1414-4141-8141-141414141414"
+        for listed, expected in (
+            (True, "created"),
+            (False, "none"),
+        ):
+            authorization, pull_request, lease = self.draft_pr_fixture(run_id)
+            test = self
+            posts: list[str] = []
+            lists: list[str] = []
+
+            class FakeModule:
+                class GitHubAPIError(Exception):
+                    def __init__(self, status: int):
+                        self.status = status
+
+                class CredentialError(Exception):
+                    pass
+
+                @staticmethod
+                def mint(_config, permissions):
+                    test.assertEqual(permissions, {"contents": "read", "pull_requests": "write"})
+                    return "ghs_draft_pr", "2099-01-01T00:00:00Z", {}
+
+                @staticmethod
+                def request_json(method, path, _token, body=None):
+                    if method == "POST":
+                        posts.append(path)
+                        raise FakeModule.GitHubAPIError(502)
+                    test.assertEqual(method, "GET")
+                    test.assertIn("head=gloopsAI%3Apaperclip%2F", path)
+                    test.assertIn("base=main", path)
+                    lists.append(path)
+                    return [pull_request] if listed else []
+
+                @staticmethod
+                def revoke_value(_token):
+                    return None
+
+            with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+                connection = broker.connect_database()
+                record = broker.execute_draft_pull_request(
+                    connection,
+                    FakeModule,
+                    {},
+                    authorization,
+                    lease,
+                    authorization["draftPullRequest"],
+                )
+                self.assertEqual(record["disposition"], expected)
+                self.assertEqual(len(posts), 1)
+                self.assertEqual(len(lists), 1)
+                connection.close()
+
+    def test_recovery_observes_draft_pr_by_listing_only(self):
+        run_id = "15151515-1515-4151-8151-151515151515"
+        authorization, pull_request, _fixture_lease = self.draft_pr_fixture(run_id, 9)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        test = self
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            lease, _, prepared = broker.create_lease(
+                connection, authorization, authorization_digest, "f" * 40
+            )
+            broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+            broker.transition(
+                connection,
+                lease["nonce"],
+                "prepared",
+                "token_minted",
+                {},
+                token_expires_at="2000-01-01T00:00:00Z",
+            )
+            broker.transition(connection, lease["nonce"], "token_minted", "in_flight", {})
+
+            mints: list[dict[str, str]] = []
+            requests: list[str] = []
+
+            class FakeModule:
+                class GitHubAPIError(Exception):
+                    def __init__(self, status: int):
+                        self.status = status
+
+                class CredentialError(Exception):
+                    pass
+
+                @staticmethod
+                def load_config():
+                    return {"repository": authorization["repositoryFullName"]}
+
+                @staticmethod
+                def mint(_config, permissions):
+                    mints.append(permissions)
+                    return "ghs_reconcile_only", "2099-01-01T00:00:00Z", {}
+
+                @staticmethod
+                def request_json(method, path, _token, body=None):
+                    test.assertEqual(method, "GET")
+                    requests.append(path)
+                    return [pull_request]
+
+                @staticmethod
+                def revoke_value(_token):
+                    return None
+
+            with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                    patch.object(broker, "verify_github_repository"), \
+                    patch.object(broker, "read_remote_ref", return_value="f" * 40), \
+                    patch.object(broker, "paperclip_request", return_value={}), \
+                    patch.object(broker, "run_worker") as worker:
+                broker.reconcile_pending(connection)
+            worker.assert_not_called()
+            self.assertEqual(mints, [{"contents": "read"}, {"pull_requests": "read"}])
+            self.assertEqual(len(requests), 1)
+            row = connection.execute(
+                "SELECT state, terminal_receipt_json FROM leases WHERE nonce = ?",
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "reconciled_success")
+            receipt = json.loads(row["terminal_receipt_json"])
+            self.assertEqual(receipt["draftPullRequest"], {
+                "disposition": "created",
+                "prNumber": 9,
+                "prUrl": pull_request["html_url"],
+            })
             connection.close()
 
     def test_broker_database_has_no_token_storage_column_or_token_artifact(self):
