@@ -472,6 +472,10 @@ describe("execution admission", () => {
       errorCode: "workspace_validation_failed",
     })).toBe(true);
     expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: null,
+      errorCode: "workspace_preparation_failed",
+    })).toBe(true);
+    expect(isBudgetExemptPreflightFailure({
       providerInvocationAttempted: true,
       errorCode: "adapter_failed",
     })).toBe(false);

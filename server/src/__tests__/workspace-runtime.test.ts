@@ -533,6 +533,73 @@ describe("realizeExecutionWorkspace", () => {
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(expectedRemoteHead);
   });
 
+  it("fetches an unfetched remote branch before resolving the worktree base", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    await runGit(sourceRepo, ["checkout", "-b", "fix/hermes-supervisor-reconciliation"]);
+    await fs.writeFile(path.join(sourceRepo, "supervisor.txt"), "supervisor fix\n", "utf8");
+    await runGit(sourceRepo, ["add", "supervisor.txt"]);
+    await runGit(sourceRepo, ["commit", "-m", "Supervisor reconciliation fix"]);
+    await runGit(sourceRepo, ["push", remotePath, "fix/hermes-supervisor-reconciliation"]);
+    const remoteBranchSha = await readGit(sourceRepo, ["rev-parse", "fix/hermes-supervisor-reconciliation"]);
+
+    // The base clone has never fetched this branch: without the
+    // fetch-before-resolve policy this fails with "invalid reference".
+    await expect(
+      readGit(repoRoot, ["rev-parse", "--verify", "fix/hermes-supervisor-reconciliation^{commit}"]),
+    ).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "fix/hermes-supervisor-reconciliation");
+    expect(workspace.repoRef).toBe("origin/fix/hermes-supervisor-reconciliation");
+    expect(workspace.baseRefSha).toBe(remoteBranchSha);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(remoteBranchSha);
+  });
+
+  it("resolves an unfetched abbreviated commit SHA through the general fetch fallback", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const fullSha = await advanceRemoteMaster(sourceRepo, remotePath, "unfetched-commit.txt");
+    const shortSha = fullSha.slice(0, 10);
+
+    // The commit only exists on the remote until the fallback fetch runs.
+    await expect(readGit(repoRoot, ["cat-file", "-e", fullSha])).rejects.toThrow();
+
+    const workspace = await realizeWorktreeForTest(repoRoot, shortSha);
+    expect(workspace.baseRefSha).toBe(fullSha);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(fullSha);
+  });
+
+  it("fails typed and pre-model when the base ref cannot be resolved after fetching", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+
+    let error: unknown = null;
+    try {
+      await realizeWorktreeForTest(repoRoot, "fix/does-not-exist-anywhere");
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      code: "workspace_preparation_failed",
+      providerInvocationAttempted: false,
+      resultJson: {
+        provider_invocation: { attempted: false },
+        workspacePreparation: expect.objectContaining({
+          reason: "base_ref_unresolvable",
+          baseRef: "fix/does-not-exist-anywhere",
+        }),
+      },
+    });
+  });
+
+  it("creates the worktree at the exact resolved base SHA", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const remoteHead = await advanceRemoteMaster(sourceRepo, remotePath, "exact-sha.txt");
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "origin/master");
+    expect(workspace.baseRefSha).toBe(remoteHead);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(remoteHead);
+    expect(await readGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe(workspace.branchName);
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 

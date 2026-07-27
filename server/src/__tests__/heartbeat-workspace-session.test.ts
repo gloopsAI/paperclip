@@ -6,9 +6,10 @@ import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  ensureManagedProjectWorkspace,
   assertGitSensitiveAdapterWorkspaceValid,
   assertGitWorktreeBaseWorkspaceReady,
   assertPushCapabilityCheckoutValid,
@@ -2572,6 +2573,114 @@ describe("parseSessionCompactionPolicy", () => {
       maxSessionRuns: 25,
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
+    });
+  });
+});
+
+describe("ensureManagedProjectWorkspace fresh-clone fallback", () => {
+  async function createManagedWorkspaceFixture() {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-managed-home-"));
+    const sourceRepo = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-managed-remote-"));
+    await execFile("git", ["init"], { cwd: sourceRepo });
+    await execFile("git", ["config", "user.email", "paperclip@example.com"], { cwd: sourceRepo });
+    await execFile("git", ["config", "user.name", "Paperclip Test"], { cwd: sourceRepo });
+    await fs.writeFile(path.join(sourceRepo, "README.md"), "managed\n", "utf8");
+    await execFile("git", ["add", "README.md"], { cwd: sourceRepo });
+    await execFile("git", ["commit", "-m", "Initial commit"], { cwd: sourceRepo });
+    return { home, repoUrl: `file://${sourceRepo}` };
+  }
+
+  async function withPaperclipHome<T>(home: string, run: () => Promise<T>): Promise<T> {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = home;
+    try {
+      return await run();
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousHome;
+      }
+    }
+  }
+
+  it("quarantines a non-git managed base workspace and re-clones it", async () => {
+    const { home, repoUrl } = await createManagedWorkspaceFixture();
+    await withPaperclipHome(home, async () => {
+      const cwd = resolveManagedProjectWorkspaceDir({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoName: path.basename(new URL(repoUrl).pathname),
+      });
+      await fs.mkdir(cwd, { recursive: true });
+      await fs.writeFile(path.join(cwd, "junk.txt"), "not a git checkout\n", "utf8");
+
+      const result = await ensureManagedProjectWorkspace({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoUrl,
+      });
+
+      expect(result.cwd).toBe(cwd);
+      expect(result.warning).toContain("re-cloned");
+      await expect(fs.stat(path.join(cwd, ".git"))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(cwd, "README.md"))).resolves.toBeTruthy();
+
+      const siblings = await fs.readdir(path.dirname(cwd));
+      const quarantined = siblings.find((name) => name.startsWith(`${path.basename(cwd)}.corrupt-`));
+      expect(quarantined).toBeTruthy();
+      await expect(
+        fs.stat(path.join(path.dirname(cwd), quarantined!, "junk.txt")),
+      ).resolves.toBeTruthy();
+    });
+  });
+
+  it("quarantines a corrupt .git managed base workspace and re-clones it", async () => {
+    const { home, repoUrl } = await createManagedWorkspaceFixture();
+    await withPaperclipHome(home, async () => {
+      const cwd = resolveManagedProjectWorkspaceDir({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoName: path.basename(new URL(repoUrl).pathname),
+      });
+      await fs.mkdir(path.join(cwd, ".git"), { recursive: true });
+      await fs.writeFile(path.join(cwd, ".git", "HEAD"), "garbage\n", "utf8");
+
+      const result = await ensureManagedProjectWorkspace({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoUrl,
+      });
+
+      expect(result.cwd).toBe(cwd);
+      expect(result.warning).toContain("re-cloned");
+      const { stdout } = await execFile("git", ["rev-parse", "--is-inside-work-tree"], { cwd });
+      expect(stdout.trim()).toBe("true");
+
+      const siblings = await fs.readdir(path.dirname(cwd));
+      expect(siblings.some((name) => name.startsWith(`${path.basename(cwd)}.corrupt-`))).toBe(true);
+    });
+  });
+
+  it("keeps an intact managed git checkout untouched", async () => {
+    const { home, repoUrl } = await createManagedWorkspaceFixture();
+    await withPaperclipHome(home, async () => {
+      const first = await ensureManagedProjectWorkspace({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoUrl,
+      });
+      expect(first.warning).toBeNull();
+
+      await fs.writeFile(path.join(first.cwd, "local-work.txt"), "keep me\n", "utf8");
+      const second = await ensureManagedProjectWorkspace({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoUrl,
+      });
+      expect(second.cwd).toBe(first.cwd);
+      expect(second.warning).toBeNull();
+      await expect(fs.stat(path.join(first.cwd, "local-work.txt"))).resolves.toBeTruthy();
     });
   });
 });

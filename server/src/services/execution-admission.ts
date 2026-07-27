@@ -34,6 +34,7 @@ export const BOOTSTRAP_EXECUTION_DEFAULTS = {
  */
 export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "workspace_validation_failed",
+  "workspace_preparation_failed",
   "execution_admission.adapter_budget_unsupported",
   "configuration_incomplete",
   "agent_not_invokable",
