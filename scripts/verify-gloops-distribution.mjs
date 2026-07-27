@@ -1729,7 +1729,7 @@ for (const required of [
   "--network paperclip-execution",
   "--network-alias hermes-execution",
   "--read-only",
-  "--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700",
+  "--tmpfs /opt/data:rw,nosuid,nodev,size=768m,uid=10000,gid=10000,mode=0700",
   "--cap-drop ALL",
   "--cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETGID --cap-add SETUID --cap-add KILL --security-opt no-new-privileges:true",
   "--security-opt no-new-privileges:true",
@@ -2089,6 +2089,8 @@ for (const required of [
   "live API rejects unauthenticated execution-plane access",
   "live Paperclip identity can use the shared workspace transaction boundary",
   "Grok is host-CLI-only with no API configuration",
+  '(.repositoryId == 1297008772 and .repository == "gloopsAI/gloops-paperclip-plugin")',
+  '(.repositoryId == 1296486381 and .repository == "gloopsAI/paperclip-gym")',
 ]) {
   if (!verifyHermesExecution.includes(required)) {
     fail(`Hermes execution verification is missing ${required}`);

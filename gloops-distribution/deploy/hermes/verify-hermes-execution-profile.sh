@@ -309,8 +309,10 @@ fi
 if jq -e '
   .appId == 4307157 and
   .installationId == 146796843 and
-  .repositoryId == 1297008772 and
-  .repository == "gloopsAI/gloops-paperclip-plugin" and
+  (
+    (.repositoryId == 1297008772 and .repository == "gloopsAI/gloops-paperclip-plugin") or
+    (.repositoryId == 1296486381 and .repository == "gloopsAI/paperclip-gym")
+  ) and
   .privateKeyPath == "/etc/paperclip-gloops/github-app/private-key.pem"
 ' "${APP_CONFIG}" >/dev/null 2>&1 \
   && [[ "$(stat -c '%a:%U:%G' "${APP_CONFIG}" 2>/dev/null || true)" == '600:root:root' ]] \
@@ -361,7 +363,7 @@ for required in \
   '--read-only' \
   '--group-add 985 ' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
-  '--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700' \
+  '--tmpfs /opt/data:rw,nosuid,nodev,size=768m,uid=10000,gid=10000,mode=0700' \
   '--cap-drop ALL' \
   '--cap-add CHOWN' \
   '--cap-add DAC_OVERRIDE' \
