@@ -5432,6 +5432,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       policy: livePolicy,
       lockingEnvelope,
       priorRuns,
+      currentRun: { isRetry: true },
     });
 
     if (preflight.allowed) return { allowed: true };
@@ -8273,7 +8274,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       idempotentWakeExists: Boolean(existingWake),
     });
 
-    if (decision.kind !== "enqueue" || !issue) return;
+    if (decision.kind !== "enqueue" || !issue) {
+      if (issue && existingWake) {
+        await addSuccessfulRunHandoffCommentOnce({
+          issue,
+          run,
+          agent,
+          detectedProgressSummary: detectedProgressSummary ?? "The run reported progress, but did not choose a next step.",
+        });
+      }
+      return;
+    }
 
     const handoffAdmission = await preflightSuccessfulRunHandoffAdmission({
       context,

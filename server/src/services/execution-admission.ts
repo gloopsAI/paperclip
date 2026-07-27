@@ -951,14 +951,19 @@ export function executionInvocationBudgetFromEnvelope(value: unknown): Execution
  * Claim-time admission reused for preflight decisions before a wake/run row is
  * created. The caller must supply the same effective policy and locking
  * envelope that claim time would use for the budget epoch, plus the prior runs
- * observed for that epoch. The current prospective run is treated as a new
- * attempt (not a retry, not an authorized independent stage).
+ * observed for that epoch. Callers may classify the prospective run when the
+ * control plane has already established that it is a retry or an authorized
+ * independent stage; otherwise it remains an unclassified new attempt.
  */
 export function evaluateProspectiveExecutionAdmission(input: {
   identity: { budgetId: string; epoch: string };
   policy: Extract<ExecutionAdmissionPolicy, { enabled: true }>;
   lockingEnvelope: ExecutionAdmissionEnvelope | null;
   priorRuns: PriorExecutionRun[];
+  currentRun?: {
+    isRetry?: boolean;
+    isAuthorizedIndependentStage?: boolean;
+  };
 }): { allowed: boolean; reason: ExecutionAdmissionReason | null; envelope: ExecutionAdmissionEnvelope } {
   let effectivePolicy: Extract<ExecutionAdmissionPolicy, { enabled: true }>;
   try {
@@ -984,10 +989,11 @@ export function evaluateProspectiveExecutionAdmission(input: {
     };
   }
 
-  const decision = evaluateExecutionAdmission(effectivePolicy, input.priorRuns, {
-    isRetry: false,
-    isAuthorizedIndependentStage: false,
-  });
+  const decision = evaluateExecutionAdmission(
+    effectivePolicy,
+    input.priorRuns,
+    input.currentRun,
+  );
   return {
     allowed: decision.allowed,
     reason: decision.reason,
