@@ -1,10 +1,10 @@
 import fs from "node:fs";
-import http from "isomorphic-git/http/node";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import * as git from "isomorphic-git";
 
 const ZERO_OID = "0".repeat(40);
@@ -139,9 +139,12 @@ async function collectTreeObjects(gitdir, treeOid, output) {
     ) {
       fail("tree contains an unsupported object type or mode");
     }
-    output.add(entry.oid);
-    if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
-    if (entry.type === "tree") await collectTreeObjects(gitdir, entry.oid, output);
+    if (entry.type === "tree") {
+      await collectTreeObjects(gitdir, entry.oid, output);
+    } else {
+      output.add(entry.oid);
+      if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    }
   }
 }
 
@@ -292,6 +295,21 @@ async function importWorkerBundle(args) {
   const packPath = path.resolve(request.packPath);
   fs.mkdirSync(path.join(gitdir, "objects", "pack"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(gitdir, "refs", "heads"), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(gitdir, "HEAD"), "ref: refs/heads/paperclip-source\n", {
+    flag: "wx",
+    mode: 0o600,
+  });
+  fs.writeFileSync(
+    path.join(gitdir, "config"),
+    [
+      "[core]",
+      "\trepositoryformatversion = 0",
+      "\tfilemode = true",
+      "\tbare = true",
+      "",
+    ].join("\n"),
+    { flag: "wx", mode: 0o600 },
+  );
   const localPack = path.join(gitdir, "objects", "pack", "pack-input.pack");
   fs.copyFileSync(packPath, localPack, fs.constants.COPYFILE_EXCL);
   const { oids } = await git.indexPack({
@@ -307,7 +325,15 @@ async function importWorkerBundle(args) {
   }
   const reachable = await collectCommitClosure(gitdir, request.expectedNewOid);
   if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
-    fail("pack contains extra objects or does not close over the expected commit");
+    const reachableSet = new Set(reachable);
+    const indexedSet = new Set(indexed);
+    const missing = reachable.filter((oid) => !indexedSet.has(oid));
+    const extra = indexed.filter((oid) => !reachableSet.has(oid));
+    fail(
+      `pack contains extra objects or does not close over the expected commit `
+      + `(reachable=${reachable.length}, indexed=${indexed.length}, missing=${missing.join(",") || "none"}, `
+      + `extra=${extra.join(",") || "none"})`,
+    );
   }
   return { request, gitdir };
 }
@@ -324,7 +350,7 @@ async function workerCommand(args) {
     : "";
   if (!tokenPath) fail("worker credential boundary is unavailable");
   const token = fs.readFileSync(tokenPath, "utf8").trim();
-  if (!/^ghs_[A-Za-z0-9_]+$/.test(token)) fail("worker credential is malformed");
+  if (!token.startsWith("ghs_") || /\s/.test(token)) fail("worker credential is malformed");
   await git.writeRef({
     fs,
     gitdir,
@@ -332,31 +358,50 @@ async function workerCommand(args) {
     value: request.expectedNewOid,
     force: false,
   });
-  const url = `https://github.com/${request.repositoryFullName}.git`;
-  let prePushObserved = false;
-  const result = await git.push({
-    fs,
-    http,
-    dir: path.dirname(gitdir),
-    gitdir,
-    url,
-    ref: "refs/heads/paperclip-source",
-    remoteRef: request.remoteRef,
-    force: false,
-    delete: false,
-    onAuth: () => ({ username: "x-access-token", password: token }),
-    onPrePush: ({ url: observedUrl, localRef, remoteRef }) => {
-      prePushObserved = true;
-      return (
-        observedUrl === url
-        && localRef.ref === "refs/heads/paperclip-source"
-        && localRef.oid === request.expectedNewOid
-        && remoteRef.ref === request.remoteRef
-        && remoteRef.oid === request.expectedOldOid
-      );
+  // Supply the non-secret GitHub App username in the URL so Git only asks the
+  // isolated credential helper for the short-lived installation token.
+  const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
+  // Git's askpass discovery is not reliable inside the transient hardened
+  // systemd worker. Use the native credential-helper protocol instead. The
+  // helper command contains only the systemd credential path; the token itself
+  // never appears in argv, environment values, logs, or repository config.
+  const credentialHelper = [
+    "!f() {",
+    "printf 'username=x-access-token\\npassword=';",
+    "cat \"$CREDENTIALS_DIRECTORY/github-token\";",
+    "printf '\\n';",
+    "}; f",
+  ].join(" ");
+  const result = spawnSync(
+    "/usr/bin/git",
+    [
+      "--git-dir", gitdir,
+      "push",
+      "--porcelain",
+      "--no-force",
+      "--no-thin",
+      url,
+      `refs/heads/paperclip-source:${request.remoteRef}`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0: credentialHelper,
+        GIT_TERMINAL_PROMPT: "0",
+        CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+      },
+      timeout: 120_000,
     },
-  });
-  if (!prePushObserved || result.ok !== true) fail("Git protocol worker did not confirm the exact one-ref push");
+  );
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "native Git push failed";
+    fail(`native Git push failed: ${detail.slice(0, 500)}`);
+  }
   process.stdout.write(`${canonicalJson({ ok: true, expectedNewOid: request.expectedNewOid })}\n`);
 }
 
