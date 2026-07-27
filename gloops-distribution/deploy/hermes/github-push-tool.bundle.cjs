@@ -18852,53 +18852,43 @@ async function workerCommand(args) {
     force: false
   });
   const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
-  const askpass = import_node_path.default.join(gitdir, "paperclip-github-askpass");
-  import_node_fs.default.writeFileSync(
-    askpass,
+  const credentialHelper = [
+    "!f() {",
+    "printf 'username=x-access-token\\npassword=';",
+    'cat "$CREDENTIALS_DIRECTORY/github-token";',
+    "printf '\\n';",
+    "}; f"
+  ].join(" ");
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
     [
-      "#!/bin/sh",
-      'case "$1" in',
-      "  *Username*) printf '%s\\n' 'x-access-token' ;;",
-      '  *Password*) cat "$CREDENTIALS_DIRECTORY/github-token" ;;',
-      "  *) exit 1 ;;",
-      "esac",
-      ""
-    ].join("\n"),
-    { mode: 448 }
-  );
-  try {
-    const result = (0, import_node_child_process.spawnSync)(
-      "/usr/bin/git",
-      [
-        "--git-dir",
-        gitdir,
-        "push",
-        "--porcelain",
-        "--no-force",
-        "--no-thin",
-        url,
-        `refs/heads/paperclip-source:${request.remoteRef}`
-      ],
-      {
-        encoding: "utf8",
-        env: {
-          PATH: "/usr/bin:/bin",
-          HOME: gitdir,
-          GIT_CONFIG_NOSYSTEM: "1",
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ASKPASS_REQUIRE: "force",
-          GIT_ASKPASS: askpass,
-          CREDENTIALS_DIRECTORY: import_node_process.default.env.CREDENTIALS_DIRECTORY
-        },
-        timeout: 12e4
-      }
-    );
-    if (result.status !== 0) {
-      const detail = result.stderr.trim().split("\n").at(-1) ?? "native Git push failed";
-      fail(`native Git push failed: ${detail.slice(0, 500)}`);
+      "--git-dir",
+      gitdir,
+      "push",
+      "--porcelain",
+      "--no-force",
+      "--no-thin",
+      url,
+      `refs/heads/paperclip-source:${request.remoteRef}`
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0: credentialHelper,
+        GIT_TERMINAL_PROMPT: "0",
+        CREDENTIALS_DIRECTORY: import_node_process.default.env.CREDENTIALS_DIRECTORY
+      },
+      timeout: 12e4
     }
-  } finally {
-    import_node_fs.default.rmSync(askpass, { force: true });
+  );
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "native Git push failed";
+    fail(`native Git push failed: ${detail.slice(0, 500)}`);
   }
   import_node_process.default.stdout.write(`${canonicalJson({ ok: true, expectedNewOid: request.expectedNewOid })}
 `);

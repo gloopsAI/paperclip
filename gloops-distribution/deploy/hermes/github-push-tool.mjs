@@ -359,56 +359,48 @@ async function workerCommand(args) {
     force: false,
   });
   // Supply the non-secret GitHub App username in the URL so Git only asks the
-  // isolated askpass helper for the short-lived installation token. Some
-  // non-interactive Git builds will not invoke askpass for a missing username
-  // when terminal prompts are disabled, even when GIT_ASKPASS is configured.
+  // isolated credential helper for the short-lived installation token.
   const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
-  const askpass = path.join(gitdir, "paperclip-github-askpass");
-  fs.writeFileSync(
-    askpass,
+  // Git's askpass discovery is not reliable inside the transient hardened
+  // systemd worker. Use the native credential-helper protocol instead. The
+  // helper command contains only the systemd credential path; the token itself
+  // never appears in argv, environment values, logs, or repository config.
+  const credentialHelper = [
+    "!f() {",
+    "printf 'username=x-access-token\\npassword=';",
+    "cat \"$CREDENTIALS_DIRECTORY/github-token\";",
+    "printf '\\n';",
+    "}; f",
+  ].join(" ");
+  const result = spawnSync(
+    "/usr/bin/git",
     [
-      "#!/bin/sh",
-      "case \"$1\" in",
-      "  *Username*) printf '%s\\n' 'x-access-token' ;;",
-      "  *Password*) cat \"$CREDENTIALS_DIRECTORY/github-token\" ;;",
-      "  *) exit 1 ;;",
-      "esac",
-      "",
-    ].join("\n"),
-    { mode: 0o700 },
-  );
-  try {
-    const result = spawnSync(
-      "/usr/bin/git",
-      [
-        "--git-dir", gitdir,
-        "push",
-        "--porcelain",
-        "--no-force",
-        "--no-thin",
-        url,
-        `refs/heads/paperclip-source:${request.remoteRef}`,
-      ],
-      {
-        encoding: "utf8",
-        env: {
-          PATH: "/usr/bin:/bin",
-          HOME: gitdir,
-          GIT_CONFIG_NOSYSTEM: "1",
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ASKPASS_REQUIRE: "force",
-          GIT_ASKPASS: askpass,
-          CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
-        },
-        timeout: 120_000,
+      "--git-dir", gitdir,
+      "push",
+      "--porcelain",
+      "--no-force",
+      "--no-thin",
+      url,
+      `refs/heads/paperclip-source:${request.remoteRef}`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0: credentialHelper,
+        GIT_TERMINAL_PROMPT: "0",
+        CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
       },
-    );
-    if (result.status !== 0) {
-      const detail = result.stderr.trim().split("\n").at(-1) ?? "native Git push failed";
-      fail(`native Git push failed: ${detail.slice(0, 500)}`);
-    }
-  } finally {
-    fs.rmSync(askpass, { force: true });
+      timeout: 120_000,
+    },
+  );
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "native Git push failed";
+    fail(`native Git push failed: ${detail.slice(0, 500)}`);
   }
   process.stdout.write(`${canonicalJson({ ok: true, expectedNewOid: request.expectedNewOid })}\n`);
 }
