@@ -818,6 +818,35 @@ def journal_event(
     fsync_database()
 
 
+def record_draft_pr_envelope(
+    connection: sqlite3.Connection,
+    nonce: str,
+    expires_at: str,
+    payload: dict[str, Any],
+) -> None:
+    # The draft-PR token gets its own conservative recovery envelope, durable
+    # before the single create attempt. token_expires_at becomes the later of
+    # the push-token and draft-PR-token expiries, so recovery of a reconciling
+    # lease can never observe-and-finalize while a crashed process's create
+    # attempt could still land at GitHub.
+    parse_timestamp(expires_at)
+    connection.execute("BEGIN IMMEDIATE")
+    cursor = connection.execute(
+        """
+        UPDATE leases
+        SET token_expires_at = MAX(COALESCE(token_expires_at, ?), ?), updated_at = ?
+        WHERE nonce = ? AND state = 'reconciling'
+        """,
+        (expires_at, expires_at, timestamp(), nonce),
+    )
+    if cursor.rowcount != 1:
+        connection.rollback()
+        raise BrokerError("draft pull request envelope has no reconciling lease")
+    append_journal(connection, nonce, "reconciling", payload)
+    connection.commit()
+    fsync_database()
+
+
 def record_mint_intent(connection: sqlite3.Connection, nonce: str) -> None:
     started = datetime.now(timezone.utc)
     safe_after = started + timedelta(minutes=65)
@@ -1097,14 +1126,18 @@ def execute_draft_pull_request(
     )
     # A separate mint scoped for the draft-PR step. The contents:write push
     # token is never widened and never used against the pulls surface.
-    token, _expires_at, _permissions = module.mint(
+    token, expires_at, _permissions = module.mint(
         config, {"contents": "read", "pull_requests": "write"}
     )
     try:
-        journal_event(connection, nonce, "reconciling", {
+        # Durable intent + fresh recovery envelope BEFORE the create attempt:
+        # a crash between the POST and its journaled outcome must keep the
+        # lease unrecoverable until this token is invalid at GitHub.
+        record_draft_pr_envelope(connection, nonce, expires_at, {
             "event": "draft_pr_intent",
             "headRef": authorization["branchRef"],
             "base": draft_authorization["base"],
+            "tokenExpiresAt": expires_at,
         })
         record: dict[str, Any] | None = None
         ambiguous = False

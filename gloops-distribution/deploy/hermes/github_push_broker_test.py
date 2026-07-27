@@ -564,6 +564,32 @@ class GitHubPushBrokerTests(unittest.TestCase):
         }
         return authorization, pull_request, lease
 
+    @staticmethod
+    def reconciling_lease(
+        connection,
+        authorization: dict[str, object],
+        expected_new_oid: str,
+        push_token_expires_at: str = "2000-01-01T00:00:00Z",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        lease, _, prepared = broker.create_lease(
+            connection, authorization, authorization_digest, expected_new_oid
+        )
+        broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+        broker.transition(
+            connection,
+            lease["nonce"],
+            "prepared",
+            "token_minted",
+            {},
+            token_expires_at=push_token_expires_at,
+        )
+        broker.transition(connection, lease["nonce"], "token_minted", "in_flight", {})
+        broker.transition(connection, lease["nonce"], "in_flight", "reconciling", {})
+        return lease, prepared
+
     def test_draft_pr_step_mints_scoped_token_and_posts_exactly_once(self):
         run_id = "13131313-1313-4131-8131-131313131313"
         authorization, pull_request, lease = self.draft_pr_fixture(run_id)
@@ -596,6 +622,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
             connection = broker.connect_database()
+            lease, _prepared = self.reconciling_lease(connection, authorization, "c" * 40)
             record = broker.execute_draft_pull_request(
                 connection,
                 FakeModule,
@@ -619,12 +646,23 @@ class GitHubPushBrokerTests(unittest.TestCase):
             self.assertEqual(body["title"], f"feat(gym): leased calibration {run_id}")
             self.assertIn(lease["rootAuthorizationDigest"], body["body"])
             self.assertEqual(revoked, ["ghs_draft_pr"])
+            # The draft-PR mint re-armed the conservative recovery envelope.
+            self.assertEqual(
+                connection.execute(
+                    "SELECT token_expires_at FROM leases WHERE nonce = ?",
+                    (lease["nonce"],),
+                ).fetchone()["token_expires_at"],
+                "2099-01-01T00:00:00Z",
+            )
             broker.verify_journal(connection)
             events = [
                 json.loads(row["payload_json"]).get("event")
                 for row in connection.execute("SELECT * FROM journal ORDER BY sequence")
             ]
-            self.assertEqual(events, ["draft_pr_intent", "draft_pr_reconciled"])
+            self.assertEqual(
+                [event for event in events if event],
+                ["draft_pr_intent", "draft_pr_reconciled"],
+            )
             connection.close()
 
     def test_draft_pr_ambiguity_is_resolved_by_listing_and_never_reposted(self):
@@ -668,6 +706,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
 
             with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
                 connection = broker.connect_database()
+                lease, _prepared = self.reconciling_lease(connection, authorization, "c" * 40)
                 record = broker.execute_draft_pull_request(
                     connection,
                     FakeModule,
@@ -754,6 +793,143 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 "prNumber": 9,
                 "prUrl": pull_request["html_url"],
             })
+            connection.close()
+
+    def test_recovery_waits_for_the_draft_pr_token_envelope(self):
+        run_id = "16161616-1616-4161-8161-161616161616"
+        authorization, pull_request, _fixture_lease = self.draft_pr_fixture(run_id, 21)
+        test = self
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            authorization_digest = broker.digest(
+                "gloops.github-push-authorization.v1", authorization
+            )
+            lease, _, _prepared = broker.create_lease(
+                connection, authorization, authorization_digest, "f" * 40
+            )
+            broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+            future = (
+                datetime.now(timezone.utc) + timedelta(minutes=50)
+            ).isoformat().replace("+00:00", "Z")
+            # The envelope is bound to the reconciling state only.
+            with self.assertRaisesRegex(broker.BrokerError, "no reconciling lease"):
+                broker.record_draft_pr_envelope(
+                    connection, lease["nonce"], future, {"event": "draft_pr_intent"}
+                )
+            broker.transition(
+                connection,
+                lease["nonce"],
+                "prepared",
+                "token_minted",
+                {},
+                token_expires_at="2000-01-01T00:00:00Z",
+            )
+            broker.transition(connection, lease["nonce"], "token_minted", "in_flight", {})
+            broker.transition(connection, lease["nonce"], "in_flight", "reconciling", {})
+            broker.record_draft_pr_envelope(
+                connection,
+                lease["nonce"],
+                future,
+                {"event": "draft_pr_intent", "tokenExpiresAt": future},
+            )
+            # The envelope is the LATER of push-token and draft-PR-token
+            # expiries; an older value never shrinks it.
+            broker.record_draft_pr_envelope(
+                connection,
+                lease["nonce"],
+                "2000-01-03T00:00:00Z",
+                {"event": "draft_pr_intent", "tokenExpiresAt": "2000-01-03T00:00:00Z"},
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT token_expires_at FROM leases WHERE nonce = ?",
+                    (lease["nonce"],),
+                ).fetchone()["token_expires_at"],
+                future,
+            )
+            broker.verify_journal(connection)
+
+            mints: list[dict[str, str]] = []
+            requests: list[str] = []
+
+            class FakeModule:
+                class GitHubAPIError(Exception):
+                    def __init__(self, status: int):
+                        self.status = status
+
+                class CredentialError(Exception):
+                    pass
+
+                @staticmethod
+                def load_config():
+                    return {"repository": authorization["repositoryFullName"]}
+
+                @staticmethod
+                def mint(_config, permissions):
+                    mints.append(permissions)
+                    return "ghs_reconcile_only", "2099-01-01T00:00:00Z", {}
+
+                @staticmethod
+                def request_json(method, path, _token, body=None):
+                    test.assertEqual(method, "GET")
+                    requests.append(path)
+                    return [pull_request]
+
+                @staticmethod
+                def revoke_value(_token):
+                    return None
+
+            # While the draft-PR token may still be live at GitHub, recovery
+            # must refuse to observe-and-finalize: a crashed create attempt
+            # could still land and contradict a premature pr:none receipt.
+            with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                    patch.object(broker, "verify_github_repository"), \
+                    patch.object(broker, "read_remote_ref", return_value="f" * 40), \
+                    patch.object(broker, "paperclip_request", return_value={}), \
+                    patch.object(broker, "run_worker") as worker:
+                broker.reconcile_pending(connection)
+            worker.assert_not_called()
+            self.assertEqual(mints, [])
+            self.assertEqual(requests, [])
+            row = connection.execute(
+                "SELECT state, terminal_receipt_json FROM leases WHERE nonce = ?",
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "reconciling")
+            self.assertIsNone(row["terminal_receipt_json"])
+            delay = broker.reconciliation_delay(connection)
+            self.assertIsNotNone(delay)
+            self.assertGreater(delay, 60 * 40)
+
+            # Once the draft-PR envelope has passed, the same recovery pass
+            # observes by listing and finalizes with the found draft PR.
+            connection.execute(
+                "UPDATE leases SET token_expires_at = ? WHERE nonce = ?",
+                ("2000-01-02T00:00:00Z", lease["nonce"]),
+            )
+            connection.commit()
+            with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                    patch.object(broker, "verify_github_repository"), \
+                    patch.object(broker, "read_remote_ref", return_value="f" * 40), \
+                    patch.object(broker, "paperclip_request", return_value={}), \
+                    patch.object(broker, "run_worker") as worker:
+                broker.reconcile_pending(connection)
+            worker.assert_not_called()
+            self.assertEqual(mints, [{"contents": "read"}, {"pull_requests": "read"}])
+            self.assertEqual(len(requests), 1)
+            row = connection.execute(
+                "SELECT state, terminal_receipt_json FROM leases WHERE nonce = ?",
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "reconciled_success")
+            self.assertEqual(
+                json.loads(row["terminal_receipt_json"])["draftPullRequest"],
+                {
+                    "disposition": "created",
+                    "prNumber": 21,
+                    "prUrl": pull_request["html_url"],
+                },
+            )
             connection.close()
 
     def test_broker_database_has_no_token_storage_column_or_token_artifact(self):

@@ -1796,6 +1796,8 @@ for (const required of [
   '{"contents": "read", "pull_requests": "write"}',
   '{"pull_requests": "read"}',
   "draft_pr_intent",
+  "record_draft_pr_envelope",
+  "SET token_expires_at = MAX(COALESCE(token_expires_at, ?), ?), updated_at = ?",
   "observe_draft_pull_request",
   "list_draft_pull_request",
 ]) {
