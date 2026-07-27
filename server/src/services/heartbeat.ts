@@ -5432,6 +5432,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       policy: livePolicy,
       lockingEnvelope,
       priorRuns,
+      currentRun: { isRetry: true },
     });
 
     if (preflight.allowed) return { allowed: true };
@@ -8273,7 +8274,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       idempotentWakeExists: Boolean(existingWake),
     });
 
-    if (decision.kind !== "enqueue" || !issue) return;
+    if (decision.kind !== "enqueue" || !issue) {
+      if (issue && existingWake) {
+        await addSuccessfulRunHandoffCommentOnce({
+          issue,
+          run,
+          agent,
+          detectedProgressSummary: detectedProgressSummary ?? "The run reported progress, but did not choose a next step.",
+        });
+      }
+      return;
+    }
 
     const handoffAdmission = await preflightSuccessfulRunHandoffAdmission({
       context,
@@ -11069,7 +11080,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         effectiveAdmissionPolicy,
         priorRows.map((row) => priorExecutionRun(row, claimedAt)),
         {
-          isRetry: Boolean(run.retryOfRunId),
+          // A successful-run handoff is a bounded continuation of the source
+          // execution even though its durable wake creates a sibling run rather
+          // than populating retryOfRunId. Keep claim-time classification aligned
+          // with the preflight that admitted the wake.
+          isRetry:
+            Boolean(run.retryOfRunId) ||
+            context.wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
           isAuthorizedIndependentStage: authorizedIndependentStage,
         },
       );
