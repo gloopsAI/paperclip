@@ -160,6 +160,43 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
     };
   }
 
+  function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+      const recordValue = value as Record<string, unknown>;
+      return `{${Object.keys(recordValue).sort().map((key) =>
+        `${JSON.stringify(key)}:${canonicalJson(recordValue[key])}`
+      ).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function terminalWithDraftPullRequest(
+    receipt: ReturnType<typeof prepared>,
+    state: "reconciled_success" | "bounded_failure" | "conflict",
+    remoteNewOid: string,
+    draftPullRequest:
+      | { disposition: "created"; prNumber: number; prUrl: string }
+      | { disposition: "none" },
+  ) {
+    const projection = {
+      ...receipt,
+      state,
+      remoteOldOid: receipt.expectedOldOid,
+      remoteNewOid,
+      terminalAt: new Date().toISOString(),
+      draftPullRequest,
+    };
+    return {
+      ...projection,
+      brokerReceiptDigest: `sha256:${createHash("sha256")
+        .update("gloops.github-push-terminal-receipt.v1")
+        .update("\0")
+        .update(canonicalJson(projection))
+        .digest("hex")}`,
+    };
+  }
+
   it("binds the root receipt to live run, issue, workspace, and repository facts", async () => {
     const identity = await seed();
     const service = repositoryMutationReceiptService(db);
@@ -205,6 +242,76 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
       ...terminalReceipt,
       state: "conflict",
     })).rejects.toBeInstanceOf(RepositoryMutationReceiptConflictError);
+  });
+
+  it("accepts terminal receipts carrying leased draft pull request evidence", async () => {
+    const identity = await seed();
+    const service = repositoryMutationReceiptService(db);
+    const receipt = prepared(identity);
+    await service.recordPrepared(receipt);
+
+    const terminalReceipt = terminalWithDraftPullRequest(
+      receipt,
+      "reconciled_success",
+      receipt.expectedNewOid,
+      {
+        disposition: "created",
+        prNumber: 7,
+        prUrl: "https://github.com/gloopsAI/gloops-paperclip-plugin/pull/7",
+      },
+    );
+    const recorded = await service.recordTerminal(terminalReceipt);
+    expect((recorded.receipt as Record<string, unknown>).draftPullRequest).toEqual({
+      disposition: "created",
+      prNumber: 7,
+      prUrl: "https://github.com/gloopsAI/gloops-paperclip-plugin/pull/7",
+    });
+    const replay = await service.recordTerminal(terminalReceipt);
+    expect(replay.id).toBe(recorded.id);
+    await expect(service.getForSettlement(identity.heartbeatRunId)).resolves.toMatchObject({
+      disposition: "reconciled_success",
+    });
+  });
+
+  it("accepts pr:none draft evidence and rejects malformed draft PR fields", async () => {
+    const identity = await seed();
+    const service = repositoryMutationReceiptService(db);
+    const receipt = prepared(identity);
+    await service.recordPrepared(receipt);
+
+    const created = {
+      disposition: "created" as const,
+      prNumber: 7,
+      prUrl: "https://github.com/gloopsAI/gloops-paperclip-plugin/pull/7",
+    };
+    // A created draft PR is only valid evidence on a reconciled_success push.
+    await expect(service.recordTerminal(
+      terminalWithDraftPullRequest(receipt, "bounded_failure", receipt.expectedOldOid, created),
+    )).rejects.toBeInstanceOf(RepositoryMutationReceiptConflictError);
+    // The PR URL must be exactly the leased repository's pull URL.
+    await expect(service.recordTerminal(
+      terminalWithDraftPullRequest(receipt, "reconciled_success", receipt.expectedNewOid, {
+        ...created,
+        prUrl: "https://github.com/attacker/elsewhere/pull/7",
+      }),
+    )).rejects.toBeInstanceOf(RepositoryMutationReceiptConflictError);
+    await expect(service.recordTerminal(
+      terminalWithDraftPullRequest(receipt, "reconciled_success", receipt.expectedNewOid, {
+        disposition: "none",
+        prNumber: 7,
+      } as never),
+    )).rejects.toBeInstanceOf(RepositoryMutationReceiptConflictError);
+
+    const noneReceipt = terminalWithDraftPullRequest(
+      receipt,
+      "bounded_failure",
+      receipt.expectedOldOid,
+      { disposition: "none" },
+    );
+    const recorded = await service.recordTerminal(noneReceipt);
+    expect((recorded.receipt as Record<string, unknown>).draftPullRequest).toEqual({
+      disposition: "none",
+    });
   });
 
   it("requires terminal reconciliation before atomic settlement consumes authorization", async () => {

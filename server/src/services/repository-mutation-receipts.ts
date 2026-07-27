@@ -43,8 +43,17 @@ const TERMINAL_KEYS = new Set([
   "remoteNewOid",
   "terminalAt",
 ]);
+// Optional draft-PR evidence for the leased push+draft-PR composite. Absent
+// field = push-only receipt; old receipts stay valid.
+const TERMINAL_KEYS_WITH_DRAFT_PR = new Set([...TERMINAL_KEYS, "draftPullRequest"]);
+const DRAFT_PR_CREATED_KEYS = new Set(["disposition", "prNumber", "prUrl"]);
+const DRAFT_PR_NONE_KEYS = new Set(["disposition"]);
 
 type TerminalState = "reconciled_success" | "bounded_failure" | "conflict";
+
+export type RepositoryMutationDraftPullRequest =
+  | { disposition: "created"; prNumber: number; prUrl: string }
+  | { disposition: "none" };
 
 export type RepositoryMutationPreparedReceipt = {
   schemaVersion: "gloops.repository-mutation-receipt.v1";
@@ -76,6 +85,7 @@ export type RepositoryMutationTerminalReceipt =
     remoteOldOid: string;
     remoteNewOid: string;
     terminalAt: string;
+    draftPullRequest?: RepositoryMutationDraftPullRequest;
   };
 
 export class RepositoryMutationReceiptConflictError extends Error {
@@ -175,24 +185,52 @@ function validatePrepared(input: RepositoryMutationPreparedReceipt): void {
   }
 }
 
+function validateDraftPullRequest(input: RepositoryMutationTerminalReceipt): void {
+  const draftPullRequest = input.draftPullRequest;
+  if (draftPullRequest === undefined) return;
+  if (draftPullRequest?.disposition === "none") {
+    if (hasExactKeys(draftPullRequest, DRAFT_PR_NONE_KEYS)) return;
+  } else if (draftPullRequest?.disposition === "created") {
+    if (
+      hasExactKeys(draftPullRequest, DRAFT_PR_CREATED_KEYS)
+      && input.state === "reconciled_success"
+      && Number.isInteger(draftPullRequest.prNumber)
+      && draftPullRequest.prNumber > 0
+      && draftPullRequest.prUrl
+        === `https://github.com/${input.repositoryFullName}/pull/${draftPullRequest.prNumber}`
+    ) {
+      return;
+    }
+  }
+  throw new RepositoryMutationReceiptConflictError(
+    "Terminal repository mutation draft pull request evidence is malformed",
+  );
+}
+
 function validateTerminal(input: RepositoryMutationTerminalReceipt): void {
   const {
     brokerReceiptDigest,
     remoteOldOid,
     remoteNewOid,
     terminalAt,
+    draftPullRequest,
     ...preparedFields
   } = input;
   validatePrepared({ ...preparedFields, state: "prepared" });
+  validateDraftPullRequest(input);
   const digestProjection = {
     ...preparedProjection(input),
     state: input.state,
     remoteOldOid,
     remoteNewOid,
     terminalAt,
+    ...(draftPullRequest === undefined ? {} : { draftPullRequest }),
   };
   if (
-    !hasExactKeys(input, TERMINAL_KEYS)
+    !hasExactKeys(
+      input,
+      "draftPullRequest" in input ? TERMINAL_KEYS_WITH_DRAFT_PR : TERMINAL_KEYS,
+    )
     || !TERMINAL_STATES.has(input.state)
     || !SHA256_PATTERN.test(brokerReceiptDigest)
     || !OID_PATTERN.test(remoteOldOid)
