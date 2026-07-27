@@ -149,7 +149,7 @@ type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
-  correctiveRunId: string;
+  correctiveRunId: string | null;
   missingDisposition: string;
   handoffAttempt: number;
   maxHandoffAttempts: number;
