@@ -947,6 +947,59 @@ export function executionInvocationBudgetFromEnvelope(value: unknown): Execution
   return readExecutionAdmissionEnvelope(value)?.reservation ?? null;
 }
 
+/**
+ * Claim-time admission reused for preflight decisions before a wake/run row is
+ * created. The caller must supply the same effective policy and locking
+ * envelope that claim time would use for the budget epoch, plus the prior runs
+ * observed for that epoch. The current prospective run is treated as a new
+ * attempt (not a retry, not an authorized independent stage).
+ */
+export function evaluateProspectiveExecutionAdmission(input: {
+  identity: { budgetId: string; epoch: string };
+  policy: Extract<ExecutionAdmissionPolicy, { enabled: true }>;
+  lockingEnvelope: ExecutionAdmissionEnvelope | null;
+  priorRuns: PriorExecutionRun[];
+}): { allowed: boolean; reason: ExecutionAdmissionReason | null; envelope: ExecutionAdmissionEnvelope } {
+  let effectivePolicy: Extract<ExecutionAdmissionPolicy, { enabled: true }>;
+  try {
+    effectivePolicy = resolveEpochBoundExecutionAdmissionPolicy(
+      input.policy,
+      input.lockingEnvelope,
+    );
+  } catch {
+    const deniedDecision = {
+      allowed: false as const,
+      reason: "run_limit_exhausted" as const,
+      observed: summarizePriorExecution(input.priorRuns),
+    };
+    return {
+      allowed: false,
+      reason: deniedDecision.reason,
+      envelope: buildExecutionAdmissionEnvelope({
+        identity: input.identity,
+        policy: input.policy,
+        decision: deniedDecision,
+        evaluatedAt: new Date(),
+      }),
+    };
+  }
+
+  const decision = evaluateExecutionAdmission(effectivePolicy, input.priorRuns, {
+    isRetry: false,
+    isAuthorizedIndependentStage: false,
+  });
+  return {
+    allowed: decision.allowed,
+    reason: decision.reason,
+    envelope: buildExecutionAdmissionEnvelope({
+      identity: input.identity,
+      policy: effectivePolicy,
+      decision,
+      evaluatedAt: new Date(),
+    }),
+  };
+}
+
 export function evaluateExecutionReservationUsage(input: {
   reservation: ExecutionInvocationBudget;
   inputTokens: number;

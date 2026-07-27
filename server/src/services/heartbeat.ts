@@ -204,6 +204,7 @@ import {
   allowsAutomaticRecoveryCreation,
   evaluateExecutionAdmission,
   evaluateExecutionReservationUsage,
+  evaluateProspectiveExecutionAdmission,
   executionInvocationBudgetFromEnvelope,
   isBudgetExemptPreflightFailure,
   parseExecutionAdmissionPolicy,
@@ -5349,6 +5350,98 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       bindingPresent,
     );
   }
+
+  async function preflightSuccessfulRunHandoffAdmission(input: {
+    context: Record<string, unknown>;
+    issueId: string;
+    sourceRun: typeof heartbeatRuns.$inferSelect;
+  }): Promise<
+    | { allowed: true }
+    | { allowed: false; reason: ExecutionAdmissionReason; envelope: ExecutionAdmissionEnvelope | null }
+  > {
+    if (!executionAdmissionPolicy.enabled) return { allowed: true };
+
+    const livePolicy = await resolveEffectiveAdmissionPolicyForIssue(input.issueId);
+    if (!livePolicy.enabled) return { allowed: true };
+
+    const parentEnvelope = readExecutionAdmissionEnvelope(
+      input.context[EXECUTION_ADMISSION_CONTEXT_KEY],
+    );
+
+    let identity: { budgetId: string; epoch: string };
+    try {
+      identity = resolveExecutionBudgetIdentity({
+        issueId: input.issueId,
+        runId: input.sourceRun.id,
+        retryOfRunId: null,
+        parentEnvelope,
+        resetId: undefined,
+        requestedByActorType: "system",
+      });
+    } catch {
+      return { allowed: false, reason: "run_limit_exhausted", envelope: null };
+    }
+
+    const exactBudgetCondition = and(
+      sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'budgetId' = ${identity.budgetId}`,
+      sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'decision' = 'allowed'`,
+    );
+    const legacyDefaultIssueCondition = identity.epoch === "default"
+      ? and(
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} is null`,
+        isNotNull(heartbeatRuns.startedAt),
+      )
+      : undefined;
+    const priorBudgetCondition = legacyDefaultIssueCondition
+      ? or(exactBudgetCondition, legacyDefaultIssueCondition)
+      : exactBudgetCondition;
+
+    const priorRows = await db
+      .select({
+        retryOfRunId: heartbeatRuns.retryOfRunId,
+        usageJson: heartbeatRuns.usageJson,
+        resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        errorCode: heartbeatRuns.errorCode,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.sourceRun.companyId),
+        priorBudgetCondition,
+      ))
+      .orderBy(asc(heartbeatRuns.createdAt));
+
+    const priorRuns = priorRows.map((row) => priorExecutionRun(row, new Date()));
+
+    const lockingEnvelope = selectEpochLockingAdmissionEnvelope([
+      parentEnvelope && parentEnvelope.budgetId === identity.budgetId
+        ? parentEnvelope
+        : null,
+      ...priorRows.map((row) =>
+        readExecutionAdmissionEnvelope(
+          parseObject(row.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
+        ),
+      ),
+    ]);
+
+    const preflight = evaluateProspectiveExecutionAdmission({
+      identity,
+      policy: livePolicy,
+      lockingEnvelope,
+      priorRuns,
+    });
+
+    if (preflight.allowed) return { allowed: true };
+    return {
+      allowed: false,
+      reason: preflight.reason ?? "run_limit_exhausted",
+      envelope: preflight.envelope,
+    };
+  }
+
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -8182,36 +8275,56 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (decision.kind !== "enqueue" || !issue) return;
 
-    if (!(await allowsAutomaticRecoveryForContext(context))) {
+    const handoffAdmission = await preflightSuccessfulRunHandoffAdmission({
+      context,
+      issueId: issue.id,
+      sourceRun: run,
+    });
+
+    if (!handoffAdmission.allowed) {
       await db
         .update(issues)
         .set({
-          status: "blocked",
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
-      await addSuccessfulRunHandoffCommentOnce({
-        issue,
-        run,
-        agent,
-        detectedProgressSummary:
-          detectedProgressSummary ?? "The run reported progress, but did not choose a terminal issue disposition.",
-      });
-      await appendRunEvent(run, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: "Successful-run handoff blocked before row creation by the execution-admission policy",
-        payload: {
-          issueId: issue.id,
-          maxRetriesPerTask: executionAdmissionPolicy.enabled
-            ? executionAdmissionPolicy.maxRetriesPerTask
-            : null,
+      const fullIssue = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!fullIssue) return;
+      const blocked = await recovery.escalateStrandedAssignedIssue({
+        issue: fullIssue,
+        previousStatus: "in_progress",
+        latestRun: null,
+        recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        successfulRunHandoffEvidence: {
+          sourceRunId: run.id,
+          correctiveRunId: null,
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
         },
+        suppressRecoveryWake: true,
       });
+      if (blocked) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message:
+            `Successful-run handoff blocked before row creation by execution-admission preflight (${handoffAdmission.reason})`,
+          payload: {
+            issueId: issue.id,
+            admissionReason: handoffAdmission.reason,
+            executionAdmission: handoffAdmission.envelope,
+          },
+        });
+      }
       return;
     }
 
