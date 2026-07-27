@@ -574,6 +574,27 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
         gloopsExecutionAdmission: null,
       },
     });
+    adapterExecute.mockImplementationOnce(async (input: { agent: { id: string } }) => {
+      adapterState.startedAgentIds.push(input.agent.id);
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Controlled-swarm retry completed its issue.",
+        provider: "test",
+        model: "test-model",
+        usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2 },
+      };
+    });
 
     const heartbeat = heartbeatService(db, {
       runtimeEnv: {

@@ -83,12 +83,29 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
+const mockAdapterState = vi.hoisted(() => ({
+  supportsExecutionBudget: true,
+}));
+
+vi.mock("@paperclipai/adapter-utils/execution-envelope", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/execution-envelope")>();
+  return {
+    ...actual,
+    evaluateSubscriptionRouteAdmission: vi.fn(() => ({
+      allowed: true,
+      provider: null,
+      reason: "Process-recovery fixture bypasses subscription route chain.",
+    })),
+  };
+});
+
 vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
+      supportsExecutionBudget: mockAdapterState.supportsExecutionBudget,
       execute: mockAdapterExecute,
     })),
   };
@@ -3016,6 +3033,259 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activityDetailsText).not.toContain(bearerSecret);
     expect(activityDetailsText).not.toContain(apiKeySecret);
   });
+
+  it("produces no heartbeat row and a single blocked/attention outcome when admission preflight denies the handoff", async () => {
+    await withExecutionEnvironment(ZERO_RECOVERY_EXECUTION_ENV, async () => {
+      const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture({ adapterType: "codex_local" });
+      mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+        await db.insert(issueComments).values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          createdByRunId: ctx.runId,
+          body: "Implemented the backend detector, but did not choose a final issue state.",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Implemented the backend detector, but did not choose a final issue state.",
+          provider: "test",
+          model: "test-model",
+          usage: {
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+          },
+        };
+      });
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await waitForValue(async () => {
+        const events = await db
+          .select({ id: costEvents.id })
+          .from(costEvents)
+          .where(eq(costEvents.heartbeatRunId, runId));
+        return events[0] ?? null;
+      }, 5_000);
+
+      const handoffWakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId))
+        .then((rows) => rows.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff"));
+      expect(handoffWakeups).toHaveLength(0);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: runId, status: "succeeded" });
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("blocked");
+      expect(issue?.executionRunId).toBeNull();
+
+      const recoveryActions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+      expect(recoveryActions).toHaveLength(1);
+      expect(recoveryActions[0]).toMatchObject({
+        kind: "missing_disposition",
+        cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        status: "active",
+      });
+
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      const requiredNotice = comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY);
+      expect(requiredNotice).toBeFalsy();
+      const exhaustedNotice = comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
+      expect(exhaustedNotice).toBeTruthy();
+      expect(exhaustedNotice?.authorType).toBe("system");
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+      expect(events.some((event) =>
+        event.eventType === "lifecycle" &&
+        event.message?.includes("execution-admission preflight")
+      )).toBe(true);
+    });
+  });
+
+  it("keeps exactly-once handoff behavior when a prior handoff wake already exists", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;
+    await db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "finish_successful_run_handoff",
+      payload: { issueId, sourceRunId: runId, handoffRequired: true, handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON },
+      status: "queued",
+      idempotencyKey,
+      requestedAt: new Date("2026-03-19T00:00:01.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:01.000Z"),
+    });
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Implemented the backend detector, but did not choose a final issue state.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the backend detector, but did not choose a final issue state.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.some((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)
+        ? true
+        : null;
+    }, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+    expect(handoffWakeups).toHaveLength(1);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.filter((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toHaveLength(1);
+  });
+
+  it("queues one admissible handoff wake under a strict envelope with room for a second run", async () => {
+    const generousEnv = {
+      ...ZERO_RECOVERY_EXECUTION_ENV,
+      PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "2",
+      PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "1",
+    };
+    await withExecutionEnvironment(generousEnv, async () => {
+      const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+      const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;
+      mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+        await db.insert(issueComments).values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          createdByRunId: ctx.runId,
+          body: "Implemented the backend detector, but did not choose a final issue state.",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Implemented the backend detector, but did not choose a final issue state.",
+          provider: "test",
+          model: "test-model",
+          usage: {
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+          },
+        };
+      });
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Recorded the required terminal issue disposition.",
+          provider: "test",
+          model: "test-model",
+          usage: {
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+          },
+        };
+      });
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+
+      const handoffEvidence = await waitForValue(async () => {
+        const wakeups = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.agentId, agentId));
+        const matchingWakeups = wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff");
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+        const matchingRuns = runs.filter((run) => (
+          run.id !== runId
+          && (run.contextSnapshot as { wakeReason?: string } | null)?.wakeReason === "finish_successful_run_handoff"
+        ));
+        return matchingWakeups.length > 0 || matchingRuns.length > 0
+          ? { wakeups: matchingWakeups, runs: matchingRuns }
+          : null;
+      }, 5_000);
+      await waitForValue(async () => {
+        const events = await db
+          .select({ id: costEvents.id })
+          .from(costEvents)
+          .where(eq(costEvents.heartbeatRunId, runId));
+        return events[0] ?? null;
+      }, 5_000);
+      expect(handoffEvidence).toBeTruthy();
+      const logicalWakeIds = new Set([
+        ...(handoffEvidence?.wakeups.map((wakeup) => wakeup.id) ?? []),
+        ...(handoffEvidence?.runs.map((run) => run.wakeupRequestId).filter(Boolean) ?? []),
+      ]);
+      expect(logicalWakeIds.size).toBe(1);
+      if (handoffEvidence?.wakeups[0]) {
+        expect(handoffEvidence.wakeups[0].idempotencyKey).toBe(idempotencyKey);
+      } else {
+        expect(handoffEvidence?.runs[0]?.contextSnapshot).toMatchObject({
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId: runId,
+        });
+      }
+
+      const issue = await waitForValue(async () => {
+        const current = await db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        return current?.status === "done" ? current : null;
+      }, 5_000);
+      expect(issue.status).toBe("done");
+    });
+  }, 15_000);
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
     const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
