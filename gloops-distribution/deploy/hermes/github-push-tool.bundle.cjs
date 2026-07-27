@@ -18851,7 +18851,7 @@ async function workerCommand(args) {
     value: request.expectedNewOid,
     force: false
   });
-  const url = `https://github.com/${request.repositoryFullName}.git`;
+  const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
   const askpass = import_node_path.default.join(gitdir, "paperclip-github-askpass");
   import_node_fs.default.writeFileSync(
     askpass,

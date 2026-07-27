@@ -358,7 +358,11 @@ async function workerCommand(args) {
     value: request.expectedNewOid,
     force: false,
   });
-  const url = `https://github.com/${request.repositoryFullName}.git`;
+  // Supply the non-secret GitHub App username in the URL so Git only asks the
+  // isolated askpass helper for the short-lived installation token. Some
+  // non-interactive Git builds will not invoke askpass for a missing username
+  // when terminal prompts are disabled, even when GIT_ASKPASS is configured.
+  const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
   const askpass = path.join(gitdir, "paperclip-github-askpass");
   fs.writeFileSync(
     askpass,
