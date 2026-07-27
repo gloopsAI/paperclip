@@ -159,6 +159,52 @@ test("client rejects a symlinked repository before contacting the broker", async
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("worker imports a complete closure into a native bare repository", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-native-"));
+  const repo = path.join(root, "repo");
+  const gitdir = path.join(root, "worker.git");
+  const pack = path.join(root, "input.pack");
+  const request = path.join(root, "request.json");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.mkdirSync(path.join(repo, "nested"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "nested", "proof.txt"), "complete closure\n");
+  git(repo, "add", "nested/proof.txt");
+  git(repo, "commit", "-m", "nested closure");
+  const head = git(repo, "rev-parse", "HEAD");
+  const objectOids = [
+    head,
+    git(repo, "rev-parse", "HEAD^{tree}"),
+    git(repo, "rev-parse", "HEAD:nested"),
+    git(repo, "rev-parse", "HEAD:nested/proof.txt"),
+  ].sort();
+  const packed = spawnSync("git", ["pack-objects", "--stdout", "--revs"], {
+    cwd: repo,
+    input: `${head}\n`,
+  });
+  assert.equal(packed.status, 0, packed.stderr?.toString());
+  fs.writeFileSync(pack, packed.stdout);
+  fs.writeFileSync(request, JSON.stringify({
+    schemaVersion: "gloops.github-push-worker-request.v1",
+    repositoryFullName: "gloopsAI/gloops-paperclip-plugin",
+    defaultBranch: "main",
+    remoteRef: `refs/heads/paperclip/${runId}/calibration`,
+    expectedOldOid: "0".repeat(40),
+    expectedNewOid: head,
+    objectOids,
+    packPath: pack,
+    gitdir,
+  }));
+
+  const result = await runTool(["validate", "--request", request], root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(git(root, "--git-dir", gitdir, "rev-parse", "--is-bare-repository"), "true");
+  assert.equal(git(root, "--git-dir", gitdir, "cat-file", "-t", head), "commit");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("worker rejects a committed symlink before making a request", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-symlink-"));
   const repo = path.join(root, "repo");
