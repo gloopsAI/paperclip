@@ -2869,6 +2869,25 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/gbrain/context/compile",
+  tags: ["organization-kernel"],
+  summary: "Compile advisory GBrain context packet v0",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/gbrain/fingerprints/normalize",
+  tags: ["organization-kernel"],
+  summary: "Normalize a failure fingerprint",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/dashboard",
