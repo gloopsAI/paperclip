@@ -15,6 +15,7 @@ export { secretRoutes } from "./secrets.js";
 export { costRoutes } from "./costs.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
+export { agentCapacityRoutes } from "./agent-capacity.js";
 export { outcomeScorecardRoutes } from "./outcome-scorecard.js";
 export { attentionRoutes } from "./attention.js";
 export { sidebarBadgeRoutes } from "./sidebar-badges.js";
