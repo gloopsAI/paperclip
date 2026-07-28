@@ -164,8 +164,10 @@ export function detectCompletionEvidence(input: {
     return { kind: "done_pattern", detail: excerpt(output) };
   }
 
-  if (summary) return { kind: "summary", detail: excerpt(summary) };
-  if (result) return { kind: "result", detail: excerpt(result) };
+  // Non-empty free-text alone is intentionally NOT auto-close evidence.
+  // Recovery/handoff tests and comment-optional successes must remain in
+  // progress until an explicit terminal marker, disposition, or review accept.
+  // Those empty/non-explicit successes surface as attention via null evidence.
 
   return null;
 }
