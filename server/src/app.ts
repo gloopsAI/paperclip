@@ -34,6 +34,7 @@ import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { reviewPathSloRoutes } from "./routes/review-path-slo.js";
 import { agentCapacityRoutes } from "./routes/agent-capacity.js";
 import { outcomeScorecardRoutes } from "./routes/outcome-scorecard.js";
 import { attentionRoutes } from "./routes/attention.js";
@@ -294,6 +295,7 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(reviewPathSloRoutes(db));
   api.use(agentCapacityRoutes(db));
   api.use(outcomeScorecardRoutes(db));
   api.use(attentionRoutes(db));
