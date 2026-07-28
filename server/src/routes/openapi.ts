@@ -5490,6 +5490,47 @@ for (const route of [
   });
 }
 
+// ─── Harbor release contract (read-only validation; no live deploy) ───────────
+
+const releaseCandidateSchema = z.object({
+  imageDigest: z.string().min(1),
+  prRef: z.string().min(1),
+  headRef: z.string().min(1),
+  argusAccepted: z.boolean(),
+  ciGreen: z.boolean(),
+  environment: z.enum(["surface", "staging", "production"]),
+  service: z.string().optional(),
+  previousImageDigest: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+});
+
+const releaseCandidateValidationSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(z.object({
+    code: z.string(),
+    message: z.string(),
+  })),
+  environment: z.enum(["surface", "staging", "production"]).optional(),
+  imageDigest: z.string().optional(),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/release/validate-candidate",
+  tags: ["release"],
+  summary: "Validate a Harbor release candidate against the release/rollback contract (read-only; does not deploy)",
+  body: releaseCandidateSchema,
+  responses: {
+    200: r.ok(releaseCandidateValidationSchema),
+    400: {
+      description: "Release candidate failed contract validation",
+      content: { "application/json": { schema: releaseCandidateValidationSchema } },
+    },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
