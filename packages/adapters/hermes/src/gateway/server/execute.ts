@@ -1694,11 +1694,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // at the existing reconciliation boundary. The terminal_reconciliation report
   // uses the run evidence digest so the supervisor can dedupe across runs.
   // The resume ledger records the terminal side effect to prevent replay.
-  // When there is no issue/pr projection, preserve null projections as
-  // unreconciled and produce an advisory-only repair ladder.
+  // Phase 4 receipt truth: project the run's own terminal evidence onto the
+  // bound issue when present so disposition is matched (not always unreconciled).
+  // PR projection remains null until a durable PR-head projector is wired.
+  const boundIssueId = issueIdFromContext(ctx);
+  const issueProjection = boundIssueId
+    ? {
+        issueId: boundIssueId,
+        terminalEvidenceDigest: providerIoTerminalEvidence.terminalEvidenceDigest,
+        terminalStatus: providerIoTerminalEvidence.terminalEvidence.terminalStatus,
+        hermesRunId: runId,
+      }
+    : null;
   const terminalReconciliation = reconcileTerminalAcrossProjections({
     runTerminalEvidence: providerIoTerminalEvidence,
-    issueProjection: null,
+    issueProjection,
     prProjection: null,
   });
   const resumeLedger = readResumeLedger(ctx, ctx.runId);
@@ -1711,8 +1721,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "terminal_reconciliation_succeeded",
     terminalReconciliation.digest,
   );
+  // Phase 4: never map unreconciled → null; the repair ladder must see it.
   const repairDecision = evaluateRepairLadder({
-    errorCode: terminalReconciliation.disposition === "unreconciled" ? null : terminalReconciliation.disposition,
+    errorCode:
+      terminalReconciliation.disposition === "matched"
+        ? null
+        : terminalReconciliation.disposition === "unreconciled"
+          ? "terminal_reconciliation_unreconciled"
+          : terminalReconciliation.disposition,
     attempt: 0,
     observedAt: new Date().toISOString(),
   });

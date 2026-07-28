@@ -5377,6 +5377,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         parentEnvelope,
         resetId: undefined,
         requestedByActorType: "system",
+        // Recovery handoff stays on the issue default budget.
+        routePathId: null,
       });
     } catch {
       return { allowed: false, reason: "run_limit_exhausted", envelope: null };
@@ -10919,6 +10921,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         parentEnvelope,
         resetId: context[EXECUTION_ADMISSION_RESET_CONTEXT_KEY],
         requestedByActorType: wakeup?.requestedByActorType ?? null,
+        // Phase 5: scope budget by provider route ladder step when present so
+        // ollama→grok→codex advances do not inherit an exhausted default budget.
+        routePathId: (() => {
+          const overrides = parseObject(context.assigneeAdapterOverrides);
+          const evidence = parseObject(overrides.providerRouteEvidence);
+          const advanced = Array.isArray(evidence.advancedProviders)
+            ? evidence.advancedProviders.filter((v): v is string => typeof v === "string")
+            : [];
+          if (advanced.length > 0) return advanced[advanced.length - 1] ?? null;
+          const provider = typeof evidence.currentProvider === "string" ? evidence.currentProvider : null;
+          return provider;
+        })(),
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Invalid execution budget reset";

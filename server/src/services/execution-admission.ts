@@ -795,6 +795,8 @@ export function resolveExecutionBudgetIdentity(input: {
   parentEnvelope: ExecutionAdmissionEnvelope | null;
   resetId: unknown;
   requestedByActorType: string | null;
+  /** Phase 5 surface: isolate budget per provider route so ladder advances do not inherit an exhausted default budget. */
+  routePathId?: string | null;
 }) {
   if (input.parentEnvelope) {
     return { budgetId: input.parentEnvelope.budgetId, epoch: input.parentEnvelope.epoch };
@@ -812,7 +814,14 @@ export function resolveExecutionBudgetIdentity(input: {
   }
 
   const root = input.issueId ? `issue:${input.issueId}` : `run:${input.retryOfRunId ?? input.runId}`;
-  return { budgetId: `${root}:${epoch}`, epoch };
+  const routeRaw = typeof input.routePathId === "string" ? input.routePathId.trim() : "";
+  const route =
+    routeRaw && /^[A-Za-z0-9._:-]{1,64}$/.test(routeRaw) ? routeRaw : "default";
+  // Keep historical default budget id when route is default for backward compatibility.
+  if (route === "default") {
+    return { budgetId: `${root}:${epoch}`, epoch };
+  }
+  return { budgetId: `${root}:${epoch}:route:${route}`, epoch };
 }
 
 function nonNegative(value: number | null | undefined) {
