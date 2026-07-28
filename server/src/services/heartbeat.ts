@@ -14803,7 +14803,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorMessage: exceededDimensions.includes("usage_missing")
                   ? "Provider completed without usage needed to reconcile its execution reservation"
                   : `Provider usage exceeded its reserved execution envelope (${exceededDimensions.join(", ")})`,
-                clearSession: true,
+                // Phase 3 accounting truth: stop auto-clearSession on reservation paths.
               }
             : {}),
           resultJson: {
@@ -14846,7 +14846,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? {
                 errorCode: "execution_admission.reservation_exceeded",
                 errorMessage: `Provider usage exceeded its reserved execution envelope (${reservationUsage.exceeded.join(", ")})`,
-                clearSession: true,
+                // Phase 3 accounting truth: stop auto-clearSession on reservation paths.
               }
             : {}),
           resultJson: {
@@ -14968,9 +14968,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 : adapterResult.usageBasis === "per_run"
                   ? { usageSource: "per_run" }
                   : {}),
+              // Phase 3 accounting truth: reservation charges are not measured
+              // provider usage. Mark reserved + non-compliant separately so
+              // ledgers can distinguish measured from capacity charges.
+              ...(!normalizedUsage && accountedUsage
+                ? { usageProvenance: "reserved" as const, executionCompliant: false }
+                : reservationUsage && !reservationUsage.compliant
+                  ? { executionCompliant: false }
+                  : {}),
               // Economic truth: preserve measured vs estimated vs unknown.
               // Estimated totals must never be re-labeled as measured.
-              ...(adapterUsageProvenance ? { usageProvenance: adapterUsageProvenance } : {}),
+              // Do not override reserved provenance from capacity charges.
+              ...(adapterUsageProvenance && !(!normalizedUsage && accountedUsage)
+                ? { usageProvenance: adapterUsageProvenance }
+                : {}),
               ...(adapterEstimationMethod ? { estimationMethod: adapterEstimationMethod } : {}),
               ...(adapterEstimationConfidence != null
                 ? { estimationConfidence: adapterEstimationConfidence }
