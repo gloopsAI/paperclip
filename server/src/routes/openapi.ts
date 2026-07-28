@@ -2821,6 +2821,18 @@ registry.registerPath({
 });
 
 
+// ─── Organization Kernel ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/continuation/escalation-packet",
+  tags: ["organization-kernel"],
+  summary: "Build a compact escalation packet (no transcript)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 413: { description: "Packet too large" } },
+});
+
+
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 // ─── Organization Kernel ─────────────────────────────────────────────────────
