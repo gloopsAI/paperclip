@@ -35,6 +35,8 @@ export interface OutcomeScorecard {
   outcomes: {
     admitted: number;
     acceptedOutcomes: number;
+    /** Done probe-lane issues (skill_test / ask) — not product accepted outcomes. */
+    probeOutcomes: number;
     runtimeSuccessNotDone: number;
     doneWithoutSuccessRun: number;
   };
@@ -63,6 +65,8 @@ export interface ScorecardIssue {
   createdAt: Date | string;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  /** Issue work mode — probe modes (skill_test, ask) are excluded from acceptedOutcomes. */
+  workMode?: string | null;
 }
 
 export interface ScorecardRun {
@@ -331,18 +335,33 @@ function hasNonEmptyNonInfraSuccessEvidence(run: ScorecardRun): boolean {
   return true;
 }
 
+/** Probe work modes never count as accepted product outcomes (MAW loop lanes). */
+export function isProbeScorecardIssue(issue: Pick<ScorecardIssue, "workMode">): boolean {
+  const mode = typeof issue.workMode === "string" ? issue.workMode.trim().toLowerCase() : "";
+  return mode === "skill_test" || mode === "ask";
+}
+
 /**
  * An issue is an accepted organizational outcome when it is done and either:
  * - has an explicit review-accept marker on a linked run result, or
  * - has at least one succeeded run with non-empty non-infra result/summary.
+ *
+ * Probe lanes (skill_test / ask) are excluded — they surface as probeOutcomes.
  */
 export function isAcceptedOrganizationalOutcome(
-  issue: Pick<ScorecardIssue, "status">,
+  issue: Pick<ScorecardIssue, "status" | "workMode">,
   runs: ScorecardRun[],
 ): boolean {
   if (issue.status !== "done") return false;
+  if (isProbeScorecardIssue(issue)) return false;
   if (runs.some((run) => hasExplicitReviewAcceptMarker(run.resultJson))) return true;
   return runs.some((run) => hasNonEmptyNonInfraSuccessEvidence(run));
+}
+
+export function isProbeOrganizationalOutcome(
+  issue: Pick<ScorecardIssue, "status" | "workMode">,
+): boolean {
+  return issue.status === "done" && isProbeScorecardIssue(issue);
 }
 
 /**
@@ -467,6 +486,7 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
   }
 
   let acceptedOutcomes = 0;
+  let probeOutcomes = 0;
   let doneWithoutSuccessRun = 0;
 
   for (const issueId of admittedIssueIds) {
@@ -476,6 +496,9 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
 
     if (isAcceptedOrganizationalOutcome(issue, linkedRuns)) {
       acceptedOutcomes += 1;
+    }
+    if (isProbeOrganizationalOutcome(issue)) {
+      probeOutcomes += 1;
     }
 
     if (issue.status === "done") {
@@ -510,6 +533,7 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
     outcomes: {
       admitted,
       acceptedOutcomes,
+      probeOutcomes,
       runtimeSuccessNotDone,
       doneWithoutSuccessRun,
     },
@@ -627,6 +651,7 @@ export function outcomeScorecardService(db: Db) {
           createdAt: issues.createdAt,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          workMode: issues.workMode,
         })
         .from(issues)
         .where(
@@ -654,6 +679,7 @@ export function outcomeScorecardService(db: Db) {
                 createdAt: issues.createdAt,
                 assigneeAgentId: issues.assigneeAgentId,
                 assigneeUserId: issues.assigneeUserId,
+                workMode: issues.workMode,
               })
               .from(issues)
               .where(and(eq(issues.companyId, companyId), inArray(issues.id, allIssueIds)));
