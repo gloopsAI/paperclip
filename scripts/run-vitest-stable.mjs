@@ -15,7 +15,6 @@ const nonServerProjects = [
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-codex-local",
   "@paperclipai/adapter-opencode-local",
-  "@paperclipai/hermes-paperclip-adapter",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
   "@paperclipai/ui",
