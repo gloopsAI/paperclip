@@ -2809,6 +2809,18 @@ registry.registerPath({
 });
 
 
+// ─── Organization Kernel ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/review-path-slo",
+  tags: ["organization-kernel"],
+  summary: "Get Argus review-path availability SLO metrics",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 // ─── Organization Kernel ─────────────────────────────────────────────────────
