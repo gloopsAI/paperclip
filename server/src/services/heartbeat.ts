@@ -146,6 +146,7 @@ import {
   decideTerminalIssueReconciliation,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
+import { ensureImplementationReviewHandoff } from "./implementation-review-handoff.js";
 import { terminalReconciliationService } from "./terminal-reconciliation.js";
 import { decideTerminalAgentTruth } from "./terminal-agent-reconciliation.js";
 import {
@@ -5670,6 +5671,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         changed: receiptChanged || issueLifecycleChanged,
         status: decision.status,
         reason: decision.reason,
+        exactHeadSha: workspaceHeadSha,
+        implementerAgentId: currentRun.agentId,
+        companyId: currentRun.companyId,
+        issueId: currentIssue.id,
+      };
+    }).then(async (result) => {
+      // MAW lane 2: when implementation is ready for verified_change, hand off
+      // an Argus exact-head review child. Best-effort — never fail settlement.
+      if (
+        result.changed &&
+        result.status === "in_review" &&
+        result.reason === "implementation_ready" &&
+        result.issueId &&
+        result.implementerAgentId &&
+        result.companyId
+      ) {
+        try {
+          await ensureImplementationReviewHandoff(db, {
+            companyId: result.companyId,
+            parentIssueId: result.issueId,
+            implementerAgentId: result.implementerAgentId,
+            exactHeadSha: result.exactHeadSha,
+            enqueueWakeup: async (agentId, payload) => {
+              const issueId =
+                payload.payload && typeof payload.payload.issueId === "string"
+                  ? payload.payload.issueId
+                  : undefined;
+              await enqueueWakeup(agentId, {
+                source: (payload.source as WakeupOptions["source"]) ?? "assignment",
+                triggerDetail: (payload.triggerDetail as WakeupOptions["triggerDetail"]) ?? "system",
+                reason: payload.reason ?? "implementation_review_handoff",
+                contextSnapshot: issueId ? { issueId } : undefined,
+                payload: payload.payload,
+              });
+            },
+          });
+        } catch (error) {
+          logger.warn(
+            { err: error, issueId: result.issueId },
+            "implementation review handoff after terminal reconciliation failed",
+          );
+        }
+      }
+      return {
+        changed: result.changed,
+        status: result.status,
+        reason: result.reason,
       };
     });
   }
