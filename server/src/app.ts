@@ -34,6 +34,7 @@ import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { gbrainRoutes } from "./routes/gbrain.js";
 import { continuationRoutes } from "./routes/continuation.js";
 import { discoveryRoutes } from "./routes/discovery.js";
 import { reviewPathSloRoutes } from "./routes/review-path-slo.js";
@@ -297,6 +298,7 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(gbrainRoutes());
   api.use(continuationRoutes());
   api.use(discoveryRoutes());
   api.use(reviewPathSloRoutes(db));

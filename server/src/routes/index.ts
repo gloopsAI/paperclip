@@ -15,6 +15,7 @@ export { secretRoutes } from "./secrets.js";
 export { costRoutes } from "./costs.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
+export { gbrainRoutes } from "./gbrain.js";
 export { continuationRoutes } from "./continuation.js";
 export { discoveryRoutes } from "./discovery.js";
 export { reviewPathSloRoutes } from "./review-path-slo.js";
