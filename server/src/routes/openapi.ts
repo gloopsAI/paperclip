@@ -2797,6 +2797,18 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// ─── Organization Kernel ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/agents/{agentId}/admission-check",
+  tags: ["organization-kernel"],
+  summary: "Evaluate fail-closed role admission for an agent",
+  request: { params: z.object({ companyId: z.string(), agentId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 // ─── Organization Kernel ─────────────────────────────────────────────────────
