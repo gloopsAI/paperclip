@@ -39,6 +39,10 @@ import {
   buildBoundExecutionContext,
 } from "@paperclipai/adapter-utils/execution-envelope";
 import { EXECUTION_ADMISSION_RESET_CONTEXT_KEY } from "../services/execution-admission.js";
+import {
+  buildRoleAdmissionInputFromAgent,
+  evaluateRoleAdmission,
+} from "../services/execution-role-admission.js";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
@@ -1826,6 +1830,67 @@ export function agentRoutes(
       }
     },
   );
+
+  /**
+   * Read-only pre-run role/skill/config admission check (OK-04).
+   * Does not start a run. Useful for Dispatch before multi-turn wake.
+   *
+   * Follow-up: call evaluateRoleAdmission from heartbeat wake/claim preflight
+   * and deny wake when admitted === false (prefer that over half-wiring
+   * heartbeat.ts in this slice).
+   */
+  router.post("/companies/:companyId/agents/:agentId/admission-check", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    await assertCanReadConfigurations(req, companyId);
+
+    const agent = await svc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const body = (req.body ?? {}) as { desiredSkills?: unknown };
+    const desiredSkills = Array.isArray(body.desiredSkills)
+      ? body.desiredSkills.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : undefined;
+
+    let instructions: string | undefined;
+    try {
+      const instructionsSvc = agentInstructionsService();
+      const bundle = await instructionsSvc.getBundle(agent);
+      if (bundle.entryFile) {
+        const entry = await instructionsSvc.readFile(agent, bundle.entryFile);
+        if (typeof entry.content === "string" && entry.content.trim().length > 0) {
+          instructions = entry.content;
+        }
+      }
+    } catch {
+      // Fall through to adapterConfig.promptTemplate / capabilities.
+    }
+
+    const input = buildRoleAdmissionInputFromAgent(agent, {
+      desiredSkills,
+      instructions,
+    });
+    const evaluation = evaluateRoleAdmission(input);
+
+    res.json({
+      agentId: agent.id,
+      companyId: agent.companyId,
+      role: input.role,
+      status: agent.status,
+      model: input.model,
+      charterLength: typeof input.instructions === "string" ? input.instructions.length : 0,
+      attachedSkills: input.attachedSkills ?? [],
+      desiredSkills: input.desiredSkills ?? [],
+      admitted: evaluation.admitted,
+      reasonCodes: evaluation.reasonCodes,
+      details: evaluation.details,
+      roleKey: evaluation.roleKey,
+    });
+  });
 
   router.get("/agents/:id/skills", async (req, res) => {
     const id = req.params.id as string;

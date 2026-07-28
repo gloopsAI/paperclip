@@ -157,3 +157,4 @@ export {
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export * from "./agent-capacity.js";
+export * from "./execution-role-admission.js";
