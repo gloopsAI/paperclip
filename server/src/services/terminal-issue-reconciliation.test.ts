@@ -176,14 +176,22 @@ describe("decideTerminalIssueReconciliation", () => {
     }))).toEqual({ kind: "preserve", reason: "execution_truth_rejected" });
   });
 
-  it("does not let operations_complete bypass verified-change review", () => {
-    expect(decideTerminalIssueReconciliation(input({
+  it("does not let operations_complete self-accept verified-change to done", () => {
+    // operations_complete alone never grants done; with a progress workspace head
+    // the control plane may project implementation_ready → in_review for Argus.
+    const decision = decideTerminalIssueReconciliation(input({
       completionProfile: "verified_change",
       terminalReceipt: {
         action: "operations_complete",
         summary: "Implementation completed",
       },
-    }))).toEqual({ kind: "preserve", reason: "missing_execution_truth" });
+    }));
+    expect(decision).toMatchObject({
+      kind: "project",
+      status: "in_review",
+      reason: "implementation_ready",
+    });
+    expect(decision.kind === "project" ? decision.status : null).not.toBe("done");
   });
 
   it("projects a bound agent-reported blocker with an auditable receipt", () => {
@@ -231,6 +239,38 @@ describe("decideTerminalIssueReconciliation", () => {
       completionProfile: "verified_change",
       contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt },
     }))).toMatchObject({ kind: "project", status: "in_review", reason: "implementation_ready" });
+  });
+
+
+  it("synthesizes implementation-ready receipt from workspace progress head when missing", () => {
+    const decision = decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      // no existing receipt — control plane must synthesize from measured head
+      workspaceHeadSha: headSha,
+    }));
+    expect(decision).toMatchObject({
+      kind: "project",
+      status: "in_review",
+      reason: "implementation_ready",
+      receipt: {
+        verification: {
+          exactHeadAligned: true,
+          exactHeadSha: headSha,
+          allChecksPassed: true,
+          mode: "implementation_ready",
+        },
+        projection: {
+          purpose: "implementation_ready_from_workspace_head",
+        },
+      },
+    });
+  });
+
+  it("does not synthesize when workspace head matches bound baseline (no progress)", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      completionProfile: "verified_change",
+      workspaceHeadSha: "b".repeat(40), // matches boundContext repoRef
+    }))).toEqual({ kind: "preserve", reason: "missing_execution_truth" });
   });
 
   it("preserves failure for missing checks and exact binding mismatches", () => {

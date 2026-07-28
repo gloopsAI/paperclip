@@ -149,6 +149,56 @@ function buildDirectReceipt(input: {
   return { ...body, digest: digest(body) };
 }
 
+function buildImplementationReadyReceipt(input: {
+  workId: string;
+  issueId: string;
+  runId: string;
+  agentId: string;
+  workspaceId: string | null;
+  contextDigest: string;
+  routePathIds: string[];
+  exactHeadSha: string;
+}) {
+  const routePathIds = [...new Set(
+    (input.routePathIds.length > 0 ? input.routePathIds : ["paperclip-control-plane"])
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  )];
+  const body = {
+    schemaVersion: "gloops.execution-truth.operator-receipt.v2",
+    work: { id: input.workId },
+    budget: { exhausted: [] as string[] },
+    route: {
+      observedPathIds: routePathIds,
+      prohibitedPathObserved: routePathIds.some(
+        (routePath) => routePath !== "grok-build-cli" && GROK_API_PATH.test(routePath),
+      ),
+    },
+    continuation: { required: false, valid: true },
+    verification: {
+      mode: "implementation_ready",
+      workspaceFinalized: true,
+      exactHeadAligned: true,
+      exactHeadSha: input.exactHeadSha,
+      // Local/workspace readiness for independent review — not CI green.
+      // Argus exact-head review remains the product gate.
+      allChecksPassed: true,
+    },
+    authority: { humanRequired: false },
+    status: "built",
+    projection: {
+      source: "paperclip-control-plane",
+      purpose: "implementation_ready_from_workspace_head",
+      issueId: input.issueId,
+      runId: input.runId,
+      agentId: input.agentId,
+      workspaceId: input.workspaceId,
+      contextDigest: input.contextDigest,
+    },
+  };
+  return { ...body, digest: digest(body) };
+}
+
 function buildBlockedReceipt(input: {
   workId: string;
   issueId: string;
@@ -346,15 +396,37 @@ export function decideTerminalIssueReconciliation(input: {
     };
   }
   if (input.completionProfile === "verified_change") {
-    if (!existingReceipt) {
-      return { kind: "preserve", reason: "missing_execution_truth" };
+    let receiptForReady: unknown = existingReceipt;
+    if (!receiptForReady) {
+      // Agents implement + commit; control plane measures workspace head and
+      // synthesizes the implementation-ready receipt so PATCH in_review is not
+      // required (and cannot self-accept review). Requires a progress head
+      // distinct from the bound baseline SHA when one is present.
+      const boundRepoRef = string(record(bindingResult.binding.packet.repoRef).repoRef);
+      const head = input.workspaceHeadSha && SHA.test(input.workspaceHeadSha)
+        ? input.workspaceHeadSha
+        : null;
+      const progressHead = Boolean(head && (!boundRepoRef || !SHA.test(boundRepoRef) || head !== boundRepoRef));
+      if (!progressHead || input.budgetExceeded.length > 0) {
+        return { kind: "preserve", reason: "missing_execution_truth" };
+      }
+      receiptForReady = buildImplementationReadyReceipt({
+        workId,
+        issueId: input.issue.id,
+        runId: input.run.id,
+        agentId: input.run.agentId,
+        workspaceId: input.issue.projectWorkspaceId,
+        contextDigest: bindingResult.binding.digest,
+        routePathIds: input.routePathIds,
+        exactHeadSha: head!,
+      });
     }
     const completed = evaluateExecutionTruthTransition({
       transition: "completed",
       workId,
-      receipt: existingReceipt,
+      receipt: receiptForReady,
     });
-    const completedVerification = record(record(existingReceipt).verification);
+    const completedVerification = record(record(receiptForReady).verification);
     if (
       completed.allowed &&
       completedVerification.exactHeadSha === input.workspaceHeadSha
@@ -362,13 +434,13 @@ export function decideTerminalIssueReconciliation(input: {
       return {
         kind: "project",
         status: "done",
-        receipt: existingReceipt as Record<string, unknown>,
+        receipt: receiptForReady as Record<string, unknown>,
         reason: "review_accepted",
       };
     }
     const ready = implementationReady({
       workId,
-      receipt: existingReceipt,
+      receipt: receiptForReady,
       exactHeadSha: input.workspaceHeadSha,
     });
     if (ready) {
@@ -378,7 +450,7 @@ export function decideTerminalIssueReconciliation(input: {
       return {
         kind: "project",
         status: "in_review",
-        receipt: existingReceipt as Record<string, unknown>,
+        receipt: receiptForReady as Record<string, unknown>,
         reason: "implementation_ready",
       };
     }

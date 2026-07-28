@@ -361,7 +361,7 @@ for required in \
   '--read-only' \
   '--group-add 985 ' \
   '--tmpfs /run:rw,exec,nosuid,nodev,size=64m' \
-  '--tmpfs /opt/data:rw,nosuid,nodev,size=256m,uid=10000,gid=10000,mode=0700' \
+  '--tmpfs /opt/data:rw,nosuid,nodev,size=768m,uid=10000,gid=10000,mode=0700' \
   '--cap-drop ALL' \
   '--cap-add CHOWN' \
   '--cap-add DAC_OVERRIDE' \
@@ -371,6 +371,13 @@ for required in \
   '--env GIT_CONFIG_COUNT=1 ' \
   '--env GIT_CONFIG_KEY_0=safe.directory ' \
   '--env GIT_CONFIG_VALUE_0=/opt/data/workspace/* ' \
+  '--env PNPM_HOME=/opt/data/cache/pnpm ' \
+  '--env PNPM_STORE_DIR=/opt/data/cache/pnpm/store ' \
+  '--env npm_config_cache=/opt/data/cache/npm ' \
+  '--env npm_config_prefix=/opt/data/cache/npm-global ' \
+  '--env XDG_CACHE_HOME=/opt/data/cache ' \
+  '--env XDG_DATA_HOME=/opt/data/cache/xdg-data ' \
+  '--env COREPACK_HOME=/opt/data/cache/corepack ' \
   '--memory 2048m' \
   '--cpus 2.0' \
   '--pids-limit 512' \
