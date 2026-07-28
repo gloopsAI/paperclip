@@ -13,7 +13,7 @@ const base = (overrides: Partial<ShouldAutoCloseInput> = {}): ShouldAutoCloseInp
   hasBoundIssue: true,
   issueStatus: "in_progress",
   runIsCurrentForIssue: true,
-  evidence: { kind: "summary", detail: "Implemented the fix and verified tests" },
+  evidence: { kind: "terminal_marker", detail: "disposition:done" },
   completionProfile: null,
   ...overrides,
 });
@@ -25,24 +25,24 @@ const evidence = (kind: CompletionEvidence["kind"], detail = "ok"): CompletionEv
 
 describe("shouldAutoCloseIssueOnRunSuccess", () => {
   describe("close", () => {
-    it("closes in_progress issues with non-empty summary evidence", () => {
+    it("closes in_progress issues with explicit terminal marker evidence", () => {
       expect(shouldAutoCloseIssueOnRunSuccess(base())).toEqual({
         action: "close",
-        reason: "evidenced_success:summary",
+        reason: "evidenced_success:terminal_marker",
       });
     });
 
-    it("closes todo issues with result evidence", () => {
+    it("closes todo issues with done_pattern evidence", () => {
       expect(
         shouldAutoCloseIssueOnRunSuccess(
           base({
             issueStatus: "todo",
-            evidence: evidence("result", "All checks green"),
+            evidence: evidence("done_pattern", "DONE: All checks green"),
           }),
         ),
       ).toEqual({
         action: "close",
-        reason: "evidenced_success:result",
+        reason: "evidenced_success:done_pattern",
       });
     });
 
@@ -130,7 +130,7 @@ describe("shouldAutoCloseIssueOnRunSuccess", () => {
         shouldAutoCloseIssueOnRunSuccess(
           base({
             completionProfile: "verified_change",
-            evidence: evidence("summary", "looks done"),
+            evidence: evidence("terminal_marker", "looks done"),
           }),
         ),
       ).toEqual({
@@ -193,7 +193,7 @@ describe("shouldAutoCloseIssueOnRunSuccess", () => {
         shouldAutoCloseIssueOnRunSuccess(
           base({
             issueStatus: "in_review",
-            evidence: evidence("summary", "ready for review"),
+            evidence: evidence("terminal_marker", "ready for review"),
           }),
         ),
       ).toEqual({ action: "noop", reason: "in_review_awaiting_accept" });
@@ -217,14 +217,23 @@ describe("detectCompletionEvidence", () => {
     expect(detectCompletionEvidence({ resultJson: { exitCode: 0 } })).toBeNull();
   });
 
-  it("detects non-empty summary and result", () => {
+  it("does not treat non-empty free-text alone as auto-close evidence", () => {
     expect(
       detectCompletionEvidence({ resultJson: { summary: "  shipped the fix  " } }),
-    ).toEqual({ kind: "summary", detail: "shipped the fix" });
+    ).toBeNull();
 
     expect(
       detectCompletionEvidence({ resultJson: { result: "All green" } }),
-    ).toEqual({ kind: "result", detail: "All green" });
+    ).toBeNull();
+  });
+
+  it("detects explicit disposition/status terminal markers", () => {
+    expect(
+      detectCompletionEvidence({ resultJson: { disposition: "done" } }),
+    ).toEqual({ kind: "terminal_marker", detail: "disposition:done" });
+    expect(
+      detectCompletionEvidence({ resultJson: { status: "completed" } }),
+    ).toEqual({ kind: "terminal_marker", detail: "status:completed" });
   });
 
   it("detects DONE pattern over plain summary", () => {
@@ -306,28 +315,28 @@ describe("buildReconciliationReceipt", () => {
     expect(
       buildReconciliationReceipt({
         action: "close",
-        reason: "evidenced_success:summary",
+        reason: "evidenced_success:terminal_marker",
         companyId: "c1",
         runId: "r1",
         issueId: "i1",
         runStatus: "succeeded",
         issueStatusBefore: "in_progress",
         issueStatusAfter: "done",
-        evidence: evidence("summary", "done"),
+        evidence: evidence("terminal_marker", "done"),
         applied: true,
         at,
       }),
     ).toEqual({
       schemaVersion: "paperclip.terminal-reconciliation.v1",
       action: "close",
-      reason: "evidenced_success:summary",
+      reason: "evidenced_success:terminal_marker",
       companyId: "c1",
       runId: "r1",
       issueId: "i1",
       runStatus: "succeeded",
       issueStatusBefore: "in_progress",
       issueStatusAfter: "done",
-      evidence: { kind: "summary", detail: "done" },
+      evidence: { kind: "terminal_marker", detail: "done" },
       applied: true,
       at: "2026-07-28T12:00:00.000Z",
     });
