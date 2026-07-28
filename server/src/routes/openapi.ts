@@ -2803,6 +2803,18 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/agent-capacity",
+  tags: ["organization-kernel"],
+  summary: "Get agent capacity lifecycle report",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+
+// ─── Organization Kernel ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/outcome-scorecard",
   tags: ["organization-kernel"],
   summary: "Get organizational outcome scorecard",
