@@ -1593,7 +1593,11 @@ def handle_connection(connection: sqlite3.Connection, client: socket.socket) -> 
                 "schemaVersion": "gloops.github-push-client-response.v1",
                 "error": str(error)[:1000],
             }
-    client.sendall((canonical_json(response) + "\n").encode())
+    try:
+        client.sendall((canonical_json(response) + "\n").encode())
+    except (BrokenPipeError, ConnectionResetError, OSError) as err:
+        # Response delivery is best-effort; never kill the serve loop.
+        print(f"github-push-broker: response send failed: {err}", file=sys.stderr)
 
 
 def serve() -> None:
@@ -1610,7 +1614,11 @@ def serve() -> None:
         pass
     connection = connect_database()
     verify_journal(connection)
-    reconcile_pending(connection)
+    try:
+        reconcile_pending(connection)
+    except (BrokenPipeError, ConnectionResetError, OSError, TimeoutError) as err:
+        # Transient peer/network issues must not kill the broker process.
+        print(f"github-push-broker: startup reconcile deferred: {err}", file=sys.stderr)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(SOCKET_PATH))
     os.chown(SOCKET_PATH, 0, 10_000)
@@ -1622,11 +1630,24 @@ def serve() -> None:
             try:
                 client, _address = listener.accept()
             except socket.timeout:
-                reconcile_pending(connection)
+                try:
+                    reconcile_pending(connection)
+                except (BrokenPipeError, ConnectionResetError, OSError, TimeoutError) as err:
+                    print(f"github-push-broker: reconcile peer error: {err}", file=sys.stderr)
                 continue
-            with client:
-                handle_connection(connection, client)
-            reconcile_pending(connection)
+            except (BrokenPipeError, ConnectionResetError, OSError) as err:
+                # accept() can raise ECONNRESET when a peer aborts mid-handshake.
+                print(f"github-push-broker: accept peer disconnect: {err}", file=sys.stderr)
+                continue
+            try:
+                with client:
+                    handle_connection(connection, client)
+            except (BrokenPipeError, ConnectionResetError, OSError) as err:
+                print(f"github-push-broker: peer disconnect: {err}", file=sys.stderr)
+            try:
+                reconcile_pending(connection)
+            except (BrokenPipeError, ConnectionResetError, OSError, TimeoutError) as err:
+                print(f"github-push-broker: post-handle reconcile peer error: {err}", file=sys.stderr)
     finally:
         listener.close()
         connection.close()
@@ -1634,6 +1655,7 @@ def serve() -> None:
             SOCKET_PATH.unlink()
         except FileNotFoundError:
             pass
+
 
 
 def main() -> int:

@@ -75,3 +75,19 @@ node ./paperclip-task.mjs comment --issue PAP-123 --body-file -
 - Use comments for durable progress.
 - Use `update-status` only when the issue has a real disposition: `done`, `in_review`, `blocked`, `todo`, `in_progress`, `backlog`, or `cancelled`.
 - Use `list-assigned` before creating duplicate work when the user asks about current Paperclip assignments.
+
+## Verified-change / implementation_ready (important)
+
+Do **not** use `update-status --status in_review` to force review readiness for repository work.
+That path requires a full execution-truth receipt (including review acceptance) and will fail with
+`execution_truth_transition_denied` / `missing_receipt`.
+
+Correct path for standard/repo work:
+1. Commit your change in the leased workspace (exact head SHA).
+2. Leave a comment with branch + commit SHA evidence.
+3. End the run successfully (`operations_complete` lifecycle if available).
+4. The control plane measures the workspace head and projects `in_review` with
+   `implementation_ready`, which triggers Argus exact-head handoff when wired.
+
+Use `update-status --status blocked` only when genuinely blocked.
+Use `update-status --status done` only for `skill_test` / `ask` / direct-completion work.
