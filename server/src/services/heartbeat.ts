@@ -146,6 +146,7 @@ import {
   decideTerminalIssueReconciliation,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
+import { terminalReconciliationService } from "./terminal-reconciliation.js";
 import { decideTerminalAgentTruth } from "./terminal-agent-reconciliation.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
@@ -15186,6 +15187,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : null,
           })
         : { changed: false, status: null, reason: "missing_terminal_run" };
+
+      // OK-03: safety-net for terminal mismatch (succeeded run, open issue) when the
+      // trusted-evidence path did not already project a terminal issue state.
+      // Fail closed: empty infrastructure successes become attention candidates only.
+      let terminalMismatchReconciliation: {
+        action: string;
+        reason: string;
+        applied: boolean;
+      } | null = null;
+      if (
+        persistedRun &&
+        persistedRun.status === "succeeded" &&
+        issueId &&
+        !terminalIssueReconciliation.changed
+      ) {
+        terminalMismatchReconciliation = await terminalReconciliationService(db)
+          .reconcileSucceededRun({
+            companyId: persistedRun.companyId,
+            runId: persistedRun.id,
+          })
+          .then((receipt) => ({
+            action: receipt.action,
+            reason: receipt.reason,
+            applied: receipt.applied,
+          }))
+          .catch((err) => {
+            logger.warn(
+              { err, runId: persistedRun.id, issueId },
+              "terminal mismatch reconciliation failed",
+            );
+            return null;
+          });
+      }
+      const issueProjectedToTerminal =
+        terminalIssueReconciliation.changed ||
+        Boolean(terminalMismatchReconciliation?.applied);
+
       if (!persistedRunWrite.updated) {
         logger.info(
           {
@@ -15193,17 +15231,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             attemptedStatus: status,
             currentStatus: persistedRunWrite.run?.status ?? null,
             terminalIssueReconciliation,
+            terminalMismatchReconciliation,
           },
           "skipping late run finalization because the run already left running state",
         );
-        if (terminalIssueReconciliation.changed && persistedRun) {
+        if (issueProjectedToTerminal && persistedRun) {
           persistedRun = await getRun(run.id) ?? persistedRun;
           await releaseIssueExecutionAndPromote(persistedRun);
         }
         return;
       }
 
-      if (terminalIssueReconciliation.changed && persistedRun) {
+      if (issueProjectedToTerminal && persistedRun) {
         persistedRun = await getRun(run.id) ?? persistedRun;
       }
       if (persistedRun) {
