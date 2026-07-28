@@ -2799,6 +2799,18 @@ registry.registerPath({
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
+// ─── Organization Kernel ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/outcome-scorecard",
+  tags: ["organization-kernel"],
+  summary: "Get organizational outcome scorecard",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/dashboard",
