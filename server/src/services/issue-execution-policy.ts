@@ -449,11 +449,13 @@ export function resolveIssueExecutionCompletionProfile(input: {
   repositoryBacked?: boolean;
 }): IssueExecutionCompletionProfile | null {
   const explicit = normalizeIssueExecutionPolicy(input.executionPolicy)?.completionProfile;
-  // Standard work attached to a repository is implementation work. Treating
-  // it as direct lets an agent self-report "done" without an exact-head
-  // verification receipt. Read-only repository work should use ask/planning.
+  // Standard work attached to a repository is implementation work. Always require
+  // verified_change (exact-head + independent review) whether or not an explicit
+  // completionProfile is set — including the common null default. Treating it as
+  // direct (or leaving profile null so OK-03 auto-closes) lets an agent self-report
+  // "done" without review. Read-only repository work should use ask/planning.
   // Probe modes (skill_test) intentionally keep direct even when repository-backed.
-  if (input.workMode === "standard" && input.repositoryBacked && explicit === "direct") {
+  if (input.workMode === "standard" && input.repositoryBacked) {
     return "verified_change";
   }
   if (explicit) return explicit;

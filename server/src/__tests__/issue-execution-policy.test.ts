@@ -224,6 +224,14 @@ describe("resolveIssueExecutionCompletionProfile", () => {
       repositoryBacked: true,
     })).toBe("verified_change");
   });
+
+  it("defaults repository-backed standard work to verified_change when profile is unset", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: null,
+      workMode: "standard",
+      repositoryBacked: true,
+    })).toBe("verified_change");
+  });
 });
 
 describe("parseIssueExecutionState", () => {
