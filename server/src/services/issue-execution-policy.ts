@@ -431,6 +431,18 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   };
 }
 
+/** Probe / health-check work modes: may complete via direct terminal path. */
+export const PROBE_WORK_MODES = new Set(["ask", "skill_test"]);
+
+/**
+ * True when the work mode is a sealed probe lane (not product accepted-outcome).
+ * skill_test = MAW probe canary; ask = Q&A without merge.
+ */
+export function isProbeWorkMode(workMode?: string | null): boolean {
+  if (typeof workMode !== "string") return false;
+  return PROBE_WORK_MODES.has(workMode.trim().toLowerCase());
+}
+
 export function resolveIssueExecutionCompletionProfile(input: {
   executionPolicy: unknown;
   workMode?: string | null;
@@ -440,11 +452,17 @@ export function resolveIssueExecutionCompletionProfile(input: {
   // Standard work attached to a repository is implementation work. Treating
   // it as direct lets an agent self-report "done" without an exact-head
   // verification receipt. Read-only repository work should use ask/planning.
+  // Probe modes (skill_test) intentionally keep direct even when repository-backed.
   if (input.workMode === "standard" && input.repositoryBacked && explicit === "direct") {
     return "verified_change";
   }
   if (explicit) return explicit;
-  return input.workMode === "ask" ? "direct" : null;
+  // ask = Q&A; skill_test = sealed health/canary probe lane (MAW loop lanes).
+  // Neither may claim verified_change product acceptance without explicit policy.
+  if (input.workMode === "ask" || input.workMode === "skill_test") {
+    return "direct";
+  }
+  return null;
 }
 
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {

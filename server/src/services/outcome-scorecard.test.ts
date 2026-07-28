@@ -172,6 +172,21 @@ describe("isAcceptedOrganizationalOutcome", () => {
       ),
     ).toBe(false);
   });
+
+  it("rejects skill_test/ask probe outcomes from accepted organizational outcomes", () => {
+    expect(
+      isAcceptedOrganizationalOutcome(
+        { status: "done", workMode: "skill_test" },
+        [run({ id: "r1", status: "succeeded", resultJson: { summary: "probe passed", reviewStatus: "accepted" } })],
+      ),
+    ).toBe(false);
+    expect(
+      isAcceptedOrganizationalOutcome(
+        { status: "done", workMode: "ask" },
+        [run({ id: "r1", status: "succeeded", resultJson: { summary: "answered question" } })],
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("isTerminalMismatch", () => {
@@ -309,6 +324,7 @@ describe("buildOutcomeScorecard", () => {
         // ISSUE_ASSIGNED (created+assigned)
         admitted: 4,
         acceptedOutcomes: 1,
+        probeOutcomes: 0,
         runtimeSuccessNotDone: 1,
         // ISSUE_DONE_NO_RUN is done with no success run in window
         doneWithoutSuccessRun: 1,

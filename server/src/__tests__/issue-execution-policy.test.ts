@@ -188,6 +188,21 @@ describe("resolveIssueExecutionCompletionProfile", () => {
     })).toBe("direct");
   });
 
+  it("defaults skill_test probe work to direct terminal reconciliation", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: null,
+      workMode: "skill_test",
+    })).toBe("direct");
+  });
+
+  it("allows skill_test probe work to stay direct even when repository-backed", () => {
+    expect(resolveIssueExecutionCompletionProfile({
+      executionPolicy: null,
+      workMode: "skill_test",
+      repositoryBacked: true,
+    })).toBe("direct");
+  });
+
   it("preserves an explicit completion profile over the work-mode default", () => {
     expect(resolveIssueExecutionCompletionProfile({
       executionPolicy: { completionProfile: "verified_change" },
