@@ -35,6 +35,7 @@ import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { continuationRoutes } from "./routes/continuation.js";
+import { discoveryRoutes } from "./routes/discovery.js";
 import { reviewPathSloRoutes } from "./routes/review-path-slo.js";
 import { agentCapacityRoutes } from "./routes/agent-capacity.js";
 import { outcomeScorecardRoutes } from "./routes/outcome-scorecard.js";
@@ -297,6 +298,7 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(continuationRoutes());
+  api.use(discoveryRoutes());
   api.use(reviewPathSloRoutes(db));
   api.use(agentCapacityRoutes(db));
   api.use(outcomeScorecardRoutes(db));
