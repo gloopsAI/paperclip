@@ -541,15 +541,16 @@ describeEmbeddedPostgres("attention service", () => {
     const personalFeed = await attentionService(db).list(companyId, { userId: "board-user" });
     const companyFeed = await attentionService(db).list(companyId);
 
-    // Personal Focus (userId set) is decision-only: no autonomous telemetry.
-    expect(personalFeed.totalCount).toBe(7);
+    // Personal Focus (userId set) is decision-only: board decision-lane includes blockers,
+    // but pure autonomous telemetry (failed_run / budget_alert / agent_error_alert) stays out.
+    expect(personalFeed.totalCount).toBe(8);
     expect(personalFeed.countsBySourceKind).toMatchObject({
       approval: 2,
       issue_thread_interaction: 1,
       join_request: 1,
       recovery_action: 1,
       productivity_review: 1,
-      blocker_attention: 0,
+      blocker_attention: 1,
       review: 1,
       failed_run: 0,
       budget_alert: 0,
@@ -561,11 +562,11 @@ describeEmbeddedPostgres("attention service", () => {
       "join_request",
       "recovery_action",
       "productivity_review",
+      "blocker_attention",
       "review",
     ]));
     expect(personalFeed.items.some((item) =>
       item.sourceKind === "failed_run"
-      || item.sourceKind === "blocker_attention"
       || item.sourceKind === "budget_alert"
       || item.sourceKind === "agent_error_alert"
     )).toBe(false);
@@ -607,6 +608,10 @@ describeEmbeddedPostgres("attention service", () => {
     expect(personalFeed.items.find((item) => item.sourceKind === "issue_thread_interaction")?.detail).toMatchObject({
       kind: "questions",
       questionCount: 0,
+    });
+    expect(personalFeed.items.find((item) => item.sourceKind === "blocker_attention")?.detail).toMatchObject({
+      kind: "blocker",
+      blockingIssue: { identifier: "ATN-5", title: "Stalled review blocker" },
     });
     expect(companyFeed.items.find((item) => item.sourceKind === "blocker_attention")?.detail).toMatchObject({
       kind: "blocker",
