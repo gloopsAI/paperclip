@@ -1907,6 +1907,28 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/issues/{id}/packet-readiness",
+  tags: ["issues"],
+  summary: "Evaluate issue packet Definition of Ready (read-only)",
+  request: {
+    params: z.object({ id: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/{issueId}/packet-readiness",
+  tags: ["issues"],
+  summary: "Evaluate issue packet Definition of Ready (company-scoped, read-only)",
+  request: {
+    params: z.object({ companyId: z.string(), issueId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/release",
   tags: ["issues"],
   summary: "Release an issue",
