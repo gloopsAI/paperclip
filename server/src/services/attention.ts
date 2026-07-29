@@ -585,7 +585,9 @@ export function attentionService(db: Db) {
       const prefix = await companyPrefix(db, companyId);
       const dismissals = await dismissalByKey(db, companyId, options.userId);
       const includeDismissed = options.includeDismissed === true;
-      // Personal Focus is decision-only; autonomous telemetry remains available to unscoped operators.
+      // Personal Focus is decision-only (approvals, blockers, reviews, etc.).
+      // Pure autonomous telemetry (failed_run / budget_alert / agent_error_alert)
+      // remains available only to unscoped company-wide lists.
       const includeAutonomousTelemetry = !options.userId;
       const now = Date.now();
       const collected: AttentionItem[] = [];
@@ -900,14 +902,18 @@ export function attentionService(db: Db) {
         }));
       }
 
-      if (includeAutonomousTelemetry) {
+      // stalled/needs_attention blockers are board decision-lane, not autonomous telemetry.
+      // Always collect for personal Focus (userId set) and company-wide lists.
       const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
       const blockedIssueSummaries = await issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockedImageMap = await issueImageMap(db, companyId, blockedIssues.map((issue) => issue.id));
       const blockingIssues = await blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id));
       for (const issue of blockedIssues as Array<IssueSubjectRow & { blockerAttention?: { state?: string; sampleStalledBlockerIdentifier?: string | null; sampleBlockerIdentifier?: string | null } | null }>) {
         const blockerAttention = issue.blockerAttention;
-        if (blockerAttention?.state !== "stalled") continue;
+        if (
+          !blockerAttention
+          || (blockerAttention.state !== "stalled" && blockerAttention.state !== "needs_attention")
+        ) continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const summarizedIssue = issueSummary ?? issue;
         const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier ?? issue.identifier ?? issue.id;
@@ -924,7 +930,7 @@ export function attentionService(db: Db) {
             { id: "nudge", label: "Nudge", description: "Wake or prompt the current owner." },
           ),
           inlineResolvable: false,
-          entryRule: "blocked issue has blockerAttention.state = 'stalled'",
+          entryRule: "blocked issue has blockerAttention.state in ('stalled', 'needs_attention')",
           exitRule: "Blocker chain is no longer stalled or the issue leaves blocked status.",
           dedupKey,
           severity: "high",
@@ -935,7 +941,6 @@ export function attentionService(db: Db) {
           ...issueContext(issueSummary),
           detail: { kind: "blocker", blockingIssue, images: issueImages(blockedImageMap, issue.id) },
         }));
-      }
       }
 
       const reviewRows = await db
