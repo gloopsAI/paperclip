@@ -175,6 +175,10 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  ISSUE_PACKET_REASON,
+  evaluateIssuePacketReadiness,
+} from "../services/issue-packet-readiness.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -8869,6 +8873,47 @@ export function issueRoutes(
       return;
     }
 
+    // Issue packet DoR: fail-close before checkout mutates or wakes the agent.
+    // Does not put the agent in error state (unlike workspace_validation_failed).
+    const checkoutAgentId =
+      typeof req.body.agentId === "string" && req.body.agentId.trim().length > 0
+        ? req.body.agentId
+        : issue.assigneeAgentId;
+    const checkoutAgent = checkoutAgentId ? await agentsSvc.getById(checkoutAgentId) : null;
+    const packetReadiness = evaluateIssuePacketReadiness({
+      title: issue.title,
+      description: issue.description,
+      workMode: issue.workMode,
+      status: issue.status,
+      assigneeRole: checkoutAgent?.role ?? null,
+      assigneeName: checkoutAgent?.name ?? null,
+      repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+    });
+    // observe: always allow, but log structural gaps for soak metrics.
+    if (packetReadiness.mode === "observe" && packetReadiness.reasonCodes.length > 0) {
+      logger.info(
+        {
+          issueId: issue.id,
+          profile: packetReadiness.profile,
+          reasonCodes: packetReadiness.reasonCodes,
+          missing: packetReadiness.missing,
+        },
+        "issue packet DoR observe: not structurally ready",
+      );
+    }
+    if (packetReadiness.mode === "enforce" && !packetReadiness.ready) {
+      res.status(422).json({
+        error: ISSUE_PACKET_REASON.NOT_READY,
+        reasonCodes: packetReadiness.reasonCodes,
+        missing: packetReadiness.missing,
+        present: packetReadiness.present,
+        profile: packetReadiness.profile,
+        details: packetReadiness.details,
+        mode: packetReadiness.mode,
+      });
+      return;
+    }
+
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
@@ -8911,6 +8956,107 @@ export function issueRoutes(
     }
 
     res.json(updated);
+  });
+
+  /**
+   * Read-only issue packet Definition of Ready evaluation.
+   * Always computes; never mutates. Useful for Dispatch before assign/wake.
+   */
+  router.post("/issues/:id/packet-readiness", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const body = (req.body ?? {}) as {
+      assigneeAgentId?: unknown;
+      assigneeRole?: unknown;
+      assigneeName?: unknown;
+    };
+    const bodyAssigneeAgentId =
+      typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+        ? body.assigneeAgentId.trim()
+        : null;
+    const agentId = bodyAssigneeAgentId ?? issue.assigneeAgentId;
+    const agent = agentId ? await agentsSvc.getById(agentId) : null;
+
+    const assigneeRole =
+      typeof body.assigneeRole === "string" && body.assigneeRole.trim().length > 0
+        ? body.assigneeRole.trim()
+        : agent?.role ?? null;
+    const assigneeName =
+      typeof body.assigneeName === "string" && body.assigneeName.trim().length > 0
+        ? body.assigneeName.trim()
+        : agent?.name ?? null;
+
+    const evaluation = evaluateIssuePacketReadiness({
+      title: issue.title,
+      description: issue.description,
+      workMode: issue.workMode,
+      status: issue.status,
+      assigneeRole,
+      assigneeName,
+      repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+    });
+
+    res.json({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      ...evaluation,
+    });
+  });
+
+  router.post("/companies/:companyId/issues/:issueId/packet-readiness", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const issueId = req.params.issueId as string;
+    assertCompanyAccess(req, companyId);
+    const issue = await svc.getById(issueId);
+    if (!issue || issue.companyId !== companyId) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const body = (req.body ?? {}) as {
+      assigneeAgentId?: unknown;
+      assigneeRole?: unknown;
+      assigneeName?: unknown;
+    };
+    const bodyAssigneeAgentId =
+      typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+        ? body.assigneeAgentId.trim()
+        : null;
+    const agentId = bodyAssigneeAgentId ?? issue.assigneeAgentId;
+    const agent = agentId ? await agentsSvc.getById(agentId) : null;
+
+    const assigneeRole =
+      typeof body.assigneeRole === "string" && body.assigneeRole.trim().length > 0
+        ? body.assigneeRole.trim()
+        : agent?.role ?? null;
+    const assigneeName =
+      typeof body.assigneeName === "string" && body.assigneeName.trim().length > 0
+        ? body.assigneeName.trim()
+        : agent?.name ?? null;
+
+    const evaluation = evaluateIssuePacketReadiness({
+      title: issue.title,
+      description: issue.description,
+      workMode: issue.workMode,
+      status: issue.status,
+      assigneeRole,
+      assigneeName,
+      repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+    });
+
+    res.json({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      ...evaluation,
+    });
   });
 
   router.post("/issues/:id/release", async (req, res) => {

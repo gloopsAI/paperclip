@@ -103,6 +103,10 @@ import {
 } from "./run-liveness.js";
 import { parseControlledSwarmAdmissionPolicy } from "./controlled-swarm-admission.js";
 import {
+  ISSUE_PACKET_REASON,
+  evaluateIssuePacketReadiness,
+} from "./issue-packet-readiness.js";
+import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -11409,6 +11413,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    let claimIssueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null = null;
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -11463,13 +11468,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return null;
       }
+
+      // Issue packet DoR: deny claim before execution admission / Hermes work-prep.
+      claimIssueContext = await getIssueExecutionContext(run.companyId, issueId);
+      if (claimIssueContext) {
+        const packetReadiness = evaluateIssuePacketReadiness({
+          title: claimIssueContext.title,
+          description: claimIssueContext.description,
+          workMode: claimIssueContext.workMode,
+          status: claimIssueContext.status,
+          assigneeRole: agent.role ?? null,
+          assigneeName: agent.name ?? null,
+          repositoryBacked: Boolean(
+            claimIssueContext.projectWorkspaceId || claimIssueContext.executionWorkspaceId,
+          ),
+        });
+        if (packetReadiness.mode === "observe" && packetReadiness.reasonCodes.length > 0) {
+          logger.info(
+            {
+              runId: run.id,
+              issueId,
+              profile: packetReadiness.profile,
+              reasonCodes: packetReadiness.reasonCodes,
+              missing: packetReadiness.missing,
+            },
+            "claimQueuedRun: issue packet DoR observe gap",
+          );
+        }
+        if (packetReadiness.mode === "enforce" && !packetReadiness.ready) {
+          await cancelQueuedRunForIssuePacketNotReady(run, issueId, packetReadiness);
+          logger.info(
+            {
+              runId: run.id,
+              issueId,
+              errorCode: ISSUE_PACKET_REASON.NOT_READY,
+              reasonCodes: packetReadiness.reasonCodes,
+              profile: packetReadiness.profile,
+            },
+            "claimQueuedRun: cancelled issue packet not ready",
+          );
+          return null;
+        }
+      }
     }
 
     const claimedAt = new Date();
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
-      issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
+      issueContext: claimIssueContext,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
     const admissionClaim = await claimQueuedRunWithExecutionAdmission({
@@ -11803,6 +11850,97 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       level: "warn",
       message: staleness.reason,
       payload: staleness.details,
+    });
+
+    return cancelled;
+  }
+
+  async function cancelQueuedRunForIssuePacketNotReady(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    packetReadiness: ReturnType<typeof evaluateIssuePacketReadiness>,
+  ) {
+    const now = new Date();
+    const reason =
+      packetReadiness.details ||
+      "Cancelled because the issue packet is not ready (missing Scope/Acceptance or role anchors)";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: ISSUE_PACKET_REASON.NOT_READY,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: ISSUE_PACKET_REASON.NOT_READY,
+        issuePacketReadiness: {
+          profile: packetReadiness.profile,
+          reasonCodes: packetReadiness.reasonCodes,
+          missing: packetReadiness.missing,
+          present: packetReadiness.present,
+          mode: packetReadiness.mode,
+          details: packetReadiness.details,
+        },
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "issue_packet_dor_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, run.id),
+        ),
+      );
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: {
+        errorCode: ISSUE_PACKET_REASON.NOT_READY,
+        issueId,
+        profile: packetReadiness.profile,
+        reasonCodes: packetReadiness.reasonCodes,
+        missing: packetReadiness.missing,
+        present: packetReadiness.present,
+        mode: packetReadiness.mode,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "heartbeat.issue_packet_not_ready",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: {
+        issueId,
+        errorCode: ISSUE_PACKET_REASON.NOT_READY,
+        profile: packetReadiness.profile,
+        reasonCodes: packetReadiness.reasonCodes,
+        missing: packetReadiness.missing,
+        mode: packetReadiness.mode,
+      },
     });
 
     return cancelled;

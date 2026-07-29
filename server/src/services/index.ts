@@ -158,6 +158,7 @@ export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServic
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export * from "./agent-capacity.js";
 export * from "./execution-role-admission.js";
+export * from "./issue-packet-readiness.js";
 export * from "./review-path-slo.js";
 export * from "./continuation-packet.js";
 export * from "./typed-discovery.js";
