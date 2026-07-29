@@ -34,10 +34,17 @@ const OBSERVE = { PAPERCLIP_ISSUE_PACKET_DOR: "observe" };
 const OFF = { PAPERCLIP_ISSUE_PACKET_DOR: "off" };
 
 describe("getIssuePacketDorMode", () => {
-  it("defaults to enforce", () => {
+  it("defaults to enforce outside tests", () => {
     expect(getIssuePacketDorMode({})).toBe("enforce");
     expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "" })).toBe("enforce");
     expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "  " })).toBe("enforce");
+  });
+
+  it("defaults to off under vitest/test when unset", () => {
+    expect(getIssuePacketDorMode({ VITEST: "true" })).toBe("off");
+    expect(getIssuePacketDorMode({ NODE_ENV: "test" })).toBe("off");
+    // explicit still wins
+    expect(getIssuePacketDorMode({ VITEST: "true", PAPERCLIP_ISSUE_PACKET_DOR: "enforce" })).toBe("enforce");
   });
 
   it("parses off/observe/enforce case-insensitively", () => {
