@@ -279,6 +279,15 @@ export async function ensureImplementationReviewHandoff(
       projectId: plan.projectId,
       parentId: plan.parentId,
       assigneeAgentId: plan.assigneeAgentId,
+      // Declared workspace head MUST be exact head for reviews (GLO-1941 / boring canary).
+      // Never fall back to project pin / origin/gloops/stable here.
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: plan.exactHeadSha,
+        },
+      },
     } as never);
 
     const reviewIssueId = (created as { id?: string })?.id;
