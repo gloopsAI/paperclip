@@ -196,22 +196,49 @@ export function planImplementationReviewHandoff(input: {
   };
 }
 
+export type ReviewerPickSource = "argus_name" | "reviewer_role" | "any_live_fallback" | "none";
+
+export type ReviewerPick =
+  | { id: string; source: Exclude<ReviewerPickSource, "none"> }
+  | { source: "none" };
+
 export function pickCompanyReviewerAgent(
   companyAgents: Array<{ id: string; name?: string | null; role?: string | null; status?: string | null }>,
 ): string | null {
+  const pick = pickCompanyReviewerAgentDetailed(companyAgents);
+  return pick.source === "none" ? null : pick.id;
+}
+
+/**
+ * Like {@link pickCompanyReviewerAgent} but also returns how the reviewer was
+ * chosen. Used by reliability logging so fallback handoffs are visible
+ * (GLO-2023 reviewer-fallback path).
+ *
+ * Tier order:
+ *  1. agent named "argus"
+ *  2. agent with reviewer-style role (qa / reviewer / quality)
+ *  3. ANY other live agent (degraded fallback so the handoff does not silently
+ *     drop when the company has no designated reviewer)
+ */
+export function pickCompanyReviewerAgentDetailed(
+  companyAgents: Array<{ id: string; name?: string | null; role?: string | null; status?: string | null }>,
+): ReviewerPick {
   const live = companyAgents.filter((a) => a.status !== "terminated" && a.status !== "pending_approval");
   const byName = live.find((a) => String(a.name ?? "").trim().toLowerCase() === "argus");
-  if (byName) return byName.id;
+  if (byName) return { id: byName.id, source: "argus_name" };
   const byRole = live.find((a) => {
     const role = String(a.role ?? "").trim().toLowerCase();
     return role === "qa" || role === "reviewer" || role === "quality";
   });
-  return byRole?.id ?? null;
+  if (byRole) return { id: byRole.id, source: "reviewer_role" };
+  const anyLive = live[0];
+  if (anyLive) return { id: anyLive.id, source: "any_live_fallback" };
+  return { source: "none" };
 }
 
 export type ImplementationReviewHandoffResult =
-  | { ok: true; action: "skipped"; reason: string }
-  | { ok: true; action: "created"; reviewIssueId: string; reviewIdentifier: string | null }
+  | { ok: true; action: "skipped"; reason: string; reviewerPickSource: ReviewerPickSource }
+  | { ok: true; action: "created"; reviewIssueId: string; reviewIdentifier: string | null; reviewerPickSource: Exclude<ReviewerPickSource, "none"> }
   | { ok: false; error: string };
 
 /**
@@ -261,7 +288,8 @@ export async function ensureImplementationReviewHandoff(
       .from(agents)
       .where(eq(agents.companyId, input.companyId));
 
-    const reviewerAgentId = pickCompanyReviewerAgent(companyAgents);
+    const reviewerPick = pickCompanyReviewerAgentDetailed(companyAgents);
+    const reviewerAgentId = reviewerPick.source === "none" ? null : reviewerPick.id;
 
     const children = await db
       .select({
@@ -290,7 +318,12 @@ export async function ensureImplementationReviewHandoff(
     });
 
     if (plan.action === "skip") {
-      return { ok: true, action: "skipped", reason: plan.reason };
+      return {
+        ok: true,
+        action: "skipped",
+        reason: plan.reason,
+        reviewerPickSource: reviewerPick.source,
+      };
     }
 
     const created = await issueService(db).create(input.companyId, {
@@ -323,25 +356,34 @@ export async function ensureImplementationReviewHandoff(
           parentIssueId: parent.id,
           exactHeadSha: plan.exactHeadSha,
           draftPrUrl: plan.draftPrUrl,
+          reviewerPickSource: reviewerPick.source,
         },
       });
     }
 
-    logger.info(
-      {
-        parentIssueId: parent.id,
-        reviewIssueId,
-        reviewerAgentId: plan.assigneeAgentId,
-        exactHeadSha: plan.exactHeadSha,
-      },
-      "implementation review handoff created",
-    );
+    const logPayload: Record<string, unknown> = {
+      parentIssueId: parent.id,
+      reviewIssueId,
+      reviewerAgentId: plan.assigneeAgentId,
+      exactHeadSha: plan.exactHeadSha,
+      reviewerPickSource: reviewerPick.source,
+    };
+    if (reviewerPick.source === "any_live_fallback") {
+      logPayload.degraded = true;
+      logger.warn(
+        logPayload,
+        "implementation review handoff created via fallback reviewer (GLO-2023)",
+      );
+    } else {
+      logger.info(logPayload, "implementation review handoff created");
+    }
 
     return {
       ok: true,
       action: "created",
       reviewIssueId,
       reviewIdentifier,
+      reviewerPickSource: reviewerPick.source as Exclude<ReviewerPickSource, "none">,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
