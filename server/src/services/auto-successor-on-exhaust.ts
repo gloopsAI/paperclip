@@ -38,25 +38,37 @@ export const EXHAUST_SUCCESSOR_REASONS = [
 
 export type ExhaustSuccessorReason = (typeof EXHAUST_SUCCESSOR_REASONS)[number];
 
+export type AutoSuccessorSkipReason =
+  | "not_exhaust_reason"
+  | "missing_issue"
+  | "non_exec_title"
+  | "successor_title"
+  | "review_title"
+  | "terminal_parent"
+  | "already_handled"
+  | "no_assignee"
+  | "create_failed";
+
 export type AutoSuccessorEligibility =
   | { eligible: true; reason: ExhaustSuccessorReason }
   | {
       eligible: false;
-      skip:
+      skip: Extract<
+        AutoSuccessorSkipReason,
         | "not_exhaust_reason"
         | "missing_issue"
         | "non_exec_title"
         | "successor_title"
         | "review_title"
         | "terminal_parent"
-        | "already_handled";
+        | "already_handled"
+      >;
     };
 
 export type AutoSuccessorResult =
   | { kind: "created"; issueId: string; identifier: string | null; assigneeAgentId: string | null }
   | { kind: "existing"; issueId: string; identifier: string | null }
-  | { kind: "skipped"; skip: AutoSuccessorEligibility extends { eligible: false } ? AutoSuccessorEligibility["skip"] : never }
-  | { kind: "skipped"; skip: "no_assignee" | "create_failed" };
+  | { kind: "skipped"; skip: AutoSuccessorSkipReason };
 
 export function isExhaustSuccessorReason(reason: string | null | undefined): reason is ExhaustSuccessorReason {
   return typeof reason === "string" && (EXHAUST_SUCCESSOR_REASONS as readonly string[]).includes(reason);
