@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll Paperclip board for trust-substrate IR clearances
+After=network-online.target paperclip-gloops.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/tools/substrate-ir-approval-poller.py
+Nice=10
