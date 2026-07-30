@@ -569,6 +569,9 @@ export async function readPhase1Intake(inputPath: string): Promise<Phase1Intake>
 
 async function fetchTyped<T>(ctx: ResolvedClientContext, path: string): Promise<T> {
   const result = await ctx.api.get<T>(path);
+  if (result == null) {
+    throw new Error(`GET ${path} returned empty response`);
+  }
   return result;
 }
 
