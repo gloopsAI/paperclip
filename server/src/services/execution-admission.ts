@@ -38,6 +38,10 @@ export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "execution_admission.adapter_budget_unsupported",
   "configuration_incomplete",
   "agent_not_invokable",
+  // C3 / T-RESERVE: hermes auth thrash must never burn task budget or charge reservation.
+  "hermes_gateway_auth_failed",
+  "hermes_gateway_api_key_missing",
+  "hermes_gateway_connect_failed",
 ]);
 
 export type ExecutionAdmissionPolicy =

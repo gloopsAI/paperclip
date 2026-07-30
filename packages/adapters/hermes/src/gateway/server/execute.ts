@@ -534,6 +534,91 @@ function classifyHttpError(status: number): { code: string; family: AdapterExecu
   return { code: "hermes_gateway_protocol_error", family: null };
 }
 
+/**
+ * C3 / T-RESERVE: true when an error is auth/config and must never charge
+ * multi-million-token reservation_fallback. Provider was not invoked.
+ */
+function isAuthOrPreInvokeFailure(err: unknown): boolean {
+  const hermesError = err as HermesHttpError;
+  if (hermesError?.code === "hermes_gateway_auth_failed") return true;
+  if (hermesError?.status === 401 || hermesError?.status === 403) return true;
+  if (hermesError?.code === "hermes_gateway_connect_failed") return true;
+  if (hermesError?.code === "hermes_gateway_api_key_missing") return true;
+  if (hermesError?.code === "hermes_gateway_api_key_invalid_shape") return true;
+  return false;
+}
+
+/**
+ * C3: reject Paperclip pcp_ tokens mistaken for Hermes API_SERVER_KEY before
+ * any reservation-sensitive provider path runs.
+ */
+function rejectPaperclipTokenAsHermesKey(
+  apiKey: string,
+  routeFacts: ConfiguredExecutionRouteFacts,
+): AdapterExecutionResult | null {
+  if (!apiKey.startsWith("pcp_")) return null;
+  return deterministicRefusal({
+    errorCode: "hermes_gateway_auth_failed",
+    errorMessage:
+      "adapterConfig.apiKey looks like a Paperclip token (pcp_…), not the Hermes API_SERVER_KEY. " +
+      "Fix the agent adapterConfig.apiKey before any budget reservation can be charged.",
+    routeFacts,
+  });
+}
+
+/**
+ * C3: cheap GET /health with the configured apiKey *before* POST /v1/runs.
+ * Fail closed on 401/403 so auth thrash never reaches reservation_fallback.
+ */
+async function preflightHermesAuth(input: {
+  baseUrl: URL;
+  apiKey: string;
+  routeFacts: ConfiguredExecutionRouteFacts;
+  model: string | null;
+}): Promise<AdapterExecutionResult | null> {
+  const healthUrl = apiUrl(input.baseUrl, "/health");
+  let response: Response;
+  try {
+    response = await fetch(healthUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(2_000),
+    });
+  } catch (err) {
+    // Connectivity failures are also pre-invoke: zero usage, no reservation charge.
+    const fetchErr = new Error(
+      `Hermes gateway auth preflight failed: ${fetchFailureMessage(err)}`,
+    ) as HermesHttpError;
+    fetchErr.code = "hermes_gateway_connect_failed";
+    return errorResult(fetchErr, sanitizeSensitiveText, false, input.routeFacts);
+  }
+  if (response.status === 401 || response.status === 403) {
+    return deterministicRefusal({
+      errorCode: "hermes_gateway_auth_failed",
+      errorMessage:
+        `Hermes gateway auth preflight returned HTTP ${response.status}. ` +
+        "Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway. " +
+        "No provider run was created; reservation must not be charged.",
+      model: input.model,
+      routeFacts: input.routeFacts,
+      resultJson: {
+        auth_preflight: {
+          schemaVersion: "gloops.hermes.auth-preflight.v1",
+          ok: false,
+          status: response.status,
+          path: "/health",
+        },
+      },
+    });
+  }
+  // Non-auth health failures (5xx) do not block — create path will surface them.
+  // Auth is the thrash class that fabricates multi-million token charges.
+  return null;
+}
+
 function fetchFailureMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   const cause = err instanceof Error ? (err as { cause?: unknown }).cause : null;
@@ -1400,6 +1485,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       routeFacts,
     });
   }
+  // C3 / T-RESERVE: fail closed on Paperclip tokens mistaken for Hermes keys.
+  const paperclipTokenRefusal = rejectPaperclipTokenAsHermesKey(apiKey, routeFacts);
+  if (paperclipTokenRefusal) return paperclipTokenRefusal;
 
   const configuredTimeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
   const timeoutSec = ctx.executionBudget
@@ -1482,6 +1570,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return preflightRefusal;
     }
   }
+  // C3 / T-RESERVE: auth preflight before prepared-request ack and POST /v1/runs.
+  // Prevents multi-million-token reservation_fallback on hermes 401/403.
+  {
+    const authRefusal = await preflightHermesAuth({
+      baseUrl,
+      apiKey,
+      routeFacts,
+      model: nonEmpty(parseObject(body).model),
+    });
+    if (authRefusal) return authRefusal;
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
   const serializedBody = JSON.stringify(body);
   const requestSha256 = `sha256:${createHash("sha256").update(serializedBody, "utf8").digest("hex")}`;
@@ -1563,7 +1662,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
   } catch (err) {
-    return errorResult(err, redactText, true, routeFacts);
+    // C3: create failures before a run_id means no provider invocation.
+    // Auth/connect failures must not charge reservation_fallback.
+    const attempted = !isAuthOrPreInvokeFailure(err);
+    return errorResult(err, redactText, attempted, routeFacts);
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
