@@ -411,8 +411,9 @@ describe("execute", () => {
       providerInvocationAttempted: false,
     });
     // C3 auth preflight may probe /health; must never POST /v1/runs.
-    expect(fetchMock.mock.calls.every(([input]) => String(input).endsWith("/health") || String(input).endsWith("/api/health"))).toBe(true);
-    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(false);
+    const prepUrls1 = (fetchMock.mock.calls as unknown as Array<unknown[]>).map((c) => String(c[0]));
+    expect(prepUrls1.every((u) => u.endsWith("/health") || u.endsWith("/api/health"))).toBe(true);
+    expect(prepUrls1.some((u) => u.endsWith("/v1/runs"))).toBe(false);
   });
 
   it("does not dispatch when the durable prepared-request boundary is unavailable", async () => {
@@ -429,8 +430,9 @@ describe("execute", () => {
       providerInvocationAttempted: false,
     });
     // C3 auth preflight may probe /health; must never POST /v1/runs.
-    expect(fetchMock.mock.calls.every(([input]) => String(input).endsWith("/health") || String(input).endsWith("/api/health"))).toBe(true);
-    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(false);
+    const prepUrls2 = (fetchMock.mock.calls as unknown as Array<unknown[]>).map((c) => String(c[0]));
+    expect(prepUrls2.every((u) => u.endsWith("/health") || u.endsWith("/api/health"))).toBe(true);
+    expect(prepUrls2.some((u) => u.endsWith("/v1/runs"))).toBe(false);
   });
 
   it("uses the bound compact packet as the sole work body with a fresh session and budget", async () => {
@@ -1535,7 +1537,7 @@ describe("execute", () => {
     expect(result.providerInvocationAttempted).toBe(false);
     expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 });
     // Must fail at /health preflight — never POST /v1/runs.
-    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    const urls = (fetchMock.mock.calls as unknown as Array<unknown[]>).map((call) => String(call[0]));
     expect(urls.some((u) => u.endsWith("/health"))).toBe(true);
     expect(urls.some((u) => u.endsWith("/v1/runs"))).toBe(false);
   });
