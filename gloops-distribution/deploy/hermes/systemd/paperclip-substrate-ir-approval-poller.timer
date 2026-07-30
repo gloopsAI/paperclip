@@ -1,0 +1,11 @@
+[Unit]
+Description=Every 1m: substrate IR board approval poller
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=paperclip-substrate-ir-approval-poller.service
+
+[Install]
+WantedBy=timers.target
