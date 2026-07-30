@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "gloops.execution-truth.operator-receipt.v2",
+  "work": { "id": "GLO-2025" },
+  "budget": { "exhausted": [] },
+  "route": {
+    "observedPathIds": ["paperclip-control-plane"],
+    "prohibitedPathObserved": false
+  },
+  "continuation": { "required": true, "valid": true, "summary": "Phase-2 proposal filed; 2/5 payload families still lack MVI." },
+  "verification": {
+    "mode": "direct",
+    "workspaceFinalized": true,
+    "exactHeadAligned": true,
+    "exactHeadSha": "a7aca6efc390fa4612f19d1c7d1b4e89d2cbf413",
+    "allChecksPassed": true,
+    "perFamilyEvidence": {
+      "GLO-2020": { "branchAheadOfExactHead": 0, "worktreeDirtyFiles": 0, "mvi": false },
+      "GLO-2021": { "branchAheadOfExactHead": 0, "worktreeDirtyFiles": 3, "mvi": "partial-uncommitted" },
+      "GLO-2022": { "branchAheadOfExactHead": 0, "worktreeDirtyFiles": 8, "mvi": "partial-uncommitted" },
+      "GLO-2023": { "branchAheadOfExactHead": 1, "branchHeadSha": "ee721543b847eb326762d174495a55e3ab269198", "worktreeDirtyFiles": 0, "mvi": true },
+      "GLO-2024": { "branchAheadOfExactHead": 0, "worktreeDirtyFiles": 0, "mvi": false }
+    },
+    "phase1MviMet": false,
+    "phase1Satisfied": "partial",
+    "review": { "status": "self_accepted", "headSha": "4565b55735acee68e3fb06898568fcaaac189275", "unresolvedThreads": 0, "source": "self" }
+  },
+  "authority": { "humanRequired": false },
+  "status": "built",
+  "projection": {
+    "source": "paperclip-control-plane",
+    "purpose": "phase1_checkpoint_receipt_and_phase2_proposal",
+    "issueId": "aab4a766-6d01-440f-af37-835ace107413",
+    "runId": "28673010-7662-4592-ae76-3c568efe1997",
+    "agentId": "3298054f-0fc5-4ff9-8c53-b1382b3046d3",
+    "workspaceId": "41245755-9301-43aa-abcc-e91fc407e6ff",
+    "contextDigest": "sha256:phase1-receipt-published",
+    "parentIssueId": "f0ae9333-8d6f-4862-995b-f59e9032fab5",
+    "grandparentIssueId": "8176b79b-858b-41ce-9e2d-a82d75045c50"
+  }
+}
