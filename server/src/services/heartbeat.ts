@@ -163,6 +163,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { agentUsesContinuationPacketLive } from "./continuation-packet-live.js";
 import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
@@ -14039,9 +14040,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const retryCarriesStaleRunBinding =
       Boolean(readNonEmptyString(context.retryOfRunId)) &&
       readNonEmptyString(existingExecutionAuthority.runId) !== run.id;
+    // C4: for Dispatch/Wren (feature-flag default on), always rebuild the
+    // bound continuation packet on resume so live wakes inject the compact
+    // summary instead of replaying full transcript context. Full MTE stays off.
+    const continuationPacketLive = agentUsesContinuationPacketLive(agent.name);
     if (
       issueRef &&
-      (!existingExecutionContext || retryCarriesStaleRunBinding)
+      (!existingExecutionContext || retryCarriesStaleRunBinding || continuationPacketLive)
     ) {
       // Retry rows intentionally inherit the prior run's context so they can
       // continue the same task. The execution authority is the exception: it
@@ -14090,7 +14095,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionBudget: parseObject(context[EXECUTION_ADMISSION_CONTEXT_KEY]),
       });
       context[PAPERCLIP_EXECUTION_CONTEXT_KEY] = buildBoundExecutionContext(packet);
-      if (agent.adapterType === "hermes_local" || agent.adapterType === "hermes_gateway") {
+      if (
+        agent.adapterType === "hermes_local"
+        || agent.adapterType === "hermes_gateway"
+        || continuationPacketLive
+      ) {
+        // Compact packet path: never resume a fat transcript session.
         context.forceFreshSession = true;
       }
     }

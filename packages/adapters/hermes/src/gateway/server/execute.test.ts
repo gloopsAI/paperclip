@@ -138,8 +138,15 @@ function stubEvidencedFetch(
   let frozenEnvelope: ReturnType<typeof terminalEnvelope> | null = null;
   const wrapped = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const response = await fetchMock(input, init) as Response;
-    if (!(response instanceof Response) || !response.ok) return response;
     const url = String(input);
+    // C3 auth preflight probes GET /health before POST /v1/runs.
+    // Prefer the test mock (so testEnvironment assertions see the call);
+    // never run terminal-evidence wrapping on health responses.
+    if (url.endsWith("/health") || url.endsWith("/api/health")) {
+      if (response instanceof Response) return response;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (!(response instanceof Response) || !response.ok) return response;
     if (url.endsWith("/v1/runs") && init?.method === "POST") {
       requestBody = String(init.body ?? "");
       const created = JSON.parse(await response.clone().text()) as Record<string, unknown>;
@@ -403,7 +410,9 @@ describe("execute", () => {
       errorCode: "provider_evidence.pre_dispatch_ack_failed",
       providerInvocationAttempted: false,
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    // C3 auth preflight may probe /health; must never POST /v1/runs.
+    expect(fetchMock.mock.calls.every(([input]) => String(input).endsWith("/health") || String(input).endsWith("/api/health"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(false);
   });
 
   it("does not dispatch when the durable prepared-request boundary is unavailable", async () => {
@@ -419,7 +428,9 @@ describe("execute", () => {
       errorCode: "provider_evidence.pre_dispatch_ack_unavailable",
       providerInvocationAttempted: false,
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    // C3 auth preflight may probe /health; must never POST /v1/runs.
+    expect(fetchMock.mock.calls.every(([input]) => String(input).endsWith("/health") || String(input).endsWith("/api/health"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(false);
   });
 
   it("uses the bound compact packet as the sole work body with a fresh session and budget", async () => {
@@ -1154,6 +1165,9 @@ describe("execute", () => {
   it("bounds final-status reconciliation when Hermes never responds", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith("/health") || url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
       if (url.endsWith("/v1/runs")) {
         return new Response(JSON.stringify({ run_id: "run-hung-reconcile" }), { status: 200 });
       }
@@ -1508,7 +1522,8 @@ describe("execute", () => {
   });
 
   it("maps HTTP auth failures", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 })));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
     const result = await execute(makeCtx({
       apiBaseUrl: "http://127.0.0.1:8642",
       apiKey: "secret-key",
@@ -1516,6 +1531,27 @@ describe("execute", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_auth_failed");
     expect(result.errorMessage).toContain("Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY");
+    // C3: auth preflight must not charge reservation (no provider invocation).
+    expect(result.providerInvocationAttempted).toBe(false);
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 });
+    // Must fail at /health preflight — never POST /v1/runs.
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls.some((u) => u.endsWith("/health"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/v1/runs"))).toBe(false);
+  });
+
+  it("refuses Paperclip pcp_ tokens as Hermes apiKey before any network call", async () => {
+    const fetchMock = vi.fn(async () => new Response("should not be called", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "pcp_agent_looks_like_paperclip_token",
+    }));
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+    expect(result.providerInvocationAttempted).toBe(false);
+    expect(result.errorMessage).toMatch(/pcp_/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("includes network causes in connection failure messages", async () => {
@@ -1537,10 +1573,15 @@ describe("execute", () => {
   });
 
   it("redacts echoed auth material from HTTP error payloads", async () => {
+    // Health preflight passes; create path returns 401 with sensitive body to redact.
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/health")) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response(
           JSON.stringify({
             message: "Authorization rejected: Bearer secret-key raw secret-key",
             detail: "X-Hermes-Session-Key: paperclip:company:company-1:agent:agent-1:issue:issue-1",
@@ -1549,7 +1590,8 @@ describe("execute", () => {
             },
           }),
           { status: 401 },
-        )),
+        );
+      }),
     );
 
     const result = await execute(makeCtx({
@@ -1559,6 +1601,7 @@ describe("execute", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+    expect(result.providerInvocationAttempted).toBe(false);
     expect(result.errorMeta?.body).toEqual({
       message: "Authorization rejected: Bearer [redacted] raw [redacted len=10]",
       detail: "X-Hermes-Session-Key: [redacted]",
@@ -1926,6 +1969,9 @@ describe("supervisor operational closure integration", () => {
   it("attaches terminal_reconciliation, resume_ledger, and repair_ladder on a successful run", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.endsWith("/health") || url.endsWith("/api/health")) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
       if (url.endsWith("/v1/runs")) {
         return new Response(JSON.stringify({ run_id: "integration-1" }), { status: 200 });
       }
