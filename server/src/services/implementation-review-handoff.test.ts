@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   REVIEW_HANDOFF_MARKER,
   buildImplementationReviewTitle,
+  buildReviewExecutionWorkspaceSettings,
   planImplementationReviewHandoff,
   pickCompanyReviewerAgent,
 } from "./implementation-review-handoff.js";
@@ -119,5 +120,26 @@ describe("pickCompanyReviewerAgent", () => {
         { id: "2", name: "Review Bot", role: "qa", status: "idle" },
       ]),
     ).toBe("2");
+  });
+});
+
+describe("buildReviewExecutionWorkspaceSettings (C2 / GLO-1940)", () => {
+  it("binds baseRef to exact head SHA (never project pin)", () => {
+    const settings = buildReviewExecutionWorkspaceSettings(HEAD);
+    expect(settings).toEqual({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: HEAD,
+      },
+    });
+    expect(settings.workspaceStrategy.baseRef).not.toMatch(/gloops\/stable|origin\//);
+  });
+
+  it("rejects non-SHA heads fail-closed", () => {
+    expect(() => buildReviewExecutionWorkspaceSettings("origin/gloops/stable")).toThrow(
+      /review_declared_head_missing/,
+    );
+    expect(() => buildReviewExecutionWorkspaceSettings("abc")).toThrow(/review_declared_head_missing/);
   });
 });

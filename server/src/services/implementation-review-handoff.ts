@@ -47,6 +47,29 @@ export function isExactHeadSha(value: string | null | undefined): value is strin
   return typeof value === "string" && SHA_RE.test(value.trim());
 }
 
+/**
+ * Declared workspace head for maw-implementation-review children (GLO-1940 / C2).
+ * Always bind baseRef to the exact implement head — never project pin / gloops/stable.
+ */
+export function buildReviewExecutionWorkspaceSettings(exactHeadSha: string): {
+  mode: "isolated_workspace";
+  workspaceStrategy: {
+    type: "git_worktree";
+    baseRef: string;
+  };
+} {
+  if (!isExactHeadSha(exactHeadSha)) {
+    throw new Error("review_declared_head_missing: exactHeadSha must be a full 40-char SHA");
+  }
+  return {
+    mode: "isolated_workspace",
+    workspaceStrategy: {
+      type: "git_worktree",
+      baseRef: exactHeadSha.trim().toLowerCase(),
+    },
+  };
+}
+
 export function buildImplementationReviewTitle(input: {
   parentIdentifier: string | null | undefined;
   exactHeadSha: string;
@@ -279,15 +302,9 @@ export async function ensureImplementationReviewHandoff(
       projectId: plan.projectId,
       parentId: plan.parentId,
       assigneeAgentId: plan.assigneeAgentId,
-      // Declared workspace head MUST be exact head for reviews (GLO-1941 / boring canary).
+      // Declared workspace head MUST be exact head for reviews (GLO-1940 / GLO-1941 / C2).
       // Never fall back to project pin / origin/gloops/stable here.
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-        workspaceStrategy: {
-          type: "git_worktree",
-          baseRef: plan.exactHeadSha,
-        },
-      },
+      executionWorkspaceSettings: buildReviewExecutionWorkspaceSettings(plan.exactHeadSha),
     } as never);
 
     const reviewIssueId = (created as { id?: string })?.id;

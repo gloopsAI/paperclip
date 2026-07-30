@@ -47,11 +47,17 @@ export type RoleAdmissionPolicy = {
  * GLoops controlled-swarm role skill policies.
  * Role matching is by agent name / role label (case-insensitive).
  */
+/**
+ * WP-E role skill allowlists (PLAN-AUTONOMOUS-RUNTIME + phase-bc-closure B5).
+ * Attached skills must match allow patterns and must not match deny patterns.
+ * Default-deny for unknown attached skills is enforced in evaluateRoleAdmission.
+ */
 export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
   {
     key: "implementer",
     aliases: ["wren", "mason", "implementer", "implementation engineer", "accountable implementation owner"],
-    // paperclip / github / terminal / file related skills
+    // WP-E: gloops-bounded-implementation, gloops-task-preparation, software-development,
+    // github (read patterns), gloops-evidence-lookup + paperclip helpers
     allowedSkillPatterns: [
       "paperclip",
       "github",
@@ -62,6 +68,8 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "implementation",
       "bounded-implementation",
       "task-preparation",
+      "software-development",
+      "software",
       "prcheck",
       "pr-report",
       "check-pr",
@@ -69,24 +77,35 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "test",
       "qa-acceptance",
       "doc-maintenance",
+      "evidence-lookup",
+      "gloops-bounded-implementation",
+      "gloops-task-preparation",
+      "gloops-evidence-lookup",
       "gloops-",
     ],
-    // deny broad social/media unless explicitly listed above
+    // WP-E default deny packs (social/media/etc.)
     deniedSkillPatterns: [
       "twitter",
       "discord",
       "slack",
+      "social-media",
       "social",
-      "media",
+      "smart-home",
+      "yuanbao",
+      "dogfood",
+      "apple",
+      "creative",
+      "email",
       "announcement",
       "release-announcement",
       "release-changelog-discord",
+      "media",
     ],
   },
   {
     key: "reviewer",
     aliases: ["argus", "reviewer", "independent quality owner", "qa"],
-    // read-only review skills
+    // WP-E: gloops-focused-review, gloops-evidence-lookup, gloops-terminal-reconciliation
     allowedSkillPatterns: [
       "review",
       "evidence",
@@ -95,12 +114,15 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "focused-review",
       "gloops-focused-review",
       "gloops-evidence",
+      "gloops-evidence-lookup",
+      "gloops-terminal-reconciliation",
+      "terminal-reconciliation",
+      "reconciliation",
       "paperclip",
       "github-read",
       "doc-maintenance",
       "diagnose",
     ],
-    // deny implementation / push / release mutation skills
     deniedSkillPatterns: [
       "bounded-implementation",
       "implementation",
@@ -114,14 +136,18 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "twitter",
       "discord",
       "slack",
+      "social-media",
       "social",
+      "smart-home",
+      "yuanbao",
+      "dogfood",
       "media",
     ],
   },
   {
     key: "dispatch",
     aliases: ["dispatch", "execution coordinator"],
-    // dispatch-only
+    // WP-E: gloops-bounded-planning, gloops-evidence-lookup only (no implement)
     allowedSkillPatterns: [
       "dispatch",
       "triage",
@@ -131,6 +157,9 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "routing",
       "gloops-task-preparation",
       "gloops-bounded-planning",
+      "gloops-evidence-lookup",
+      "evidence-lookup",
+      "evidence",
       "paperclip",
     ],
     deniedSkillPatterns: [
@@ -144,14 +173,18 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "twitter",
       "discord",
       "slack",
+      "social-media",
       "social",
+      "smart-home",
+      "yuanbao",
+      "dogfood",
       "media",
     ],
   },
   {
     key: "harbor",
     aliases: ["harbor", "release and promotion owner", "release", "deploy"],
-    // release / deploy related
+    // release / deploy + evidence helpers
     allowedSkillPatterns: [
       "release",
       "deploy",
@@ -161,6 +194,12 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "paperclip",
       "github",
       "rollback",
+      "gloops-evidence-lookup",
+      "gloops-terminal-reconciliation",
+      "evidence-lookup",
+      "evidence",
+      "terminal-reconciliation",
+      "reconciliation",
     ],
     deniedSkillPatterns: [
       "bounded-implementation",
@@ -168,7 +207,11 @@ export const ROLE_ADMISSION_POLICIES: readonly RoleAdmissionPolicy[] = [
       "twitter",
       "discord",
       "slack",
+      "social-media",
       "social",
+      "smart-home",
+      "yuanbao",
+      "dogfood",
       "media",
       "announcement",
     ],

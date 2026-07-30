@@ -192,6 +192,90 @@ describe("evaluateRoleAdmission", () => {
     });
   });
 
+  it("admits WP-E role skill allowlists (B5)", () => {
+    const wren = evaluateRoleAdmission(
+      baseInput({
+        role: "Wren",
+        attachedSkills: [
+          "gloops-bounded-implementation",
+          "gloops-task-preparation",
+          "software-development",
+          "github",
+          "gloops-evidence-lookup",
+          "paperclip",
+        ],
+      }),
+    );
+    expect(wren).toMatchObject({ admitted: true, roleKey: "implementer" });
+
+    const dispatch = evaluateRoleAdmission(
+      baseInput({
+        role: "Dispatch",
+        attachedSkills: ["gloops-bounded-planning", "gloops-evidence-lookup", "paperclip"],
+      }),
+    );
+    expect(dispatch).toMatchObject({ admitted: true, roleKey: "dispatch" });
+
+    const argus = evaluateRoleAdmission(
+      baseInput({
+        role: "Argus",
+        attachedSkills: [
+          "gloops-focused-review",
+          "gloops-evidence-lookup",
+          "gloops-terminal-reconciliation",
+          "paperclip",
+        ],
+      }),
+    );
+    expect(argus).toMatchObject({ admitted: true, roleKey: "reviewer" });
+
+    const harbor = evaluateRoleAdmission(
+      baseInput({
+        role: "Harbor",
+        attachedSkills: [
+          "gloops-evidence-lookup",
+          "gloops-terminal-reconciliation",
+          "paperclip",
+          "release",
+          "deploy",
+        ],
+      }),
+    );
+    expect(harbor).toMatchObject({ admitted: true, roleKey: "harbor" });
+  });
+
+  it("denies WP-E default-deny packs on implementer (B5)", () => {
+    for (const denied of ["social-media", "smart-home", "dogfood", "yuanbao"]) {
+      const result = evaluateRoleAdmission(
+        baseInput({
+          role: "Wren",
+          attachedSkills: ["paperclip", "gloops-bounded-implementation", denied],
+        }),
+      );
+      expect(result.admitted).toBe(false);
+      expect(result.reasonCodes).toContain(ADMISSION_REASON.SKILL_DENIED);
+    }
+  });
+
+  it("enforces MVP charter length band via options (B5 ≤1200)", () => {
+    const ok = evaluateRoleAdmission(
+      baseInput({
+        instructions: "A".repeat(1100),
+        options: { minCharterLength: 100, maxCharterLength: 1200 },
+      }),
+    );
+    expect(ok.admitted).toBe(true);
+
+    const over = evaluateRoleAdmission(
+      baseInput({
+        instructions: "A".repeat(1201),
+        options: { minCharterLength: 100, maxCharterLength: 1200 },
+      }),
+    );
+    expect(over.admitted).toBe(false);
+    expect(over.reasonCodes).toContain(ADMISSION_REASON.CHARTER_INVALID);
+  });
+
   it("denies missing budget when requireBudget is true", () => {
     const result = evaluateRoleAdmission(
       baseInput({
