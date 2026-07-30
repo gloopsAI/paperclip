@@ -139,4 +139,58 @@ describe("operations improvement proposals", () => {
       stewardAgentId: null,
     })).toBeNull();
   });
+
+  it("stamps the MTE rollup hint on the steward wake when the anomaly owner is token_economics", () => {
+    const wake = buildOperationsImprovementStewardWake({
+      proposalResult: { kind: "created", issueId: "proposal-token" },
+      stewardAgentId: "token-steward",
+      candidate: {
+        reason: "terminal_usage_missing",
+        severity: "medium",
+        summary: "usage missing",
+      },
+    });
+    expect(wake?.options.payload).toMatchObject({
+      issueId: "proposal-token",
+      owner: "token_economics",
+      mteRollupHint: {
+        tokenEconomicsOwner: true,
+        rollupNames: expect.arrayContaining(["byAgent", "byProvider", "byBiller"]),
+      },
+    });
+    expect(wake?.options.contextSnapshot).toMatchObject({
+      mteRollupHint: {
+        tokenEconomicsOwner: true,
+      },
+    });
+  });
+
+  it("stamps an empty MTE rollup hint when the anomaly owner is capacity", () => {
+    const wake = buildOperationsImprovementStewardWake({
+      proposalResult: { kind: "created", issueId: "proposal-capacity" },
+      stewardAgentId: "capacity-manager",
+      candidate: {
+        reason: "work_preparation_denied",
+        severity: "high",
+        summary: "preparation denied",
+      },
+    });
+    expect(wake?.options.payload).toMatchObject({
+      issueId: "proposal-capacity",
+      owner: "capacity",
+      mteRollupHint: { tokenEconomicsOwner: false, rollupNames: [] },
+    });
+  });
+
+  it("stamps a null owner/hint when no candidate is provided", () => {
+    const wake = buildOperationsImprovementStewardWake({
+      proposalResult: { kind: "created", issueId: "proposal-legacy" },
+      stewardAgentId: "steward-1",
+    });
+    expect(wake?.options.payload).toMatchObject({
+      issueId: "proposal-legacy",
+      owner: null,
+      mteRollupHint: null,
+    });
+  });
 });
