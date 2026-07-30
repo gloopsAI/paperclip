@@ -3,8 +3,9 @@ import {
   REVIEW_HANDOFF_MARKER,
   buildImplementationReviewTitle,
   buildReviewExecutionWorkspaceSettings,
-  planImplementationReviewHandoff,
   pickCompanyReviewerAgent,
+  pickCompanyReviewerAgentDetailed,
+  planImplementationReviewHandoff,
 } from "./implementation-review-handoff.js";
 
 const HEAD = "8df321b7e407fd38b0c8caddcc4c02b07ca2d642";
@@ -120,6 +121,55 @@ describe("pickCompanyReviewerAgent", () => {
         { id: "2", name: "Review Bot", role: "qa", status: "idle" },
       ]),
     ).toBe("2");
+  });
+});
+
+describe("pickCompanyReviewerAgentDetailed (GLO-2023 reviewer-fallback)", () => {
+  it("reports argus_name when an agent is named Argus", () => {
+    expect(
+      pickCompanyReviewerAgentDetailed([
+        { id: "wren", name: "Wren", role: "engineer", status: "idle" },
+        { id: ARGUS, name: "Argus", role: "qa", status: "idle" },
+      ]),
+    ).toEqual({ id: ARGUS, source: "argus_name" });
+  });
+
+  it("reports reviewer_role when no Argus is present", () => {
+    expect(
+      pickCompanyReviewerAgentDetailed([
+        { id: "wren", name: "Wren", role: "engineer", status: "idle" },
+        { id: "review-bot", name: "Review Bot", role: "qa", status: "idle" },
+      ]),
+    ).toEqual({ id: "review-bot", source: "reviewer_role" });
+  });
+
+  it("falls back to any live agent when no reviewer exists (GLO-2023 reliability)", () => {
+    const pick = pickCompanyReviewerAgentDetailed([
+      { id: "wren", name: "Wren", role: "engineer", status: "idle" },
+      { id: "northstar", name: "Northstar", role: "manager", status: "idle" },
+    ]);
+    expect(pick.source).toBe("any_live_fallback");
+    if (pick.source === "any_live_fallback") {
+      expect(["wren", "northstar"]).toContain(pick.id);
+    }
+  });
+
+  it("skips terminated and pending_approval agents before falling back", () => {
+    const pick = pickCompanyReviewerAgentDetailed([
+      { id: "dead", name: "Zombie", role: "qa", status: "terminated" },
+      { id: "pending", name: "Tbd", role: "qa", status: "pending_approval" },
+      { id: "live", name: "Wren", role: "engineer", status: "idle" },
+    ]);
+    expect(pick).toEqual({ id: "live", source: "any_live_fallback" });
+  });
+
+  it("returns source none when no live agent exists", () => {
+    expect(
+      pickCompanyReviewerAgentDetailed([
+        { id: "dead1", name: "A", role: "qa", status: "terminated" },
+        { id: "dead2", name: "B", role: "qa", status: "pending_approval" },
+      ]),
+    ).toEqual({ source: "none" });
   });
 });
 
