@@ -128,7 +128,7 @@ describe("gbrain-failure-recorder", () => {
     });
     expect(ok).toBe(true);
     const res = getRecentFingerprints("company-1", 10);
-    expect(res.fingerprints[0]?.stage).toBe("POST /api/companies/abc/issues");
+    expect(res.fingerprints[0]?.stage).toBe("post_api_companies_abc_issues");
   });
 
   it("returns false and never throws for unusable input", () => {
