@@ -106,12 +106,15 @@ def mint_board_approval(pr, head, substrate_hits):
     }
     try:
         created=paperclip("POST", f"/api/companies/{COMPANY_ID}/approvals", {"type":"request_board_approval","payload":payload})
-        aid=created.get("id"); print(f"board approval minted id={aid}")
+        aid=created.get("id")
+        if not aid:
+            raise RuntimeError("Paperclip returned a board-approval response without an id")
+        print(f"board approval minted id={aid}")
         HUMAN_CLEARANCE_DIR.mkdir(parents=True, exist_ok=True)
-        (HUMAN_CLEARANCE_DIR/f"pr-{pr}.approval-id").write_text(str(aid or "")+"\n")
+        (HUMAN_CLEARANCE_DIR/f"pr-{pr}.approval-id").write_text(str(aid)+"\n")
         return aid
     except Exception as e:
-        print(f"WARN mint board approval failed: {e}", file=sys.stderr); return None
+        raise RuntimeError(f"board approval mint failed: {e}") from e
 
 def notify_human(pr, head, substrate_hits, approval_id):
     pr_url=f"https://github.com/{REPO}/pull/{pr}"
@@ -152,6 +155,7 @@ def main():
     if a.head and a.head!=head: raise SystemExit(f"--head mismatch")
     paths, subs=classify_paths(list_pr_files(auth, a.pr))
     approval_id=None
+    approval_error=None
     if a.verdict!="accepted":
         concl,title,summ="failure","Independent review: changes required","Argus requested changes."
     elif a.force_after_action_required:
@@ -163,12 +167,27 @@ def main():
         summ=("Changed files include trust-substrate paths (auto-merge withheld): "+", ".join(subs[:20])+
               f". Open Paperclip Approvals or phrase: `clear trust substrate IR for #{a.pr}`.")
         if not a.dry_run:
-            mark_action_required(a.pr); approval_id=mint_board_approval(a.pr, head, subs); notify_human(a.pr, head, subs, approval_id)
+            mark_action_required(a.pr)
+            try:
+                approval_id=mint_board_approval(a.pr, head, subs)
+            except RuntimeError as e:
+                approval_error=str(e)
+                summ=("Changed files include trust-substrate paths; auto-merge remains withheld. "
+                      f"CRITICAL: Paperclip board approval was not created ({approval_error}). "
+                      "Treat this publisher invocation as failed; investigate the board path before clearing IR.")
+            notify_human(a.pr, head, subs, approval_id)
     elif prior_action_required(a.pr):
         concl="action_required"; title="Independent review: prior substrate touch requires human clearance"
         summ=f"PR #{a.pr} previously action_required. Clear via Paperclip Approvals or --force-after-action-required."
         if not a.dry_run:
-            approval_id=mint_board_approval(a.pr, head, subs or ["(prior sticky)"]); notify_human(a.pr, head, subs or ["(prior sticky)"], approval_id)
+            try:
+                approval_id=mint_board_approval(a.pr, head, subs or ["(prior sticky)"])
+            except RuntimeError as e:
+                approval_error=str(e)
+                summ=("PR has a prior trust-substrate hold and remains blocked. "
+                      f"CRITICAL: Paperclip board approval was not created ({approval_error}). "
+                      "Treat this publisher invocation as failed; investigate the board path before clearing IR.")
+            notify_human(a.pr, head, subs or ["(prior sticky)"], approval_id)
     else:
         concl,title,summ="success","Independent review: accepted","Argus accepted the exact head; no trust-substrate paths touched."
     body={"name":CHECK_NAME,"head_sha":head,"status":"completed","conclusion":concl,"output":{"title":title,"summary":summ}}
@@ -176,6 +195,8 @@ def main():
     if a.dry_run: print("DRY RUN"); return
     res=gh("POST", f"/repos/{REPO}/check-runs", auth, body)
     print("published check-run id", res.get("id"), "conclusion", res.get("conclusion"))
+    if approval_error:
+        raise SystemExit(approval_error)
 
 if __name__=="__main__":
     main()
