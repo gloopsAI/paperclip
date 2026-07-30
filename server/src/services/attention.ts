@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -80,6 +80,22 @@ const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const FAILED_RUN_STATUSES = ["failed", "timed_out"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
+/**
+ * PS2-E / GLO-2024 (GLO-2050): bound the attention failed-run scan.
+ * Without this bound every list() call would walk every "Bounded retry
+ * exhausted" lifecycle event the company has ever produced, plus every
+ * follow-up run for every agent that ever failed. Steady-state cockpit
+ * feeds kept seeing duplicate failed_run rows and multi-second latency.
+ */
+const FAILED_RUN_ATTENTION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Per-agent cap on failed_run rows surfaced to the cockpit feed. Combined
+ * with the time bound above this caps steady-state work at
+ * O(active-failed-agents-in-window) rows for both the exhausted-run scan
+ * and the follow-up "is there a newer run?" scan.
+ */
+const FAILED_RUN_ATTENTION_PER_AGENT_LIMIT = 25;
 
 type IssueSummaryRow = {
   id: string;
@@ -1014,6 +1030,7 @@ export function attentionService(db: Db) {
       }
 
       if (includeAutonomousTelemetry) {
+      const failedRunLookbackStart = new Date(now - FAILED_RUN_ATTENTION_LOOKBACK_MS);
       const exhaustedRunRows = await db
         .select({
           id: heartbeatRuns.id,
@@ -1040,14 +1057,27 @@ export function attentionService(db: Db) {
           eq(heartbeatRunEvents.companyId, companyId),
           eq(heartbeatRunEvents.eventType, "lifecycle"),
           sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+          gte(heartbeatRuns.createdAt, failedRunLookbackStart),
         ))
-        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRunEvents.id));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRunEvents.id))
+        .limit(FAILED_RUN_ATTENTION_PER_AGENT_LIMIT * 16);
 
       const latestExhaustedByRunId = new Map<string, (typeof exhaustedRunRows)[number]>();
       for (const row of exhaustedRunRows) {
         if (!latestExhaustedByRunId.has(row.id)) latestExhaustedByRunId.set(row.id, row);
       }
-      const failedRows = [...latestExhaustedByRunId.values()];
+      // PS2-E / GLO-2050: prefer the most-recent exhausted row per agent and
+      // cap the feed so one chatty agent cannot crowd out the rest. Older
+      // failures are still discoverable via the routes/agent pages; the
+      // cockpit surface intentionally focuses on the live picture.
+      const latestPerAgent = new Map<string, (typeof exhaustedRunRows)[number]>();
+      for (const row of latestExhaustedByRunId.values()) {
+        const current = latestPerAgent.get(row.agentId);
+        if (!current || row.createdAt > current.createdAt) latestPerAgent.set(row.agentId, row);
+      }
+      const failedRows = [...latestPerAgent.values()]
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, FAILED_RUN_ATTENTION_PER_AGENT_LIMIT);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
       const failedIssueMap = await issueSummaryMap(
         db,
@@ -1056,9 +1086,13 @@ export function attentionService(db: Db) {
       );
       const failedImageMap = await issueImageMap(db, companyId, failedIssueIds);
       const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
+      // After the per-agent cap, the oldest exhausted row in the feed is
+      // the floor we still need to walk to detect a follow-up run that
+      // suppresses it. Bound by the same lookback so we never scan beyond
+      // the cockpit's retention surface.
       const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
-        if (!oldest || row.createdAt < oldest) return row.createdAt;
-        return oldest;
+        if (!oldest) return row.createdAt;
+        return oldest < row.createdAt ? oldest : row.createdAt;
       }, null);
       const latestRunCreatedAtByKey = new Map<string, Date>();
       if (oldestFailedRunCreatedAt && failedAgentIds.length > 0) {
@@ -1072,6 +1106,7 @@ export function attentionService(db: Db) {
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.agentId, failedAgentIds),
+            gte(heartbeatRuns.createdAt, failedRunLookbackStart),
             gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
           ));
         for (const newerRun of newerRuns) {
