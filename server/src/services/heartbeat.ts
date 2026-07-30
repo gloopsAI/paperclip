@@ -227,6 +227,7 @@ import {
   type ExecutionAdmissionReason,
   type PriorExecutionRun,
 } from "./execution-admission.js";
+import { ensureAutoSuccessorOnExhaust } from "./auto-successor-on-exhaust.js";
 import {
   PAPERCLIP_EXECUTION_CONTEXT_KEY,
   PAPERCLIP_EXECUTION_RECEIPT_KEY,
@@ -11255,6 +11256,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
     await releaseIssueExecutionAndPromote(result.run, { suppressImmediateRecovery: true });
+    // B4p: product-native auto-successor for EXEC-class exhaust.
+    // Owns exhaust→successor so host paperclip-auto-successor-exhaust.timer can retire.
+    // Never multi-wakes the parent (suppressImmediateRecovery already set above).
+    try {
+      const successor = await ensureAutoSuccessorOnExhaust({
+        db,
+        run: result.run,
+        errorCode: result.errorCode,
+        envelope: result.envelope,
+        reasonText: result.reason,
+      });
+      if (successor.kind === "created" || successor.kind === "existing") {
+        await logActivity(db, {
+          companyId: result.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: result.run.agentId,
+          runId: result.run.id,
+          action: "heartbeat.auto_successor_on_exhaust",
+          entityType: "issue",
+          entityId: successor.issueId,
+          details: {
+            kind: successor.kind,
+            successorIssueId: successor.issueId,
+            successorIdentifier: successor.identifier,
+            errorCode: result.errorCode,
+          },
+        });
+      }
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: result.run.id, errorCode: result.errorCode },
+        "finalizeExecutionAdmissionDenial: auto-successor-on-exhaust failed",
+      );
+    }
   }
 
   type ControlledSwarmIssueScopeBlock = {
