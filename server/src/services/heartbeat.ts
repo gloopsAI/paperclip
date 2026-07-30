@@ -252,6 +252,7 @@ import {
 } from "./work-preparation.js";
 import {
   buildOperationsImprovementStewardWake,
+  classifyOperationsAnomaly,
   projectOperationsImprovementProposal,
   selectOperationsImprovementStewardAgentId,
 } from "./operations-improvement-proposals.js";
@@ -15480,7 +15481,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
-
+      const anomalyCandidate = persistedRun ? classifyOperationsAnomaly(persistedRun) : null;
       if (persistedRun) {
         const stewardAgentId = selectOperationsImprovementStewardAgentId({
           run: persistedRun,
@@ -15509,6 +15510,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const stewardWake = buildOperationsImprovementStewardWake({
           proposalResult,
           stewardAgentId,
+          candidate: anomalyCandidate,
         });
         if (stewardWake) {
           await enqueueWakeup(stewardWake.agentId, stewardWake.options).catch((wakeError) => {
