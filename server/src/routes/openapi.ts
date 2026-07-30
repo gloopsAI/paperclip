@@ -2912,6 +2912,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/gbrain/fingerprints/recent",
+  tags: ["organization-kernel"],
+  summary: "Get recent OK-09 failure fingerprints (advisory)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      limit: z.number().int().positive().max(32).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/dashboard",
   tags: ["dashboard"],
   summary: "Get dashboard data",
