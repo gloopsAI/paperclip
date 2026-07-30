@@ -1,5 +1,15 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  buildMteStewardRollupHint,
+  getMteRollup,
+  MTE_ROLLUP_QUERIES,
+  TOKEN_ECONOMICS_STEWARD_ROLLUPS,
+  type MteLedgerSource,
+  type MteRollupGroupAxis,
+  type MteRollupSpec,
+  type MteStewardRollupHint,
+} from "./mte-rollups.js";
+export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,

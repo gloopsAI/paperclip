@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { and, eq, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues } from "@paperclipai/db";
+import {
+  buildMteStewardRollupHint,
+  type MteStewardRollupHint,
+} from "@paperclipai/shared";
 import { issueService } from "./issues.js";
 
 export const OPERATIONS_IMPROVEMENT_ORIGIN_KIND = "operations_improvement_proposal" as const;
@@ -237,9 +241,16 @@ export async function projectOperationsImprovementProposal(input: {
 export function buildOperationsImprovementStewardWake(input: {
   proposalResult: Awaited<ReturnType<typeof projectOperationsImprovementProposal>> | null;
   stewardAgentId: string | null;
+  candidate?: OperationsImprovementCandidate | null;
 }) {
   if (input.proposalResult?.kind !== "created" || !input.stewardAgentId) return null;
   const issueId = input.proposalResult.issueId;
+  const owner = input.candidate
+    ? operationsImprovementOwnerForReason(input.candidate.reason)
+    : null;
+  const mteRollupHint: MteStewardRollupHint | null = owner
+    ? buildMteStewardRollupHint({ owner })
+    : null;
   return {
     agentId: input.stewardAgentId,
     options: {
@@ -249,6 +260,8 @@ export function buildOperationsImprovementStewardWake(input: {
       payload: {
         issueId,
         source: OPERATIONS_IMPROVEMENT_ORIGIN_KIND,
+        owner: owner ?? null,
+        mteRollupHint,
       },
       requestedByActorType: "system" as const,
       requestedByActorId: OPERATIONS_IMPROVEMENT_ORIGIN_KIND,
@@ -257,6 +270,7 @@ export function buildOperationsImprovementStewardWake(input: {
         taskId: issueId,
         wakeReason: OPERATIONS_IMPROVEMENT_WAKE_REASON,
         source: OPERATIONS_IMPROVEMENT_ORIGIN_KIND,
+        mteRollupHint,
       },
       idempotencyKey: `operations-improvement-proposal:${issueId}`,
     },
