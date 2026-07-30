@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
 import {
   recordResponsibleUserDenialOnActiveRun,
 } from "../services/responsible-user-denial-run-outcomes.js";
+import { recordServerFailure } from "../services/gbrain-failure-recorder.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -68,6 +69,39 @@ function recordResponsibleUserDenialFromHttpError(
   });
 }
 
+/**
+ * Best-effort OK-09 microplane integration: surface 5xx (and stable 4xx
+ * HttpError codes) as normalized FailureFingerprints so the implementer
+ * and reviewer can request them via the recent-fingerprints surface.
+ * Never throws into the request pipeline.
+ */
+function recordGbrainFailureFromError(
+  req: Request,
+  status: number,
+  err: Error,
+  code: string | null,
+): void {
+  try {
+    const url = req.originalUrl || req.url || null;
+    const method = req.method || null;
+    const companyId =
+      typeof req.params?.companyId === "string" && req.params.companyId.length > 0
+        ? req.params.companyId
+        : null;
+    recordServerFailure({
+      companyId,
+      errorCode: code ?? err.name ?? "unknown_error",
+      message: err.message || "unknown error",
+      tool: "http",
+      method,
+      url,
+      recoveryHint: status >= 500 ? "check server logs for stack" : null,
+    });
+  } catch {
+    // Swallow — gbrain integration is advisory and must never affect responses.
+  }
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -88,6 +122,15 @@ export function errorHandler(
       );
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
+    }
+    // OK-09 microplane integration: surface server errors as advisory
+    // FailureFingerprints so they can be requested via /recent. 5xx is
+    // always recorded; 4xx is recorded only when the HttpError carries a
+    // stable code (e.g. account_locked, auth_unauthorized).
+    const stableCode =
+      typeof details?.code === "string" ? details.code : null;
+    if (err.status >= 500 || stableCode) {
+      recordGbrainFailureFromError(req, err.status, err, stableCode);
     }
     res.status(err.status).json({
       error: err.message,
@@ -115,6 +158,7 @@ export function errorHandler(
 
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
+  recordGbrainFailureFromError(req, 500, rootError, null);
 
   res.status(500).json({
     error: "Internal server error",
