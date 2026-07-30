@@ -14,6 +14,10 @@ import {
   normalizeFailureFingerprint,
   type FailureFingerprint,
 } from "../services/gbrain-microplane.js";
+import {
+  GBRAIN_RECENT_FINGERPRINT_HARD_LIMIT,
+  getRecentFingerprints,
+} from "../services/gbrain-failure-recorder.js";
 import { assertCompanyAccess } from "./authz.js";
 
 const fingerprintInputSchema = z
@@ -190,6 +194,37 @@ export function gbrainRoutes() {
       }
 
       res.status(200).json(fingerprint);
+    },
+  );
+
+  /**
+   * GET /companies/:companyId/gbrain/fingerprints/recent
+   *
+   * Return the recent normalized FailureFingerprints observed in this
+   * process for the given company. Advisory only — informational context
+   * for the OK-09 microplane, never a basis for authority decisions.
+   */
+  router.get(
+    "/companies/:companyId/gbrain/fingerprints/recent",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const rawLimit = (req.query as Record<string, unknown> | undefined)?.limit;
+      const parsedLimit =
+        typeof rawLimit === "string" && rawLimit.length > 0
+          ? Number(rawLimit)
+          : typeof rawLimit === "number"
+            ? rawLimit
+            : 10;
+      const safeLimit = Number.isFinite(parsedLimit) ? Math.floor(parsedLimit) : 10;
+      const limit = Math.min(
+        Math.max(1, safeLimit),
+        GBRAIN_RECENT_FINGERPRINT_HARD_LIMIT,
+      );
+
+      const payload = getRecentFingerprints(companyId, limit);
+      res.status(200).json(payload);
     },
   );
 
