@@ -2903,6 +2903,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/gbrain/context-records",
+  tags: ["organization-kernel"],
+  summary: "Ingest an append-only, cited GBrain context projection",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/gbrain/context/retrieve",
+  tags: ["organization-kernel"],
+  summary: "Retrieve a bounded, advisory GBrain context packet",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/gbrain/fingerprints/normalize",
   tags: ["organization-kernel"],
   summary: "Normalize a failure fingerprint",
