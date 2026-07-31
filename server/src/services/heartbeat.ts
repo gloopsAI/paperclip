@@ -18780,7 +18780,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; cursor?: { createdAt: Date; id: string } | null } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
@@ -18805,11 +18805,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         )
         .from(heartbeatRuns)
         .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
+          and(
+            agentId
+              ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
+              : eq(heartbeatRuns.companyId, companyId),
+            ...(options.cursor
+              ? [or(
+                lt(heartbeatRuns.createdAt, options.cursor.createdAt),
+                and(eq(heartbeatRuns.createdAt, options.cursor.createdAt), lt(heartbeatRuns.id, options.cursor.id)),
+              )]
+              : []),
+          ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 
       const rows = limit ? await query.limit(limit) : await query;
       return rows.map((row) => {

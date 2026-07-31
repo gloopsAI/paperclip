@@ -593,6 +593,37 @@ describe("measurement consumer — CLI command registration", () => {
     expect(fs.existsSync(path.join(tempDir, "intake.json"))).toBe(true);
   });
 
+  it("`measurement intake` paginates heartbeat runs beyond the configured page size", async () => {
+    const firstPage = [
+      makeRun({ id: "run-a", createdAt: "2026-07-30T15:00:00.000Z" }),
+      makeRun({ id: "run-b", createdAt: "2026-07-30T14:00:00.000Z" }),
+    ];
+    const secondPage = [makeRun({ id: "run-c", createdAt: "2026-07-30T13:00:00.000Z" })];
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes(`/heartbeat-runs?limit=2&cursor=`)) {
+        return Promise.resolve(new Response(JSON.stringify(secondPage), { status: 200 }));
+      }
+      if (url.includes(`/heartbeat-runs?limit=2`)) {
+        return Promise.resolve(new Response(JSON.stringify(firstPage), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createProgram().parseAsync([
+      "measurement", "intake", "--company-id", COMPANY_ID,
+      "--out", path.join(tempDir, "paginated-intake.json"), "--run-limit", "2",
+      "--api-base", "http://localhost:3100", "--api-key", "board-token",
+    ], { from: "user" });
+
+    const heartbeatUrls = fetchMock.mock.calls.map((call) => String(call[0]))
+      .filter((url) => url.includes("/heartbeat-runs?"));
+    expect(heartbeatUrls).toHaveLength(2);
+    expect(heartbeatUrls[1]).toContain("cursor=");
+    const intake = JSON.parse(fs.readFileSync(path.join(tempDir, "paginated-intake.json"), "utf8"));
+    expect(intake.run_sample_size).toBe(3);
+  });
+
   it("`measurement intake` pulls /api/issues/{id}/runs + cost-summary for each --issue", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       if (url.includes(`/issues/${ISSUE_A}/runs`)) {
