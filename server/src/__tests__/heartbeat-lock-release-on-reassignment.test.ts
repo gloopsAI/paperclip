@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -49,7 +49,10 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     await tempDb?.cleanup();
   });
 
-  async function seedCrossAgentScenario(opts: { holderStatus: "queued" | "running" }) {
+  async function seedCrossAgentScenario(opts: {
+    holderStatus: "queued" | "running";
+    providerInvocationAttempted?: boolean;
+  }) {
     const companyId = randomUUID();
     const coderAgentId = randomUUID();
     const reviewerAgentId = randomUUID();
@@ -85,7 +88,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
         status: "idle",
         adapterType: "process",
         adapterConfig: {},
-        runtimeConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
         permissions: {},
       },
     ]);
@@ -107,6 +110,9 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       status: opts.holderStatus,
       wakeupRequestId,
       contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      resultJson: opts.providerInvocationAttempted === undefined
+        ? null
+        : { provider_invocation: { attempted: opts.providerInvocationAttempted } },
     });
 
     await db.insert(issues).values({
@@ -116,6 +122,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       status: "in_review",
       priority: "medium",
       assigneeAgentId: reviewerAgentId,
+      responsibleUserId: "local-board",
       executionRunId: holderRunId,
       executionAgentNameKey: "coder",
       executionLockedAt: new Date(),
@@ -133,9 +140,9 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     };
   }
 
-  it("defers a cross-agent wake while the holder is still running and leaves the holder alone", async () => {
+  it("defers a cross-agent wake after the holder crossed the provider-invocation fence", async () => {
     const { coderAgentId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
-      await seedCrossAgentScenario({ holderStatus: "running" });
+      await seedCrossAgentScenario({ holderStatus: "running", providerInvocationAttempted: true });
 
     const heartbeat = heartbeatService(db);
     const followupRun = await heartbeat.wakeup(reviewerAgentId, {
@@ -196,28 +203,94 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     expect(issue?.executionRunId).toBe(holderRunId);
   });
 
-  // Race-guard regression: the cancel UPDATE for the queued holder is pinned
-  // to the exact non-running status that was read just above it. If a worker
-  // races in and flips the holder from `queued` → `running` between that
-  // SELECT and the cancel UPDATE, the status predicate in the WHERE clause
-  // must guarantee zero rows are clobbered. We simulate the race by
-  // pre-running the same UPDATE shape against a row that is already
-  // `running` (the snapshot we would have read was `queued`); the row must
-  // remain untouched, no wake-request cascade fires, and the lock stays
-  // owned by the freshly-claimed running holder.
-  it("guards the cancel UPDATE WHERE clause against a concurrent claim flip to running", async () => {
-    const { coderAgentId, issueId, holderRunId, wakeupRequestId } = await seedCrossAgentScenario({
-      holderStatus: "queued",
+  it("releases a reassigned running holder before provider invocation and queues the new owner", async () => {
+    const { companyId, coderAgentId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
+      await seedCrossAgentScenario({ holderStatus: "running", providerInvocationAttempted: false });
+
+    // Keep the new owner's wake queued. The regression is about ownership
+    // transfer, not adapter execution or responsible-user resolution.
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 1 }, () => ({
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: { wakeReason: "test_busy_slot" },
+      })),
+    );
+
+    const heartbeat = heartbeatService(db);
+    const followupRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
     });
 
-    const snapshotStatus = "queued" as const;
+    expect(followupRun).not.toBeNull();
+    expect(followupRun?.agentId).toBe(reviewerAgentId);
+    expect(followupRun?.status).toBe("queued");
 
-    // Concurrent worker claims the queued run after the SELECT but before
-    // the cancel UPDATE. In production this is a separate transaction
-    // flipping the row from queued → running.
+    const [holder, holderWakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+          agentId: heartbeatRuns.agentId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, holderRunId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(holder).toMatchObject({
+      status: "cancelled",
+      errorCode: "lock_released_on_reassignment",
+      agentId: coderAgentId,
+      resultJson: { provider_invocation: { attempted: false } },
+    });
+    expect(holderWakeup?.status).toBe("cancelled");
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  // Race-guard regression: the cancel UPDATE checks the persisted invocation
+  // fence again. A provider can cross that boundary between the initial read
+  // and the cancellation attempt; the provider-invoking holder must survive.
+  it("guards the cancel UPDATE against a concurrent provider-invocation fence", async () => {
+    const { coderAgentId, issueId, holderRunId, wakeupRequestId } = await seedCrossAgentScenario({
+      holderStatus: "running",
+      providerInvocationAttempted: false,
+    });
+
+    const snapshot = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(snapshot?.status).toBe("running");
+    if (!snapshot) return;
+
+    // The adapter execution persists its fence after the SELECT but before
+    // the cancellation UPDATE.
     await db
       .update(heartbeatRuns)
-      .set({ status: "running", startedAt: new Date(), updatedAt: new Date() })
+      .set({ resultJson: { provider_invocation: { attempted: true } }, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, holderRunId));
 
     const cancelled = await db
@@ -232,7 +305,8 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       .where(
         and(
           eq(heartbeatRuns.id, holderRunId),
-          eq(heartbeatRuns.status, snapshotStatus),
+          eq(heartbeatRuns.status, snapshot.status),
+          sql`coalesce(${heartbeatRuns.resultJson} -> 'provider_invocation' ->> 'attempted', 'false') <> 'true'`,
         ),
       )
       .returning({ id: heartbeatRuns.id });

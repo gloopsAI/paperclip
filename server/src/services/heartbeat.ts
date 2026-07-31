@@ -1546,6 +1546,15 @@ export function isWorkspaceNotWritableFailedRun(
   return run?.errorCode === WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
 }
 
+/**
+ * A run becomes `running` before its adapter/provider call begins. Reassignment
+ * may safely release that narrow pre-provider holder, but must not clobber a
+ * holder once it has crossed the persisted invocation fence.
+ */
+function hasPersistedProviderInvocationAttempt(run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">) {
+  return parseObject(parseObject(run.resultJson).provider_invocation).attempted === true;
+}
+
 type WorkspacePreparationFailureLike = WorkspacePreparationFailure | {
   code: typeof WORKSPACE_PREPARATION_FAILURE_CODE;
   resultJson: Record<string, unknown>;
@@ -14823,6 +14832,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
         await recordWorkspaceFinalize("succeeded");
       } else try {
+        // `running` is set before the adapter call. Persist the exact boundary
+        // first so reassignment can safely cancel only pre-provider work and
+        // never race a provider-invoking holder.
+        const invocationFence = await db
+          .update(heartbeatRuns)
+          .set({
+            resultJson: {
+              ...parseObject(run.resultJson),
+              provider_invocation: { attempted: true },
+            },
+            updatedAt: new Date(),
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+          .returning({ id: heartbeatRuns.id });
+        if (invocationFence.length === 0) return;
         adapterInvocationAttempted = true;
         adapterResult = await adapter.execute({
           runId: run.id,
@@ -17595,16 +17619,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // forever, because the original queued holder will never run
         // (the issue's status / target now belongs to someone else).
         //
-        // Race guard: pin the cancel UPDATE to the exact non-running
-        // status we read above. A worker could transition the holder
-        // from `queued` → `running` between the SELECT and this UPDATE;
-        // the status predicate ensures we never clobber a freshly-
-        // claimed running run. If zero rows matched, leave
-        // `activeExecutionRun` populated so the defer path runs
-        // normally against the now-running holder.
+        // Race guard: a running holder is normally left alone. The exception
+        // is the short pre-provider interval: a run is marked running before
+        // adapter invocation, so retaining a reassigned holder there can burn
+        // the new assignee's task budget while its wake is deferred. Persisted
+        // invocation evidence is the fence; the guarded UPDATE below checks
+        // that persisted evidence again, preventing a concurrent fence write
+        // from being clobbered. After that point we retain the existing
+        // no-clobber behavior.
         if (
           activeExecutionRun &&
-          activeExecutionRun.status !== "running" &&
+          (
+            activeExecutionRun.status !== "running" ||
+            !hasPersistedProviderInvocationAttempt(activeExecutionRun)
+          ) &&
           issue.assigneeAgentId &&
           activeExecutionRun.agentId !== issue.assigneeAgentId
         ) {
@@ -17615,12 +17643,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               finishedAt: new Date(),
               error: "Execution lock released after issue reassigned to a different agent",
               errorCode: "lock_released_on_reassignment",
+              resultJson: {
+                ...parseObject(activeExecutionRun.resultJson),
+                provider_invocation: { attempted: false },
+              },
               updatedAt: new Date(),
             })
             .where(
               and(
                 eq(heartbeatRuns.id, activeExecutionRun.id),
                 eq(heartbeatRuns.status, activeExecutionRun.status),
+                sql`coalesce(${heartbeatRuns.resultJson} -> 'provider_invocation' ->> 'attempted', 'false') <> 'true'`,
               ),
             )
             .returning({ id: heartbeatRuns.id });
