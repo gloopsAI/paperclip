@@ -275,10 +275,6 @@ def open_surface_prs() -> list[dict]:
 
 def independent_review_ok(pr_number: int) -> bool | None:
     """True if check success, False if missing/failed, None if unknown."""
-    try:
-        checks = gh_json(f"/repos/{REPO}/commits/{pr_number}/status")
-    except Exception:
-        checks = None
     # Prefer check-runs on the head
     try:
         # Use PR view via gh
@@ -412,4 +408,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
