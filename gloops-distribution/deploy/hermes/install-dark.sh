@@ -100,6 +100,7 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-runtime-deadman.sh" "${LIB
 install -m 0555 -o root -g root "${SCRIPT_DIR}/campaign-deadman.py" "${LIB_DIR}/campaign-deadman.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-campaign-deadman.py" "${LIB_DIR}/verify-campaign-deadman.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-predecessor-campaign-epoch.py" "${LIB_DIR}/verify-predecessor-campaign-epoch.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/verify-current-campaign-commissioning.py" "${LIB_DIR}/verify-current-campaign-commissioning.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/campaign-deadman-stop.sh" "${LIB_DIR}/campaign-deadman-stop.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/campaign-deadman-rehearsal-stop.sh" "${LIB_DIR}/campaign-deadman-rehearsal-stop.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/rehearse-campaign-deadman.py" "${LIB_DIR}/rehearse-campaign-deadman.py"

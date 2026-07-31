@@ -40,6 +40,21 @@ readonly EXPECTED_IMAGE="$(tr -d '\r\n' < "${APPROVED_IMAGE_FILE}")"
   echo "the controlled-swarm runtime has not been bound to an accepted immutable image" >&2
   exit 1
 }
+if [[ "${PAPERCLIP_CAMPAIGN_ID:-}" =~ ^supervisor-product-sequence-20[0-9]{6}$ ]]; then
+  [[ "${PAPERCLIP_CAMPAIGN_DURATION_SECONDS:-}" == '86400' ]] || {
+    echo "successor campaign duration has drifted" >&2
+    exit 1
+  }
+  [[ "${PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET:-}" == "${CAMPAIGN_DEADMAN_SOCKET}" ]] || {
+    echo "successor campaign deadman socket has drifted" >&2
+    exit 1
+  }
+  case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-}" in
+    false) ;;
+    true) /usr/local/lib/paperclip-gloops/verify-current-campaign-commissioning.py ;;
+    *) echo "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED is not an exact boolean" >&2; exit 1 ;;
+  esac
+else
 readonly -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_CAMPAIGN_ID]='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
   [PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
@@ -84,6 +99,7 @@ case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-}" in
     exit 1
     ;;
 esac
+fi
 systemctl is-active --quiet paperclip-campaign-deadman.service || {
   echo "the root-owned campaign deadman must be active before execution" >&2
   exit 1
