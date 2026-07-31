@@ -298,7 +298,7 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
-  api.use(gbrainRoutes());
+  api.use(gbrainRoutes(db));
   api.use(continuationRoutes());
   api.use(discoveryRoutes());
   api.use(reviewPathSloRoutes(db));
