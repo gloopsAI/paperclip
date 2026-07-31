@@ -1,0 +1,14 @@
+[Unit]
+Description=Paperclip closed-loop: Argus APPROVE → App-B independent-review stamp
+After=paperclip-gloops.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/paperclip-gloops/runtime.env
+EnvironmentFile=-/etc/paperclip-gloops/github-read.env
+Environment=PAPERCLIP_API=http://127.0.0.1:3100/api
+Environment=PAPERCLIP_BOARD_TOKEN_FILE=/etc/paperclip-gloops/operator-board-token
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/tools/closed-loop-argus-publish-poller.py --once
+Nice=10
