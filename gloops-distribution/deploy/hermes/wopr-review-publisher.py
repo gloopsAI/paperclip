@@ -11,7 +11,12 @@ KEY="/etc/paperclip-gloops/github-app-review/private-key.pem"
 REPO="gloopsAI/paperclip"; REPO_ID=1299155335
 CHECK_NAME="gloops / independent-review"
 HUMAN_CLEARANCE_DIR=Path("/var/lib/paperclip-gloops/wopr-review-clearance")
-PAPERCLIP_API=os.environ.get("PAPERCLIP_API","http://127.0.0.1:3100").rstrip("/")
+def normalize_paperclip_api_base(value):
+    """Normalize either the Paperclip origin or its legacy /api base URL."""
+    base = value.rstrip("/")
+    return base[:-4] if base.endswith("/api") else base
+
+PAPERCLIP_API=normalize_paperclip_api_base(os.environ.get("PAPERCLIP_API","http://127.0.0.1:3100"))
 COMPANY_ID=os.environ.get("PAPERCLIP_COMPANY_ID","89ed0964-d918-4fcc-b830-5be49d2d4089")
 BOARD_TOKEN_FILE=Path(os.environ.get("PAPERCLIP_BOARD_TOKEN_FILE","/etc/paperclip-gloops/operator-board-token"))
 SLACK_CHANNEL_ID=os.environ.get("PAPERCLIP_SUBSTRATE_SLACK_CHANNEL","C0BGVS837EG")
