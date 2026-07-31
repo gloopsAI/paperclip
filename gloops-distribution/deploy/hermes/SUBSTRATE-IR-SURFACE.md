@@ -16,9 +16,23 @@ Zach never saw Paperclip Approvals or Buzz — fallout chat was the only path.
 
 ## Install
 Install the publisher at `/usr/local/lib/paperclip-gloops/wopr-review-publisher.py`.
-Install the poller and standing helper at
-`/usr/local/lib/paperclip-gloops/tools/{substrate-ir-approval-poller.py,closed-loop-publish-review.sh}`.
-Enable timer `paperclip-substrate-ir-approval-poller.timer`.
+Install the pollers and standing helper at
+`/usr/local/lib/paperclip-gloops/tools/{substrate-ir-approval-poller.py,closed-loop-argus-publish-poller.py,closed-loop-publish-review.sh}`.
+Enable timers `paperclip-substrate-ir-approval-poller.timer` and
+`paperclip-closed-loop-publish-poller.timer`.
+
+## Argus-accept front half (A4)
+
+`closed-loop-argus-publish-poller.py` runs every two minutes. It reads only
+review-issue **comments** for an Argus exact-head approval (or the compatible
+`PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
+`gloops/stable`, then invokes the independent-review publisher and arms the
+normal ready/auto-merge path. Its state is keyed by `PR:head`, so a new commit
+requires a new exact-head approval.
+
+It does not merge or deploy by itself, and it cannot bypass the publisher's
+trust-substrate denylist. A substrate PR still follows the Board Approve →
+scheduled substrate poller back half before independent review can be SUCCESS.
 
 ## Live acceptance canary
 Paperclip **#225** exercised the full approval arm on 2026-07-30: its exact head was

@@ -1,0 +1,11 @@
+[Unit]
+Description=Every 2m: closed-loop Argus publish poller
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=paperclip-closed-loop-publish-poller.service
+
+[Install]
+WantedBy=timers.target
