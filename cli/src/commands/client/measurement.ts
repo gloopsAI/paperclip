@@ -575,6 +575,36 @@ async function fetchTyped<T>(ctx: ResolvedClientContext, path: string): Promise<
   return result;
 }
 
+function encodeHeartbeatRunCursor(run: RawHeartbeatRun): string {
+  const createdAt = typeof run.createdAt === "string" ? run.createdAt : run.startedAt;
+  if (!run.id || !createdAt || Number.isNaN(Date.parse(createdAt))) {
+    throw new Error("heartbeat-runs page cannot continue because its final row has no stable cursor fields");
+  }
+  return Buffer.from(JSON.stringify({ createdAt, id: run.id })).toString("base64url");
+}
+
+export async function fetchAllHeartbeatRuns(
+  ctx: ResolvedClientContext,
+  companyId: string,
+  pageLimit: number,
+): Promise<RawHeartbeatRun[]> {
+  const runs: RawHeartbeatRun[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const params = new URLSearchParams({ limit: String(pageLimit) });
+    if (cursor) params.set("cursor", cursor);
+    const page = await fetchTyped<RawHeartbeatRun[]>(
+      ctx,
+      `/api/companies/${companyId}/heartbeat-runs?${params.toString()}`,
+    );
+    runs.push(...page);
+    if (page.length < pageLimit) return runs;
+    const nextCursor = encodeHeartbeatRunCursor(page[page.length - 1]!);
+    if (nextCursor === cursor) throw new Error("heartbeat-runs pagination cursor did not advance");
+    cursor = nextCursor;
+  }
+}
+
 export async function collectCompanyPhase1Intake(
   ctx: ResolvedClientContext,
   options: {
@@ -585,10 +615,7 @@ export async function collectCompanyPhase1Intake(
 ): Promise<Phase1Intake> {
   const limit = options.heartbeatRunLimit ?? 500;
   const issueRefs = options.issueRefs ?? [];
-  const heartbeatRuns = await fetchTyped<RawHeartbeatRun[]>(
-    ctx,
-    apiPath`/api/companies/${options.companyId}/heartbeat-runs?limit=${limit}`,
-  );
+  const heartbeatRuns = await fetchAllHeartbeatRuns(ctx, options.companyId, limit);
   let costsSummary: unknown = null;
   let costsByProvider: unknown = null;
   let subscriptionEconomics: unknown = null;
@@ -694,7 +721,7 @@ export function registerMeasurementCommands(program: Command): void {
           return list;
         },
       )
-      .option("--run-limit <n>", "Heartbeat run sample cap (default 500)")
+      .option("--run-limit <n>", "Heartbeat-run page size; all pages are collected (default 500)")
       .action(async (opts: IntakeOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });

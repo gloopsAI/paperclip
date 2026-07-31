@@ -137,6 +137,31 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function decodeHeartbeatRunCursor(value: unknown): { createdAt: Date; id: string } | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+    throw new HttpError(400, "cursor must be a bounded opaque heartbeat-run cursor");
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as {
+      createdAt?: unknown;
+      id?: unknown;
+    };
+    const createdAt = typeof parsed.createdAt === "string" ? new Date(parsed.createdAt) : null;
+    if (
+      !createdAt
+      || Number.isNaN(createdAt.getTime())
+      || typeof parsed.id !== "string"
+      || !isUuidLike(parsed.id)
+    ) {
+      throw new Error("invalid cursor");
+    }
+    return { createdAt, id: parsed.id };
+  } catch {
+    throw new HttpError(400, "cursor must be a valid heartbeat-run cursor");
+  }
+}
+
 function readRunIssueId(context: Record<string, unknown> | null) {
   const directIssueId = context?.issueId;
   if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
@@ -3742,7 +3767,8 @@ export function agentRoutes(
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const cursor = decodeHeartbeatRunCursor(req.query.cursor);
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, cursor });
     res.json(runs);
   });
 
