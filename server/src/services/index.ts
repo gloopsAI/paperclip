@@ -74,6 +74,7 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
+export { guardedAdmissionResetService } from "./guarded-admission-reset.js";
 export {
   heartbeatRunSettlementService,
   HeartbeatRunSettlementConflictError,

@@ -22,7 +22,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
-  resetExhaustedAdmissionCheckoutSchema,
+  resetExhaustedAdmissionAndCheckoutIssueSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -1908,25 +1908,6 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/api/issues/{id}/reset-exhausted-admission-and-checkout",
-  tags: ["issues"],
-  summary: "Atomically reset an exhausted issue admission epoch and check out the existing assignee",
-  request: {
-    params: z.object({ id: z.string() }),
-    body: jsonBody(resetExhaustedAdmissionCheckoutSchema),
-  },
-  responses: {
-    201: r.ok(),
-    400: r.badRequest,
-    401: r.unauthorized,
-    404: r.notFound,
-    409: r.conflict,
-    422: r.unprocessable,
-  },
-});
-
-registry.registerPath({
-  method: "post",
   path: "/api/issues/{id}/packet-readiness",
   tags: ["issues"],
   summary: "Evaluate issue packet Definition of Ready (read-only)",
@@ -2472,6 +2453,27 @@ registry.registerPath({
   summary: "List user secret definitions",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/admin/reset-exhausted-admission-and-checkout",
+  tags: ["issues"],
+  summary: "Reset a provably exhausted default admission epoch and checkout once (admin)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(resetExhaustedAdmissionAndCheckoutIssueSchema),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

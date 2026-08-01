@@ -58,7 +58,6 @@ import {
   issueWorkProducts,
   projects,
   projectWorkspaces,
-  repositoryMutationReceipts as repositoryMutationReceiptsTable,
   routineRevisions,
   routineRuns,
   routines,
@@ -2175,14 +2174,6 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
-  /**
-   * Board-only escape hatch for repairing an exhausted issue-bound admission
-   * epoch. This stays inside the issue wake transaction so a caller cannot
-   * reset a budget and then race a separate checkout/wake sequence.
-   */
-  resetExhaustedIssueCheckout?: {
-    expectedStatuses: string[];
-  };
 }
 
 const WAKEUP_IDEMPOTENCY_KEY_MAX_CHARS = 512;
@@ -17735,92 +17726,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
-        const resetCheckout = opts.resetExhaustedIssueCheckout;
-        if (resetCheckout) {
-          if (opts.requestedByActorType !== "user") {
-            throw conflict("Reset-exhausted admission checkout requires a board-requested wake", {
-              issueId: issue.id,
-            });
-          }
-          if (!resetCheckout.expectedStatuses.includes(issue.status)) {
-            throw conflict("Issue status changed before reset-exhausted admission checkout", {
-              issueId: issue.id,
-              currentStatus: issue.status,
-              expectedStatuses: resetCheckout.expectedStatuses,
-            });
-          }
-          if (issue.status === "done" || issue.status === "cancelled") {
-            throw conflict("Terminal issues cannot receive a reset-exhausted admission checkout", {
-              issueId: issue.id,
-              status: issue.status,
-            });
-          }
-          if (issue.assigneeAgentId !== agentId) {
-            throw conflict("Reset-exhausted admission checkout must preserve the assigned agent", {
-              issueId: issue.id,
-              assigneeAgentId: issue.assigneeAgentId,
-              requestedAgentId: agentId,
-            });
-          }
-          if (activeExecutionRun) {
-            throw conflict("Live issue execution prevents reset-exhausted admission checkout", {
-              issueId: issue.id,
-              runId: activeExecutionRun.id,
-              status: activeExecutionRun.status,
-            });
-          }
-
-          const [successfulRun] = await tx
-            .select({ id: heartbeatRuns.id })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, issue.companyId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-              eq(heartbeatRuns.status, "succeeded"),
-            ))
-            .limit(1);
-          if (successfulRun) {
-            throw conflict("Terminal run evidence prevents reset-exhausted admission checkout", {
-              issueId: issue.id,
-              runId: successfulRun.id,
-            });
-          }
-
-          const [successfulMutation] = await tx
-            .select({ id: repositoryMutationReceiptsTable.id, heartbeatRunId: repositoryMutationReceiptsTable.heartbeatRunId })
-            .from(repositoryMutationReceiptsTable)
-            .where(and(
-              eq(repositoryMutationReceiptsTable.companyId, issue.companyId),
-              eq(repositoryMutationReceiptsTable.issueId, issue.id),
-              eq(repositoryMutationReceiptsTable.state, "reconciled_success"),
-            ))
-            .limit(1);
-          if (successfulMutation) {
-            throw conflict("Reconciled repository mutation prevents reset-exhausted admission checkout", {
-              issueId: issue.id,
-              receiptId: successfulMutation.id,
-              runId: successfulMutation.heartbeatRunId,
-            });
-          }
-
-          const [exhaustedEpoch] = await tx
-            .select({ id: heartbeatRuns.id })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, issue.companyId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-              eq(heartbeatRuns.errorCode, "execution_admission.retry_limit_exhausted"),
-              sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'budgetId' = ${`issue:${issue.id}:default`}`,
-              sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'epoch' = 'default'`,
-              sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'decision' = 'denied'`,
-              sql`${heartbeatRuns.contextSnapshot} -> ${EXECUTION_ADMISSION_CONTEXT_KEY} ->> 'reason' = 'retry_limit_exhausted'`,
-            ))
-            .limit(1);
-          if (!exhaustedEpoch) {
-            throw conflict("Current issue admission epoch is not exhausted", { issueId: issue.id });
-          }
-        }
-
         const dependencyReadiness = await issuesSvc.listDependencyReadiness(
           issue.companyId,
           [issue.id],
@@ -18300,36 +18205,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-        if (resetCheckout) {
-          const now = new Date();
-          const checkoutSet = {
-            checkoutRunId: newRun.id,
-            status: "in_progress",
-            updatedAt: now,
-            ...(issue.status !== "in_progress" ? { startedAt: now } : {}),
-          };
-          const stamped = await tx
-            .update(issues)
-            .set(checkoutSet)
-            .where(and(
-              eq(issues.id, issue.id),
-              inArray(issues.status, resetCheckout.expectedStatuses),
-              isNull(issues.checkoutRunId),
-              isNull(issues.executionRunId),
-            ))
-            .returning({ id: issues.id })
-            .then((rows) => rows[0] ?? null);
-          if (!stamped) {
-            throw conflict("Issue checkout lock changed during reset-exhausted admission checkout", {
-              issueId: issue.id,
-              runId: newRun.id,
-            });
-          }
-        }
-
-        // Queued runs deliberately retain the lazy execution lock: only their
-        // checkout binding is stamped above. claimQueuedRun stamps execution
-        // ownership after admission succeeds.
+        // executionRunId is NOT stamped here (enqueueWakeup queues the run but
+        // doesn't start it). It will be stamped in claimQueuedRun() once the run
+        // transitions to "running" — Fix A (lazy locking).
 
         return recordIdempotencyOutcome({ kind: "queued" as const, run: newRun });
       });
