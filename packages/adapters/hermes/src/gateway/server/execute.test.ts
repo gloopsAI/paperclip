@@ -1244,27 +1244,40 @@ describe("execute", () => {
       });
       expect(fetchMock).not.toHaveBeenCalled();
 
+      // Disposable untracked proof/ is auto-cleaned; dispatch proceeds.
       await rm(join(cwd, "untracked.txt"));
+      await execFileAsync("mkdir", ["-p", join(cwd, "proof")]);
+      await writeFile(join(cwd, "proof", "packet.md"), "disposable\n");
+      fetchMock.mockClear();
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "workspace-ok" }), { status: 200 });
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "proof-cleaned" }), { status: 200 });
         if (url.endsWith("/events")) {
-          return new Response(sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n"), { status: 200 });
+          return new Response(
+            sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n"),
+            { status: 200 },
+          );
         }
         return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
       });
-      const clean = makeCtx({
+      const disposableOnly = makeCtx({
         apiBaseUrl: "http://127.0.0.1:8642",
         apiKey: "secret-key",
         expectedWorkspaceHeadSha: head,
       });
-      clean.context.paperclipWorkspace = { cwd };
-      const cleanResult = await execute(clean);
-      expect(cleanResult.exitCode).toBe(0);
-      expect(cleanResult.resultJson).toMatchObject({
+      disposableOnly.context.paperclipWorkspace = { cwd };
+      const disposableResult = await execute(disposableOnly);
+      expect(disposableResult.exitCode).toBe(0);
+      expect(disposableResult.resultJson).toMatchObject({
         workspace: { expected: head, actual: head, clean: true },
       });
       expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(true);
+      const { stdout: afterProofClean } = await execFileAsync(
+        "git",
+        ["status", "--porcelain=v1", "--untracked-files=normal"],
+        { cwd },
+      );
+      expect(afterProofClean.trim()).toBe("");
 
       // Clean worktree at a different commit: materialize declared head, then dispatch.
       await writeFile(join(cwd, "README.md"), "two\n");

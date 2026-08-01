@@ -8852,11 +8852,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueCommentStatus: "retry_exhausted",
         issueCommentSatisfiedByCommentId: null,
       });
+      // Review/assignment wakes that exit 0 without a disposition comment must
+      // not remain `succeeded` — that bricks guarded admission reset and burns
+      // the sole task budget as if Gate5 ACCEPT happened.
+      if (run.status === "succeeded") {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "failed",
+            errorCode: "review_missing_disposition",
+            error: "Review/assignment run ended without a disposition issue comment",
+            updatedAt: new Date(),
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "succeeded")));
+      }
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+        message: "Run ended without an issue comment after one retry; demoted succeeded→failed (review_missing_disposition); no further comment wake will be queued",
       });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
@@ -8889,11 +8903,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const queuedRun = await enqueueMissingIssueCommentRetry(run, agent, issueId);
     if (queuedRun) {
+      if (run.status === "succeeded") {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "failed",
+            errorCode: "review_missing_disposition",
+            error: "Review/assignment run ended without a disposition issue comment",
+            updatedAt: new Date(),
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "succeeded")));
+      }
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment; queued one follow-up wake to require a comment",
+        message: "Run ended without an issue comment; demoted succeeded→failed (review_missing_disposition) and queued one follow-up wake",
       });
       return { outcome: "retry_queued" as const, queuedRun };
     }
@@ -8902,6 +8927,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueCommentStatus: "retry_exhausted",
       issueCommentSatisfiedByCommentId: null,
     });
+    if (run.status === "succeeded") {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          errorCode: "review_missing_disposition",
+          error: "Review/assignment run ended without a disposition issue comment",
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "succeeded")));
+    }
     return { outcome: "retry_exhausted" as const, queuedRun: null };
   }
 

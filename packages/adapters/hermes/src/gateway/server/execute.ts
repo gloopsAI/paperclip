@@ -1249,6 +1249,56 @@ function expectedWorkspaceHead(
 }
 
 /**
+ * Top-level untracked paths agents leave behind that are never product WIP.
+ * Safe to auto-remove before dispatch so disposable evidence (`proof/`) does
+ * not strand Gate5 / Argus on `workspace_validation_failed`. Tracked edits and
+ * any other untracked path still refuse (fail-closed for real work).
+ */
+const DISPOSABLE_UNTRACKED_TOP_LEVEL = new Set([
+  "proof",
+  ".scratch",
+  ".paperclip-restore-preflight",
+  ".paperclip-write-probe",
+  // Hermes/W4e agent scratch trees (never product WIP).
+  ".hermes-w4e",
+  ".hermes",
+]);
+
+/**
+ * Parse porcelain v1 for untracked entries (`?? path`) whose first path segment
+ * is a known disposable top-level name. Never includes modified tracked files.
+ */
+function disposableUntrackedPathsFromPorcelain(statusOutput: string): string[] {
+  const found = new Set<string>();
+  for (const line of statusOutput.split("\n")) {
+    if (!line.startsWith("?? ")) continue;
+    const raw = line.slice(3).trim().replace(/\/$/, "");
+    if (!raw || raw.includes("..") || raw.startsWith("/")) continue;
+    const top = raw.split(/[\\/]/)[0] ?? "";
+    if (!DISPOSABLE_UNTRACKED_TOP_LEVEL.has(top)) continue;
+    // Remove the top-level entry only (rm -rf proof covers nested junk).
+    found.add(top);
+  }
+  return [...found].sort();
+}
+
+async function removeDisposableUntrackedPaths(
+  cwd: string,
+  paths: string[],
+): Promise<string[]> {
+  const removed: string[] = [];
+  for (const rel of paths) {
+    try {
+      await execFileAsync("rm", ["-rf", "--", rel], { cwd });
+      removed.push(rel);
+    } catch {
+      // Best-effort; remaining dirt is re-checked by the caller.
+    }
+  }
+  return removed;
+}
+
+/**
  * When a run declares an exact workspace head, the worktree must be on that
  * commit before provider dispatch. Reused gym/workspaces often lag (wrong HEAD
  * from a prior GLO) while remaining clean — fail-closed was correct, but the
@@ -1325,9 +1375,29 @@ async function verifyWorkspaceBeforeDispatch(
       execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], { cwd }),
     ]);
     let actual = headOutput.trim().toLowerCase();
-    // Dirty first: never auto-destroy in-progress work.
+    // Dirty first: never auto-destroy in-progress product work. Disposable
+    // untracked paths (proof/, .scratch/, probe dirs) are auto-removed once;
+    // any remaining dirt still fails closed.
     if (statusOutput.trim()) {
-      return { error: "Workspace contains uncommitted or untracked changes.", expected, actual };
+      const disposable = disposableUntrackedPathsFromPorcelain(statusOutput);
+      if (disposable.length > 0) {
+        const removed = await removeDisposableUntrackedPaths(cwd, disposable);
+        if (removed.length > 0) {
+          await ctx.onLog(
+            "stdout",
+            `[hermes-gateway] removed disposable untracked path(s) before dispatch: ${removed.join(", ")}\n`,
+          );
+        }
+        const { stdout: afterCleanStatus } = await execFileAsync(
+          "git",
+          ["status", "--porcelain=v1", "--untracked-files=normal"],
+          { cwd },
+        );
+        statusOutput = afterCleanStatus;
+      }
+      if (statusOutput.trim()) {
+        return { error: "Workspace contains uncommitted or untracked changes.", expected, actual };
+      }
     }
     if (actual !== expected) {
       // Clean but wrong HEAD: materialize declared exact head (recurring Argus toast root cause).
