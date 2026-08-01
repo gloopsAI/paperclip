@@ -22,6 +22,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  resetExhaustedAdmissionAndCheckoutIssueSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -2452,6 +2453,27 @@ registry.registerPath({
   summary: "List user secret definitions",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/admin/reset-exhausted-admission-and-checkout",
+  tags: ["issues"],
+  summary: "Reset a provably exhausted default admission epoch and checkout once (admin)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(resetExhaustedAdmissionAndCheckoutIssueSchema),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

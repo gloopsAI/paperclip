@@ -534,6 +534,19 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+export const resetExhaustedAdmissionAndCheckoutIssueSchema = z.object({
+  agentId: z.string().uuid(),
+  resetId: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "Reset id must be URL-safe"),
+}).strict();
+
+export type ResetExhaustedAdmissionAndCheckoutIssue = z.infer<
+  typeof resetExhaustedAdmissionAndCheckoutIssueSchema
+>;
+
 const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
 const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
 

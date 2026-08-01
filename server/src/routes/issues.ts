@@ -33,6 +33,7 @@ import {
   createIssueWorkProductSchema,
   createIssueLabelSchema,
   createAcceptedPlanDecompositionSchema,
+  resetExhaustedAdmissionAndCheckoutIssueSchema,
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
@@ -120,6 +121,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { guardedAdmissionResetService } from "../services/guarded-admission-reset.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -2489,6 +2491,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const guardedAdmissionReset = guardedAdmissionResetService(db);
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
@@ -8829,6 +8832,47 @@ export function issueRoutes(
     await queueTaskWatchdogEvaluation(existing, actor.runId);
     res.json(issue);
   });
+
+  router.post(
+    "/issues/:id/admin/reset-exhausted-admission-and-checkout",
+    validate(resetExhaustedAdmissionAndCheckoutIssueSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      const actor = getActorInfo(req);
+      if (actor.actorType !== "user" || !actor.actorId) {
+        res.status(403).json({ error: "A concrete board user is required" });
+        return;
+      }
+
+      const result = await guardedAdmissionReset.resetExhaustedAdmissionAndCheckout({
+        issueId: issue.id,
+        companyId: issue.companyId,
+        agentId: req.body.agentId,
+        resetId: req.body.resetId,
+        requestedByUserId: actor.actorId,
+      });
+
+      void heartbeat.resumeQueuedRuns().catch((err) =>
+        logger.warn(
+          { err, issueId: issue.id, runId: result.run.id },
+          "failed to start guarded admission-reset run",
+        ),
+      );
+
+      res.status(result.created ? 201 : 200).json({
+        created: result.created,
+        run: result.run,
+        receipt: result.receipt,
+      });
+    },
+  );
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
     const id = req.params.id as string;
