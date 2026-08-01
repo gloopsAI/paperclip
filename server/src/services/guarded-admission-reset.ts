@@ -15,6 +15,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
+  isNonDispositionalReviewSuccess,
   readExecutionAdmissionEnvelope,
 } from "./execution-admission.js";
 
@@ -243,17 +244,22 @@ export function guardedAdmissionResetService(db: Db) {
           });
         }
 
-        const [succeededRun, durableSuccessReceipt] = await Promise.all([
+        const [succeededCandidates, durableSuccessReceipt] = await Promise.all([
           tx
-            .select({ id: heartbeatRuns.id })
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+              errorCode: heartbeatRuns.errorCode,
+              issueCommentStatus: heartbeatRuns.issueCommentStatus,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+            })
             .from(heartbeatRuns)
             .where(and(
               eq(heartbeatRuns.companyId, issue.companyId),
               eq(heartbeatRuns.status, "succeeded"),
               sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
             ))
-            .limit(1)
-            .then((rows) => rows[0] ?? null),
+            .limit(20),
           tx
             .select({ id: repositoryMutationReceipts.id })
             .from(repositoryMutationReceipts)
@@ -265,6 +271,18 @@ export function guardedAdmissionResetService(db: Db) {
             .limit(1)
             .then((rows) => rows[0] ?? null),
         ]);
+        // Exit-0 review/assignment wakes without a disposition comment are not
+        // durable success evidence — they are the reason operators need reset.
+        const succeededRun = succeededCandidates.find((row) => {
+          const ctx = record(row.contextSnapshot);
+          return !isNonDispositionalReviewSuccess({
+            status: row.status,
+            errorCode: row.errorCode,
+            issueCommentStatus: row.issueCommentStatus,
+            wakeReason: typeof ctx.wakeReason === "string" ? ctx.wakeReason : null,
+            skipIssueComment: ctx.skipIssueComment === true,
+          });
+        }) ?? null;
         if (succeededRun || durableSuccessReceipt) {
           throw conflict("Successful terminal evidence forbids an execution-admission reset", {
             code: "admission_reset_success_evidence",

@@ -42,6 +42,10 @@ export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "hermes_gateway_auth_failed",
   "hermes_gateway_api_key_missing",
   "hermes_gateway_connect_failed",
+  // Review exit-0 without disposition is demoted to this code; must not brick
+  // the task budget or block guarded admission reset as "success evidence".
+  "review_missing_disposition",
+  "missing_issue_comment",
 ]);
 
 export type ExecutionAdmissionPolicy =
@@ -850,6 +854,8 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
       return {
         runCount: total.runCount + 1,
         // Independent workflow stages consume run budget but are not retries.
+        // Workspace-validation / preflight-exempt retries also do not increment
+        // retryCount (handled above via countsTowardTaskBudget === false).
         retryCount: total.retryCount + (run.retryOfRunId ? 1 : 0),
         inputTokens: total.inputTokens + inputSplit.discretionaryInputTokens,
         cachedInputTokens: total.cachedInputTokens + nonNegative(run.cachedInputTokens),
@@ -871,6 +877,36 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
       preflightExemptRunCount: 0,
     },
   );
+}
+
+/**
+ * True when a terminal "succeeded" row must not count as durable success
+ * evidence for admission reset or task completion (review/assignment wakes
+ * that never posted a disposition comment).
+ */
+export function isNonDispositionalReviewSuccess(input: {
+  status?: string | null;
+  errorCode?: string | null;
+  issueCommentStatus?: string | null;
+  wakeReason?: string | null;
+  skipIssueComment?: boolean;
+}): boolean {
+  if (input.skipIssueComment === true) return false;
+  if (input.errorCode === "review_missing_disposition" || input.errorCode === "missing_issue_comment") {
+    return true;
+  }
+  if (input.status !== "succeeded") return false;
+  const comment = typeof input.issueCommentStatus === "string" ? input.issueCommentStatus : "";
+  if (comment === "satisfied" || comment === "not_applicable" || comment === "") return false;
+  // retry_queued / retry_exhausted mean comment was required and not satisfied.
+  if (comment === "retry_queued" || comment === "retry_exhausted") return true;
+  const wake = typeof input.wakeReason === "string" ? input.wakeReason : "";
+  return (
+    wake === "issue_assigned" ||
+    wake === "execution_review_requested" ||
+    wake === "execution_approval_requested" ||
+    wake === "execution_changes_requested"
+  ) && comment !== "satisfied";
 }
 
 export function evaluateExecutionAdmission(

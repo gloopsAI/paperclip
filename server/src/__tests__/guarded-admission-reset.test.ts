@@ -244,6 +244,7 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     });
 
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, seeded.issueId));
+    // Disposition-satisfied success still blocks reset.
     const succeededRunId = await db
       .insert(heartbeatRuns)
       .values({
@@ -252,7 +253,8 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
         status: "succeeded",
         invocationSource: "assignment",
         finishedAt: new Date(),
-        contextSnapshot: { issueId: seeded.issueId },
+        issueCommentStatus: "satisfied",
+        contextSnapshot: { issueId: seeded.issueId, wakeReason: "issue_assigned" },
       })
       .returning({ id: heartbeatRuns.id })
       .then((rows) => rows[0]!.id);
@@ -261,8 +263,32 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     });
 
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, succeededRunId));
-    const receipt = await insertRepositoryReceipt(seeded, "reconciled_success");
-    await expect(service.resetExhaustedAdmissionAndCheckout(resetInput(seeded))).rejects.toMatchObject({
+    // Exit-0 without disposition comment must NOT block reset (Gate5 thrash root cause).
+    const nonDispositionalId = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        status: "succeeded",
+        invocationSource: "assignment",
+        finishedAt: new Date(),
+        issueCommentStatus: "retry_exhausted",
+        contextSnapshot: { issueId: seeded.issueId, wakeReason: "issue_assigned" },
+      })
+      .returning({ id: heartbeatRuns.id })
+      .then((rows) => rows[0]!.id);
+    // Not success-evidence: reset may proceed past this check (seed has exhausted envelope).
+    await expect(service.resetExhaustedAdmissionAndCheckout(resetInput(seeded))).resolves.toMatchObject({
+      created: true,
+    });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, nonDispositionalId));
+
+    // Fresh seed for repository-mutation success evidence (prior reset may have mutated state).
+    const seededForReceipt = await seed();
+    const receipt = await insertRepositoryReceipt(seededForReceipt, "reconciled_success");
+    await expect(
+      service.resetExhaustedAdmissionAndCheckout(resetInput(seededForReceipt)),
+    ).rejects.toMatchObject({
       details: { code: "admission_reset_success_evidence", repositoryMutationReceiptId: receipt.id },
     });
   });

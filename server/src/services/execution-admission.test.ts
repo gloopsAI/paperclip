@@ -6,6 +6,7 @@ import {
   evaluateExecutionReservationUsage,
   evaluateExecutionAdmission,
   isBudgetExemptPreflightFailure,
+  isNonDispositionalReviewSuccess,
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
@@ -471,6 +472,15 @@ describe("execution admission", () => {
       providerInvocationAttempted: null,
       errorCode: "workspace_validation_failed",
     })).toBe(true);
+    // Workspace validation never burns retries even when error code is the only signal.
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: true,
+      errorCode: "workspace_validation_failed",
+    })).toBe(true);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: true,
+      errorCode: "review_missing_disposition",
+    })).toBe(true);
     expect(isBudgetExemptPreflightFailure({
       providerInvocationAttempted: null,
       errorCode: "workspace_preparation_failed",
@@ -534,6 +544,44 @@ describe("execution admission", () => {
         preflightExemptRunCount: 1,
       },
     });
+
+    // Multiple workspace_validation failures (as retries) never exhaust retry budget.
+    const validationOnly = [
+      { retryOfRunId: null, countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: "run-a", countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: "run-b", countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+    ];
+    expect(summarizePriorExecution(validationOnly)).toMatchObject({
+      runCount: 0,
+      retryCount: 0,
+      preflightExemptRunCount: 3,
+    });
+    expect(evaluateExecutionAdmission(policy(), validationOnly, { isRetry: true })).toMatchObject({
+      allowed: true,
+      reason: null,
+    });
+  });
+
+  it("treats review success without disposition as non-dispositional", () => {
+    expect(isNonDispositionalReviewSuccess({
+      status: "succeeded",
+      issueCommentStatus: "retry_exhausted",
+      wakeReason: "issue_assigned",
+    })).toBe(true);
+    expect(isNonDispositionalReviewSuccess({
+      status: "failed",
+      errorCode: "review_missing_disposition",
+    })).toBe(true);
+    expect(isNonDispositionalReviewSuccess({
+      status: "succeeded",
+      issueCommentStatus: "satisfied",
+      wakeReason: "issue_assigned",
+    })).toBe(false);
+    expect(isNonDispositionalReviewSuccess({
+      status: "succeeded",
+      issueCommentStatus: "not_applicable",
+      wakeReason: "heartbeat_timer",
+    })).toBe(false);
   });
 
   it("accounts fixed input overhead separately from discretionary task budget", () => {
