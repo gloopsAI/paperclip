@@ -104,7 +104,6 @@ import {
   companySearchService,
   executionWorkspaceService,
   goalService,
-  guardedAdmissionResetService,
   heartbeatService,
   issueApprovalService,
   issueRecoveryActionService,
@@ -122,6 +121,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { guardedAdmissionResetService } from "../services/guarded-admission-reset.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
