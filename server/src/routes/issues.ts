@@ -34,6 +34,7 @@ import {
   createIssueLabelSchema,
   createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
+  resetExhaustedAdmissionCheckoutSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -136,6 +137,10 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
+  parseExecutionAdmissionPolicy,
+} from "../services/execution-admission.js";
+import {
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
@@ -193,7 +198,6 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
-import { parseExecutionAdmissionPolicy } from "../services/execution-admission.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -8957,6 +8961,83 @@ export function issueRoutes(
 
     res.json(updated);
   });
+
+  /**
+   * Board-authorized recovery for the narrow case where the same issue must
+   * repair an exhausted execution-admission epoch. The Heartbeat service owns
+   * the row lock, denial checks, idempotency record, queued run, and checkout
+   * stamp in one transaction; do not compose the ordinary checkout and wake
+   * endpoints here.
+   */
+  router.post(
+    "/issues/:id/reset-exhausted-admission-and-checkout",
+    validate(resetExhaustedAdmissionCheckoutSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+
+      const agent = await agentsSvc.getById(req.body.agentId);
+      if (!agent || agent.companyId !== issue.companyId) {
+        res.status(422).json({ error: "Checkout agent is not assignable to this issue company" });
+        return;
+      }
+      if (issue.assigneeAgentId !== agent.id) {
+        res.status(409).json({ error: "Reset-exhausted admission checkout must preserve the assigned agent" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const run = await heartbeat.wakeup(req.body.agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "reset_exhausted_admission_and_checkout",
+        payload: {
+          issueId: issue.id,
+          mutation: "reset_exhausted_admission_and_checkout",
+        },
+        idempotencyKey: req.body.idempotencyKey,
+        requestedByActorType: "user",
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: req.body.executionBudgetResetId,
+          resetExhaustedAdmissionCheckout: true,
+        },
+        resetExhaustedIssueCheckout: {
+          expectedStatuses: req.body.expectedStatuses,
+        },
+      });
+      if (!run) {
+        throw conflict("Reset-exhausted admission checkout did not create an issue-bound run", {
+          issueId: issue.id,
+        });
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: req.body.agentId,
+        runId: run.id,
+        action: "issue.reset_exhausted_admission_checked_out",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          resetEpoch: req.body.executionBudgetResetId,
+          expectedStatuses: req.body.expectedStatuses,
+          bootstrapControlPlane: true,
+        },
+      });
+
+      res.status(201).json(run);
+    },
+  );
 
   /**
    * Read-only issue packet Definition of Ready evaluation.

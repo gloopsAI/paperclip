@@ -534,6 +534,13 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+export const resetExhaustedAdmissionCheckoutSchema = checkoutIssueSchema.extend({
+  executionBudgetResetId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  idempotencyKey: z.string().trim().min(1).max(512),
+}).strict();
+
+export type ResetExhaustedAdmissionCheckout = z.infer<typeof resetExhaustedAdmissionCheckoutSchema>;
+
 const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
 const commentMetadataTextSchema = z.string().trim().min(1).max(2000);
 

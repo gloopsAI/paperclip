@@ -337,6 +337,7 @@ export {
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
+  resetExhaustedAdmissionCheckoutSchema,
   issueCommentAuthorTypeSchema,
   issueCommentPresentationSchema,
   issueCommentMetadataRowSchema,

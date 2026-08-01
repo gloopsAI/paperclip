@@ -22,6 +22,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  resetExhaustedAdmissionCheckoutSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -1903,6 +1904,25 @@ registry.registerPath({
     body: jsonBody(checkoutIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/reset-exhausted-admission-and-checkout",
+  tags: ["issues"],
+  summary: "Atomically reset an exhausted issue admission epoch and check out the existing assignee",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(resetExhaustedAdmissionCheckoutSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
