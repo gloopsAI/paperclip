@@ -1259,6 +1259,9 @@ const DISPOSABLE_UNTRACKED_TOP_LEVEL = new Set([
   ".scratch",
   ".paperclip-restore-preflight",
   ".paperclip-write-probe",
+  // Hermes/W4e agent scratch trees (never product WIP).
+  ".hermes-w4e",
+  ".hermes",
 ]);
 
 /**
