@@ -1217,13 +1217,14 @@ describe("execute", () => {
       const fetchMock = vi.fn();
       stubEvidencedFetch(fetchMock);
 
-      const stale = makeCtx({
+      // Unknown SHA: materialize cannot invent commits — still refuse.
+      const missing = makeCtx({
         apiBaseUrl: "http://127.0.0.1:8642",
         apiKey: "secret-key",
         expectedWorkspaceHeadSha: "f".repeat(40),
       });
-      stale.context.paperclipWorkspace = { cwd };
-      expect(await execute(stale)).toMatchObject({
+      missing.context.paperclipWorkspace = { cwd };
+      expect(await execute(missing)).toMatchObject({
         errorCode: "workspace_validation_failed",
         providerInvocationAttempted: false,
         usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
@@ -1263,6 +1264,40 @@ describe("execute", () => {
       expect(cleanResult.resultJson).toMatchObject({
         workspace: { expected: head, actual: head, clean: true },
       });
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(true);
+
+      // Clean worktree at a different commit: materialize declared head, then dispatch.
+      await writeFile(join(cwd, "README.md"), "two\n");
+      await execFileAsync("git", ["add", "README.md"], { cwd });
+      await execFileAsync("git", ["commit", "-qm", "second"], { cwd });
+      const { stdout: secondOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+      const second = secondOut.trim();
+      expect(second.toLowerCase()).not.toBe(head.toLowerCase());
+      fetchMock.mockClear();
+      fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "workspace-aligned" }), { status: 200 });
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream("event: run.completed\ndata: {\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n"),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      const realign = makeCtx({
+        apiBaseUrl: "http://127.0.0.1:8642",
+        apiKey: "secret-key",
+        expectedWorkspaceHeadSha: head,
+      });
+      realign.context.paperclipWorkspace = { cwd };
+      const realignResult = await execute(realign);
+      expect(realignResult.exitCode).toBe(0);
+      expect(realignResult.resultJson).toMatchObject({
+        workspace: { expected: head.toLowerCase(), actual: head.toLowerCase(), clean: true },
+      });
+      const { stdout: afterHead } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+      expect(afterHead.trim().toLowerCase()).toBe(head.toLowerCase());
       expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs"))).toBe(true);
     } finally {
       await rm(cwd, { recursive: true, force: true });

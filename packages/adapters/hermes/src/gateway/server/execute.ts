@@ -1248,6 +1248,66 @@ function expectedWorkspaceHead(
   return { expected };
 }
 
+/**
+ * When a run declares an exact workspace head, the worktree must be on that
+ * commit before provider dispatch. Reused gym/workspaces often lag (wrong HEAD
+ * from a prior GLO) while remaining clean — fail-closed was correct, but the
+ * root cause is missing materialization. Align clean worktrees to the declared
+ * head; keep refusing dirty trees (would destroy in-progress work).
+ */
+async function materializeDeclaredWorkspaceHead(
+  cwd: string,
+  expected: string,
+): Promise<{ ok: true; previous: string | null } | { ok: false; error: string; previous: string | null }> {
+  let previous: string | null = null;
+  try {
+    const { stdout: headOut } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+    previous = headOut.trim().toLowerCase() || null;
+  } catch {
+    previous = null;
+  }
+  try {
+    await execFileAsync("git", ["cat-file", "-e", `${expected}^{commit}`], { cwd });
+  } catch {
+    try {
+      await execFileAsync("git", ["fetch", "--all", "--tags", "--prune"], { cwd });
+    } catch (fetchErr) {
+      return {
+        ok: false,
+        previous,
+        error: `Declared head ${expected} is not in the workspace and git fetch failed: ${
+          fetchErr instanceof Error ? fetchErr.message : String(fetchErr)
+        }`,
+      };
+    }
+    try {
+      await execFileAsync("git", ["cat-file", "-e", `${expected}^{commit}`], { cwd });
+    } catch {
+      return {
+        ok: false,
+        previous,
+        error: `Declared head ${expected} is not available in the workspace after fetch.`,
+      };
+    }
+  }
+  try {
+    await execFileAsync("git", ["checkout", "--detach", "--force", expected], { cwd });
+  } catch (checkoutErr) {
+    try {
+      await execFileAsync("git", ["reset", "--hard", expected], { cwd });
+    } catch (resetErr) {
+      return {
+        ok: false,
+        previous,
+        error: `Failed to materialize declared head ${expected}: ${
+          resetErr instanceof Error ? resetErr.message : String(resetErr)
+        } (checkout: ${checkoutErr instanceof Error ? checkoutErr.message : String(checkoutErr)})`,
+      };
+    }
+  }
+  return { ok: true, previous };
+}
+
 async function verifyWorkspaceBeforeDispatch(
   ctx: AdapterExecutionContext,
   binding: ReturnType<typeof readBoundExecutionContext>,
@@ -1260,16 +1320,44 @@ async function verifyWorkspaceBeforeDispatch(
   const cwd = nonEmpty(workspace?.cwd);
   if (!cwd) return { error: "Exact workspace head was declared, but Paperclip did not provide a workspace cwd.", expected };
   try {
-    const [{ stdout: headOutput }, { stdout: statusOutput }] = await Promise.all([
+    let [{ stdout: headOutput }, { stdout: statusOutput }] = await Promise.all([
       execFileAsync("git", ["rev-parse", "HEAD"], { cwd }),
       execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], { cwd }),
     ]);
-    const actual = headOutput.trim().toLowerCase();
-    if (actual !== expected) {
-      return { error: `Workspace HEAD ${actual || "unknown"} does not match declared head ${expected}.`, expected, actual: actual || null };
-    }
+    let actual = headOutput.trim().toLowerCase();
+    // Dirty first: never auto-destroy in-progress work.
     if (statusOutput.trim()) {
       return { error: "Workspace contains uncommitted or untracked changes.", expected, actual };
+    }
+    if (actual !== expected) {
+      // Clean but wrong HEAD: materialize declared exact head (recurring Argus toast root cause).
+      const aligned = await materializeDeclaredWorkspaceHead(cwd, expected);
+      if (!aligned.ok) {
+        return {
+          error: `Workspace HEAD ${actual || "unknown"} does not match declared head ${expected}. ${aligned.error}`,
+          expected,
+          actual: actual || null,
+        };
+      }
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] aligned workspace HEAD ${aligned.previous ?? "unknown"} → ${expected} (declared exact head)\n`,
+      );
+      [{ stdout: headOutput }, { stdout: statusOutput }] = await Promise.all([
+        execFileAsync("git", ["rev-parse", "HEAD"], { cwd }),
+        execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], { cwd }),
+      ]);
+      actual = headOutput.trim().toLowerCase();
+      if (actual !== expected) {
+        return {
+          error: `Workspace HEAD ${actual || "unknown"} does not match declared head ${expected} after materialize.`,
+          expected,
+          actual: actual || null,
+        };
+      }
+      if (statusOutput.trim()) {
+        return { error: "Workspace contains uncommitted or untracked changes after materialize.", expected, actual };
+      }
     }
     return { expected, actual, clean: true };
   } catch (error) {
