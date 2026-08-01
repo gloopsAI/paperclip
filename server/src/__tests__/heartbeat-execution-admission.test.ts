@@ -9,12 +9,17 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import {
+  EXECUTION_ADMISSION_CONTEXT_KEY,
+  EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
   buildExecutionAdmissionEnvelope,
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
 } from "../services/execution-admission.js";
+import { guardedAdmissionResetService } from "../services/guarded-admission-reset.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -240,6 +245,111 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
     return { companyId, agentId };
   }
+
+  it("admits a guarded reset run under a fresh claim-time budget epoch", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const resetId = "board-reset-claim-e2e";
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Admission reset integration",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Current checkout",
+      sourceType: "local_path",
+      cwd: process.cwd(),
+      repoUrl: "https://github.com/gloopsAI/paperclip.git",
+      defaultRef: "gloops/stable",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Resume exhausted execution admission",
+      description: "Prove the guarded reset reaches claim-time admission under a fresh epoch.",
+      status: "in_progress",
+      priority: "high",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `RESET-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: false,
+        stages: [],
+      },
+    });
+
+    const policy = parseExecutionAdmissionPolicy(process.env);
+    if (!policy.enabled) throw new Error("expected enabled execution policy");
+    const exhaustedDecision = evaluateExecutionAdmission(policy, [{ retryOfRunId: null }]);
+    expect(exhaustedDecision).toMatchObject({ allowed: false, reason: "retry_limit_exhausted" });
+    const exhaustedEnvelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: `issue:${issueId}:default`, epoch: "default" },
+      policy,
+      decision: exhaustedDecision,
+      evaluatedAt: new Date("2026-08-01T00:00:00Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "cancelled",
+      responsibleUserId: "operator",
+      finishedAt: new Date("2026-08-01T00:00:00Z"),
+      errorCode: "execution_admission.retry_limit_exhausted",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        [EXECUTION_ADMISSION_CONTEXT_KEY]: exhaustedEnvelope,
+      },
+    });
+
+    const reset = await guardedAdmissionResetService(db).resetExhaustedAdmissionAndCheckout({
+      issueId,
+      companyId,
+      agentId,
+      resetId,
+      requestedByUserId: "board-user",
+    });
+    expect(reset.created).toBe(true);
+    expect(reset.run).toMatchObject({
+      status: "queued",
+      contextSnapshot: {
+        [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: resetId,
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForTerminalRuns(db, [reset.run.id]);
+
+    const persisted = await heartbeat.getRun(reset.run.id);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.contextSnapshot).toMatchObject({
+      [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: resetId,
+      [EXECUTION_ADMISSION_CONTEXT_KEY]: {
+        budgetId: `issue:${issueId}:${resetId}`,
+        epoch: resetId,
+        attempt: 1,
+        decision: "allowed",
+        reason: null,
+        observed: { runCount: 0, retryCount: 0 },
+      },
+    });
+  });
 
   it("refuses an adapter that cannot enforce the provider reservation", async () => {
     mockAdapterState.supportsBudget = false;
