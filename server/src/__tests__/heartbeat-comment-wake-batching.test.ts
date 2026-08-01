@@ -1643,9 +1643,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId))
           .orderBy(asc(heartbeatRuns.createdAt));
+        // Exit-0 without disposition is demoted to failed (review_missing_disposition)
+        // so it cannot brick admission reset as false success evidence.
         return (
           runs.length === 2 &&
-          runs.every((run) => run.status === "succeeded") &&
+          runs.every((run) => run.status === "failed" && run.errorCode === "review_missing_disposition") &&
           runs[0]?.issueCommentStatus === "retry_queued" &&
           runs[1]?.issueCommentStatus === "retry_exhausted"
         );
@@ -1658,8 +1660,12 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .orderBy(asc(heartbeatRuns.createdAt));
 
       expect(runs).toHaveLength(2);
+      expect(runs[0]?.status).toBe("failed");
+      expect(runs[0]?.errorCode).toBe("review_missing_disposition");
       expect(runs[0]?.issueCommentStatus).toBe("retry_queued");
       expect(runs[1]?.retryOfRunId).toBe(runs[0]?.id);
+      expect(runs[1]?.status).toBe("failed");
+      expect(runs[1]?.errorCode).toBe("review_missing_disposition");
       expect(runs[1]?.issueCommentStatus).toBe("retry_exhausted");
 
       const comments = await db
