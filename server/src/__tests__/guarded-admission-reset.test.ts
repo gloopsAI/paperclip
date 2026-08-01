@@ -319,6 +319,30 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     expect(replay.receipt).toEqual(first.receipt);
   });
 
+  it("fails closed when an idempotent replay receipt no longer binds the reset facts", async () => {
+    const seeded = await seed();
+    const service = guardedAdmissionResetService(db);
+    const first = await service.resetExhaustedAdmissionAndCheckout(resetInput(seeded));
+    const context = record(first.run.contextSnapshot);
+    const receipt = record(context.gloopsIssueAdmissionResetReceipt);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          ...context,
+          gloopsIssueAdmissionResetReceipt: {
+            ...receipt,
+            priorBudgetId: `issue:${randomUUID()}:default`,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, first.run.id));
+
+    await expect(service.resetExhaustedAdmissionAndCheckout(resetInput(seeded))).rejects.toMatchObject({
+      details: { code: "admission_reset_replay_missing" },
+    });
+  });
+
   it("permits at most one reset of the default epoch even with a new idempotency key", async () => {
     const seeded = await seed();
     const service = guardedAdmissionResetService(db);

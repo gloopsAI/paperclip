@@ -65,7 +65,8 @@ function readReceipt(value: unknown): GuardedAdmissionResetReceipt | null {
     candidate.priorEpoch !== "default" ||
     candidate.priorReason !== "retry_limit_exhausted" ||
     typeof candidate.runId !== "string" ||
-    typeof candidate.createdAt !== "string"
+    typeof candidate.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(candidate.createdAt))
   ) {
     return null;
   }
@@ -171,9 +172,13 @@ export function guardedAdmissionResetService(db: Db) {
             replayReceipt.runId !== replayRun.id ||
             replayReceipt.issueId !== issue.id ||
             replayReceipt.agentId !== input.agentId ||
+            replayReceipt.projectId !== issue.projectId ||
             replayReceipt.projectWorkspaceId !== issue.projectWorkspaceId ||
             replayReceipt.resetId !== input.resetId ||
-            replayReceipt.idempotencyKey !== idempotencyKey
+            replayReceipt.idempotencyKey !== idempotencyKey ||
+            replayReceipt.priorBudgetId !== `issue:${issue.id}:default` ||
+            replayReceipt.priorEpoch !== "default" ||
+            replayReceipt.priorReason !== "retry_limit_exhausted"
           ) {
             throw conflict("Admission reset replay references a missing durable run receipt", {
               code: "admission_reset_replay_missing",
