@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.727.0-gloops.32",
+    "version": "2026.801.0-gloops.33",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:c33e040665827793c962b27017a9009c3e0161cc37333aed801227ce635c4e54"
+    "digest": "sha256:ccf6eadd5d0ad2dd9a555dacf43b62490505652ec3d85168c3c15a2dd2b30393"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.727.0-gloops.32.json"
+    "vex": "gloops-distribution/security/vex-2026.801.0-gloops.33.json"
   },
   "patches": [
     {
@@ -451,6 +451,17 @@
       "integratedCommits": ["d38a769487af8dffc73d3d30b088cc1122a8638c"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until broker-mode credential lifecycles are natively projector-only, legacy dual-role receipts remain verifiable, and any stranded pre-schema broker receipt can be reconciled through an equivalently exact, hash-chained, crash-idempotent transition bound to its source distribution and successful stop evidence."
+    },
+    {
+      "id": "guarded-exhausted-admission-reset",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "d658bfc9a707d05aae704365cdd59ee89e741a64",
+      "sourceHead": "0ab3ac50d23c603045fc2a6dbf3a548f2526268f",
+      "patchDiffSha256": "e96f26e7393b33e3f395a6db40c560ad332b5ba66b7ae261db8a07551cfb6ac8",
+      "integratedCommits": ["9d5ecf1a6e61aff2d61b4e622a9f8112921af2b5"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until upstream provides an equivalently authenticated, atomic, idempotent reset of an exhausted admission budget that binds the reset to the exact terminal run and denies ambiguous, stale, or cross-company replay."
     }
   ],
   "releasePolicy": {
