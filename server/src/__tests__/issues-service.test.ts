@@ -6429,6 +6429,201 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(blockRows.every((row) => row.type === "blocks")).toBe(true);
     expect(blockRows.map((row) => row.issueId).sort()).toEqual([...result.childIssueIds].sort());
   });
+
+  it("wires explicit prerequisite-child → final-audit edges from preallocated ids and fails readiness closed until prerequisites are terminal (WG-PLAT-013)", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const implementId = randomUUID();
+    const reviewId = randomUUID();
+    const finalAuditId = randomUUID();
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          id: implementId,
+          title: "Implement slice one",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+        },
+        {
+          id: reviewId,
+          title: "Peer review of slice one",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          // Explicit durable sibling dependency — parent blocking alone is not enough.
+          blockedByIssueIds: [implementId],
+        },
+        {
+          id: finalAuditId,
+          title: "Final audit",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          blockedByIssueIds: [implementId, reviewId],
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(result.childIssueIds).toEqual([implementId, reviewId, finalAuditId]);
+    expect(result.newlyCreatedIssues).toHaveLength(3);
+
+    const createdById = new Map(result.newlyCreatedIssues.map((child) => [child.id, child]));
+    expect(createdById.get(implementId)?.status).toBe("todo");
+    // Explicit blockedByIssueIds force blocked so the audit is not concurrently runnable.
+    expect(createdById.get(reviewId)?.status).toBe("blocked");
+    expect(createdById.get(finalAuditId)?.status).toBe("blocked");
+
+    const finalAuditRelations = await svc.getRelationSummaries(finalAuditId);
+    expect(finalAuditRelations.blockedBy.map((relation) => relation.id).sort()).toEqual(
+      [implementId, reviewId].sort(),
+    );
+
+    // Parent completion gating remains (every child blocks the parent).
+    const parentRelations = await svc.getRelationSummaries(sourceIssueId);
+    expect(parentRelations.blockedBy.map((relation) => relation.id).sort()).toEqual(
+      [implementId, reviewId, finalAuditId].sort(),
+    );
+
+    // Readiness must fail closed while any prerequisite is non-terminal.
+    await expect(svc.getDependencyReadiness(finalAuditId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      allBlockersDone: false,
+      unresolvedBlockerCount: 2,
+      unresolvedBlockerIssueIds: expect.arrayContaining([implementId, reviewId]),
+    });
+    await expect(svc.getDependencyReadiness(reviewId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      unresolvedBlockerIssueIds: [implementId],
+    });
+    // Prerequisite itself is free to run.
+    await expect(svc.getDependencyReadiness(implementId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      unresolvedBlockerCount: 0,
+    });
+
+    // Terminal prerequisite clears only that edge — final audit still blocked on review.
+    await svc.update(implementId, { status: "done" });
+    await expect(svc.getDependencyReadiness(reviewId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      unresolvedBlockerCount: 0,
+    });
+    await expect(svc.getDependencyReadiness(finalAuditId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      unresolvedBlockerIssueIds: [reviewId],
+    });
+
+    await svc.update(reviewId, { status: "done" });
+    await expect(svc.getDependencyReadiness(finalAuditId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      allBlockersDone: true,
+      unresolvedBlockerCount: 0,
+      unresolvedBlockerIssueIds: [],
+    });
+  });
+
+  it("rejects sibling blockedByIssueIds that forward-reference later preallocated children (WG-PLAT-013)", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+
+    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          id: firstId,
+          title: "Final audit listed first",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          // Forward reference — second child is not created yet when first is inserted.
+          blockedByIssueIds: [secondId],
+        },
+        {
+          id: secondId,
+          title: "Implement slice",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    const childrenRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.parentId, sourceIssueId));
+    expect(childrenRows).toHaveLength(0);
+  });
+
+  it("rejects createChild when description exact-head disagrees with workspaceStrategy.baseRef (WG-PLAT-008 P1)", async () => {
+    const { sourceIssueId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const descriptionSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const baseRefSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    await expect(svc.createChild(sourceIssueId, {
+      title: "Implementation review of the claim table slice",
+      status: "todo",
+      workMode: "standard",
+      priority: "high",
+      description: `## Exact Head\nExact head: \`${descriptionSha}\`\n`,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: baseRefSha,
+        },
+      },
+      actorAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    const childrenRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.parentId, sourceIssueId));
+    expect(childrenRows).toHaveLength(0);
+  });
+
+  it("accepts createChild when description exact-head matches workspaceStrategy.baseRef (WG-PLAT-008 P1)", async () => {
+    const { sourceIssueId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const exactHeadSha = "cccccccccccccccccccccccccccccccccccccccc";
+
+    const { issue } = await svc.createChild(sourceIssueId, {
+      title: "Implementation review of the claim table slice",
+      status: "todo",
+      workMode: "standard",
+      priority: "high",
+      description: `## Exact Head\nExact head: \`${exactHeadSha}\`\n`,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: exactHeadSha,
+        },
+      },
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(issue.description).toContain(exactHeadSha);
+    // Must not double-inject a second Exact Head section when already present.
+    expect(issue.description?.match(/## Exact Head/g) ?? []).toHaveLength(1);
+
+    const readiness = evaluateIssuePacketReadiness(
+      {
+        title: issue.title,
+        description: issue.description,
+        workMode: issue.workMode,
+        status: issue.status,
+        assigneeRole: null,
+        assigneeName: null,
+      },
+      { PAPERCLIP_ISSUE_PACKET_DOR: "enforce" },
+    );
+    expect(readiness.reasonCodes).not.toContain("issue_packet.missing_exact_head");
+  });
 });
 
 describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adoption", () => {
