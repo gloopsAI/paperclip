@@ -4,6 +4,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, notExists, notInArray, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -147,7 +148,10 @@ import {
 import { compileExecutionVerification } from "./execution-context-verification.js";
 import {
   buildTerminalIssueLifecyclePatch,
+  buildTerminalReconciliationPreserveRecord,
   decideTerminalIssueReconciliation,
+  isTerminalReconciliationPreserveRecord,
+  TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
 import { ensureImplementationReviewHandoff } from "./implementation-review-handoff.js";
@@ -228,6 +232,7 @@ import {
   type ExecutionAdmissionReason,
   type PriorExecutionRun,
 } from "./execution-admission.js";
+import { ADMISSION_REASON, evaluateIssueRunnableAdmission } from "./execution-role-admission.js";
 import { ensureAutoSuccessorOnExhaust } from "./auto-successor-on-exhaust.js";
 import {
   PAPERCLIP_EXECUTION_CONTEXT_KEY,
@@ -2307,6 +2312,29 @@ export function isStaleDirtyWorkspaceAgentErrorReason(value: unknown) {
   if (!reason) return false;
   return /^workspace contains uncommitted or untracked changes\.?$/i.test(reason) ||
     /workspace validation failed.*(?:dirty|uncommitted|untracked)/i.test(reason);
+}
+
+/**
+ * WG-PLAT-005: pure agent-status resolution used by finalizeAgentStatus.
+ * Extracted so the keepIdleOnFailure contract (e.g. provider_quota, and the
+ * issue-scoped dirty-workspace failure family) is directly unit-testable
+ * without exercising the full heartbeat run-execution pipeline.
+ */
+export function resolveFinalizedAgentStatus(input: {
+  outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
+  runningCount: number;
+  keepIdleOnFailure?: boolean;
+}): "running" | "idle" | "error" {
+  if (input.runningCount > 0) return "running";
+  if (
+    input.outcome === "succeeded" ||
+    input.outcome === "interrupted" ||
+    input.outcome === "cancelled" ||
+    (input.outcome === "failed" && input.keepIdleOnFailure === true)
+  ) {
+    return "idle";
+  }
+  return "error";
 }
 
 export function runLifecycleContextCoordinates(contextSnapshot: unknown): {
@@ -5299,6 +5327,28 @@ export interface HeartbeatServiceOptions {
   runtimeEnv?: Record<string, string | undefined>;
   campaignDeadmanAdmission?: typeof admitCampaignRun;
   heartbeatRunSettlementHooks?: HeartbeatRunSettlementHooks;
+  terminalIssueReconciliationHooks?: {
+    /** Test/coordination seam after the read decision and before the guarded write. */
+    afterDecisionBeforeProjection?: (input: {
+      runId: string;
+      issueId: string;
+      targetStatus: "done" | "blocked" | "in_review";
+    }) => Promise<void>;
+  };
+  dirtyWorkspaceFailureRetirementHooks?: {
+    /** Test/coordination seam for compare-and-clear race coverage. */
+    afterRuntimeRead?: (input: { agentId: string; observedLastError: string }) => Promise<void>;
+  };
+  queuedRunClaimHooks?: {
+    /** Test/coordination seam after issue preflight and before the claim transaction. */
+    afterIssuePreflight?: (input: { runId: string; issueId: string; agentId: string }) => Promise<void>;
+    /** Test/coordination seam after dependency readiness is read inside the claim transaction. */
+    afterDependencyReadBeforeClaimUpdate?: (input: {
+      runId: string;
+      issueId: string;
+      agentId: string;
+    }) => Promise<void>;
+  };
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -5624,6 +5674,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { changed: false, status: null, reason: "missing_bound_record" };
       }
 
+      // WG-PLAT-007: a parent/root must never auto-complete to "done" while
+      // any child (by parentId) is still open, regardless of whether
+      // dependency ("blocks") edges exist between them.
+      const [{ count: openChildrenCount }] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, currentIssue.companyId),
+          eq(issues.parentId, currentIssue.id),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ));
+
       const lifecycleReceipt = parseFinalGovernedLifecycleReceipt(currentRun);
       const terminalReceipt =
         lifecycleReceipt?.action === "operations_complete" || lifecycleReceipt?.action === "blocked"
@@ -5662,10 +5724,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         budgetExceeded: input.budgetExceeded,
         routePathIds: input.routePathIds,
         executionWorkspaceMode: input.executionWorkspaceMode,
+        hasOpenChildren: openChildrenCount > 0,
       });
       if (decision.kind === "preserve") {
-        return { changed: false, status: null, reason: decision.reason };
+        // WG-PLAT-010: when the run genuinely succeeded but reconciliation
+        // could not project a terminal issue status, record a truthful,
+        // auditable reason atomically in this same settlement transaction
+        // instead of leaving the run with zero durable trace. This does not
+        // change issue status, so the existing successful-run-handoff
+        // corrective wake (which requires issue.status === "in_progress")
+        // still gets its one bounded attempt untouched.
+        const preserveRecord = buildTerminalReconciliationPreserveRecord({
+          decision,
+          runStatus: currentRun.status,
+          now: new Date(),
+        });
+        let preserveRecorded = false;
+        if (preserveRecord) {
+          const runContext = parseObject(currentRun.contextSnapshot);
+          const alreadyRecorded = isTerminalReconciliationPreserveRecord(
+            runContext[TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY],
+            preserveRecord.reason,
+          );
+          if (!alreadyRecorded) {
+            await tx.update(heartbeatRuns)
+              .set({
+                contextSnapshot: {
+                  ...runContext,
+                  [TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY]: preserveRecord,
+                },
+                updatedAt: new Date(),
+              })
+              .where(and(
+                eq(heartbeatRuns.id, currentRun.id),
+                eq(heartbeatRuns.companyId, currentRun.companyId),
+                eq(heartbeatRuns.agentId, currentRun.agentId),
+              ));
+            preserveRecorded = true;
+          }
+        }
+        return { changed: preserveRecorded, status: null, reason: decision.reason };
       }
+
+      await options.terminalIssueReconciliationHooks?.afterDecisionBeforeProjection?.({
+        runId: currentRun.id,
+        issueId: currentIssue.id,
+        targetStatus: decision.status,
+      });
 
       const runContext = parseObject(currentRun.contextSnapshot);
       const existingReceipt = parseObject(runContext[PAPERCLIP_EXECUTION_RECEIPT_KEY]);
@@ -5696,6 +5801,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       if (issueLifecycleChanged) {
         const now = new Date();
+        const childIssues = alias(issues, "terminal_reconciliation_child");
+        const noOpenChildrenAtWrite = decision.status === "done"
+          ? notExists(
+              tx.select({ id: childIssues.id })
+                .from(childIssues)
+                .where(and(
+                  eq(childIssues.companyId, currentIssue.companyId),
+                  eq(childIssues.parentId, currentIssue.id),
+                  notInArray(childIssues.status, ["done", "cancelled"]),
+                )),
+            )
+          : undefined;
         const updated = await tx.update(issues)
           .set(buildTerminalIssueLifecyclePatch({
             currentCompletedAt: currentIssue.completedAt,
@@ -5711,9 +5828,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(issues.checkoutRunId, currentRun.id),
             ),
             inArray(issues.status, eligibleCurrentStatuses),
+            noOpenChildrenAtWrite,
           ))
           .returning({ id: issues.id });
         if (updated.length !== 1) {
+          if (decision.status === "done") {
+            const openChildNow = await tx
+              .select({ id: childIssues.id })
+              .from(childIssues)
+              .where(and(
+                eq(childIssues.companyId, currentIssue.companyId),
+                eq(childIssues.parentId, currentIssue.id),
+                notInArray(childIssues.status, ["done", "cancelled"]),
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (openChildNow) {
+              const preserveDecision = { kind: "preserve", reason: "children_not_done" } as const;
+              const preserveRecord = buildTerminalReconciliationPreserveRecord({
+                decision: preserveDecision,
+                runStatus: currentRun.status,
+                now,
+              });
+              const alreadyRecorded = preserveRecord
+                ? isTerminalReconciliationPreserveRecord(
+                    runContext[TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY],
+                    preserveRecord.reason,
+                  )
+                : false;
+              if (preserveRecord && !alreadyRecorded) {
+                await tx.update(heartbeatRuns)
+                  .set({
+                    contextSnapshot: {
+                      ...runContext,
+                      [TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY]: preserveRecord,
+                    },
+                    updatedAt: now,
+                  })
+                  .where(and(
+                    eq(heartbeatRuns.id, currentRun.id),
+                    eq(heartbeatRuns.companyId, currentRun.companyId),
+                    eq(heartbeatRuns.agentId, currentRun.agentId),
+                  ));
+              }
+              return {
+                changed: Boolean(preserveRecord) && !alreadyRecorded,
+                status: null,
+                reason: "children_not_done",
+                exactHeadSha: workspaceHeadSha,
+                implementerAgentId: currentRun.agentId,
+                companyId: currentRun.companyId,
+                issueId: currentIssue.id,
+              };
+            }
+          }
           throw new Error("Terminal issue reconciliation lost its bound issue ownership");
         }
       }
@@ -7796,6 +7964,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(...conditions))
       .returning()
       .then((rows) => rows.length);
+  }
+
+  async function retireDirtyWorkspaceFailureState(input: {
+    agent: typeof agents.$inferSelect;
+    taskKey: string | null;
+  }) {
+    // Delete the issue-scoped session first. If that fails, leave the runtime
+    // error intact and keep the agent globally failed; partial "idle" recovery
+    // would let the poisoned session escape into a later claim.
+    if (input.taskKey) {
+      await clearTaskSessions(input.agent.companyId, input.agent.id, {
+        taskKey: input.taskKey,
+        adapterType: input.agent.adapterType,
+      });
+    }
+    const runtimeState = await getRuntimeState(input.agent.id);
+    if (runtimeState?.lastError && !isStaleDirtyWorkspaceAgentErrorReason(runtimeState.lastError)) {
+      throw new Error("Refusing to clear a non-dirty runtime error during dirty-workspace retirement");
+    }
+    if (runtimeState && isStaleDirtyWorkspaceAgentErrorReason(runtimeState.lastError)) {
+      await options.dirtyWorkspaceFailureRetirementHooks?.afterRuntimeRead?.({
+        agentId: input.agent.id,
+        observedLastError: runtimeState.lastError!,
+      });
+      const cleared = await db
+        .update(agentRuntimeState)
+        .set({ lastError: null, updatedAt: new Date() })
+        .where(and(
+          eq(agentRuntimeState.agentId, input.agent.id),
+          eq(agentRuntimeState.lastError, runtimeState.lastError!),
+        ))
+        .returning({ agentId: agentRuntimeState.agentId });
+      if (cleared.length === 0) {
+        const current = await getRuntimeState(input.agent.id);
+        if (current?.lastError !== null) {
+          throw new Error("Dirty-workspace runtime error changed during guarded retirement");
+        }
+      }
+    }
   }
 
   async function ensureRuntimeState(agent: typeof agents.$inferSelect) {
@@ -10826,7 +11033,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   type ExecutionAdmissionClaim =
-    | { kind: "claimed"; run: typeof heartbeatRuns.$inferSelect }
+    | {
+        kind: "claimed";
+        run: typeof heartbeatRuns.$inferSelect;
+        trustedTerminalNonOwningDeferredCommentDelivery: boolean;
+      }
     | {
         kind: "denied";
         run: typeof heartbeatRuns.$inferSelect;
@@ -10990,6 +11201,223 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
+  function issueBlockersResolvedClaimGuard(input: {
+    companyId: string;
+    issueId: string;
+    resolvedBlockerIssueId: string;
+  }) {
+    return sql<boolean>`
+      exists (
+        select 1
+        from issue_relations resolved_binding
+        where resolved_binding.company_id = ${input.companyId}
+          and resolved_binding.type = 'blocks'
+          and resolved_binding.related_issue_id = ${input.issueId}
+          and resolved_binding.issue_id = ${input.resolvedBlockerIssueId}
+      )
+      and not exists (
+        select 1
+        from issue_relations dependency_edge
+        join issues blocker_issue on blocker_issue.id = dependency_edge.issue_id
+        where dependency_edge.company_id = ${input.companyId}
+          and dependency_edge.type = 'blocks'
+          and dependency_edge.related_issue_id = ${input.issueId}
+          and (
+            blocker_issue.status <> 'done'
+            or (
+              blocker_issue.execution_workspace_id is not null
+              and coalesce(
+                (
+                  select
+                    attributed_op.phase = 'workspace_finalize'
+                    and attributed_op.status = 'succeeded'
+                  from workspace_operations attributed_op
+                  where attributed_op.company_id = ${input.companyId}
+                    and attributed_op.execution_workspace_id = blocker_issue.execution_workspace_id
+                    and attributed_op.issue_id = blocker_issue.id
+                  order by attributed_op.started_at desc
+                  limit 1
+                ),
+                (
+                  select
+                    unattributed_op.phase = 'workspace_finalize'
+                    and unattributed_op.status = 'succeeded'
+                  from workspace_operations unattributed_op
+                  where unattributed_op.company_id = ${input.companyId}
+                    and unattributed_op.execution_workspace_id = blocker_issue.execution_workspace_id
+                    and unattributed_op.issue_id is null
+                  order by unattributed_op.started_at desc
+                  limit 1
+                ),
+                true
+              ) = false
+            )
+          )
+      )
+    `;
+  }
+
+  async function denyIssueBlockersResolvedClaimRace(input: {
+    tx: Pick<Db, "update">;
+    run: typeof heartbeatRuns.$inferSelect;
+    claimedAt: Date;
+    nextContext: Record<string, unknown>;
+    envelope: ExecutionAdmissionEnvelope | null;
+  }): Promise<Extract<ExecutionAdmissionClaim, { kind: "denied" }> | null> {
+    const errorCode = "issue_dependencies_blocked";
+    const reason = "Cancelled because issue dependency readiness changed at the queued-to-running claim boundary";
+    const denied = await input.tx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        contextSnapshot: input.nextContext,
+        finishedAt: input.claimedAt,
+        updatedAt: input.claimedAt,
+        error: reason,
+        errorCode,
+        resultJson: {
+          ...parseObject(input.run.resultJson),
+          stopReason: errorCode,
+          timeoutFired: false,
+        },
+      })
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return denied
+      ? { kind: "denied", run: denied, errorCode, reason, envelope: input.envelope }
+      : null;
+  }
+
+  async function enforceIssueRunnableAdmissionAtClaim(input: {
+    tx: Pick<Db, "select" | "update">;
+    run: typeof heartbeatRuns.$inferSelect;
+    context: Record<string, unknown>;
+    issueId: string | null;
+    claimedAt: Date;
+    nextContext: Record<string, unknown>;
+    envelope: ExecutionAdmissionEnvelope | null;
+  }): Promise<
+    | {
+        kind: "admitted";
+        trustedTerminalNonOwningDeferredCommentDelivery: boolean;
+        trustedDependencyReadyWake: boolean;
+      }
+    | { kind: "denied"; result: Extract<ExecutionAdmissionClaim, { kind: "denied" }> }
+    | { kind: "lost_race" }
+  > {
+    if (!input.issueId) {
+      return {
+        kind: "admitted",
+        trustedTerminalNonOwningDeferredCommentDelivery: false,
+        trustedDependencyReadyWake: false,
+      };
+    }
+
+    const currentIssue = await input.tx
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    const trustedTerminalNonOwningDeferredCommentDelivery = Boolean(
+      currentIssue &&
+      (currentIssue.status === "done" || currentIssue.status === "cancelled") &&
+      await isTrustedNonOwningDeferredCommentDelivery(input.tx, input.run, input.context),
+    );
+    const trustedDependencyResolvedWake = currentIssue
+      ? await isTrustedIssueBlockersResolvedWake(
+          input.tx,
+          input.run,
+          input.context,
+          input.issueId,
+        )
+      : false;
+    const dependencyReadiness = trustedDependencyResolvedWake
+      ? await issuesSvc
+          .listDependencyReadiness(input.run.companyId, [input.issueId], input.tx)
+          .then((rows) => rows.get(input.issueId!) ?? null)
+      : null;
+    if (trustedDependencyResolvedWake) {
+      await options.queuedRunClaimHooks?.afterDependencyReadBeforeClaimUpdate?.({
+        runId: input.run.id,
+        issueId: input.issueId,
+        agentId: input.run.agentId,
+      });
+    }
+    const dependencyReadyWake = Boolean(
+      trustedDependencyResolvedWake &&
+      currentIssue?.status === "blocked" &&
+      dependencyReadiness?.isDependencyReady &&
+      dependencyReadiness.blockerIssueIds.includes(
+        readNonEmptyString(input.context.resolvedBlockerIssueId)!,
+      ),
+    );
+    const runnableAdmission = currentIssue
+      ? evaluateIssueRunnableAdmission({
+          issueStatus: currentIssue.status,
+          interactionWake: allowsIssueInteractionWake(input.context) || dependencyReadyWake,
+          resumeIntent: input.context.resumeIntent === true,
+        })
+      : { admitted: false, reasonCode: ADMISSION_REASON.ISSUE_NOT_RUNNABLE };
+    if (trustedTerminalNonOwningDeferredCommentDelivery || runnableAdmission.admitted) {
+      return {
+        kind: "admitted",
+        trustedTerminalNonOwningDeferredCommentDelivery,
+        trustedDependencyReadyWake: dependencyReadyWake,
+      };
+    }
+
+    const dependencyBecameBlocked = Boolean(
+      trustedDependencyResolvedWake &&
+      dependencyReadiness &&
+      !dependencyReadiness.isDependencyReady,
+    );
+    const errorCode = dependencyBecameBlocked
+      ? "issue_dependencies_blocked"
+      : runnableAdmission.reasonCode ?? ADMISSION_REASON.ISSUE_NOT_RUNNABLE;
+    const currentStatus = currentIssue?.status ?? "missing";
+    const reason = dependencyBecameBlocked
+      ? "Cancelled because issue dependencies became blocked before the queued run could claim"
+      : `Cancelled because current issue status "${currentStatus}" does not admit this claim`;
+    const denied = await input.tx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        contextSnapshot: input.nextContext,
+        finishedAt: input.claimedAt,
+        updatedAt: input.claimedAt,
+        error: reason,
+        errorCode,
+        resultJson: {
+          ...parseObject(input.run.resultJson),
+          stopReason: errorCode,
+          ...(dependencyBecameBlocked
+            ? {
+                unresolvedBlockerIssueIds:
+                  dependencyReadiness?.unresolvedBlockerIssueIds ?? [],
+              }
+            : {}),
+          timeoutFired: false,
+        },
+      })
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return denied
+      ? {
+          kind: "denied",
+          result: {
+            kind: "denied",
+            run: denied,
+            errorCode,
+            reason,
+            envelope: input.envelope,
+          },
+        }
+      : { kind: "lost_race" };
+  }
+
   async function claimQueuedRunWithExecutionAdmission(input: {
     run: typeof heartbeatRuns.$inferSelect;
     context: Record<string, unknown>;
@@ -11027,26 +11455,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             runId: run.id,
           })
           : null;
+        const nextContext = campaignEpoch
+          ? {
+              ...context,
+              [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
+            }
+          : context;
+        const issueRunnableAdmission = await enforceIssueRunnableAdmissionAtClaim({
+          tx,
+          run,
+          context,
+          issueId,
+          claimedAt,
+          nextContext,
+          envelope: null,
+        });
+        if (issueRunnableAdmission.kind === "denied") return issueRunnableAdmission.result;
+        if (issueRunnableAdmission.kind === "lost_race") return { kind: "lost_race" as const };
         const claimed = await tx
           .update(heartbeatRuns)
           .set({
             status: "running",
-            ...(campaignEpoch
-              ? {
-                contextSnapshot: {
-                  ...context,
-                  [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
-                },
-              }
-              : {}),
+            contextSnapshot: nextContext,
             responsibleUserId,
             startedAt: run.startedAt ?? claimedAt,
             updatedAt: claimedAt,
           })
-          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .where(and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "queued"),
+            issueRunnableAdmission.trustedDependencyReadyWake
+              ? issueBlockersResolvedClaimGuard({
+                  companyId: run.companyId,
+                  issueId: issueId!,
+                  resolvedBlockerIssueId: readNonEmptyString(context.resolvedBlockerIssueId)!,
+                })
+              : undefined,
+          ))
           .returning()
           .then((rows) => rows[0] ?? null);
-        return claimed ? { kind: "claimed" as const, run: claimed } : { kind: "lost_race" as const };
+        if (!claimed && issueRunnableAdmission.trustedDependencyReadyWake) {
+          const denied = await denyIssueBlockersResolvedClaimRace({
+            tx,
+            run,
+            claimedAt,
+            nextContext,
+            envelope: null,
+          });
+          if (denied) return denied;
+        }
+        return claimed
+          ? {
+              kind: "claimed" as const,
+              run: claimed,
+              trustedTerminalNonOwningDeferredCommentDelivery:
+                issueRunnableAdmission.trustedTerminalNonOwningDeferredCommentDelivery,
+            }
+          : { kind: "lost_race" as const };
       });
     }
 
@@ -11315,24 +11780,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runId: run.id,
         })
         : null;
+      const claimContext = campaignEpoch
+        ? {
+            ...nextContext,
+            [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
+          }
+        : nextContext;
+      const issueRunnableAdmission = await enforceIssueRunnableAdmissionAtClaim({
+        tx,
+        run,
+        context,
+        issueId,
+        claimedAt,
+        nextContext: claimContext,
+        envelope,
+      });
+      if (issueRunnableAdmission.kind === "denied") return issueRunnableAdmission.result;
+      if (issueRunnableAdmission.kind === "lost_race") return { kind: "lost_race" as const };
       const claimed = await tx
         .update(heartbeatRuns)
         .set({
           status: "running",
-          contextSnapshot: campaignEpoch
-            ? {
-              ...nextContext,
-              [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
-            }
-            : nextContext,
+          contextSnapshot: claimContext,
           responsibleUserId,
           startedAt: run.startedAt ?? claimedAt,
           updatedAt: claimedAt,
         })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .where(and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.status, "queued"),
+          issueRunnableAdmission.trustedDependencyReadyWake
+            ? issueBlockersResolvedClaimGuard({
+                companyId: run.companyId,
+                issueId: issueId!,
+                resolvedBlockerIssueId: readNonEmptyString(context.resolvedBlockerIssueId)!,
+              })
+            : undefined,
+        ))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return claimed ? { kind: "claimed" as const, run: claimed } : { kind: "lost_race" as const };
+      if (!claimed && issueRunnableAdmission.trustedDependencyReadyWake) {
+        const denied = await denyIssueBlockersResolvedClaimRace({
+          tx,
+          run,
+          claimedAt,
+          nextContext: claimContext,
+          envelope,
+        });
+        if (denied) return denied;
+      }
+      return claimed
+        ? {
+            kind: "claimed" as const,
+            run: claimed,
+            trustedTerminalNonOwningDeferredCommentDelivery:
+              issueRunnableAdmission.trustedTerminalNonOwningDeferredCommentDelivery,
+          }
+        : { kind: "lost_race" as const };
     });
   }
 
@@ -11609,6 +12113,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const issueId = readNonEmptyString(context.issueId);
     let claimIssueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null = null;
+    let trustedTerminalNonOwningDeferredCommentDelivery = false;
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -11645,16 +12150,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
-      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
-      const readiness = dependencyReadiness.get(issueId);
-      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
-        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
-        return null;
-      }
+      // WG-PLAT-016: mediate every issue-bound claim, independent of the
+      // wake class that happened to enqueue it. Terminal work claims are
+      // denied; the sole exception is an authenticated, message-only delivery
+      // promoted by the control plane, which must not take issue ownership.
+      // A blocked issue is admitted only for a verified interaction wake or a
+      // real resumeIntent; assignment/settings and all other wakes remain
+      // fail-closed.
+      claimIssueContext = await getIssueExecutionContext(run.companyId, issueId);
+      const trustedNonOwningDeferredCommentDelivery = await isTrustedNonOwningDeferredCommentDelivery(
+        db,
+        run,
+        context,
+      );
+      trustedTerminalNonOwningDeferredCommentDelivery =
+        trustedNonOwningDeferredCommentDelivery &&
+        (claimIssueContext?.status === "done" || claimIssueContext?.status === "cancelled");
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      // Preserve the established, more-specific queued-run invalidation
+      // contract before applying the general runnable-status gate. Stale
+      // terminal and max-turn continuation claims need their typed stop
+      // metadata and skipped-wakeup disposition; every surviving issue-bound
+      // claim is still mediated immediately below.
+      const staleness = await evaluateQueuedRunStaleness(
+        run,
+        issueId,
+        context,
+        trustedTerminalNonOwningDeferredCommentDelivery,
+      );
       if (staleness.stale) {
         await cancelQueuedRunForStaleIssue(run, issueId, staleness);
         logger.info(
@@ -11664,8 +12187,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
+      const readiness = dependencyReadiness.get(issueId);
+      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
+        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
+        return null;
+      }
+
+      const trustedDependencyReadyWake = Boolean(
+        claimIssueContext?.status === "blocked" &&
+        readiness?.isDependencyReady &&
+        readiness.blockerIssueIds.includes(readNonEmptyString(context.resolvedBlockerIssueId)!) &&
+        await isTrustedIssueBlockersResolvedWake(db, run, context, issueId),
+      );
+      if (claimIssueContext && !trustedTerminalNonOwningDeferredCommentDelivery) {
+        const runnableAdmission = evaluateIssueRunnableAdmission({
+          issueStatus: claimIssueContext.status,
+          interactionWake: allowsIssueInteractionWake(context) || trustedDependencyReadyWake,
+          resumeIntent: context.resumeIntent === true,
+        });
+        if (!runnableAdmission.admitted) {
+          await cancelRunInternal(
+            run.id,
+            `Cancelled because issue status "${claimIssueContext.status}" does not admit this wake`,
+            { ...deferQueuePumpAfterClaimCancellation, errorCode: runnableAdmission.reasonCode ?? undefined },
+          );
+          logger.info(
+            {
+              runId: run.id,
+              issueId,
+              issueStatus: claimIssueContext.status,
+              errorCode: runnableAdmission.reasonCode,
+            },
+            "claimQueuedRun: cancelled run at issue runnable-status admission",
+          );
+          return null;
+        }
+      }
+
       // Issue packet DoR: deny claim before execution admission / Hermes work-prep.
-      claimIssueContext = await getIssueExecutionContext(run.companyId, issueId);
       if (claimIssueContext) {
         const packetReadiness = evaluateIssuePacketReadiness({
           title: claimIssueContext.title,
@@ -11714,6 +12276,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: claimIssueContext,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
+    if (issueId) {
+      await options.queuedRunClaimHooks?.afterIssuePreflight?.({
+        runId: run.id,
+        issueId,
+        agentId: run.agentId,
+      });
+    }
     const admissionClaim = await claimQueuedRunWithExecutionAdmission({
       run,
       context,
@@ -11739,6 +12308,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
     const claimed = admissionClaim.run;
+    trustedTerminalNonOwningDeferredCommentDelivery =
+      admissionClaim.trustedTerminalNonOwningDeferredCommentDelivery;
 
     publishLiveEvent({
       companyId: claimed.companyId,
@@ -11764,7 +12335,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedContext = parseObject(claimed.contextSnapshot);
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
+    if (
+      claimedIssueId &&
+      claimedWakeReason !== "source_scoped_recovery_action" &&
+      !trustedTerminalNonOwningDeferredCommentDelivery
+    ) {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
@@ -11863,10 +12438,72 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: Record<string, unknown>;
       };
 
+  async function isTrustedNonOwningDeferredCommentDelivery(
+    query: Pick<Db, "select">,
+    run: typeof heartbeatRuns.$inferSelect,
+    context: Record<string, unknown>,
+  ) {
+    if (
+      context.nonOwningDeferredCommentDelivery !== true ||
+      extractWakeCommentIds(context).length === 0 ||
+      !run.wakeupRequestId
+    ) {
+      return false;
+    }
+    return query
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, run.wakeupRequestId),
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.runId, run.id),
+        eq(agentWakeupRequests.reason, "issue_execution_promoted"),
+      ))
+      .limit(1)
+      .then((rows) => rows.length === 1);
+  }
+
+  async function isTrustedIssueBlockersResolvedWake(
+    query: Pick<Db, "select">,
+    run: typeof heartbeatRuns.$inferSelect,
+    context: Record<string, unknown>,
+    issueId: string,
+  ) {
+    const resolvedBlockerIssueId = readNonEmptyString(context.resolvedBlockerIssueId);
+    if (
+      readNonEmptyString(context.wakeReason) !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON ||
+      !resolvedBlockerIssueId ||
+      !run.wakeupRequestId
+    ) {
+      return false;
+    }
+
+    const wake = await query
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, run.wakeupRequestId),
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+        eq(agentWakeupRequests.runId, run.id),
+        eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
+        eq(agentWakeupRequests.requestedByActorType, "system"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const payload = parseObject(wake?.payload);
+    return Boolean(
+      wake &&
+      readNonEmptyString(payload.issueId) === issueId &&
+      readNonEmptyString(payload.resolvedBlockerIssueId) === resolvedBlockerIssueId,
+    );
+  }
+
   async function evaluateQueuedRunStaleness(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     context: Record<string, unknown>,
+    nonOwningDeferredCommentDelivery = false,
   ): Promise<QueuedRunStaleness> {
     const issue = await db
       .select({
@@ -11891,7 +12528,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
@@ -11938,15 +12574,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
-      }
+    if (
+      (issue.status === "done" || issue.status === "cancelled") &&
+      !nonOwningDeferredCommentDelivery
+    ) {
+      return {
+        stale: true,
+        errorCode: "issue_terminal_status",
+        reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -12164,12 +12801,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "interrupted" || outcome === "cancelled" || (outcome === "failed" && options?.keepIdleOnFailure)
-          ? "idle"
-          : "error";
+    const nextStatus = resolveFinalizedAgentStatus({
+      outcome,
+      runningCount,
+      keepIdleOnFailure: options?.keepIdleOnFailure,
+    });
 
     const updated = await db
       .update(agents)
@@ -15983,7 +16619,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed", message);
+      const dirtyWorkspaceFailure =
+        Boolean(workspaceValidationFailure) && isStaleDirtyWorkspaceAgentErrorReason(message);
+      let dirtyWorkspaceRetirementSucceeded = true;
+      if (dirtyWorkspaceFailure) {
+        try {
+          await retireDirtyWorkspaceFailureState({ agent, taskKey });
+        } catch (retirementError) {
+          dirtyWorkspaceRetirementSucceeded = false;
+          logger.error(
+            { err: retirementError, runId: run.id, agentId: agent.id, taskKey },
+            "failed to retire dirty-workspace runtime/session state; keeping agent failed",
+          );
+        }
+      }
+
+      await finalizeAgentStatus(agent.id, "failed", message, {
+        // WG-PLAT-005: an issue-scoped dirty-workspace validation failure must
+        // not poison the whole agent globally — the workspace itself still
+        // fails admission on every future attempt (this guard is untouched),
+        // but the agent stays idle and available for other issues/workspaces
+        // instead of requiring a manual POST /agents/:id/clear-error.
+        keepIdleOnFailure: dirtyWorkspaceFailure && dirtyWorkspaceRetirementSucceeded,
+      });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -16102,7 +16760,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // path owned the terminal transition. If another path already finalized
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
-            await finalizeAgentStatus(run.agentId, "failed", message).catch(() => undefined);
+            const dirtyWorkspaceSetupFailure =
+              Boolean(workspaceValidationSetupFailure) && isStaleDirtyWorkspaceAgentErrorReason(message);
+            let dirtyWorkspaceRetirementSucceeded = !dirtyWorkspaceSetupFailure;
+            if (dirtyWorkspaceSetupFailure && setupFailureAgent) {
+              try {
+                await retireDirtyWorkspaceFailureState({
+                  agent: setupFailureAgent,
+                  taskKey: deriveTaskKeyWithHeartbeatFallback(parseObject(run.contextSnapshot), null),
+                });
+                dirtyWorkspaceRetirementSucceeded = true;
+              } catch (retirementError) {
+                dirtyWorkspaceRetirementSucceeded = false;
+                logger.error(
+                  { err: retirementError, runId, agentId: run.agentId },
+                  "failed to retire setup dirty-workspace runtime/session state; keeping agent failed",
+                );
+              }
+            }
+            await finalizeAgentStatus(run.agentId, "failed", message, {
+              // WG-PLAT-005: same issue-scoped dirty-workspace carve-out as the
+              // adapter-failure catch block, for pre-dispatch setup failures
+              // (e.g. resolveWorkspaceForRun) that throw before adapter.execute.
+              keepIdleOnFailure: dirtyWorkspaceSetupFailure && dirtyWorkspaceRetirementSucceeded,
+            }).catch(() => undefined);
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
@@ -16654,6 +17335,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
           );
+        const terminalNonOwningDeferredCommentDelivery =
+          deferredCommentIds.length > 0 &&
+          !shouldReopenDeferredCommentWake &&
+          (issue.status === "done" || issue.status === "cancelled");
+        if (terminalNonOwningDeferredCommentDelivery) {
+          // This promoted run delivers an already-batched comment to the
+          // agent; it does not claim ownership of the terminal issue. Keep the
+          // issue coordinates for prompt context while allowing claim-time
+          // status mediation to distinguish delivery from executable work.
+          promotedContextSeed.nonOwningDeferredCommentDelivery = true;
+        }
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
@@ -16773,16 +17465,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: newRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          // Promoted mention wakes are issue-scoped, not issue ownership transfers.
-          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+        if (!terminalNonOwningDeferredCommentDelivery) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: newRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            // Promoted mention wakes are issue-scoped, not issue ownership transfers.
+            .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+        }
 
         return {
           kind: "promoted" as const,

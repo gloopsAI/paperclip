@@ -20,6 +20,9 @@ export const ADMISSION_REASON = {
   ROLE_UNKNOWN: "admission.role_unknown",
   AGENT_STATUS: "admission.agent_status",
   BUDGET_MISSING: "admission.budget_missing",
+  ISSUE_BLOCKED: "admission.issue_blocked",
+  ISSUE_TERMINAL: "admission.issue_terminal",
+  ISSUE_NOT_RUNNABLE: "admission.issue_not_runnable",
 } as const;
 
 export type AdmissionReasonCode =
@@ -517,6 +520,40 @@ export function evaluateRoleAdmission(input: RoleAdmissionInput): RoleAdmissionR
       : detailParts.join(" "),
     roleKey: policy.key,
   };
+}
+
+/** Issue statuses that may be admitted for execution without a special wake. */
+const RUNNABLE_ISSUE_STATUSES = new Set(["todo", "in_progress", "in_review"]);
+
+/**
+ * WG-PLAT-016: assignment/policy/workspace changes cannot admit a blocked
+ * issue. Blocked interaction wakes and real resume intents remain legitimate;
+ * done/cancelled are terminal and never admit, and all other non-runnable
+ * statuses fail closed with their own truthful reason.
+ *
+ * Pure and trigger-independent — callers decide when to invoke it (defense
+ * in depth: apply it at every entrypoint that can lead to a run starting,
+ * independent of what specifically triggered that entrypoint).
+ */
+export function evaluateIssueRunnableAdmission(input: {
+  issueStatus: string;
+  /** True only for a verified comment/interaction wake. */
+  interactionWake: boolean;
+  /** True only when contextSnapshot.resumeIntent === true. */
+  resumeIntent: boolean;
+}): { admitted: boolean; reasonCode: AdmissionReasonCode | null } {
+  if (RUNNABLE_ISSUE_STATUSES.has(input.issueStatus)) {
+    return { admitted: true, reasonCode: null };
+  }
+  if (input.issueStatus === "done" || input.issueStatus === "cancelled") {
+    return { admitted: false, reasonCode: ADMISSION_REASON.ISSUE_TERMINAL };
+  }
+  if (input.issueStatus === "blocked") {
+    return input.interactionWake || input.resumeIntent
+      ? { admitted: true, reasonCode: null }
+      : { admitted: false, reasonCode: ADMISSION_REASON.ISSUE_BLOCKED };
+  }
+  return { admitted: false, reasonCode: ADMISSION_REASON.ISSUE_NOT_RUNNABLE };
 }
 
 /**

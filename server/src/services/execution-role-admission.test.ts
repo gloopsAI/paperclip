@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ADMISSION_REASON,
   buildRoleAdmissionInputFromAgent,
+  evaluateIssueRunnableAdmission,
   evaluateRoleAdmission,
   extractModelFromAdapterConfig,
   resolveRoleAdmissionPolicy,
@@ -342,6 +343,43 @@ describe("evaluateRoleAdmission", () => {
         ADMISSION_REASON.SKILL_DENIED,
       ]),
     );
+  });
+});
+
+describe("evaluateIssueRunnableAdmission (WG-PLAT-016)", () => {
+  it("admits runnable issue statuses without requiring an explicit resume", () => {
+    for (const status of ["todo", "in_progress", "in_review"]) {
+      expect(evaluateIssueRunnableAdmission({ issueStatus: status, interactionWake: false, resumeIntent: false })).toEqual({
+        admitted: true,
+        reasonCode: null,
+      });
+    }
+  });
+
+  it("denies a blocked issue with admission.issue_blocked when there is no explicit resume", () => {
+    const result = evaluateIssueRunnableAdmission({ issueStatus: "blocked", interactionWake: false, resumeIntent: false });
+    expect(result).toEqual({ admitted: false, reasonCode: ADMISSION_REASON.ISSUE_BLOCKED });
+  });
+
+  it("denies terminal statuses unconditionally, including interaction and resume wakes", () => {
+    for (const status of ["done", "cancelled"]) {
+      expect(evaluateIssueRunnableAdmission({ issueStatus: status, interactionWake: true, resumeIntent: true })).toEqual({
+        admitted: false,
+        reasonCode: ADMISSION_REASON.ISSUE_TERMINAL,
+      });
+    }
+  });
+
+  it("admits blocked only for a verified interaction wake or a real resume intent", () => {
+    expect(evaluateIssueRunnableAdmission({ issueStatus: "blocked", interactionWake: true, resumeIntent: false }))
+      .toEqual({ admitted: true, reasonCode: null });
+    expect(evaluateIssueRunnableAdmission({ issueStatus: "blocked", interactionWake: false, resumeIntent: true }))
+      .toEqual({ admitted: true, reasonCode: null });
+  });
+
+  it("denies other non-runnable statuses with a truthful generic code", () => {
+    expect(evaluateIssueRunnableAdmission({ issueStatus: "backlog", interactionWake: true, resumeIntent: true }))
+      .toEqual({ admitted: false, reasonCode: ADMISSION_REASON.ISSUE_NOT_RUNNABLE });
   });
 });
 

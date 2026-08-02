@@ -857,7 +857,20 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const mentionedAgentId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    let promotedClaimPreTransaction = false;
+    let releasePromotedClaim = () => {};
+    const promotedClaimGate = new Promise<void>((resolve) => {
+      releasePromotedClaim = resolve;
+    });
+    const heartbeat = heartbeatService(db, {
+      queuedRunClaimHooks: {
+        afterIssuePreflight: async ({ agentId }) => {
+          if (agentId !== mentionedAgentId) return;
+          promotedClaimPreTransaction = true;
+          await promotedClaimGate;
+        },
+      },
+    });
 
     try {
       await db.insert(companies).values({
@@ -1006,6 +1019,42 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId));
 
       gateway.releaseFirstWait();
+      await waitFor(() => promotedClaimPreTransaction, 90_000);
+
+      const promotedRunId = await waitFor(async () => {
+        const promoted = await db
+          .select({ runId: agentWakeupRequests.runId, status: heartbeatRuns.status })
+          .from(agentWakeupRequests)
+          .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, agentWakeupRequests.runId))
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+              eq(agentWakeupRequests.reason, "issue_execution_promoted"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return promoted?.status === "queued" ? promoted.runId : false;
+      }, 90_000);
+
+      const issueAfterPromotion = await db
+        .select({
+          status: issues.status,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issueAfterPromotion).toMatchObject({
+        status: "done",
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      });
+
+      releasePromotedClaim();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
@@ -1016,19 +1065,26 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
       }, 90_000);
 
-      const issueAfterPromotion = await db
+      const issueAfterSettlement = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
+          executionRunId: issues.executionRunId,
+          executionAgentNameKey: issues.executionAgentNameKey,
+          executionLockedAt: issues.executionLockedAt,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(issueAfterPromotion).toMatchObject({
+      expect(issueAfterSettlement).toMatchObject({
         status: "done",
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
       });
-      expect(issueAfterPromotion?.completedAt).not.toBeNull();
+      expect(issueAfterSettlement?.completedAt).not.toBeNull();
+      expect(promotedRunId).not.toBe(firstRun?.id);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
@@ -1047,6 +1103,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
       expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
     } finally {
+      releasePromotedClaim();
       gateway.releaseFirstWait();
       await gateway.close();
     }
