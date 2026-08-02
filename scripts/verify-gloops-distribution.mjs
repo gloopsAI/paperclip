@@ -1586,6 +1586,7 @@ for (const required of [
   "server/src/__tests__/guarded-admission-reset.test.ts",
   "server/src/__tests__/heartbeat-comment-wake-batching.test.ts",
   "bash gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh",
+  "fast-container:",
   "timeout-minutes: 15",
   "type=sha,prefix=sha-",
   "type=raw,value=stable,enable=${{ github.ref == 'refs/heads/gloops/stable' }}",

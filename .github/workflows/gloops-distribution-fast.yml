@@ -118,7 +118,7 @@ jobs:
           bash gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh
           node scripts/verify-gloops-distribution.mjs
 
-  container:
+  fast-container:
     needs:
       - classify
       - focused-verify
