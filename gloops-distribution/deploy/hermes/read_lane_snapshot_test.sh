@@ -29,6 +29,22 @@ assert()   { local d="$1" expr="$2"; if eval "${expr}"; then _report "${d}" 0; e
 put() { rm -f "$1"; printf '%s\n' "$2" >"$1"; chmod 0555 "$1"; }   # install-like replace
 mkinstall() { mkdir -p "${TMP}/lib/tools"; }
 
+# Force the second target's phase-2 prior-save copy to fail after mktemp.  The
+# first target has already changed, so the single undo path must restore it and
+# remove the just-created but not-yet-populated second prior temp.
+restore_with_second_save_failure() (
+  cp() {
+    local src dst
+    if [[ "${1:-}" == '-p' ]]; then src="${2:-}"; dst="${3:-}"; else src="${1:-}"; dst="${2:-}"; fi
+    if [[ "${src}" == "${READ_TOOL_INSTALL}"
+      && "${dst}" == *'/.read-lane-prior.github-read-tool.mjs.'* ]]; then
+      return 1
+    fi
+    command cp "$@"
+  }
+  restore_read_lane_snapshot "$1"
+)
+
 # --- PRESENT-pair: both old versions restored + hash/mode verified ----------
 stage="${TMP}/present"; mkdir -p "${stage}"; mkinstall
 put "${READ_BROKER_INSTALL}" "OLD BROKER v1"
@@ -49,6 +65,41 @@ assert "present-pair restored mode is 0555" \
   "[[ \"\$(python3 -c 'import os,sys;print(oct(os.stat(sys.argv[1]).st_mode&0o777)[2:])' '${READ_BROKER_INSTALL}')\" == '555' ]]"
 exp_ok "verify present-pair passes" verify_read_lane_restored "${stage}"
 exp_ok "check present-pair passes" check_read_lane_snapshot "${stage}"
+
+# --- CAPTURE binding: manifest hashes the COPIED artifact, not live path ----
+# Simulate a live-path change immediately after the broker copy. The captured
+# manifest must still bind to the immutable snapshot bytes placed in the backup.
+stage="${TMP}/capturebind"; mkdir -p "${stage}"; mkinstall
+put "${READ_BROKER_INSTALL}" "CAPTURED BROKER"
+put "${READ_TOOL_INSTALL}" "CAPTURED TOOL"
+cp() {
+  local src="$1" dst="$2"
+  command cp "$@"
+  if [[ "${src}" == "${READ_BROKER_INSTALL}" && "${dst}" == *'.before' ]]; then
+    chmod 0755 "${READ_BROKER_INSTALL}"
+    printf '%s\n' 'LIVE PATH CHANGED AFTER COPY' >"${READ_BROKER_INSTALL}"
+    chmod 0555 "${READ_BROKER_INSTALL}"
+  fi
+}
+exp_ok "capture remains snapshot-bound after live-path change" capture_read_lane_snapshot "${stage}"
+unset -f cp
+recorded_broker_hash="$(awk -F '\t' '$1 == "github-read-broker.py" {sub(/^sha256:/, "", $3); print $3}' "${stage}/read-lane.manifest")"
+copied_broker_hash="$(sha256sum "${stage}/read-lane.github-read-broker.py.before" | awk '{print $1}')"
+live_broker_hash="$(sha256sum "${READ_BROKER_INSTALL}" | awk '{print $1}')"
+assert "manifest broker hash == copied snapshot bytes" \
+  "[[ '${recorded_broker_hash}' == '${copied_broker_hash}' ]]"
+assert "capture-binding fixture actually changed the live bytes" \
+  "[[ '${recorded_broker_hash}' != '${live_broker_hash}' ]]"
+exp_ok "semantic check accepts the snapshot-bound capture" check_read_lane_snapshot "${stage}"
+
+# --- INVALID governed pre-state fails during capture, before publication ----
+stage="${TMP}/badmode"; mkdir -p "${stage}"; mkinstall
+put "${READ_BROKER_INSTALL}" "BAD MODE BROKER"
+put "${READ_TOOL_INSTALL}" "GOOD MODE TOOL"
+chmod 0755 "${READ_BROKER_INSTALL}"
+exp_fail "non-0555 governed pre-state -> capture fails" capture_read_lane_snapshot "${stage}"
+exp_fail "failed governed capture does not produce a usable manifest" check_read_lane_snapshot "${stage}"
+chmod 0555 "${READ_BROKER_INSTALL}"
 
 # --- ABSENT-pair: both removed + verified absent ----------------------------
 stage="${TMP}/absent"; mkdir -p "${stage}"; mkinstall
@@ -131,6 +182,20 @@ assert "phase-2 rollback -> tool untouched (NEW T2)" \
   "[[ \"\$(cat '${READ_TOOL_INSTALL}')\" == 'NEW T2' ]]"
 assert "phase-2 rollback -> no leaked temp" \
   "[[ -z \"\$(ls -A '${TMP}/lib' '${TMP}/lib/tools' 2>/dev/null | grep -F read-lane || true)\" ]]"
+
+# --- PHASE-2 second prior-save failure -> full undo + no temp leak ----------
+stage="${TMP}/savefail"; mkdir -p "${stage}"; mkinstall
+put "${READ_BROKER_INSTALL}" "OLD SAVE B"; put "${READ_TOOL_INSTALL}" "OLD SAVE T"
+exp_ok "save-failure capture succeeds" capture_read_lane_snapshot "${stage}"
+put "${READ_BROKER_INSTALL}" "NEW SAVE B"; put "${READ_TOOL_INSTALL}" "NEW SAVE T"
+exp_fail "phase-2 second prior-save failure -> restore fails" \
+  restore_with_second_save_failure "${stage}"
+assert "prior-save failure -> broker fully undone" \
+  "[[ \"\$(cat '${READ_BROKER_INSTALL}')\" == 'NEW SAVE B' ]]"
+assert "prior-save failure -> tool untouched" \
+  "[[ \"\$(cat '${READ_TOOL_INSTALL}')\" == 'NEW SAVE T' ]]"
+assert "prior-save failure -> no staged/prior temp leak" \
+  "[[ -z \"\$(find '${TMP}/lib' -name '.read-lane*' -print -quit)\" ]]"
 
 # --- MIXED-VERSION terminal state -> verify FAILS ---------------------------
 stage="${TMP}/mixed"; mkdir -p "${stage}"; mkinstall

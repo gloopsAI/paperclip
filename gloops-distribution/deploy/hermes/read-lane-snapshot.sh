@@ -60,7 +60,7 @@ capture_read_lane_snapshot() {
   local stage="${1:?stage dir required}"
   local manifest="${stage}/read-lane.manifest"
   : >"${manifest}"
-  local name target mode owner
+  local name target snap mode owner snapshot_hash
   while IFS= read -r name; do
     target="$(_read_lane_target_for "${name}")"
     if [[ -L "${target}" ]]; then
@@ -76,10 +76,20 @@ capture_read_lane_snapshot() {
       owner="$(_read_lane_owner "${target}")"
       [[ -n "${mode}" && -n "${owner}" ]] \
         || { echo "read-lane capture could not stat install path: ${target}" >&2; return 1; }
-      cp "${target}" "${stage}/read-lane.${name}.before"
-      chmod 0444 "${stage}/read-lane.${name}.before"
+      [[ "${mode}" == '555' ]] \
+        || { echo "read-lane capture refuses non-governed mode at install path: ${target} (${mode})" >&2; return 1; }
+      if _read_lane_running_as_root; then
+        [[ "${owner}" == '0:0' ]] \
+          || { echo "read-lane capture refuses non-root ownership at install path: ${target} (${owner})" >&2; return 1; }
+      fi
+      snap="${stage}/read-lane.${name}.before"
+      cp "${target}" "${snap}"
+      chmod 0444 "${snap}"
+      # Bind the manifest to the bytes actually placed in the backup artifact,
+      # not to a second read of the live install path after the copy.
+      snapshot_hash="$(_read_lane_sha256 "${snap}")"
       printf '%s\tpresent\tsha256:%s\tmode:%s\towner:%s\n' \
-        "${name}" "$(_read_lane_sha256 "${target}")" "${mode}" "${owner}" >>"${manifest}"
+        "${name}" "${snapshot_hash}" "${mode}" "${owner}" >>"${manifest}"
     else
       printf '%s\tabsent\t-\n' "${name}" >>"${manifest}"
     fi
@@ -98,7 +108,8 @@ _read_lane_parse_manifest() {
   local line name state
   local -a f
   while IFS= read -r line || [[ -n "${line}" ]]; do
-    [[ -n "${line}" ]] || continue
+    [[ -n "${line}" ]] \
+      || { echo "read-lane manifest contains an empty row" >&2; return 1; }
     IFS=$'\t' read -r -a f <<<"${line}"
     name="${f[0]:-}"; state="${f[1]:-}"
     _read_lane_target_for "${name}" >/dev/null || { echo "read-lane manifest has an unknown name: ${name}" >&2; return 1; }
@@ -176,9 +187,10 @@ restore_read_lane_snapshot() {
     if [[ -e "${target}" || -L "${target}" ]]; then
       save="$(mktemp "$(dirname "${target}")/.read-lane-prior.${name}.XXXXXX")" \
         || { _read_lane_apply_rollback "${name}"; return 1; }
+      # Register the temp before copying so a save failure cannot leak it.
+      _RL_PRIOR["${name}"]="${save}"
       { cp -p "${target}" "${save}" 2>/dev/null || cp "${target}" "${save}"; } \
         || { _read_lane_apply_rollback "${name}"; return 1; }
-      _RL_PRIOR["${name}"]="${save}"
     else
       _RL_PRIOR["${name}"]=''
     fi
@@ -242,7 +254,7 @@ check_read_lane_snapshot() {
           || { echo "read-lane check: recorded owner is not root for ${name}" >&2; rc=1; }
       fi
     else
-      [[ ! -e "${backup_dir}/read-lane.${name}.before" ]] \
+      [[ ! -e "${backup_dir}/read-lane.${name}.before" && ! -L "${backup_dir}/read-lane.${name}.before" ]] \
         || { echo "read-lane check: absent row has a stray snapshot ${name}" >&2; rc=1; }
     fi
   done < <(_read_lane_names)

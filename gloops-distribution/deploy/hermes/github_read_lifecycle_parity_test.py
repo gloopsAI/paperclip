@@ -146,6 +146,14 @@ class LifecycleParityTests(unittest.TestCase):
         self.assertTrue(any(READ_BROKER_UNIT in line for line in refuse),
                         "backup-dark refuse-active loop omits the read broker")
 
+    def test_backup_semantically_checks_snapshot_before_publication(self):
+        script = read("backup-dark.sh")
+        capture = script.index("capture_read_lane_snapshot")
+        semantic_check = script.index("check_read_lane_snapshot", capture)
+        publish = script.index('mv "${stage}" "${destination}"', semantic_check)
+        self.assertLess(capture, semantic_check)
+        self.assertLess(semantic_check, publish)
+
     # -- rollback / verify-rollback -------------------------------------------
 
     def test_rollback_disables_masks_and_purges_read_broker_state(self):

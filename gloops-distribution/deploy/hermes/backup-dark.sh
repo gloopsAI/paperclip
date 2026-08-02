@@ -73,6 +73,10 @@ install -m 0600 -o root -g root "${SERVICE_FILE}" "${stage}/paperclip.service.be
 # Capture the PRE-install state (content + old hash, or "absent") of BOTH halves
 # of the read-only evidence lane so rollback can restore them symmetrically.
 capture_read_lane_snapshot "${stage}"
+# Fail before publishing the backup if the manifest cannot be used to restore
+# the exact copied artifacts. This is semantic validation in addition to the
+# aggregate SHA256SUMS written below.
+check_read_lane_snapshot "${stage}"
 ln "${HERMES_IMAGE_ARCHIVE}" "${stage}/$(basename "${HERMES_IMAGE_ARCHIVE}")"
 (
   cd "${stage}"
