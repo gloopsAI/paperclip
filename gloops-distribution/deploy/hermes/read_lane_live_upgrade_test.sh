@@ -99,7 +99,50 @@ s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "${sd}/socket" 2>/dev/null
   *) exit 0 ;;
 esac
 SH
-  chmod +x "${dir}/flock" "${dir}/curl" "${dir}/systemctl"
+
+  # Privilege-drop helpers used by _run_client so canaries never run as root.
+  # Mocks accept the production argv shapes and exec the payload (no real uid
+  # change) so the harness can run unprivileged; they still refuse a root target
+  # and record the requested identity for assertions.
+  cat >"${dir}/runuser" <<'SH'
+#!/usr/bin/env bash
+user=""
+while (($#)); do
+  case "$1" in
+    -u) user="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "${MOCK_RUNUSER_LOG:-}" ]]; then
+  printf '%s\n' "${user}" >>"${MOCK_RUNUSER_LOG}"
+fi
+[[ "${MOCK_RUNUSER_FAIL:-0}" == "1" ]] && exit 1
+[[ "${user}" == "root" || "${user}" == "0" ]] && exit 1
+exec "$@"
+SH
+
+  cat >"${dir}/setpriv" <<'SH'
+#!/usr/bin/env bash
+reuid=""; regid=""
+while (($#)); do
+  case "$1" in
+    --reuid=*) reuid="${1#--reuid=}"; shift ;;
+    --regid=*) regid="${1#--regid=}"; shift ;;
+    --clear-groups) shift ;;
+    --) shift; break ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "${MOCK_SETPRIV_LOG:-}" ]]; then
+  printf 'reuid=%s regid=%s\n' "${reuid}" "${regid}" >>"${MOCK_SETPRIV_LOG}"
+fi
+[[ "${MOCK_SETPRIV_FAIL:-0}" == "1" ]] && exit 1
+[[ "${reuid}" == "0" ]] && exit 1
+exec "$@"
+SH
+
+  chmod +x "${dir}/flock" "${dir}/curl" "${dir}/systemctl" "${dir}/runuser" "${dir}/setpriv"
 }
 
 # ---- sandbox ----------------------------------------------------------------
@@ -272,9 +315,10 @@ applied_new() { # both installed files carry the applied source bytes
 }
 
 # 13. happy path -> exit 0, both applied, broker restarted once, canaries bound,
-#     durable success receipt with the verified blob sha.
+#     durable success receipt with the verified blob sha.  Canaries must go
+#     through the peer-identity drop (runuser -u hermes-peer), never as root.
 S="$(new_sandbox)"; install_client_mock "$S"
-run_case "$S" MOCK_CLIENT_MODE=good
+run_case "$S" MOCK_CLIENT_MODE=good "MOCK_RUNUSER_LOG=$S/runuser.log"
 chk "happy path succeeds (0)" "$([[ $RC -eq 0 ]] && echo 0 || echo 1)"
 chk "  ...both files applied (new)" "$(applied_new "$S" && echo 0 || echo 1)"
 chk "  ...receipt disposition=success" "$(receipt_has "$S" 'disposition=success' && echo 0 || echo 1)"
@@ -283,6 +327,7 @@ OBSERVED_TOOL_SHA256="$(SHA256 "$S/install/github-read-tool.mjs")"
 chk "  ...receipt binds final observed broker hash" "$(receipt_has "$S" "observed_broker_sha256=${OBSERVED_BROKER_SHA256}" && echo 0 || echo 1)"
 chk "  ...receipt binds final observed tool hash" "$(receipt_has "$S" "observed_tool_sha256=${OBSERVED_TOOL_SHA256}" && echo 0 || echo 1)"
 chk "  ...receipt binds rootTree+blob+size" "$(receipt_has "$S" 'canary_verified=rootTree=2222222222222222222222222222222222222222; file README.md blob=1111111111111111111111111111111111111111 size=3' && echo 0 || echo 1)"
+chk "  ...canaries dropped to hermes-peer (not root)" "$([[ -s "$S/runuser.log" ]] && ! grep -qv '^hermes-peer$' "$S/runuser.log" && echo 0 || echo 1)"
 chk "  ...no token leak" "$(no_token_leak && echo 0 || echo 1)"
 chk "  ...no staged leak" "$(no_staged_leak "$S" && echo 0 || echo 1)"; rm -rf "$S"
 
@@ -420,6 +465,37 @@ run_case "$S" "MOCK_MUTATE_AFTER_CANARY=$S/install/github-read-broker.py" MOCK_C
 chk "post-canary mutation -> rollback (5)" "$([[ $RC -eq 5 ]] && echo 0 || echo 1)"
 chk "  ...both files restored to OLD" "$(files_unchanged "$S" && echo 0 || echo 1)"
 chk "  ...disposition=rolled-back (not success)" "$(receipt_has "$S" 'disposition=rolled-back' && echo 0 || echo 1)"; rm -rf "$S"
+
+# 40. peer-identity drop unavailable (no runuser/setpriv on PATH) -> canary
+#     fails closed -> rollback.  Production must never canary as root when the
+#     drop tools are missing.  Restrict PATH so a host /usr/bin/setpriv cannot
+#     satisfy command -v.
+S="$(new_sandbox)"; install_client_mock "$S"
+rm -f "$S/mockbin/runuser" "$S/mockbin/setpriv"
+mkdir -p "$S/path"
+for c in bash sh python3 sha256sum mktemp mkdir rm mv cp chmod cat awk grep find id \
+         dirname basename head printf env touch sleep ln uname tr cut sed; do
+  src="$(command -v "$c" 2>/dev/null)" || continue
+  ln -sf "$src" "$S/path/$c"
+done
+run_case "$S" MOCK_CLIENT_MODE=good "PATH=$S/mockbin:$S/path"
+chk "missing peer-drop helper rolls back (5)" "$([[ $RC -eq 5 ]] && echo 0 || echo 1)"
+chk "  ...files restored to OLD" "$(files_unchanged "$S" && echo 0 || echo 1)"
+chk "  ...receipt disposition=rolled-back" "$(receipt_has "$S" 'disposition=rolled-back' && echo 0 || echo 1)"; rm -rf "$S"
+
+# 41. runuser fails to assume peer identity -> canary fails closed -> rollback.
+S="$(new_sandbox)"; install_client_mock "$S"
+run_case "$S" MOCK_RUNUSER_FAIL=1 MOCK_CLIENT_MODE=good
+chk "runuser fail rolls back (5)" "$([[ $RC -eq 5 ]] && echo 0 || echo 1)"
+chk "  ...files restored to OLD" "$(files_unchanged "$S" && echo 0 || echo 1)"; rm -rf "$S"
+
+# 42. setpriv-only path (no runuser) still drops to uid 10000 and succeeds.
+S="$(new_sandbox)"; install_client_mock "$S"
+rm -f "$S/mockbin/runuser"
+run_case "$S" MOCK_CLIENT_MODE=good "MOCK_SETPRIV_LOG=$S/setpriv.log"
+chk "setpriv peer-drop succeeds (0)" "$([[ $RC -eq 0 ]] && echo 0 || echo 1)"
+chk "  ...setpriv targeted uid/gid 10000" "$(grep -q '^reuid=10000 regid=10000$' "$S/setpriv.log" && echo 0 || echo 1)"
+chk "  ...both files applied (new)" "$(applied_new "$S" && echo 0 || echo 1)"; rm -rf "$S"
 
 echo "== pass=${PASS} fail=${FAIL} =="
 [[ "${FAIL}" -eq 0 ]]
