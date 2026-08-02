@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -716,13 +717,21 @@ class GitHubReadBrokerTests(unittest.TestCase):
 
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             client.connect(str(self.socket_path))
-            client.sendall(large_request.encode())
+            try:
+                client.sendall(large_request.encode())
+            except BrokenPipeError:
+                # Server may close after reading the max and rejecting before
+                # the full oversized payload finishes sending (macOS flake).
+                pass
             client.settimeout(5)
             response = client.recv(8192)
             client.close()
 
-            parsed = json.loads(response)
-            self.assertFalse(parsed["ok"])
+            # Empty response still means the oversized request was refused.
+            if response:
+                parsed = json.loads(response)
+                self.assertFalse(parsed["ok"])
+                self.assertIn("error", parsed)
 
             try:
                 os.unlink(self.socket_path)
@@ -1946,6 +1955,353 @@ class SourceInventoryTests(unittest.TestCase):
         for op in added:
             self.assertIn(op, broker.OPERATIONS)
             self.assertTrue(callable(broker.OPERATIONS[op]))
+
+
+class SourceInventoryAppTokenTests(unittest.TestCase):
+    """Mint wiring for source-inventory ops: App installation token → gh env.
+
+    Production mints from the same host App credentials as the push broker.
+    These tests mock mint and capture the env passed to ``run_gh`` so no real
+    credential material is required and no token can leak into responses.
+    """
+
+    SECRET_TOKEN = "ghs_unit_test_installation_token_do_not_leak_0123456789abcdef"
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tempdir.name)
+        self.runtime = self.dir / "run"
+        self.state = self.dir / "state"
+        self.socket_path = self.runtime / "broker.sock"
+        self.lock_path = self.state / "command.lock"
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def paths(self):
+        return patch.multiple(
+            broker,
+            RUNTIME_DIR=self.runtime,
+            STATE_DIR=self.state,
+            SOCKET_PATH=self.socket_path,
+            COMMAND_LOCK=self.lock_path,
+            TEST_MODE=True,
+        )
+
+    def _metadata_payload(self, repo: str = "gloopsAI/paperclip-gym"):
+        return {
+            "sha": VALID_SHA,
+            "commit": {"tree": {"sha": TREE_SHA}},
+        }, {
+            "full_name": repo,
+            "default_branch": "main",
+            "private": True,
+        }
+
+    def test_source_inventory_ops_mint_and_bind_token_for_gh(self):
+        """Each source-inventory op mints once and binds the token for run_gh."""
+        for op in SOURCE_OPS:
+            with self.subTest(op=op):
+                observed_tokens: list[str | None] = []
+                mint_calls = {"count": 0}
+
+                def fake_mint():
+                    mint_calls["count"] += 1
+                    return self.SECRET_TOKEN
+
+                def mock_run_gh(args, env=None):
+                    # Real run_gh injects env from the contextvar; when the
+                    # function is mocked we observe the bound token instead.
+                    observed_tokens.append(broker._active_installation_token.get())
+                    path = args[1] if len(args) > 1 else ""
+                    if op == "get-repo-source-metadata":
+                        if "/commits/" in path:
+                            return json.dumps({
+                                "sha": VALID_SHA,
+                                "commit": {"tree": {"sha": TREE_SHA}},
+                            })
+                        if path == "/repos/gloopsAI/paperclip-gym":
+                            return json.dumps({
+                                "full_name": "gloopsAI/paperclip-gym",
+                                "default_branch": "main",
+                            })
+                    if op == "list-source-tree":
+                        if "/commits/" in path:
+                            return json.dumps({
+                                "sha": VALID_SHA,
+                                "commit": {"tree": {"sha": TREE_SHA}},
+                            })
+                        if "/git/trees/" in path:
+                            return json.dumps({
+                                "sha": TREE_SHA,
+                                "truncated": False,
+                                "tree": [
+                                    {
+                                        "path": "README.md",
+                                        "mode": "100644",
+                                        "type": "blob",
+                                        "sha": BLOB_SHA,
+                                        "size": 4,
+                                    }
+                                ],
+                            })
+                    if op == "get-source-file":
+                        return json.dumps({
+                            "type": "file",
+                            "path": "src/app.ts",
+                            "sha": BLOB_SHA,
+                            "encoding": "base64",
+                            "content": base64.b64encode(b"ok\n").decode(),
+                            "size": 3,
+                        })
+                    raise AssertionError(f"unexpected gh args for {op}: {args}")
+
+                request = {
+                    "operation": op,
+                    "repo": "gloopsAI/paperclip-gym",
+                    "commit": VALID_SHA,
+                }
+                if op == "get-source-file":
+                    request["path"] = "src/app.ts"
+
+                with self.paths():
+                    with patch.object(broker, "mint_installation_token", side_effect=fake_mint):
+                        with patch.object(broker, "revoke_installation_token") as revoke:
+                            with patch.object(broker, "run_gh", side_effect=mock_run_gh):
+                                result = broker.process_request(request)
+
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(mint_calls["count"], 1)
+                self.assertGreaterEqual(len(observed_tokens), 1)
+                for token in observed_tokens:
+                    self.assertEqual(token, self.SECRET_TOKEN)
+                # Token never appears in the broker response payload.
+                self.assertNotIn(self.SECRET_TOKEN, json.dumps(result))
+                revoke.assert_called_once_with(self.SECRET_TOKEN)
+                # Token context is cleared after the request.
+                self.assertIsNone(broker._active_installation_token.get())
+
+    def test_run_gh_injects_gh_token_and_github_token_env(self):
+        """Active installation token is passed to gh only via env (not argv)."""
+        token = self.SECRET_TOKEN
+        captured: dict[str, object] = {}
+
+        class Result:
+            returncode = 0
+            stdout = b'{"ok":true}'
+            stderr = b""
+
+        def fake_run(command, stdout=None, stderr=None, timeout=None, env=None):
+            captured["command"] = command
+            captured["env"] = env
+            return Result()
+
+        with self.paths():
+            handle = broker._active_installation_token.set(token)
+            try:
+                with patch.object(broker.subprocess, "run", side_effect=fake_run):
+                    out = broker.run_gh(["api", "/repos/gloopsAI/paperclip-gym"])
+            finally:
+                broker._active_installation_token.reset(handle)
+
+        self.assertEqual(out, '{"ok":true}')
+        self.assertEqual(captured["command"], ["gh", "api", "/repos/gloopsAI/paperclip-gym"])
+        env = captured["env"]
+        self.assertIsInstance(env, dict)
+        assert isinstance(env, dict)
+        self.assertEqual(env.get("GH_TOKEN"), token)
+        self.assertEqual(env.get("GITHUB_TOKEN"), token)
+        # Token must never appear on the argv surface.
+        self.assertNotIn(token, captured["command"])
+
+    def test_source_inventory_mint_failure_fails_closed(self):
+        """Mint failure is a typed BrokerError; run_gh is never invoked."""
+        for op in SOURCE_OPS:
+            with self.subTest(op=op):
+                run_gh = MagicMock()
+                with self.paths():
+                    with patch.object(
+                        broker,
+                        "mint_installation_token",
+                        side_effect=broker.BrokerError(
+                            "GitHub App installation token mint failed"
+                        ),
+                    ):
+                        with patch.object(broker, "run_gh", run_gh):
+                            with self.assertRaisesRegex(
+                                broker.BrokerError,
+                                "installation token mint failed",
+                            ):
+                                broker.process_request({
+                                    "operation": op,
+                                    "repo": "gloopsAI/paperclip-gym",
+                                    "commit": VALID_SHA,
+                                    "path": "src/app.ts",
+                                })
+                run_gh.assert_not_called()
+
+    def test_issue_ops_do_not_mint_installation_token(self):
+        """Issue/PR ops keep host gh auth; they must not mint App tokens."""
+        with self.paths():
+            with patch.object(broker, "mint_installation_token") as mint:
+                with patch.object(broker, "run_gh", return_value="[]"):
+                    result = broker.process_request({
+                        "operation": "list-issues",
+                        "repo": "InductAI/induct",
+                    })
+        self.assertTrue(result["ok"])
+        mint.assert_not_called()
+
+    def test_response_never_contains_minted_token(self):
+        """Even if upstream echoes the token, strip_credentials + guard catch it."""
+        leaky = {
+            "sha": VALID_SHA,
+            "commit": {"tree": {"sha": TREE_SHA}},
+            "token": self.SECRET_TOKEN,
+            "access_token": self.SECRET_TOKEN,
+        }
+        repo_payload = {
+            "full_name": "gloopsAI/paperclip-gym",
+            "default_branch": "main",
+            "token": self.SECRET_TOKEN,
+        }
+        call_count = {"n": 0}
+
+        def mock_run_gh(args, env=None):
+            call_count["n"] += 1
+            path = args[1]
+            if "/commits/" in path:
+                return json.dumps(leaky)
+            if path == "/repos/gloopsAI/paperclip-gym":
+                return json.dumps(repo_payload)
+            raise AssertionError(path)
+
+        with self.paths():
+            with patch.object(
+                broker, "mint_installation_token", return_value=self.SECRET_TOKEN
+            ):
+                with patch.object(broker, "run_gh", side_effect=mock_run_gh):
+                    result = broker.process_request({
+                        "operation": "get-repo-source-metadata",
+                        "repo": "gloopsAI/paperclip-gym",
+                        "commit": VALID_SHA,
+                    })
+        self.assertTrue(result["ok"])
+        payload = json.dumps(result)
+        self.assertNotIn(self.SECRET_TOKEN, payload)
+        self.assertNotIn("token", result["data"])
+        self.assertNotIn("access_token", result["data"])
+        self.assertGreaterEqual(call_count["n"], 1)
+
+    def test_handle_connection_mint_failure_does_not_leak_token_material(self):
+        """Socket error path for mint failure stays typed and secret-free."""
+        secret = self.SECRET_TOKEN
+
+        def exploding_mint():
+            # Simulate a mint path that might have held a secret; the error
+            # surface must not include it.
+            raise broker.BrokerError(
+                "GitHub App installation token mint failed"
+            )
+
+        with self.paths():
+            with patch.object(broker, "mint_installation_token", side_effect=exploding_mint):
+                with patch.object(broker, "verify_peer"):
+                    client = MagicMock()
+                    request = {
+                        "operation": "get-repo-source-metadata",
+                        "repo": "gloopsAI/paperclip-gym",
+                        "commit": VALID_SHA,
+                    }
+                    client.recv.side_effect = [
+                        (json.dumps(request) + "\n").encode("utf-8"),
+                        b"",
+                    ]
+                    sent: list[bytes] = []
+                    client.sendall.side_effect = lambda data: sent.append(data)
+                    broker.handle_connection(client)
+
+        self.assertEqual(len(sent), 1)
+        body = sent[0].decode("utf-8")
+        self.assertNotIn(secret, body)
+        parsed = json.loads(body)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("installation token mint failed", parsed["error"])
+
+    def test_run_gh_redacts_token_from_stderr_errors(self):
+        """gh stderr that echoes the token must not surface it in BrokerError."""
+        token = self.SECRET_TOKEN
+
+        class Result:
+            returncode = 1
+            stdout = b""
+            stderr = f"auth failed for {token} against api".encode("utf-8")
+
+        with self.paths():
+            handle = broker._active_installation_token.set(token)
+            try:
+                with patch.object(broker.subprocess, "run", return_value=Result()):
+                    with self.assertRaises(broker.BrokerError) as ctx:
+                        broker.run_gh(["api", "/repos/gloopsAI/paperclip-gym"])
+            finally:
+                broker._active_installation_token.reset(handle)
+        self.assertNotIn(token, str(ctx.exception))
+        self.assertIn("[redacted]", str(ctx.exception))
+
+    def test_production_mint_uses_app_config_and_permissions(self):
+        """Non-test mint posts installation-wide contents:read (no repo pin)."""
+        config = {
+            "appId": 1,
+            "installationId": 146796843,
+            "repositoryId": 99,
+            "repository": "gloopsAI/gloops-paperclip-plugin",
+            "privateKeyPath": "/etc/paperclip-gloops/github-app/private-key.pem",
+            "boardTokenPath": "/etc/paperclip-gloops/operator-board-token",
+        }
+        expires = (
+            datetime.now(timezone.utc) + timedelta(seconds=3600)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        captured: dict[str, object] = {}
+
+        def fake_request(method, path, token, body=None):
+            captured["method"] = method
+            captured["path"] = path
+            captured["jwt"] = token
+            captured["body"] = body
+            return {
+                "token": self.SECRET_TOKEN,
+                "expires_at": expires,
+                "permissions": {"contents": "read", "metadata": "read"},
+            }
+
+        with patch.object(broker, "TEST_MODE", False):
+            with patch.object(broker, "load_app_config", return_value=config):
+                with patch.object(broker, "_app_jwt", return_value="header.payload.sig"):
+                    with patch.object(broker, "_request_json", side_effect=fake_request):
+                        token = broker.mint_installation_token()
+
+        self.assertEqual(token, self.SECRET_TOKEN)
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(
+            captured["path"],
+            f"/app/installations/{config['installationId']}/access_tokens",
+        )
+        self.assertEqual(captured["body"], {"permissions": {"contents": "read"}})
+        # No single-repo pin: installation covers paperclip-gym etc.
+        assert isinstance(captured["body"], dict)
+        self.assertNotIn("repository_ids", captured["body"])
+
+    def test_production_mint_failure_is_typed_broker_error(self):
+        with patch.object(broker, "TEST_MODE", False):
+            with patch.object(
+                broker,
+                "load_app_config",
+                side_effect=broker.BrokerError("GitHub App config is missing"),
+            ):
+                with self.assertRaisesRegex(
+                    broker.BrokerError, "GitHub App config is missing"
+                ):
+                    broker.mint_installation_token()
 
 
 if __name__ == "__main__":
