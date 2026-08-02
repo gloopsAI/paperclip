@@ -9,6 +9,9 @@ import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
+  describeSupportedWorkspaceBranchTemplateVariables,
+  findUnsupportedWorkspaceBranchTemplateVariables,
+  hasStrayWorkspaceBranchTemplatePlaceholderSyntax,
   listWorkspaceServiceCommandDefinitions,
   type GitWorktreeBranchAncestryVerdict,
   type GitWorktreeBranchIncoherenceEvidence as SharedGitWorktreeBranchIncoherenceEvidence,
@@ -438,6 +441,40 @@ function renderWorkspaceTemplate(template: string, input: {
     },
     slug,
   });
+}
+
+// WG-PLAT-006: renderWorkspaceTemplate()/renderTemplate() only expand
+// double-curly `{{dotted.path}}` placeholders naming a supported variable.
+// Any other placeholder shape (single-brace `{identifier}`, angle-bracket
+// `<slug>`) or a `{{...}}` naming an unsupported variable is left as literal
+// text (or silently rendered empty) instead of being expanded. Without this
+// check, sanitizeBranchName() would absorb the leftover `{ } < >` characters
+// into hyphens and admission would proceed with a branch name the operator
+// never intended (e.g. the literal branch `GLO-identifier-<slug>`). Must run
+// on the rendered branch name, before sanitizeBranchName().
+function assertWorkspaceBranchTemplateResolved(input: { template: string; renderedBranch: string }) {
+  const unsupportedVariables = findUnsupportedWorkspaceBranchTemplateVariables(input.template);
+  const hasStrayPlaceholderSyntax = hasStrayWorkspaceBranchTemplatePlaceholderSyntax(input.renderedBranch);
+  if (unsupportedVariables.length === 0 && !hasStrayPlaceholderSyntax) return;
+
+  const reasons: string[] = [];
+  if (unsupportedVariables.length > 0) {
+    reasons.push(`references unsupported variable(s) ${unsupportedVariables.map((name) => `{{${name}}}`).join(", ")}`);
+  }
+  if (hasStrayPlaceholderSyntax) {
+    reasons.push(`rendered branch name "${input.renderedBranch}" still contains unresolved placeholder syntax`);
+  }
+
+  throw new WorkspacePreparationFailure(
+    `Workspace branch template "${input.template}" could not be fully resolved (${reasons.join("; ")}). ` +
+      `Supported variables: ${describeSupportedWorkspaceBranchTemplateVariables()}.`,
+    {
+      reason: "branch_template_unresolved_placeholder",
+      branchTemplate: input.template,
+      renderedBranch: input.renderedBranch,
+      unsupportedVariables,
+    },
+  );
 }
 
 function sanitizeBranchName(value: string): string {
@@ -2731,6 +2768,7 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
+  assertWorkspaceBranchTemplateResolved({ template: branchTemplate, renderedBranch });
   let branchName = sanitizeBranchName(renderedBranch);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir

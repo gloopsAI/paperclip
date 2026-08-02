@@ -1135,6 +1135,146 @@ describe("realizeExecutionWorkspace", () => {
     expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
   });
 
+  // WG-PLAT-006: renderTemplate() only expands double-curly `{{dotted.path}}`
+  // placeholders. A template written with single-brace or angle-bracket
+  // syntax is left as literal text and must fail admission instead of being
+  // silently sanitized into a branch name the operator never intended.
+  it("rejects a branch template with an unresolved single-brace/angle-bracket placeholder", async () => {
+    const repoRoot = await createTempRepo();
+
+    let error: unknown = null;
+    try {
+      await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "GLO-{identifier}-<slug>",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "GLO-447",
+          title: "Add Worktree Support",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      code: "workspace_preparation_failed",
+      providerInvocationAttempted: false,
+      resultJson: {
+        provider_invocation: { attempted: false },
+        workspacePreparation: expect.objectContaining({
+          reason: "branch_template_unresolved_placeholder",
+          branchTemplate: "GLO-{identifier}-<slug>",
+        }),
+      },
+    });
+    // The worktree parent dir must never be created for a rejected template.
+    await expect(
+      fs.stat(path.join(repoRoot, ".paperclip", "worktrees")),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a branch template referencing an unsupported {{variable}}", async () => {
+    const repoRoot = await createTempRepo();
+
+    let error: unknown = null;
+    try {
+      await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.number}}-{{slug}}",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "GLO-447",
+          title: "Add Worktree Support",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      code: "workspace_preparation_failed",
+      providerInvocationAttempted: false,
+      resultJson: {
+        provider_invocation: { attempted: false },
+        workspacePreparation: expect.objectContaining({
+          reason: "branch_template_unresolved_placeholder",
+          branchTemplate: "{{issue.number}}-{{slug}}",
+          unsupportedVariables: ["issue.number"],
+        }),
+      },
+    });
+  });
+
+  it("still renders a well-formed {{issue.identifier}}-{{slug}} template correctly", async () => {
+    const repoRoot = await createTempRepo();
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "GLO-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("GLO-447-add-worktree-support");
+    expect(realized.created).toBe(true);
+    await expect(fs.stat(path.join(realized.cwd, ".git"))).resolves.toBeTruthy();
+  });
+
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });

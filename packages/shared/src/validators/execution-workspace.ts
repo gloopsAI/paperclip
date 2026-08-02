@@ -169,3 +169,59 @@ export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mod
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
 export type ReconcileExecutionWorkspaceBranch = z.infer<typeof reconcileExecutionWorkspaceBranchSchema>;
 export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;
+
+// Variables `renderWorkspaceTemplate()` (server/src/services/workspace-runtime.ts)
+// resolves in a `workspaceStrategy.branchTemplate` string. Kept as the single
+// source of truth so both save-time validation (below) and admission-time
+// rendering agree on what is supported.
+export const SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES = [
+  "issue.id",
+  "issue.identifier",
+  "issue.title",
+  "agent.id",
+  "agent.name",
+  "project.id",
+  "workspace.repoRef",
+  "slug",
+] as const;
+
+// Same placeholder shape `renderTemplate()`
+// (packages/adapter-utils/src/server-utils.ts) recognizes: a double-curly
+// block wrapping a dotted variable name. Any other placeholder shape —
+// single-brace `{identifier}`, angle-bracket `<slug>`, or a malformed
+// `{{...}}` — is left as literal text by `renderTemplate()` instead of being
+// expanded, so it must be flagged rather than silently sanitized away.
+const WORKSPACE_BRANCH_TEMPLATE_PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+const WORKSPACE_BRANCH_TEMPLATE_STRAY_PLACEHOLDER_CHAR_PATTERN = /[{}<>]/;
+
+/**
+ * Returns the `{{dotted.path}}` variable names referenced by `template` that
+ * are not in `SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES`. These match
+ * `renderTemplate()`'s placeholder regex, so they would otherwise silently
+ * render to an empty string instead of failing.
+ */
+export function findUnsupportedWorkspaceBranchTemplateVariables(template: string): string[] {
+  const supported = new Set<string>(SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES);
+  const unsupported = new Set<string>();
+  for (const match of template.matchAll(WORKSPACE_BRANCH_TEMPLATE_PLACEHOLDER_PATTERN)) {
+    if (!supported.has(match[1])) unsupported.add(match[1]);
+  }
+  return Array.from(unsupported);
+}
+
+/**
+ * True when `value` contains placeholder-shaped syntax (`{`, `}`, `<`, `>`)
+ * outside of a recognized `{{dotted.path}}` block. Safe to call on either the
+ * raw template (recognized blocks are stripped before checking) or on a
+ * fully rendered branch name (which should contain no `{{...}}` blocks at
+ * all, so any brace/angle-bracket character indicates a placeholder that was
+ * never expanded).
+ */
+export function hasStrayWorkspaceBranchTemplatePlaceholderSyntax(value: string): boolean {
+  const withoutRecognizedPlaceholders = value.replace(WORKSPACE_BRANCH_TEMPLATE_PLACEHOLDER_PATTERN, "");
+  return WORKSPACE_BRANCH_TEMPLATE_STRAY_PLACEHOLDER_CHAR_PATTERN.test(withoutRecognizedPlaceholders);
+}
+
+export function describeSupportedWorkspaceBranchTemplateVariables(): string {
+  return SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES.map((name) => `{{${name}}}`).join(", ");
+}

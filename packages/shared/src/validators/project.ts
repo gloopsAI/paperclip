@@ -2,6 +2,28 @@ import { z } from "zod";
 import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
+import {
+  describeSupportedWorkspaceBranchTemplateVariables,
+  findUnsupportedWorkspaceBranchTemplateVariables,
+  hasStrayWorkspaceBranchTemplatePlaceholderSyntax,
+} from "./execution-workspace.js";
+
+function validateExecutionWorkspaceBranchTemplate(
+  value: { branchTemplate?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  if (!value.branchTemplate) return;
+  const unsupportedVariables = findUnsupportedWorkspaceBranchTemplateVariables(value.branchTemplate);
+  const hasStraySyntax = hasStrayWorkspaceBranchTemplatePlaceholderSyntax(value.branchTemplate);
+  if (unsupportedVariables.length === 0 && !hasStraySyntax) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      `branchTemplate contains an unresolved placeholder. ` +
+      `Supported variables: ${describeSupportedWorkspaceBranchTemplateVariables()}.`,
+    path: ["branchTemplate"],
+  });
+}
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -12,7 +34,8 @@ const executionWorkspaceStrategySchema = z
     provisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine(validateExecutionWorkspaceBranchTemplate);
 
 export const projectExecutionWorkspacePolicySchema = z
   .object({

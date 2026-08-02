@@ -4,6 +4,7 @@ import {
   addIssueCommentSchema,
   createIssueSchema,
   issueExecutionPolicySchema,
+  issueExecutionWorkspaceSettingsSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -539,5 +540,45 @@ describe("issue validators", () => {
         resourceBudget: { maxRetriesPerTask: -1 },
       }).success,
     ).toBe(false);
+  });
+
+  // WG-PLAT-006: workspaceStrategy.branchTemplate must use the supported
+  // `{{dotted.path}}` syntax naming a supported variable, so admission never
+  // has to reject a template that was already accepted at save time.
+  it("rejects a workspaceStrategy.branchTemplate with an unresolved single-brace/angle-bracket placeholder", () => {
+    const result = issueExecutionWorkspaceSettingsSchema.safeParse({
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "GLO-{identifier}-<slug>",
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["workspaceStrategy", "branchTemplate"]);
+    }
+  });
+
+  it("rejects a workspaceStrategy.branchTemplate referencing an unsupported {{variable}}", () => {
+    const result = issueExecutionWorkspaceSettingsSchema.safeParse({
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "{{issue.number}}-{{slug}}",
+      },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["workspaceStrategy", "branchTemplate"]);
+    }
+  });
+
+  it("accepts a well-formed {{issue.identifier}}-{{slug}} branchTemplate", () => {
+    expect(
+      issueExecutionWorkspaceSettingsSchema.safeParse({
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      }).success,
+    ).toBe(true);
   });
 });
