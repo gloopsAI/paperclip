@@ -7415,7 +7415,10 @@ export function issueRoutes(
         actor.actorType,
       );
       await assertCanManageIssueMonitor(access, req, sourceIssue.companyId, child.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
-      const childIssueId = randomUUID();
+      // Preserve client-preallocated IDs from createAcceptedPlanDecompositionChildSchema
+      // so blockedByIssueIds can name sibling prereqs/dependents in the same POST.
+      const childIssueId =
+        typeof child.id === "string" && child.id.length > 0 ? child.id : randomUUID();
       const sourceTrust = await sourceTrustForActorWrite({
         id: childIssueId,
         companyId: sourceIssue.companyId,

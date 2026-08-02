@@ -1311,6 +1311,7 @@ export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
+  createAcceptedPlanDecompositionChildSchema,
   createAcceptedPlanDecompositionSchema,
   resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
