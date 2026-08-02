@@ -1893,13 +1893,19 @@ export function executionWorkspaceService(db: Db) {
           if (!sourceBefore) throw notFound("Source issue not found");
 
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
+          const restoredReturnOwnerAgentId =
+            requestedStatus === "todo"
+              ? recoveryAction?.returnOwnerAgentId ?? null
+              : null;
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({
             issue: sourceBefore,
             policy,
             previousPolicy: policy,
             requestedStatus,
-            requestedAssigneePatch: {},
+            requestedAssigneePatch: restoredReturnOwnerAgentId
+              ? { assigneeAgentId: restoredReturnOwnerAgentId, assigneeUserId: null }
+              : {},
             actor: {
               agentId: input.actor.agentId ?? null,
               userId: input.actor.actorType === "user" ? input.actor.actorId : null,
@@ -1911,6 +1917,9 @@ export function executionWorkspaceService(db: Db) {
             lockedWorkspace.sourceIssueId,
             {
               ...(requestedStatus ? { status: requestedStatus } : {}),
+              ...(restoredReturnOwnerAgentId
+                ? { assigneeAgentId: restoredReturnOwnerAgentId, assigneeUserId: null }
+                : {}),
               ...transition.patch,
               actorAgentId: input.actor.agentId ?? null,
               actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,

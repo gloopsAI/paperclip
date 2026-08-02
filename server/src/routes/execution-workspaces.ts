@@ -575,6 +575,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           wakeReason: "issue_recovery_action_restored",
           source: "execution_workspace.quarantine_restore",
           recoveryActionId: result.recoveryAction?.id ?? null,
+          recoveryCause: result.recoveryAction?.cause ?? null,
           executionWorkspaceId: existing.id,
           rescueRef: result.rescueRef?.branchName ?? null,
         },

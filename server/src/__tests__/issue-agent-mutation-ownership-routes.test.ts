@@ -1788,7 +1788,7 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
-  it("wakes the assigned agent when recovery resolution restores a source issue to todo", async () => {
+  it("restores and wakes the recorded return owner after workspace recovery", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
     );
@@ -1799,6 +1799,36 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
       ownerAgentId,
+      returnOwnerAgentId: peerAgentId,
+      cause: "workspace_validation_failed",
+    });
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId: issueId,
+      recoveryIssueId: null,
+      kind: "workspace_validation",
+      status: "resolved",
+      ownerType: "agent",
+      ownerAgentId,
+      ownerUserId: null,
+      previousOwnerAgentId: peerAgentId,
+      returnOwnerAgentId: peerAgentId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace:test",
+      evidence: {},
+      nextAction: "Restore the workspace.",
+      wakePolicy: null,
+      monitorPolicy: null,
+      attemptCount: 1,
+      maxAttempts: null,
+      timeoutAt: null,
+      lastAttemptAt: new Date(),
+      resolvedAt: new Date(),
+      outcome: "restored",
+      resolutionNote: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
     const res = await request(await createApp(ownerActor()))
@@ -1810,14 +1840,26 @@ describe("agent issue mutation checkout ownership", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "todo",
+        assigneeAgentId: peerAgentId,
+        assigneeUserId: null,
+      }),
+      expect.anything(),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ownerAgentId,
+      peerAgentId,
       expect.objectContaining({
         reason: "issue_recovery_action_restored",
         payload: expect.objectContaining({
           issueId,
           recoveryActionId,
           mutation: "recovery_action_resolution",
+        }),
+        contextSnapshot: expect.objectContaining({
+          recoveryCause: "workspace_validation_failed",
         }),
       }),
     );

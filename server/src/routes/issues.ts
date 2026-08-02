@@ -5495,7 +5495,18 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+    const restoredReturnOwnerAgentId =
+      outcome === "restored" &&
+      sourceIssueStatus === "todo" &&
+      activeRecoveryAction?.cause === "workspace_validation_failed"
+        ? activeRecoveryAction.returnOwnerAgentId ?? null
+        : null;
+    const updateFields = {
+      ...(sourceIssueStatus ? { status: sourceIssueStatus } : {}),
+      ...(restoredReturnOwnerAgentId
+        ? { assigneeAgentId: restoredReturnOwnerAgentId, assigneeUserId: null }
+        : {}),
+    };
     if (req.actor.type === "agent" && parseExecutionAdmissionPolicy().enabled &&
         (sourceIssueStatus === "in_review" || sourceIssueStatus === "done")) {
       const trustedReceipt = await trustedExecutionTruthReceiptForAgentRun(req, existing);
@@ -5545,6 +5556,9 @@ export function issueRoutes(
           id,
           {
             status: sourceIssueStatus,
+            ...(restoredReturnOwnerAgentId
+              ? { assigneeAgentId: restoredReturnOwnerAgentId, assigneeUserId: null }
+              : {}),
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           },
@@ -5635,6 +5649,7 @@ export function issueRoutes(
           wakeReason: "issue_recovery_action_restored",
           source: "issue.recovery_action_resolution",
           recoveryActionId: result.recoveryAction.id,
+          recoveryCause: result.recoveryAction.cause,
         },
       }).catch((err) =>
         logger.warn(
