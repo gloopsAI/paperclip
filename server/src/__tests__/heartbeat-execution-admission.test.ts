@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +12,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issueRecoveryActions,
   issues,
   projects,
@@ -496,6 +499,94 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       status: "cancelled",
       errorCode: "admission.issue_blocked",
       resultJson: { stopReason: "admission.issue_blocked" },
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("WG-PLAT-016 denies a resolved-dependency wake when a blocker reappears before claim", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "blocked" });
+    const blockerIssueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "done" });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    let raced = false;
+    const heartbeat = heartbeatService(db, {
+      queuedRunClaimHooks: {
+        afterDependencyReadBeforeClaimUpdate: async ({ issueId: claimIssueId }) => {
+          if (raced || claimIssueId !== issueId) return;
+          raced = true;
+          await db
+            .update(issues)
+            .set({ status: "blocked", updatedAt: new Date() })
+            .where(eq(issues.id, blockerIssueId));
+        },
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      requestedByActorType: "system",
+      requestedByActorId: "dependency-race-test",
+      payload: { issueId, resolvedBlockerIssueId: blockerIssueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: blockerIssueId,
+      },
+    });
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(raced).toBe(true);
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_dependencies_blocked",
+      resultJson: {
+        stopReason: "issue_dependencies_blocked",
+      },
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("WG-PLAT-016 rejects a user-forged dependency-ready wake on a blocked issue", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "blocked" });
+    const blockerIssueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "done" });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "manual",
+      reason: "issue_blockers_resolved",
+      requestedByActorType: "user",
+      requestedByActorId: "forging-user",
+      payload: { issueId, resolvedBlockerIssueId: blockerIssueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: blockerIssueId,
+      },
+    });
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "admission.issue_blocked",
     });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
@@ -1121,7 +1212,9 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       projectId,
       name: "Current checkout",
       sourceType: "local_path",
-      cwd: process.cwd(),
+      cwd: existsSync(path.join(process.cwd(), ".git"))
+        ? process.cwd()
+        : path.resolve(process.cwd(), ".."),
       repoUrl: "https://github.com/gloopsAI/paperclip.git",
       defaultRef: "gloops/stable",
       isPrimary: true,

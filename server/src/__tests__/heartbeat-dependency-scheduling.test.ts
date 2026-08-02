@@ -366,6 +366,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
+      requestedByActorType: "system",
+      requestedByActorId: "dependency-test",
       payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerId },
       contextSnapshot: {
         issueId: blockedIssueId,
@@ -491,6 +493,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
+      requestedByActorType: "system",
+      requestedByActorId: "dependency-test",
       payload: {
         issueId: blockedIssueId,
         resolvedBlockerIssueId: blockerId,
@@ -951,6 +955,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
+      requestedByActorType: "system",
+      requestedByActorId: "dependency-test",
       payload: { issueId: deepDescendantIssueId },
       contextSnapshot: { issueId: deepDescendantIssueId, wakeReason: "issue_blockers_resolved" },
     });
