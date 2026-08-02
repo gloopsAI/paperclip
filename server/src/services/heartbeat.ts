@@ -104,6 +104,10 @@ import {
 } from "./run-liveness.js";
 import { parseControlledSwarmAdmissionPolicy } from "./controlled-swarm-admission.js";
 import {
+  evaluateBacklogBankruptcyAdmission,
+  parseBacklogBankruptcyAdmissionPolicy,
+} from "./backlog-bankruptcy-admission.js";
+import {
   ISSUE_PACKET_REASON,
   evaluateIssuePacketReadiness,
 } from "./issue-packet-readiness.js";
@@ -5421,6 +5425,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
   const reconciledExecutionAdapters = parseReconciledExecutionAdapters(runtimeEnv);
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
+  const backlogBankruptcyAdmissionPolicy = parseBacklogBankruptcyAdmissionPolicy(runtimeEnv);
   const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
   /**
@@ -11532,6 +11537,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     claimedAt: Date;
   }): Promise<ExecutionAdmissionClaim> {
     const { run, context, issueId, responsibleUserId, claimedAt } = input;
+    const bankruptcyCompanyFrozen = backlogBankruptcyAdmissionPolicy.frozenCompanyIds.has(
+      run.companyId.toLowerCase(),
+    );
+    const bankruptcyIssue = bankruptcyCompanyFrozen && issueId
+      ? await db
+          .select({ executionPolicy: issues.executionPolicy })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const bankruptcyAdmission = evaluateBacklogBankruptcyAdmission(
+      backlogBankruptcyAdmissionPolicy,
+      {
+        companyId: run.companyId,
+        issueId,
+        executionAdmissionEnabled: executionAdmissionPolicy.enabled,
+        hasExplicitResourceBudget: Boolean(
+          normalizeIssueExecutionPolicy(bankruptcyIssue?.executionPolicy ?? null)?.resourceBudget,
+        ),
+      },
+    );
+    if (!bankruptcyAdmission.admitted) {
+      const denied = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: claimedAt,
+          updatedAt: claimedAt,
+          error: bankruptcyAdmission.reason,
+          errorCode: bankruptcyAdmission.errorCode,
+          resultJson: {
+            ...parseObject(run.resultJson),
+            stopReason: bankruptcyAdmission.errorCode,
+            timeoutFired: false,
+          },
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return denied
+        ? {
+            kind: "denied",
+            run: denied,
+            errorCode: bankruptcyAdmission.errorCode,
+            reason: bankruptcyAdmission.reason,
+            envelope: null,
+          }
+        : { kind: "lost_race" };
+    }
     if (!executionAdmissionPolicy.enabled) {
       return db.transaction(async (tx) => {
         const limit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
