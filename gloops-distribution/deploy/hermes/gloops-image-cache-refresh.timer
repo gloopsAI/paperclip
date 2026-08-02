@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the cached GLoops Paperclip stable image every five minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+RandomizedDelaySec=30s
+Persistent=true
+Unit=gloops-image-cache-refresh.service
+
+[Install]
+WantedBy=timers.target

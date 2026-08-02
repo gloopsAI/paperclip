@@ -2,6 +2,95 @@
 
 This directory installs the GLoops-owned Paperclip image on Hermes without activating it. The installer is deliberately fail-closed: it installs one immutable digest, removes the activation marker, disables legacy Paperclip/Hermes services, and masks the production service.
 
+## Supported live image pin path
+
+`pin-paperclip-image.sh` is the only supported way to change or restart the live
+Paperclip image pin. Do not hand-edit `approved-image`, `runtime.env`, or the
+supervisor operational-closure receipt.
+
+```bash
+sudo /usr/local/lib/paperclip-gloops/pin-paperclip-image.sh \
+  ghcr.io/gloopsai/paperclip-gloops@sha256:<64-lowercase-hex-digest>
+
+# Validate the current host contract without pulling, writing, or restarting.
+sudo /usr/local/lib/paperclip-gloops/pin-paperclip-image.sh \
+  --dry-run --skip-pull \
+  ghcr.io/gloopsai/paperclip-gloops@sha256:<digest>
+
+# Discovery convenience only: stable is resolved to its immutable RepoDigest.
+sudo /usr/local/lib/paperclip-gloops/pin-paperclip-image.sh --from-tag stable
+
+# Re-run preflight and restart the currently approved immutable image.
+sudo /usr/local/lib/paperclip-gloops/pin-paperclip-image.sh --restart-only
+```
+
+The command validates exact digest form and the existing three-way pin before
+mutation, pulls or verifies the target image, creates timestamped backups under
+`/var/lib/paperclip-gloops/receipts/pin-backups/`, atomically updates only the
+`PAPERCLIP_IMAGE=` line and `approvedImage` field, restarts the service, waits up
+to 120 seconds for active state plus `{"status":"ok"}`, and writes a mode-0600
+`gloops.paperclip-image-pin.v1` receipt under
+`/var/lib/paperclip-gloops/receipts/`. On startup or health failure it prints
+service/journal evidence and attempts to restore the prior three files and
+restart the prior digest. A failed rollback is named explicitly; it is never
+reported as a successful pin.
+
+Preflight footguns are intentionally surfaced, not auto-fixed:
+
+- `/etc/paperclip-gloops/github-app.json` must match the active credential
+  receipt's `appId`, `installationId`, `repository`, and `repositoryId`.
+- `/opt/paperclip/hermes-execution-profile` may contain only `auth.json`,
+  `config.yaml`, `cron-disabled`, and `policy.json`; the live profile verifier
+  still owns the full credential/provider boundary.
+- `/opt/paperclip/hermes-execution-state/workspace` must remain
+  `2770:10000:985` so Hermes uid 10000 and Paperclip gid 985 share the exact
+  transaction root.
+
+## Stable image pre-pull (no activation)
+
+GitHub Actions SSH credentials are not present in this repository, so image
+publication does not invent a new production access path. Instead, the optional
+host timer pulls `:stable` every five minutes, resolves and records its immutable
+RepoDigest, and never edits a pin or restarts a service:
+
+```bash
+sudo install -m 0755 pull-latest-stable.sh \
+  /usr/local/lib/paperclip-gloops/pull-latest-stable.sh
+sudo install -m 0644 gloops-image-cache-refresh.service \
+  gloops-image-cache-refresh.timer /usr/local/lib/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now gloops-image-cache-refresh.timer
+```
+
+Changed-digest receipts are written under `/var/lib/paperclip-gloops/receipts/`.
+Pre-pull is cache warming only: explicit operator invocation of
+`pin-paperclip-image.sh` remains the production activation boundary. The dark
+installer installs these assets but leaves this timer disabled; enabling it is a
+separate host-operations choice.
+
+## Distribution and operator timing
+
+| Path | Expected wall time | Use it when |
+|---|---:|---|
+| Full GLoops Distribution | 30–40 minutes | Schema/migration, dependency, multi-package, UI, release-tag, or any mixed/out-of-allowlist change |
+| GLoops Distribution Fast | 15 minutes or less | Only the narrow Hermes adapter/admission/guarded-reset/heartbeat allowlist and companion focused tests changed |
+| Pin-only with pre-pulled digest | 2–5 minutes | An already reviewed and published immutable digest is ready for explicit activation |
+
+For pull requests, existing branch protection still requires the full Paperclip
+CI matrix and independent review; the fast workflow does not weaken or spoof
+those checks. For a fast-only push to `gloops/stable`, the full publish rerun is
+skipped and the fast workflow owns the `sha-<shortsha>` plus `stable` image
+publication. Tag releases always retain the full Distribution path.
+
+Operational rules:
+
+1. Do not merge red when a container job was skipped or failed. Merged is not
+   the same as deployable, and no digest means there is nothing safe to pin.
+2. Land the product fix and its focused regression test in one PR; a test-only
+   follow-up pays another merge and distribution cycle.
+3. Pin only through `pin-paperclip-image.sh` and retain its receipt path.
+4. Use full Distribution whenever the fast classifier rejects any changed file.
+
 ## Guarantees while dark
 
 - No Paperclip container, agent, heartbeat, routine, scheduler, or related timer is running.

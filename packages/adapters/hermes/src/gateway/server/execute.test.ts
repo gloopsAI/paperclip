@@ -2045,7 +2045,9 @@ describe("supervisor operational closure integration", () => {
       repair_ladder?: { schemaVersion?: string; action?: string };
     };
     expect(rj.terminal_reconciliation?.schemaVersion).toBe("gloops.hermes.terminal-reconciliation.v1");
-    expect(rj.terminal_reconciliation?.disposition).toBe("unreconciled");
+    // makeCtx binds this run to an issue, so the terminal evidence projected
+    // onto that issue must reconcile exactly.
+    expect(rj.terminal_reconciliation?.disposition).toBe("matched");
     expect(rj.resume_ledger?.schemaVersion).toBe("gloops.hermes.resume-ledger.v1");
     const effectNames = (rj.resume_ledger?.entries ?? []).map((e) => e.effect);
     expect(effectNames).toContain("terminal_event_observed");

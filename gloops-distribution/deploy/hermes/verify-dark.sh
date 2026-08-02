@@ -17,9 +17,16 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service gloops-image-cache-refresh.service gloops-image-cache-refresh.timer; do
   check_inactive "${unit}"
 done
+
+if [[ "$(systemctl is-enabled gloops-image-cache-refresh.timer 2>/dev/null || true)" == "disabled" ]]; then
+  echo "PASS gloops-image-cache-refresh.timer is disabled"
+else
+  echo "FAIL gloops-image-cache-refresh.timer is not disabled" >&2
+  failed=1
+fi
 
 if [[ "$(systemctl is-enabled paperclip-campaign-deadman.service 2>/dev/null || true)" == "masked" ]]; then
   echo "PASS paperclip-campaign-deadman.service is masked"
@@ -389,14 +396,23 @@ else
   failed=1
 fi
 
-if systemctl list-timers --all --no-legend | grep -Ei 'paperclip|gloops-(runner|exec|watchdog)|hermes-agent'; then
+if systemctl list-timers --no-legend | grep -Ei 'paperclip|gloops-(runner|exec|watchdog|image-cache-refresh)|hermes-agent'; then
   echo "FAIL a Paperclip-related timer is scheduled" >&2
   failed=1
 else
   echo "PASS no Paperclip-related timer is scheduled"
 fi
 
-if systemctl list-unit-files --type=service --no-legend | grep -E 'paperclip|gloops-runner|hermes-agent' | grep -Ev '(disabled|masked|static)'; then
+if systemctl list-unit-files --type=timer --no-legend \
+  | grep -E 'paperclip|gloops-(runner|exec|watchdog|image-cache-refresh)|hermes-agent' \
+  | grep -Ev '(disabled|masked|static)'; then
+  echo "FAIL a Paperclip-related timer is enabled" >&2
+  failed=1
+else
+  echo "PASS Paperclip-related timers are disabled, masked, or static"
+fi
+
+if systemctl list-unit-files --type=service --no-legend | grep -E 'paperclip|gloops-(runner|image-cache-refresh)|hermes-agent' | grep -Ev '(disabled|masked|static)'; then
   echo "FAIL a Paperclip-related service is enabled" >&2
   failed=1
 else
