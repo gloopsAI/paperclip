@@ -35,9 +35,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 jobs:
   classify:
@@ -52,6 +49,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve and classify changed files
         id: classify
@@ -61,9 +59,9 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            git diff-tree --no-commit-id --name-only -r "${HEAD_SHA}" > /tmp/gloops-fast-files
+            git diff-tree --no-commit-id --no-renames --name-only -r "${HEAD_SHA}" > /tmp/gloops-fast-files
           else
-            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${HEAD_SHA}" > /tmp/gloops-fast-files
+            git diff --no-renames --name-only "${BASE_SHA}" "${HEAD_SHA}" > /tmp/gloops-fast-files
           fi
           node scripts/classify-gloops-fast-path.mjs \
             --github-output "${GITHUB_OUTPUT}" /tmp/gloops-fast-files
@@ -80,6 +78,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -125,11 +124,17 @@ jobs:
     if: needs.classify.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Login to GitHub Container Registry
         if: github.event_name == 'push'

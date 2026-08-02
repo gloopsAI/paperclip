@@ -371,7 +371,11 @@ PY
   fi
 fi
 
-"${SYSTEMCTL}" reset-failed "${SERVICE}" || true
+if ! "${SYSTEMCTL}" reset-failed "${SERVICE}"; then
+  echo "cannot reset the ${SERVICE} failure state" >&2
+  handle_live_failure
+  exit 1
+fi
 if ! "${SYSTEMCTL}" restart "${SERVICE}"; then
   handle_live_failure
   exit 1

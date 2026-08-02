@@ -210,7 +210,7 @@ systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl disable --now gloops-image-cache-refresh.timer gloops-image-cache-refresh.service 2>/dev/null || true
+systemctl disable --now gloops-image-cache-refresh.timer gloops-image-cache-refresh.service
 systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
 systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 

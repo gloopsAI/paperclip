@@ -1579,6 +1579,8 @@ for (const required of [
   "name: GLoops Distribution Fast",
   "workflow_dispatch:",
   "node scripts/classify-gloops-fast-path.mjs",
+  "git diff --no-renames --name-only",
+  "persist-credentials: false",
   "pnpm --filter @paperclipai/hermes-paperclip-adapter typecheck",
   "pnpm --filter @paperclipai/server typecheck",
   "src/gateway/server/execute.test.ts",
@@ -1587,6 +1589,7 @@ for (const required of [
   "server/src/__tests__/heartbeat-comment-wake-batching.test.ts",
   "bash gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh",
   "fast-container:",
+  "packages: write",
   "timeout-minutes: 15",
   "type=sha,prefix=sha-",
   "type=raw,value=stable,enable=${{ github.ref == 'refs/heads/gloops/stable' }}",
@@ -2449,6 +2452,16 @@ for (const required of [
 ]) {
   if (!installDark.includes(required)) {
     fail(`dark installer is missing fast deployment asset handling ${required}`);
+  }
+}
+for (const required of [
+  "gloops-image-cache-refresh.service",
+  "gloops-image-cache-refresh.timer",
+  "gloops-image-cache-refresh.timer is disabled",
+  "gloops-(runner|exec|watchdog|image-cache-refresh)",
+]) {
+  if (!verifyDark.includes(required)) {
+    fail(`dark verifier is missing image cache refresh assertion ${required}`);
   }
 }
 for (const [label, contents] of [

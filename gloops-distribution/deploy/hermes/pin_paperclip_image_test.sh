@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; readonly SCRIPT_DIR
 readonly OLD_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 readonly NEW_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 readonly FAILED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+readonly RESET_FAILED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
 readonly IMAGE_ID='sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
 readonly REVISION='dddddddddddddddddddddddddddddddddddddddd'
 
@@ -74,6 +75,12 @@ if [[ "$1" == 'restart' && "${PAPERCLIP_TEST_FAIL_NEXT_RESTART:-0}" == '1' ]]; t
   count=0
   [[ ! -f "${PAPERCLIP_TEST_RESTART_STATE}" ]] || count="$(<"${PAPERCLIP_TEST_RESTART_STATE}")"
   printf '%s\n' "$((count + 1))" >"${PAPERCLIP_TEST_RESTART_STATE}"
+  ((count > 0)) || exit 1
+fi
+if [[ "$1" == 'reset-failed' && "${PAPERCLIP_TEST_FAIL_NEXT_RESET:-0}" == '1' ]]; then
+  count=0
+  [[ ! -f "${PAPERCLIP_TEST_RESET_STATE}" ]] || count="$(<"${PAPERCLIP_TEST_RESET_STATE}")"
+  printf '%s\n' "$((count + 1))" >"${PAPERCLIP_TEST_RESET_STATE}"
   ((count > 0)) || exit 1
 fi
 exit 0
@@ -157,6 +164,32 @@ assert supervisor["approvedImage"] == expected_image
 assert len(list((root / "var/lib/paperclip-gloops/receipts").glob("pin-paperclip-image-*.json"))) == 1
 PY
 unset PAPERCLIP_TEST_FAIL_NEXT_RESTART PAPERCLIP_TEST_RESTART_STATE
+export PAPERCLIP_TEST_NEW_IMAGE="${NEW_IMAGE}"
+
+# reset-failed is part of the post-mutation restart transaction. If it fails,
+# the command must restore and prove the prior pin just like a failed restart.
+export PAPERCLIP_TEST_NEW_IMAGE="${RESET_FAILED_IMAGE}"
+export PAPERCLIP_TEST_FAIL_NEXT_RESET=1
+export PAPERCLIP_TEST_RESET_STATE="${test_root}/reset-count"
+if "${SCRIPT_DIR}/pin-paperclip-image.sh" --skip-pull "${RESET_FAILED_IMAGE}" \
+  >"${test_root}/failed-reset.out" 2>"${test_root}/failed-reset.err"; then
+  echo 'expected the simulated reset-failed error to fail the pin command' >&2
+  exit 1
+fi
+grep -Fq 'ROLLBACK OK' "${test_root}/failed-reset.err"
+grep -Fqx "${NEW_IMAGE}" "${root}/etc/paperclip-gloops/approved-image"
+grep -Fqx "PAPERCLIP_IMAGE=${NEW_IMAGE}" "${root}/etc/paperclip-gloops/runtime.env"
+python3 - "${root}" "${NEW_IMAGE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root, expected_image = Path(sys.argv[1]), sys.argv[2]
+supervisor = json.loads((root / "var/lib/paperclip-gloops/controlled-swarm/supervisor-operational-closure.json").read_text())
+assert supervisor["approvedImage"] == expected_image
+assert len(list((root / "var/lib/paperclip-gloops/receipts").glob("pin-paperclip-image-*.json"))) == 1
+PY
+unset PAPERCLIP_TEST_FAIL_NEXT_RESET PAPERCLIP_TEST_RESET_STATE
 export PAPERCLIP_TEST_NEW_IMAGE="${NEW_IMAGE}"
 
 export PAPERCLIP_PREPULL_TEST_MODE=1
