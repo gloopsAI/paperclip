@@ -80,11 +80,15 @@ check_read_lane_snapshot "${stage}"
 ln "${HERMES_IMAGE_ARCHIVE}" "${stage}/$(basename "${HERMES_IMAGE_ARCHIVE}")"
 (
   cd "${stage}"
-  files=(hermes-execution-*.tar.zst paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before read-lane.manifest)
+  # Keep the immutable execution image as an explicit checksum boundary; the
+  # distribution verifier and rollback contract both require this literal
+  # archive attestation before the newly added read-lane artifacts.
+  sha256sum hermes-execution-*.tar.zst >SHA256SUMS
+  files=(paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before read-lane.manifest)
   for snapshot in read-lane.*.before; do
     [[ -e "${snapshot}" ]] && files+=("${snapshot}")
   done
-  sha256sum "${files[@]}" >SHA256SUMS
+  sha256sum "${files[@]}" >>SHA256SUMS
 )
 chmod 0600 "${stage}/SHA256SUMS" "${stage}"/*.zst
 mv "${stage}" "${destination}"
