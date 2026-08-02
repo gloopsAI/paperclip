@@ -3,9 +3,12 @@
 
 Serves bounded, read-only GitHub issue/PR and source-inventory evidence for
 the allowlisted Induct repositories over a peer-authenticated Unix socket.
-Uses the existing root ``gh`` CLI authentication without copying, printing,
-mounting, or returning credentials.  A separate socket from the one-run push
-broker so the push path is untouched.
+Issue/PR operations use the existing root ``gh`` CLI authentication.  Source-
+inventory operations mint a short-lived GitHub App installation token from the
+same host credentials as the push broker (``/etc/paperclip-gloops/github-app.json``
++ private key) and pass it to ``gh`` only via process env for that invocation.
+No credential is copied, printed, mounted, or returned.  A separate socket from
+the one-run push broker so the push path is untouched.
 
 Source-inventory operations (``get-repo-source-metadata``, ``list-source-tree``,
 ``get-source-file``) inspect repository source at an EXACT immutable 40-char
@@ -38,18 +41,23 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextvars
 import fcntl
 import json
 import os
 import re
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -60,6 +68,14 @@ RUNTIME_DIR = Path(os.environ.get("GLOOPS_GITHUB_READ_BROKER_RUNTIME_DIR", "/run
 SOCKET_PATH = RUNTIME_DIR / "broker.sock"
 COMMAND_LOCK = Path(os.environ.get("GLOOPS_GITHUB_READ_BROKER_LOCK", "/var/lib/paperclip-gloops/github-read-broker/command.lock"))
 STATE_DIR = Path(os.environ.get("GLOOPS_GITHUB_READ_BROKER_STATE_DIR", "/var/lib/paperclip-gloops/github-read-broker"))
+# Same host App credentials as the push broker.  Not the write-credentials path.
+APP_CONFIG_PATH = Path(
+    os.environ.get(
+        "GLOOPS_GITHUB_READ_BROKER_APP_CONFIG",
+        str(CONFIG_DIR / "github-app.json"),
+    )
+)
+GITHUB_API_BASE = os.environ.get("GLOOPS_GITHUB_API_BASE", "https://api.github.com").rstrip("/")
 
 ALLOWED_REPOSITORIES = frozenset({
     "InductAI/induct",
@@ -67,6 +83,27 @@ ALLOWED_REPOSITORIES = frozenset({
     "gloopsAI/gloops-ui",
     "gloopsAI/paperclip-gym",
 })
+
+# Source-inventory ops mint an App installation token; issue/PR ops keep host gh.
+SOURCE_INVENTORY_OPERATIONS = frozenset({
+    "get-repo-source-metadata",
+    "list-source-tree",
+    "get-source-file",
+})
+# Installation-wide contents:read (no single-repo pin).  GitHub always grants
+# metadata:read alongside contents.  Matches the push-broker mint permission
+# shape without repository_ids so paperclip-gym (and any other repo on the
+# installation) is readable once the App can see it.
+SOURCE_INVENTORY_PERMISSIONS = {
+    "contents": "read",
+}
+# Active installation token for the current source-inventory request only.
+# Never logged or placed in responses; injected into gh env as GH_TOKEN /
+# GITHUB_TOKEN for that subprocess invocation alone.
+_active_installation_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_installation_token",
+    default=None,
+)
 
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPOSITORY_SCOPE_QUALIFIER_PATTERN = re.compile(
@@ -283,19 +320,227 @@ def bound_output(data: Any, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# GitHub App installation token mint (source-inventory only)
+# ---------------------------------------------------------------------------
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def load_app_config() -> dict[str, object]:
+    """Load the host GitHub App config used by the push broker.
+
+    Same credential material as ``/etc/paperclip-gloops/github-app.json``.  Does
+    not widen the repository allowlist and does not touch the write-credentials
+    lifecycle path.
+    """
+    try:
+        raw = json.loads(APP_CONFIG_PATH.read_text())
+    except FileNotFoundError as error:
+        raise BrokerError("GitHub App config is missing") from error
+    except OSError as error:
+        raise BrokerError("GitHub App config is unreadable") from error
+    except json.JSONDecodeError as error:
+        raise BrokerError("GitHub App config is malformed JSON") from error
+    if not isinstance(raw, dict):
+        raise BrokerError("GitHub App config must be a JSON object")
+    required = {
+        "appId",
+        "installationId",
+        "repositoryId",
+        "repository",
+        "privateKeyPath",
+        "boardTokenPath",
+    }
+    if set(raw) != required:
+        raise BrokerError("GitHub App config keys do not match the allowlist")
+    for key in ("appId", "installationId", "repositoryId"):
+        if not isinstance(raw[key], int) or raw[key] <= 0:
+            raise BrokerError(f"GitHub App config {key} must be a positive integer")
+    for key in ("repository", "privateKeyPath", "boardTokenPath"):
+        if not isinstance(raw[key], str) or not raw[key]:
+            raise BrokerError(f"GitHub App config {key} must be a non-empty string")
+    return raw
+
+
+def _app_jwt(config: dict[str, object]) -> str:
+    """Mint a short-lived App JWT from the root-owned private key (push pattern)."""
+    key_path = Path(str(config["privateKeyPath"]))
+    try:
+        key_stat = key_path.stat()
+    except OSError as error:
+        raise BrokerError("GitHub App private key is unreadable") from error
+    mode = stat.S_IMODE(key_stat.st_mode)
+    if key_stat.st_uid != 0 or mode not in {0o400, 0o600}:
+        raise BrokerError("GitHub App private key must be root-owned mode 0400 or 0600")
+    now = int(datetime.now(timezone.utc).timestamp())
+    header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    payload = _b64url(
+        json.dumps(
+            {"iat": now - 60, "exp": now + 540, "iss": config["appId"]},
+            separators=(",", ":"),
+        ).encode()
+    )
+    unsigned = f"{header}.{payload}"
+    try:
+        signature = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-sign", str(key_path)],
+            input=unsigned.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout
+    except FileNotFoundError as error:
+        raise BrokerError("openssl is not available for GitHub App JWT signing") from error
+    except subprocess.CalledProcessError as error:
+        raise BrokerError("GitHub App JWT signing failed") from error
+    return f"{unsigned}.{_b64url(signature)}"
+
+
+def _request_json(method: str, path: str, token: str, body: object | None = None) -> object:
+    data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    request = Request(
+        f"{GITHUB_API_BASE}{path}",
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "gloops-github-read-broker/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+            **({"Content-Type": "application/json"} if data is not None else {}),
+        },
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            payload = response.read()
+            return {} if not payload else json.loads(payload)
+    except HTTPError as error:
+        raise BrokerError(
+            f"GitHub App API {method} {path} returned {error.code}"
+        ) from error
+    except URLError as error:
+        raise BrokerError(f"GitHub App API {method} {path} was unavailable") from error
+    except json.JSONDecodeError as error:
+        raise BrokerError("GitHub App API returned malformed JSON") from error
+
+
+def mint_installation_token() -> str:
+    """Mint a short-lived installation token for source-inventory ``gh`` calls.
+
+    Uses the same host App credentials as the push broker.  Fails closed with a
+    typed ``BrokerError`` on any mint failure.  Never logs or returns the token
+    outside the active request context.
+    """
+    if TEST_MODE:
+        # Deterministic unit tests inject via env or accept the synthetic token.
+        # Production never takes this branch.
+        injected = os.environ.get("GLOOPS_GITHUB_READ_BROKER_TEST_TOKEN")
+        if injected is not None:
+            if not injected:
+                raise BrokerError("GitHub App installation token mint failed")
+            return injected
+        return "ghs_test_mode_read_token"
+    try:
+        config = load_app_config()
+        jwt = _app_jwt(config)
+        # Installation-wide contents:read — no repository_ids pin so every repo
+        # on the App installation (e.g. paperclip-gym) is reachable.  Single-repo
+        # push mint remains on the write path and is untouched here.
+        response = _request_json(
+            "POST",
+            f"/app/installations/{config['installationId']}/access_tokens",
+            jwt,
+            {"permissions": dict(SOURCE_INVENTORY_PERMISSIONS)},
+        )
+    except BrokerError:
+        raise
+    except Exception as error:
+        raise BrokerError(
+            f"GitHub App installation token mint failed: {type(error).__name__}"
+        ) from error
+    if not isinstance(response, dict):
+        raise BrokerError("GitHub App installation token response is malformed")
+    token = response.get("token")
+    expires_at = response.get("expires_at")
+    actual_permissions = response.get("permissions")
+    if (
+        not isinstance(token, str)
+        or not token.startswith("ghs_")
+        or any(char.isspace() for char in token)
+    ):
+        raise BrokerError("GitHub App installation token is malformed")
+    if not isinstance(expires_at, str) or not isinstance(actual_permissions, dict):
+        raise BrokerError("GitHub App installation token metadata is incomplete")
+    expected = {**SOURCE_INVENTORY_PERMISSIONS, "metadata": "read"}
+    normalized = {str(key): str(value) for key, value in actual_permissions.items()}
+    if normalized != expected:
+        raise BrokerError(
+            "GitHub App installation token permissions exceed or miss the requested scope"
+        )
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise BrokerError("GitHub App installation token expiry is malformed") from error
+    seconds = (expiry - datetime.now(timezone.utc)).total_seconds()
+    if seconds < 2700 or seconds > 3900:
+        raise BrokerError(
+            "GitHub App installation token expiry is outside the one-hour envelope"
+        )
+    return token
+
+
+def revoke_installation_token(token: str) -> None:
+    """Best-effort revoke of a short-lived installation token. Never raises."""
+    if TEST_MODE or not token:
+        return
+    try:
+        _request_json("DELETE", "/installation/token", token)
+    except Exception:
+        # Token expires within the one-hour envelope; do not fail the read path.
+        return
+
+
+def _gh_env_with_token(token: str, base: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a subprocess env that authenticates gh with the installation token.
+
+    Copies the process environment (or an explicit base) and sets GH_TOKEN and
+    GITHUB_TOKEN for this invocation only.  Never logs the token.
+    """
+    env = dict(os.environ if base is None else base)
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    return env
+
+
+def _redact_token(text: str, token: str | None) -> str:
+    if token and token in text:
+        return text.replace(token, "[redacted]")
+    return text
+
+
+# ---------------------------------------------------------------------------
 # gh CLI invocation
 # ---------------------------------------------------------------------------
 
 def run_gh(args: list[str], env: dict[str, str] | None = None) -> str:
-    """Invoke the gh CLI and return stdout.  Raises BrokerError on failure."""
+    """Invoke the gh CLI and return stdout.  Raises BrokerError on failure.
+
+    When a source-inventory installation token is active for the request, it is
+    injected via GH_TOKEN / GITHUB_TOKEN for this subprocess only.
+    """
     command = ["gh", *args]
+    token = _active_installation_token.get()
+    effective_env = env
+    if token is not None:
+        effective_env = _gh_env_with_token(token, env)
     try:
         result = subprocess.run(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=GH_TIMEOUT_SECONDS,
-            env=env,
+            env=effective_env,
         )
     except subprocess.TimeoutExpired:
         raise BrokerError("gh CLI timed out")
@@ -303,6 +548,7 @@ def run_gh(args: list[str], env: dict[str, str] | None = None) -> str:
         raise BrokerError("gh CLI is not available")
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace")[:500]
+        stderr = _redact_token(stderr, token)
         raise BrokerError(f"gh CLI failed: {stderr}")
     output = result.stdout
     if len(output) > MAX_GH_OUTPUT_BYTES:
@@ -914,9 +1160,26 @@ def process_request(request: dict[str, Any]) -> dict[str, Any]:
     validate_request(request)
     operation = request["operation"]
     handler = OPERATIONS[operation]
-    data = handler(request)
-    data = strip_credentials(data)
-    return {"ok": True, "data": data}
+    token: str | None = None
+    token_handle: contextvars.Token[str | None] | None = None
+    try:
+        if operation in SOURCE_INVENTORY_OPERATIONS:
+            # Fail closed before any gh call when App mint cannot complete.
+            token = mint_installation_token()
+            token_handle = _active_installation_token.set(token)
+        data = handler(request)
+        data = strip_credentials(data)
+        # Defense in depth: never echo a minted token even if upstream mirrored it.
+        if token:
+            serialized = canonical_json(data)
+            if token in serialized:
+                raise BrokerError("response would leak a credential")
+        return {"ok": True, "data": data}
+    finally:
+        if token_handle is not None:
+            _active_installation_token.reset(token_handle)
+        if token is not None:
+            revoke_installation_token(token)
 
 
 # ---------------------------------------------------------------------------
