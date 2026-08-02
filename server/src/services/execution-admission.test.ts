@@ -493,6 +493,14 @@ describe("execution admission", () => {
     })).toBe(true);
     expect(isBudgetExemptPreflightFailure({
       providerInvocationAttempted: null,
+      errorCode: "backlog_bankruptcy.company_frozen",
+    })).toBe(true);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: null,
+      errorCode: "backlog_bankruptcy.readmit_budget_required",
+    })).toBe(true);
+    expect(isBudgetExemptPreflightFailure({
+      providerInvocationAttempted: null,
       errorCode: "workspace_preparation_failed",
     })).toBe(true);
     expect(isBudgetExemptPreflightFailure({

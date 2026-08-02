@@ -178,6 +178,70 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     expect(adapterState.maxActive).toBe(1);
   });
 
+  it("cancels claims only for the configured bankruptcy-frozen company", async () => {
+    adapterState.active = 0;
+    adapterState.maxActive = 0;
+    adapterState.startedAgentIds = [];
+    adapterExecute.mockClear();
+    const frozen = await seedCompany(1);
+    const open = await seedCompany(1);
+    const rows = [
+      { companyId: frozen.companyId, agentId: frozen.agentIds[0] },
+      { companyId: open.companyId, agentId: open.agentIds[0] },
+    ];
+    const runIds: string[] = [];
+    for (const row of rows) {
+      const wakeupRequestId = randomUUID();
+      const runId = randomUUID();
+      runIds.push(runId);
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId: row.companyId,
+        agentId: row.agentId!,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "backlog_bankruptcy_test",
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "operator",
+        runId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: row.companyId,
+        agentId: row.agentId!,
+        status: "queued",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        wakeupRequestId,
+        responsibleUserId: "operator",
+        contextSnapshot: {},
+      });
+    }
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS: frozen.companyId,
+      },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await waitForTerminalRuns(db, runIds);
+    for (const runId of runIds) await heartbeat.waitForRunExecutionDrain(runId);
+
+    const persisted = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runIds));
+    const byId = new Map(persisted.map((row) => [row.id, row]));
+    expect(byId.get(runIds[0]!)).toMatchObject({
+      status: "cancelled",
+      errorCode: "backlog_bankruptcy.company_frozen",
+    });
+    expect(byId.get(runIds[1]!)).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterState.startedAgentIds).toEqual([open.agentIds[0]]);
+  });
+
   it("gives each queued agent one claim before another agent can consume another company slot", async () => {
     adapterState.active = 0;
     adapterState.maxActive = 0;
