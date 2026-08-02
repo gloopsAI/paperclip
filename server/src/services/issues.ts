@@ -6075,6 +6075,13 @@ export function issueService(db: Db) {
 
       while (true) {
         const step = await db.transaction(async (tx) => {
+          // WG-PLAT-013 residual: hold the source parent for the entire
+          // create/progress step (parent → claim lock order) so concurrent
+          // decompositions cannot race parent blocker sync or workspace
+          // collision checks after the initial claim transaction releases.
+          await tx.execute(
+            sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssue.id} for update`,
+          );
           await tx.execute(
             sql`select ${issuePlanDecompositions.id}
                 from ${issuePlanDecompositions}
