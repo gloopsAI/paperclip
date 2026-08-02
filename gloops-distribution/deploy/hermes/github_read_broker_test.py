@@ -1217,6 +1217,26 @@ class SourceInventoryTests(unittest.TestCase):
                                 "path": "src/app.ts",
                             })
 
+    def test_get_source_file_rejects_absent_size_key(self):
+        # A payload with NO 'size' key at all (distinct from size: null) must
+        # also fail closed -- data.get('size') is None -> invalid size.
+        def mock(args, env=None):
+            return json.dumps({
+                "type": "file", "path": "src/app.ts", "sha": BLOB_SHA,
+                "encoding": "base64",
+                "content": base64.b64encode(b"content").decode(),
+            })  # note: 'size' key intentionally omitted
+        with self.paths():
+            with patch.object(broker, "run_gh", side_effect=mock):
+                with self.assertRaisesRegex(broker.BrokerError,
+                                            "missing or invalid size"):
+                    broker.process_request({
+                        "operation": "get-source-file",
+                        "repo": "gloopsAI/gloops-ui",
+                        "commit": VALID_SHA,
+                        "path": "src/app.ts",
+                    })
+
     def test_get_source_file_rejects_non_file_type(self):
         with self.paths():
             with patch.object(broker, "run_gh", side_effect=self._file_mock(
