@@ -84,6 +84,30 @@ class ReadLaneLiveUpgradeSourceNegative(unittest.TestCase):
             ru.index("verify_read_lane_restored"), ru.index("_apply_pair")
         )
 
+    def test_canary_client_drops_to_hermes_peer_uid(self):
+        """Canaries must run as uid 10000 (hermes-peer), never as root.
+
+        Production broker SO_PEERCRED rejects any peer uid other than
+        EXPECTED_HERMES_UID=10000.  The wrapper must privilege-drop via runuser
+        or setpriv and fail closed if that identity cannot be assumed.
+        """
+        self.assertIn("READ_LANE_CANARY_PEER_USER='hermes-peer'", SRC)
+        self.assertIn("READ_LANE_CANARY_PEER_UID=10000", SRC)
+        self.assertIn("READ_LANE_CANARY_PEER_GID=10000", SRC)
+        self.assertIn("runuser -u", SRC)
+        self.assertIn("setpriv --reuid=", SRC)
+        # Executable non-root assertion under the dropped identity.
+        self.assertIn('id -u)" -eq 0', SRC)
+        # Fail closed when neither drop helper is available.
+        self.assertIn("need runuser or setpriv", SRC)
+        # _run_client must not bare-exec the installed client as the wrapper user.
+        run_client = SRC[SRC.index("_run_client() {"): SRC.index("_canary_assert()")]
+        self.assertNotRegex(
+            run_client,
+            r'^\s*"\$\{READ_TOOL_INSTALL\}" "\$@"\s*$',
+            msg="_run_client must not bare-exec the client without a peer drop",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

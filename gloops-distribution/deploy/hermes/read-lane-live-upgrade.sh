@@ -53,6 +53,14 @@ readonly SELF_DIR
 # The ONLY systemd unit this wrapper controls.  Start-only; never enabled.
 readonly BROKER_UNIT='paperclip-github-read-broker.service'
 
+# Canary peer identity -- MUST match github-read-broker.py EXPECTED_HERMES_UID /
+# HERMES_GID (SO_PEERCRED gate).  Root-run clients are rejected with
+# "peer identity is not authorized"; canaries therefore ALWAYS drop to this
+# identity and never invoke the installed client as root.
+readonly READ_LANE_CANARY_PEER_USER='hermes-peer'
+readonly READ_LANE_CANARY_PEER_UID=10000
+readonly READ_LANE_CANARY_PEER_GID=10000
+
 # Bind (do NOT reimplement) the symmetric, transactional read-lane snapshot
 # primitives: capture_read_lane_snapshot / check_read_lane_snapshot /
 # restore_read_lane_snapshot / verify_read_lane_restored plus their helpers.
@@ -336,9 +344,34 @@ _start_and_verify_read_broker() {
   return 0
 }
 
-# Run the installed read-tool client.  The bearer token is already de-exported,
-# so this child cannot inherit PAPERCLIP_API_TOKEN.  Prints the client JSON.
-_run_client() { "${READ_TOOL_INSTALL}" "$@"; }
+# Run the installed read-tool client AS the broker-authorized peer identity
+# (hermes-peer / uid 10000), never as root.  The bearer token is already
+# de-exported, so this child cannot inherit PAPERCLIP_API_TOKEN.
+#
+# Prefer `runuser -u hermes-peer`; fall back to `setpriv --reuid=10000
+# --regid=10000`.  Fail closed if neither tool can assume the peer identity.
+# Inside the dropped identity, refuse to continue if the effective uid is still
+# root (misconfigured drop must not silently canary as root).
+_run_client() {
+  local -a drop=()
+  if command -v runuser >/dev/null 2>&1; then
+    drop=(runuser -u "${READ_LANE_CANARY_PEER_USER}" --)
+  elif command -v setpriv >/dev/null 2>&1; then
+    drop=(setpriv --reuid="${READ_LANE_CANARY_PEER_UID}" --regid="${READ_LANE_CANARY_PEER_GID}" --clear-groups --)
+  else
+    echo "read-lane-live-upgrade: cannot assume canary peer identity ${READ_LANE_CANARY_PEER_USER} (uid ${READ_LANE_CANARY_PEER_UID}); need runuser or setpriv" >&2
+    return 1
+  fi
+  # Executable non-root assertion under the assumed peer identity, then the
+  # installed client.  argv after `_` is preserved via "$@' inside the -c body.
+  "${drop[@]}" bash -c '
+    if [ "$(id -u)" -eq 0 ]; then
+      echo "read-lane-live-upgrade: canary peer identity resolved to root; refusing" >&2
+      exit 1
+    fi
+    exec "$@"
+  ' _ "${READ_TOOL_INSTALL}" "$@"
+}
 
 # STEP 8 -- assert the installed client's response OBJECTS for a source op, not
 # merely its exit code or request coordinates: a wrong-identity exit-0 must FAIL
