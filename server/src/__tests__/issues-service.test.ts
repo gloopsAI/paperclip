@@ -36,6 +36,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
+import { evaluateIssuePacketReadiness } from "../services/issue-packet-readiness.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -5970,6 +5971,463 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     );
     expect(record).not.toHaveProperty("requestedChildren");
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
+  });
+
+  it("derives and injects an exact-head line for a decomposed review-profile child so the DoR gate passes (WG-PLAT-008)", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const exactHeadSha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Implementation review of the claim table slice",
+          status: "todo",
+          workMode: "standard",
+          priority: "high",
+          executionWorkspaceSettings: {
+            mode: "isolated_workspace",
+            workspaceStrategy: {
+              type: "git_worktree",
+              baseRef: exactHeadSha,
+            },
+          },
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    const [reviewChild] = result.newlyCreatedIssues;
+    expect(reviewChild?.description).toContain(exactHeadSha);
+
+    const readiness = evaluateIssuePacketReadiness(
+      {
+        title: reviewChild?.title,
+        description: reviewChild?.description,
+        workMode: reviewChild?.workMode,
+        status: reviewChild?.status,
+        assigneeRole: null,
+        assigneeName: null,
+      },
+      { PAPERCLIP_ISSUE_PACKET_DOR: "enforce" },
+    );
+    expect(readiness.profile).toBe("standard_review");
+    expect(readiness.reasonCodes).not.toContain("issue_packet.missing_exact_head");
+  });
+
+  it("fails closed instead of dispatching an unready packet when a review-profile child has no derivable exact head (WG-PLAT-008)", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+
+    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Implementation review of the claim table slice",
+          status: "todo",
+          workMode: "standard",
+          priority: "high",
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    const childrenRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.parentId, sourceIssueId));
+    expect(childrenRows).toHaveLength(0);
+  });
+
+  it("gives sibling plan children isolated executionWorkspaceId by default even when the parent's workspace is already realized (WG-PLAT-009)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const parentExecutionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const planDocumentId = randomUUID();
+    const acceptedPlanRevisionId = randomUUID();
+    const acceptedInteractionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Accepted plan decomposition",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: parentExecutionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Parent worktree",
+      status: "active",
+      providerType: "git_worktree",
+      providerRef: `/tmp/${parentExecutionWorkspaceId}`,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      goalId,
+      title: "Planning issue",
+      status: "in_progress",
+      priority: "medium",
+      workMode: "planning",
+      assigneeAgentId,
+      executionWorkspaceId: parentExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "gloops/stable",
+        },
+      },
+    });
+    await db.insert(documents).values({
+      id: planDocumentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan body",
+      latestRevisionId: acceptedPlanRevisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: assigneeAgentId,
+      updatedByAgentId: assigneeAgentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: acceptedPlanRevisionId,
+      companyId,
+      documentId: planDocumentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan body",
+      createdByAgentId: assigneeAgentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId: sourceIssueId,
+      documentId: planDocumentId,
+      key: "plan",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: acceptedInteractionId,
+      companyId,
+      issueId: sourceIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: sourceIssueId,
+          documentId: planDocumentId,
+          key: "plan",
+          revisionId: acceptedPlanRevisionId,
+          revisionNumber: 1,
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "accepted",
+      },
+      resolvedAt: new Date(),
+      createdByUserId: "local-board",
+      resolvedByUserId: "local-board",
+    });
+
+    // Neither child spec explicitly sets executionWorkspaceId — the default
+    // (structural-only inheritance) must isolate each sibling's workspace
+    // intent from the parent's already-realized worktree (WG-PLAT-009).
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Implement slice one",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+        },
+        {
+          title: "Implement slice two",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(2);
+    const [firstChild, secondChild] = result.newlyCreatedIssues;
+    for (const child of [firstChild, secondChild]) {
+      expect(child?.executionWorkspaceId).not.toBe(parentExecutionWorkspaceId);
+      expect(child?.executionWorkspaceId).toBeNull();
+      expect(child?.executionWorkspacePreference).toBeNull();
+      expect(child?.executionWorkspaceSettings).toMatchObject({
+        workspaceStrategy: expect.objectContaining({ type: "git_worktree", baseRef: "gloops/stable" }),
+      });
+    }
+  });
+
+  it("fails closed instead of pinning two decomposed siblings to the same explicit executionWorkspaceId (WG-PLAT-009)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const parentExecutionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const planDocumentId = randomUUID();
+    const acceptedPlanRevisionId = randomUUID();
+    const acceptedInteractionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Accepted plan decomposition",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: parentExecutionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Parent worktree",
+      status: "active",
+      providerType: "git_worktree",
+      providerRef: `/tmp/${parentExecutionWorkspaceId}`,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      goalId,
+      title: "Planning issue",
+      status: "in_progress",
+      priority: "medium",
+      workMode: "planning",
+      assigneeAgentId,
+      executionWorkspaceId: parentExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "gloops/stable",
+        },
+      },
+    });
+    await db.insert(documents).values({
+      id: planDocumentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan body",
+      latestRevisionId: acceptedPlanRevisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: assigneeAgentId,
+      updatedByAgentId: assigneeAgentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: acceptedPlanRevisionId,
+      companyId,
+      documentId: planDocumentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan body",
+      createdByAgentId: assigneeAgentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId: sourceIssueId,
+      documentId: planDocumentId,
+      key: "plan",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: acceptedInteractionId,
+      companyId,
+      issueId: sourceIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: sourceIssueId,
+          documentId: planDocumentId,
+          key: "plan",
+          revisionId: acceptedPlanRevisionId,
+          revisionNumber: 1,
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "accepted",
+      },
+      resolvedAt: new Date(),
+      createdByUserId: "local-board",
+      resolvedByUserId: "local-board",
+    });
+
+    // Both sibling child specs explicitly echo the parent's already-realized
+    // workspace — the exact shape that used to leave every child literally
+    // pinned to the same worktree. The decomposition must now fail closed
+    // instead of silently sharing (WG-PLAT-009).
+    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Continue in the exact planning workspace (first)",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          executionWorkspaceId: parentExecutionWorkspaceId,
+          executionWorkspacePreference: "reuse_existing",
+        },
+        {
+          title: "Continue in the exact planning workspace (second)",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+          executionWorkspaceId: parentExecutionWorkspaceId,
+          executionWorkspacePreference: "reuse_existing",
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    })).rejects.toMatchObject({ status: 422 });
+
+    const childrenRows = await db
+      .select({ id: issues.id, executionWorkspaceId: issues.executionWorkspaceId })
+      .from(issues)
+      .where(eq(issues.parentId, sourceIssueId));
+    const pinnedToParentWorkspace = childrenRows.filter(
+      (row) => row.executionWorkspaceId === parentExecutionWorkspaceId,
+    );
+    expect(pinnedToParentWorkspace.length).toBeLessThanOrEqual(1);
+  });
+
+  it("defaults decomposed plan children to block the parent so the dependency graph is never empty (WG-PLAT-012/013)", async () => {
+    const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Implement slice one",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+        },
+        {
+          title: "Final audit",
+          status: "todo",
+          workMode: "standard",
+          priority: "medium",
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(2);
+
+    const parentRelations = await svc.getRelationSummaries(sourceIssueId);
+    expect(parentRelations.blockedBy.map((relation) => relation.id).sort()).toEqual(
+      [...result.childIssueIds].sort(),
+    );
+
+    const blockRows = await db
+      .select({
+        issueId: issueRelations.issueId,
+        relatedIssueId: issueRelations.relatedIssueId,
+        type: issueRelations.type,
+      })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, sourceIssueId));
+    expect(blockRows).toHaveLength(2);
+    expect(blockRows.every((row) => row.type === "blocks")).toBe(true);
+    expect(blockRows.map((row) => row.issueId).sort()).toEqual([...result.childIssueIds].sort());
   });
 });
 

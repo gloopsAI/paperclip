@@ -81,6 +81,11 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import {
+  evaluateIssuePacketReadiness,
+  ISSUE_PACKET_DOR_ENV,
+  ISSUE_PACKET_REASON,
+} from "./issue-packet-readiness.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -343,6 +348,48 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
     };
   }
   return Object.keys(next).length > 0 ? next : null;
+}
+
+const EXACT_HEAD_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+// Internal-only override so the exact-head preflight below always evaluates
+// as if PAPERCLIP_ISSUE_PACKET_DOR=enforce, regardless of the process env
+// (vitest defaults the real DoR mode to "off" so legacy fixtures still pass).
+// This guarantees dispatched child packets are built to satisfy the *strict*
+// gate up front (WG-PLAT-008), not whichever mode happens to be active.
+const FORCE_ISSUE_PACKET_ENFORCE_ENV = { [ISSUE_PACKET_DOR_ENV]: "enforce" } as const;
+
+/**
+ * Derive a candidate exact-head SHA from a (possibly pre-realization) child
+ * executionWorkspaceSettings payload. Only a literal 40-hex baseRef counts —
+ * branch names / refs (e.g. "origin/master") are never treated as an exact
+ * head (WG-PLAT-008).
+ */
+function deriveExactHeadShaFromExecutionWorkspaceSettings(
+  settings: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!settings || typeof settings !== "object") return null;
+  const strategy = (settings as Record<string, unknown>).workspaceStrategy;
+  if (!strategy || typeof strategy !== "object") return null;
+  const baseRef = (strategy as Record<string, unknown>).baseRef;
+  if (typeof baseRef !== "string") return null;
+  const trimmed = baseRef.trim();
+  return EXACT_HEAD_SHA_PATTERN.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+/**
+ * Append a machine-readable exact-head line the DoR gate recognizes
+ * (EXACT_HEAD_LINE_RE / EXACT_HEAD_SHA_RE in issue-packet-readiness.ts),
+ * mirroring the single-child Argus handoff's buildImplementationReviewDescription
+ * (implementation-review-handoff.ts) so decomposed review/release children
+ * carry the same evidence the DoR gate already trusts.
+ */
+function appendExactHeadDescriptionSection(
+  description: string | null | undefined,
+  exactHeadSha: string,
+): string {
+  const base = (description ?? "").trimEnd();
+  const section = `## Exact Head\nExact head: \`${exactHeadSha}\``;
+  return base ? `${base}\n\n${section}\n` : `${section}\n`;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -5691,6 +5738,72 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+
+      // WG-PLAT-008: review/release-profile children must carry a literal
+      // exact-head SHA in the description or the DoR gate
+      // (evaluateIssuePacketReadiness) cancels them as "not ready". The
+      // single-child Argus handoff (implementation-review-handoff.ts) embeds
+      // this explicitly; this generic helper (used by decomposeAcceptedPlan
+      // and any other child-creation caller) did not. Derive it from the
+      // child's structured workspace intent when possible and inject it; if
+      // the profile requires an exact head and none can be derived, fail
+      // typed here instead of silently creating a packet DoR will cancel.
+      const descriptionWithAcceptanceCriteria = appendAcceptanceCriteriaToDescription(
+        issueData.description,
+        acceptanceCriteria,
+      );
+      const candidateExecutionWorkspaceSettingsForExactHead =
+        inheritedPreRealizationWorkspaceSettings ??
+        (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ??
+        null;
+      const candidateExactHeadSha = deriveExactHeadShaFromExecutionWorkspaceSettings(
+        candidateExecutionWorkspaceSettingsForExactHead,
+      );
+      const exactHeadAssigneeAgentId = issueData.assigneeAgentId ?? null;
+      const exactHeadAssigneeAgent = exactHeadAssigneeAgentId
+        ? await db
+            .select({ role: agents.role, name: agents.name })
+            .from(agents)
+            .where(eq(agents.id, exactHeadAssigneeAgentId))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const exactHeadPreflightInput = {
+        title: issueData.title ?? null,
+        description: descriptionWithAcceptanceCriteria,
+        workMode: issueData.workMode ?? null,
+        status: issueData.status ?? null,
+        assigneeRole: exactHeadAssigneeAgent?.role ?? null,
+        assigneeName: exactHeadAssigneeAgent?.name ?? null,
+      };
+      const exactHeadPreflight = evaluateIssuePacketReadiness(
+        exactHeadPreflightInput,
+        FORCE_ISSUE_PACKET_ENFORCE_ENV,
+      );
+      const exactHeadRequired =
+        exactHeadPreflight.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_EXACT_HEAD) ||
+        exactHeadPreflight.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_RELEASE_ANCHOR);
+      let finalDescription = descriptionWithAcceptanceCriteria;
+      if (exactHeadRequired) {
+        if (!candidateExactHeadSha) {
+          throw unprocessable(
+            `Child issue packet requires an exact-head SHA for profile "${exactHeadPreflight.profile}" but none could be derived from executionWorkspaceSettings.workspaceStrategy.baseRef. Supply a 40-char exact-head baseRef (or embed the exact head directly in the description) before dispatching this child.`,
+          );
+        }
+        finalDescription = appendExactHeadDescriptionSection(descriptionWithAcceptanceCriteria, candidateExactHeadSha);
+        const exactHeadVerification = evaluateIssuePacketReadiness(
+          { ...exactHeadPreflightInput, description: finalDescription },
+          FORCE_ISSUE_PACKET_ENFORCE_ENV,
+        );
+        if (
+          exactHeadVerification.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_EXACT_HEAD) ||
+          exactHeadVerification.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_RELEASE_ANCHOR)
+        ) {
+          throw unprocessable(
+            `Child issue packet still missing exact-head evidence after injection for profile "${exactHeadPreflight.profile}".`,
+          );
+        }
+      }
+
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -5702,7 +5815,7 @@ export function issueService(db: Db) {
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        description: finalDescription,
         ...(inheritedPreRealizationWorkspaceSettings
           ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
           : {}),
@@ -5883,9 +5996,42 @@ export function issueService(db: Db) {
             throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
           }
 
+          // WG-PLAT-009: plan/campaign children are dispatched fan-out work.
+          // The default (no explicit executionWorkspaceId on the child) is
+          // already forced to strategy_only below, which gives each child
+          // its own isolated pre-realization workspace intent instead of
+          // reusing the parent's realized worktree. A single child MAY still
+          // opt into an explicit executionWorkspaceId for deliberate
+          // continuity (e.g. "finish in the exact same workspace planning
+          // ran in") — but if more than one sibling in the same
+          // decomposition targets that same concrete workspace, admitting
+          // both would literally pin two children to one worktree (a dirty
+          // sibling then blocks the next child's admission). Fail closed
+          // instead of silently sharing.
+          if (nextChildInput.executionWorkspaceId) {
+            const collidingSibling = await tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, sourceIssue.companyId),
+                eq(issues.parentId, sourceIssue.id),
+                eq(issues.executionWorkspaceId, nextChildInput.executionWorkspaceId),
+              ))
+              .then((rows) => rows[0] ?? null);
+            if (collidingSibling) {
+              throw unprocessable(
+                "Only one dispatched plan child may explicitly bind to a given executionWorkspaceId; a sibling child in this decomposition already claims it.",
+              );
+            }
+          }
+
           const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
             ...nextChildInput,
             executionWorkspaceInheritanceMode: "strategy_only",
+            // WG-PLAT-012/013: dispatch must always emit dependency edges —
+            // default every decomposed child to gate the parent's
+            // completion so the graph is never empty.
+            blockParentUntilDone: true,
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
           const now = new Date();
