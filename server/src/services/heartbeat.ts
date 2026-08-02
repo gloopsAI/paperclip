@@ -614,6 +614,15 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "execution_changes_requested",
   "approval_approved",
 ]);
+const EXECUTION_ADMISSION_RETRY_WAKE_REASONS = new Set([
+  FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  "missing_issue_comment",
+  "issue_recovery_action_restored",
+  "issue_status_changed",
+  "issue_checked_out",
+  "issue_assigned",
+  "issue_continuation_needed",
+]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -2272,6 +2281,32 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * Durable issue lifecycle wakes are sibling rows, not `retryOfRunId` children.
+ * Classify the bounded re-entry reasons explicitly so they may use the task's
+ * remaining retry without being mistaken for an unclassified continuation.
+ */
+export function isExecutionAdmissionRetryWake(input: {
+  retryOfRunId?: string | null;
+  wakeReason?: unknown;
+  retryReason?: unknown;
+}) {
+  if (input.retryOfRunId) return true;
+  const wakeReason = readNonEmptyString(input.wakeReason);
+  const retryReason = readNonEmptyString(input.retryReason);
+  return Boolean(
+    (wakeReason && EXECUTION_ADMISSION_RETRY_WAKE_REASONS.has(wakeReason)) ||
+    (retryReason && EXECUTION_ADMISSION_RETRY_WAKE_REASONS.has(retryReason)),
+  );
+}
+
+export function isStaleDirtyWorkspaceAgentErrorReason(value: unknown) {
+  const reason = readNonEmptyString(value);
+  if (!reason) return false;
+  return /^workspace contains uncommitted or untracked changes\.?$/i.test(reason) ||
+    /workspace validation failed.*(?:dirty|uncommitted|untracked)/i.test(reason);
 }
 
 export function runLifecycleContextCoordinates(contextSnapshot: unknown): {
@@ -10830,8 +10865,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       providerInvocationAttempted,
       errorCode: row.errorCode,
     });
-    const reservation = executionInvocationBudgetFromEnvelope(
-      parseObject(row.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
+    const priorContext = parseObject(row.contextSnapshot);
+    const priorEnvelope = readExecutionAdmissionEnvelope(
+      priorContext[EXECUTION_ADMISSION_CONTEXT_KEY],
+    );
+    const reservation = executionInvocationBudgetFromEnvelope(priorEnvelope);
+    const countsAsRetry = Boolean(row.retryOfRunId) || Boolean(
+      priorEnvelope &&
+      priorEnvelope.observed.runCount > 0 &&
+      isExecutionAdmissionRetryWake({
+        wakeReason: priorContext.wakeReason,
+        retryReason: priorContext.retryReason,
+      }),
     );
     const useReservation = row.finishedAt === null || row.usageJson === null || row.usageJson === undefined;
     // Task budgets use the normalized per-run usage that also feeds Paperclip's
@@ -10853,6 +10898,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     return {
       retryOfRunId: row.retryOfRunId,
+      countsAsRetry,
       countsTowardTaskBudget,
       inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
@@ -10882,6 +10928,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string | null;
   }) {
     if (!input.issueId || input.run.retryOfRunId) return false;
+    const wakeCommentId = deriveCommentId(input.context, null);
+    if (wakeCommentId && allowsIssueInteractionWake(input.context)) {
+      return isVerifiedIssueTreeControlInteractionWake(input.tx, {
+        companyId: input.run.companyId,
+        issueId: input.issueId,
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        wakeupRequestId: input.run.wakeupRequestId,
+        contextSnapshot: input.context,
+      });
+    }
     const wakeReason = readNonEmptyString(input.context.wakeReason);
     const expectedStageType =
       wakeReason === "execution_review_requested"
@@ -11191,17 +11248,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         context,
         issueId,
       });
+      const priorExecutionRuns = priorRows.map((row) => priorExecutionRun(row, claimedAt));
+      const hasCountedPriorRun = priorExecutionRuns.some(
+        (priorRun) => priorRun.countsTowardTaskBudget !== false,
+      );
       const decision = evaluateExecutionAdmission(
         effectiveAdmissionPolicy,
-        priorRows.map((row) => priorExecutionRun(row, claimedAt)),
+        priorExecutionRuns,
         {
           // A successful-run handoff is a bounded continuation of the source
           // execution even though its durable wake creates a sibling run rather
           // than populating retryOfRunId. Keep claim-time classification aligned
           // with the preflight that admitted the wake.
-          isRetry:
-            Boolean(run.retryOfRunId) ||
-            context.wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          isRetry: Boolean(run.retryOfRunId) || (
+            hasCountedPriorRun &&
+            isExecutionAdmissionRetryWake({
+              wakeReason: context.wakeReason,
+              retryReason: context.retryReason ?? run.scheduledRetryReason,
+            })
+          ),
           isAuthorizedIndependentStage: authorizedIndependentStage,
         },
       );
@@ -11449,7 +11514,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       suppressImmediateRecovery: true,
       deferCompanyQueuePump: true,
     };
-    const agent = await getAgent(run.agentId);
+    let agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
         run.id,
@@ -11457,6 +11522,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         deferQueuePumpAfterClaimCancellation,
       );
       return null;
+    }
+    const context = parseObject(run.contextSnapshot);
+    const restoredRecoveryActionId = readNonEmptyString(context.recoveryActionId);
+    const restoredRecoveryIssueId = readNonEmptyString(context.issueId);
+    const verifiedWorkspaceValidationRestore =
+      readNonEmptyString(context.wakeReason) === "issue_recovery_action_restored" &&
+      readNonEmptyString(context.recoveryCause) === "workspace_validation_failed" &&
+      restoredRecoveryActionId &&
+      restoredRecoveryIssueId
+        ? await db
+          .select({ id: issueRecoveryActions.id })
+          .from(issueRecoveryActions)
+          .where(and(
+            eq(issueRecoveryActions.id, restoredRecoveryActionId),
+            eq(issueRecoveryActions.companyId, run.companyId),
+            eq(issueRecoveryActions.sourceIssueId, restoredRecoveryIssueId),
+            eq(issueRecoveryActions.cause, "workspace_validation_failed"),
+            eq(issueRecoveryActions.status, "resolved"),
+            eq(issueRecoveryActions.outcome, "restored"),
+          ))
+          .then((rows) => rows.length === 1)
+        : false;
+    if (
+      verifiedWorkspaceValidationRestore &&
+      agent.status === "error" &&
+      isStaleDirtyWorkspaceAgentErrorReason(agent.errorReason)
+    ) {
+      const cleared = await db
+        .update(agents)
+        .set({ status: "idle", errorReason: null, updatedAt: new Date() })
+        .where(and(
+          eq(agents.id, agent.id),
+          eq(agents.status, "error"),
+          eq(agents.errorReason, agent.errorReason!),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (cleared) {
+        agent = cleared;
+        publishLiveEvent({
+          companyId: cleared.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: cleared.id,
+            status: "idle",
+            outcome: "workspace_validation_recovery_restored",
+          },
+        });
+      }
     }
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
@@ -11469,8 +11583,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       return null;
     }
-
-    const context = parseObject(run.contextSnapshot);
     const campaignScopeBlock = await getControlledSwarmIssueScopeBlock(run);
     if (campaignScopeBlock) {
       await cancelRunForControlledSwarmIssueScope(run, campaignScopeBlock);

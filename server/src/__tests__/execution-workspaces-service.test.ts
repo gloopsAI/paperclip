@@ -644,6 +644,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const recoveryOwnerAgentId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const issueId = randomUUID();
@@ -664,17 +665,30 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       issuePrefix: "PAP",
       requireBoardApprovalForNewAgents: false,
     });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Codex Coder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Codex Coder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: recoveryOwnerAgentId,
+        companyId,
+        name: "Recovery Owner",
+        role: "pm",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
     await db.insert(projects).values({
       id: projectId,
       companyId,
@@ -698,7 +712,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       identifier: "PAP-124",
       status: "blocked",
       priority: "medium",
-      assigneeAgentId: agentId,
+      assigneeAgentId: recoveryOwnerAgentId,
     });
     await db.insert(executionWorkspaces).values({
       id: executionWorkspaceId,
@@ -721,7 +735,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       sourceIssueId: issueId,
       kind: "workspace_validation",
       status: "active",
-      ownerType: "board",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
       cause: "workspace_validation_failed",
       fingerprint,
       evidence: {

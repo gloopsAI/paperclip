@@ -136,6 +136,16 @@ describe("execution admission", () => {
     });
   });
 
+  it("counts a durable sibling lifecycle retry classification", () => {
+    expect(evaluateExecutionAdmission(policy(), [
+      { retryOfRunId: null },
+      { retryOfRunId: null, countsAsRetry: true },
+    ], { isRetry: true })).toMatchObject({
+      allowed: true,
+      observed: { runCount: 2, retryCount: 1 },
+    });
+  });
+
   it("suppresses automatic recovery before row creation when retries are disabled or runs are exhausted", () => {
     const zeroRecovery = parseExecutionAdmissionPolicy({
       ...enabledEnv,
