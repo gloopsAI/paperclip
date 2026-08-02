@@ -37,7 +37,8 @@ export type TerminalIssueReconciliationDecision =
         | "terminal_issue_cancelled"
         | "terminal_issue_blocked"
         | "missing_execution_truth"
-        | "execution_truth_rejected";
+        | "execution_truth_rejected"
+        | "children_not_done";
     };
 
 export type MergedPullRequestIssueDecision =
@@ -303,6 +304,35 @@ function bindingMatches(input: {
 }
 
 export function decideTerminalIssueReconciliation(input: {
+  completionProfile: IssueExecutionCompletionProfile | null | undefined;
+  terminalReceipt?: GovernedTerminalLifecycleReceipt | null;
+  issue: IssueInput;
+  run: RunInput;
+  providerTerminalEvidence: boolean;
+  workspaceFinalized: boolean;
+  workspaceCwd: string | null;
+  workspaceHeadSha: string | null;
+  executionWorkspaceMode?: string | null;
+  budgetExceeded: string[];
+  routePathIds: string[];
+  /**
+   * WG-PLAT-007: true when this issue has at least one child (by parentId)
+   * whose status is not "done" or "cancelled". Gated on the parentId
+   * hierarchy so it is robust regardless of whether dependency ("blocks")
+   * edges exist between parent and child. When true, the parent/root must
+   * never be auto-completed to "done" even when its own run/evidence would
+   * otherwise justify it.
+   */
+  hasOpenChildren?: boolean;
+}): TerminalIssueReconciliationDecision {
+  const decision = decideTerminalIssueReconciliationEvidence(input);
+  if (decision.kind === "project" && decision.status === "done" && input.hasOpenChildren) {
+    return { kind: "preserve", reason: "children_not_done" };
+  }
+  return decision;
+}
+
+function decideTerminalIssueReconciliationEvidence(input: {
   completionProfile: IssueExecutionCompletionProfile | null | undefined;
   terminalReceipt?: GovernedTerminalLifecycleReceipt | null;
   issue: IssueInput;
@@ -597,4 +627,89 @@ export function terminalIssueLifecycleNeedsUpdate(input: {
 }) {
   return input.currentStatus !== input.targetStatus ||
     (input.targetStatus === "done" && input.currentCompletedAt === null);
+}
+
+/**
+ * WG-PLAT-010: context-snapshot key that carries a truthful record of why a
+ * genuinely-succeeded run could not be terminally reconciled. Written
+ * atomically alongside the reconciliation decision so a run is never left
+ * with zero durable trace of a "preserve" outcome. Mirrors the naming
+ * convention of PAPERCLIP_EXECUTION_RECEIPT_KEY / execution-admission's
+ * context keys.
+ */
+export const TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY =
+  "gloopsTerminalReconciliationPreserve" as const;
+
+export type TerminalIssueReconciliationPreserveReason =
+  Extract<TerminalIssueReconciliationDecision, { kind: "preserve" }>["reason"];
+
+export type TerminalReconciliationPreserveRecord = {
+  schemaVersion: "gloops.terminal-reconciliation-preserve.v1";
+  reason: TerminalIssueReconciliationPreserveReason;
+  runStatus: "succeeded";
+  recordedAt: string;
+};
+
+const TERMINAL_RECONCILIATION_PRESERVE_REASONS = new Set<TerminalIssueReconciliationPreserveReason>([
+  "unsupported_completion_profile",
+  "run_not_succeeded",
+  "missing_provider_terminal_evidence",
+  "workspace_not_finalized",
+  "budget_exhausted",
+  "invalid_context_binding",
+  "context_binding_mismatch",
+  "run_not_current",
+  "terminal_issue_cancelled",
+  "terminal_issue_blocked",
+  "missing_execution_truth",
+  "execution_truth_rejected",
+  "children_not_done",
+]);
+
+export function isTerminalReconciliationPreserveRecord(
+  value: unknown,
+  expectedReason?: TerminalIssueReconciliationPreserveReason,
+): value is TerminalReconciliationPreserveRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== "gloops.terminal-reconciliation-preserve.v1" ||
+    record.runStatus !== "succeeded" ||
+    typeof record.reason !== "string" ||
+    !TERMINAL_RECONCILIATION_PRESERVE_REASONS.has(
+      record.reason as TerminalIssueReconciliationPreserveReason,
+    ) ||
+    (expectedReason !== undefined && record.reason !== expectedReason) ||
+    typeof record.recordedAt !== "string"
+  ) {
+    return false;
+  }
+  const timestamp = new Date(record.recordedAt);
+  return !Number.isNaN(timestamp.getTime()) && timestamp.toISOString() === record.recordedAt;
+}
+
+/**
+ * WG-PLAT-010: a run that succeeds at the infra level but trips a narrow
+ * reconciliation gate must not be left `in_progress` with zero durable
+ * disposition. This builds the truthful "preserve" record to persist
+ * atomically in the same settlement transaction as the reconciliation
+ * decision. It intentionally does NOT change issue status — the existing
+ * successful-run-handoff corrective wake still owns getting the issue a
+ * real disposition, and that flow requires issue.status to remain
+ * "in_progress" to fire. This only guarantees the run itself carries an
+ * auditable reason instead of silence.
+ */
+export function buildTerminalReconciliationPreserveRecord(input: {
+  decision: TerminalIssueReconciliationDecision;
+  runStatus: string;
+  now: Date;
+}): TerminalReconciliationPreserveRecord | null {
+  if (input.decision.kind !== "preserve") return null;
+  if (input.runStatus !== "succeeded") return null;
+  return {
+    schemaVersion: "gloops.terminal-reconciliation-preserve.v1",
+    reason: input.decision.reason,
+    runStatus: "succeeded",
+    recordedAt: input.now.toISOString(),
+  };
 }

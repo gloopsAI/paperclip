@@ -8,8 +8,10 @@ import {
 } from "@paperclipai/adapter-utils/execution-envelope";
 import {
   buildTerminalIssueLifecyclePatch,
+  buildTerminalReconciliationPreserveRecord,
   decideMergedPullRequestIssueReconciliation,
   decideTerminalIssueReconciliation,
+  isTerminalReconciliationPreserveRecord,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
 
@@ -345,6 +347,92 @@ describe("decideTerminalIssueReconciliation", () => {
           },
         }),
       })).toEqual({ kind: "preserve", reason: "context_binding_mismatch" });
+    });
+  });
+
+  describe("WG-PLAT-007: children-open guard", () => {
+    it("does not mark a parent done while a child is open, even though its own run/evidence would otherwise justify it", () => {
+      const withoutChildren = decideTerminalIssueReconciliation(input());
+      expect(withoutChildren).toMatchObject({ kind: "project", status: "done", reason: "direct_terminal_evidence" });
+
+      const withOpenChildren = decideTerminalIssueReconciliation(input({ hasOpenChildren: true }));
+      expect(withOpenChildren).toEqual({ kind: "preserve", reason: "children_not_done" });
+    });
+
+    it("still projects done once children are closed (hasOpenChildren: false)", () => {
+      expect(decideTerminalIssueReconciliation(input({ hasOpenChildren: false })))
+        .toMatchObject({ kind: "project", status: "done" });
+    });
+
+    it("does not gate non-done projections (blocked / in_review) on open children", () => {
+      const blocked = decideTerminalIssueReconciliation(input({
+        completionProfile: null,
+        terminalReceipt: {
+          action: "blocked",
+          reason: "Required repository credential is unavailable",
+        },
+        hasOpenChildren: true,
+      }));
+      expect(blocked).toMatchObject({ kind: "project", status: "blocked" });
+
+      const inReview = decideTerminalIssueReconciliation(input({
+        completionProfile: "verified_change",
+        workspaceHeadSha: headSha,
+        hasOpenChildren: true,
+      }));
+      expect(inReview).toMatchObject({ kind: "project", status: "in_review" });
+    });
+  });
+
+  describe("WG-PLAT-010: truthful preserve record", () => {
+    it("builds a preserve record only when the run genuinely succeeded", () => {
+      const preserveDecision = decideTerminalIssueReconciliation(input({ providerTerminalEvidence: false }));
+      expect(preserveDecision.kind).toBe("preserve");
+
+      const record = buildTerminalReconciliationPreserveRecord({
+        decision: preserveDecision,
+        runStatus: "succeeded",
+        now: new Date("2026-07-23T00:00:00.000Z"),
+      });
+      expect(record).toEqual({
+        schemaVersion: "gloops.terminal-reconciliation-preserve.v1",
+        reason: "missing_provider_terminal_evidence",
+        runStatus: "succeeded",
+        recordedAt: "2026-07-23T00:00:00.000Z",
+      });
+    });
+
+    it("does not build a record when the run did not succeed", () => {
+      const preserveDecision = decideTerminalIssueReconciliation(input({ providerTerminalEvidence: false }));
+      expect(buildTerminalReconciliationPreserveRecord({
+        decision: preserveDecision,
+        runStatus: "failed",
+        now: new Date(),
+      })).toBeNull();
+    });
+
+    it("does not build a record for a project (non-preserve) decision", () => {
+      const projectDecision = decideTerminalIssueReconciliation(input());
+      expect(buildTerminalReconciliationPreserveRecord({
+        decision: projectDecision,
+        runStatus: "succeeded",
+        now: new Date(),
+      })).toBeNull();
+    });
+
+    it("accepts only the complete versioned record for the expected preserve reason", () => {
+      const valid = {
+        schemaVersion: "gloops.terminal-reconciliation-preserve.v1",
+        reason: "missing_provider_terminal_evidence",
+        runStatus: "succeeded",
+        recordedAt: "2026-07-23T00:00:00.000Z",
+      } as const;
+      expect(isTerminalReconciliationPreserveRecord(valid, "missing_provider_terminal_evidence")).toBe(true);
+      expect(isTerminalReconciliationPreserveRecord({ ...valid, schemaVersion: "v0" }, valid.reason)).toBe(false);
+      expect(isTerminalReconciliationPreserveRecord({ ...valid, runStatus: "failed" }, valid.reason)).toBe(false);
+      expect(isTerminalReconciliationPreserveRecord({ ...valid, recordedAt: "not-a-date" }, valid.reason)).toBe(false);
+      expect(isTerminalReconciliationPreserveRecord({ ...valid, reason: "children_not_done" }, valid.reason)).toBe(false);
+      expect(isTerminalReconciliationPreserveRecord({ ...valid, reason: "invented_reason" })).toBe(false);
     });
   });
 

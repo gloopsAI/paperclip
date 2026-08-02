@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   companies,
   createDb,
@@ -21,7 +23,7 @@ import {
   parseExecutionAdmissionPolicy,
 } from "../services/execution-admission.js";
 import { guardedAdmissionResetService } from "../services/guarded-admission-reset.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import { heartbeatService, WorkspaceValidationFailure } from "../services/heartbeat.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -39,23 +41,119 @@ vi.mock("@paperclipai/adapter-utils/execution-envelope", async (importOriginal) 
   };
 });
 
+const mockWorkspaceRuntimeState = vi.hoisted(() => ({
+  setupFailure: null as (Error & { code?: string; resultJson?: Record<string, unknown> }) | null,
+}));
+
+vi.mock("../services/workspace-runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/workspace-runtime.js")>();
+  return {
+    ...actual,
+    realizeExecutionWorkspace: vi.fn(async (...args: Parameters<typeof actual.realizeExecutionWorkspace>) => {
+      if (mockWorkspaceRuntimeState.setupFailure) throw mockWorkspaceRuntimeState.setupFailure;
+      return actual.realizeExecutionWorkspace(...args);
+    }),
+  };
+});
+
 const mockAdapterState = vi.hoisted(() => ({
   supportsBudget: true,
   includeUsage: true,
   resultOverride: null as Record<string, unknown> | null,
+  throwOverride: null as Error | null,
+  providerTerminalEvidence: false,
 }));
-const mockAdapterExecute = vi.hoisted(() => vi.fn(async () => mockAdapterState.resultOverride ?? ({
-  exitCode: 0,
-  signal: null,
-  timedOut: false,
-  errorMessage: null,
-  summary: "Execution admission integration run.",
-  provider: "test",
-  model: "test-model",
-  ...(mockAdapterState.includeUsage
-    ? { usage: { inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 100 } }
-    : {}),
-})));
+const mockAdapterExecute = vi.hoisted(() => vi.fn(async (ctx: {
+  runId: string;
+  onProviderRequestPrepared?: (evidence: Record<string, unknown>) => Promise<unknown>;
+}) => {
+  if (mockAdapterState.throwOverride) throw mockAdapterState.throwOverride;
+  if (mockAdapterState.providerTerminalEvidence) {
+    if (!ctx.onProviderRequestPrepared) throw new Error("prepared-request callback missing");
+    await ctx.onProviderRequestPrepared({
+      schemaVersion: "gloops.provider-request-prepared.v1",
+      destinationClass: "hermes_gateway",
+      requestSchemaVersion: "hermes.run.create.v1",
+      requestByteLength: 23,
+      requestSha256: `sha256:${"c".repeat(64)}`,
+      idempotencyKey: ctx.runId,
+      requestPreparedAt: new Date().toISOString(),
+    });
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      providerInvocationAttempted: true,
+      summary: "Trusted terminal evidence integration run.",
+      provider: "ollama",
+      model: "test-model",
+      usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2 },
+      providerIoTerminalEvidence: {
+        schemaVersion: "gloops.provider-io-terminal.v1" as const,
+        preparedRequest: {
+          requestByteLength: 23,
+          requestSha256: `sha256:${"c".repeat(64)}`,
+        },
+        hermesRunId: `hermes-${ctx.runId}`,
+        createResponse: {
+          rawByteLength: 21,
+          rawSha256: `sha256:${"1".repeat(64)}`,
+          canonicalSha256: `sha256:${"2".repeat(64)}`,
+        },
+        eventStream: {
+          rawByteLength: 200,
+          rawSha256: `sha256:${"3".repeat(64)}`,
+          canonicalEventSequenceSha256: `sha256:${"4".repeat(64)}`,
+          eventCount: 1,
+        },
+        finalStatusResponse: {
+          rawByteLength: 180,
+          rawSha256: `sha256:${"5".repeat(64)}`,
+          canonicalSha256: `sha256:${"6".repeat(64)}`,
+        },
+        terminalEvidence: {
+          schemaVersion: "gloops.hermes-terminal-evidence.v1" as const,
+          hermesRunId: `hermes-${ctx.runId}`,
+          requestByteLength: 23,
+          requestSha256: "c".repeat(64),
+          resolvedProvider: "ollama-cloud",
+          resolvedModel: "test-model",
+          transportClass: "openai_chat_completions",
+          billingClass: "subscription_included",
+          fallbackPath: [{
+            provider: "ollama-cloud",
+            model: "test-model",
+            transportClass: "openai_chat_completions",
+            billingClass: "subscription_included",
+          }],
+          inputUsage: { present: true, value: 10 },
+          outputUsage: { present: true, value: 2 },
+          cachedUsage: { present: true, value: 0 },
+          usageSource: "provider_response_aggregate",
+          turnTotal: 1,
+          toolCallTotal: 0,
+          terminalStatus: "completed" as const,
+        },
+        terminalEvidenceDigest: `sha256:${"7".repeat(64)}`,
+        rawPayloadDisposition: "not_retained" as const,
+        reconciledAt: new Date().toISOString(),
+      },
+    };
+  }
+  return mockAdapterState.resultOverride ?? {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Execution admission integration run.",
+    provider: "test",
+    model: "test-model",
+    ...(mockAdapterState.includeUsage
+      ? { usage: { inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 100 } }
+      : {}),
+  };
+}));
 
 vi.mock("../adapters/index.js", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js");
@@ -122,6 +220,9 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     mockAdapterState.supportsBudget = true;
     mockAdapterState.includeUsage = true;
     mockAdapterState.resultOverride = null;
+    mockAdapterState.throwOverride = null;
+    mockAdapterState.providerTerminalEvidence = false;
+    mockWorkspaceRuntimeState.setupFailure = null;
     mockAdapterExecute.mockClear();
   });
 
@@ -246,6 +347,477 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
     return { companyId, agentId };
   }
+
+  let runnableIssueNumber = 10_000;
+  async function seedRunnableAdmissionIssue(input: {
+    companyId: string;
+    agentId: string;
+    status: "backlog" | "todo" | "in_progress" | "blocked" | "in_review" | "done" | "cancelled";
+  }) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: `Runnable admission ${input.status}`,
+      description: "## Scope\nExercise claim admission.\n\n## Acceptance\nThe claim is mediated by current status and wake context.",
+      status: input.status,
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: input.agentId,
+      issueNumber: runnableIssueNumber++,
+      identifier: `RUN-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: { mode: "normal", commentRequired: false, stages: [] },
+    });
+    return issueId;
+  }
+
+  it.each(["done", "cancelled"] as const)(
+    "WG-PLAT-016 denies terminal %s unconditionally despite interaction and resume signals",
+    async (status) => {
+      const { companyId, agentId } = await seedDirectAgent();
+      const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status });
+      const commentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorUserId: "operator",
+        body: "This comment must not reopen a terminal issue.",
+      });
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.invoke(
+        agentId,
+        "automation",
+        {
+          issueId,
+          wakeReason: "issue_commented",
+          commentId,
+          wakeCommentId: commentId,
+          resumeIntent: true,
+          // Caller-supplied context must not impersonate the trusted
+          // control-plane deferred-comment promotion exception.
+          nonOwningDeferredCommentDelivery: true,
+        },
+        "system",
+        { actorType: "user", actorId: "operator" },
+      );
+      expect(run).not.toBeNull();
+      await waitForTerminalRuns(db, [run!.id]);
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({
+        status: "cancelled",
+        errorCode: "issue_terminal_status",
+        resultJson: { stopReason: "issue_terminal_status" },
+      });
+    },
+  );
+
+  it("WG-PLAT-016 does not let a trusted non-owning marker bypass nonterminal runnable admission", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "backlog" });
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "operator",
+      body: "A promoted marker must not make backlog executable.",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_promoted",
+      status: "queued",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
+        nonOwningDeferredCommentDelivery: true,
+      },
+    });
+
+    await heartbeatService(db).resumeQueuedRuns();
+    await waitForTerminalRuns(db, [runId]);
+
+    expect(await heartbeatService(db).getRun(runId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "admission.issue_not_runnable",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("WG-PLAT-016 denies a todo-to-blocked race inside the queued-to-running claim", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    let raced = false;
+    const heartbeat = heartbeatService(db, {
+      queuedRunClaimHooks: {
+        afterIssuePreflight: async ({ issueId: claimIssueId }) => {
+          if (raced || claimIssueId !== issueId) return;
+          raced = true;
+          await db
+            .update(issues)
+            .set({ status: "blocked", updatedAt: new Date() })
+            .where(eq(issues.id, issueId));
+        },
+      },
+    });
+
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "race-test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(raced).toBe(true);
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "admission.issue_blocked",
+      resultJson: { stopReason: "admission.issue_blocked" },
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("WG-PLAT-016 denies blocked assignment and unrelated wakes with the blocked code", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+    for (const wakeReason of ["issue_assigned", "execution_workspace_settings_changed"]) {
+      const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "blocked" });
+      const run = await heartbeat.invoke(
+        agentId,
+        "automation",
+        { issueId, wakeReason },
+        "system",
+        { actorType: "system", actorId: "test" },
+      );
+      expect(run).not.toBeNull();
+      await waitForTerminalRuns(db, [run!.id]);
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({
+        status: "cancelled",
+        errorCode: "admission.issue_blocked",
+      });
+    }
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("WG-PLAT-016 admits blocked only for verified interaction or real resume intent", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const heartbeat = heartbeatService(db);
+
+    const interactionIssueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "blocked" });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: interactionIssueId,
+      authorUserId: "operator",
+      body: "Verified interaction may inspect the blocked issue.",
+    });
+    const interactionRun = await heartbeat.invoke(
+      agentId,
+      "automation",
+      {
+        issueId: interactionIssueId,
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
+      },
+      "system",
+      { actorType: "user", actorId: "operator" },
+    );
+    expect(interactionRun).not.toBeNull();
+    await waitForTerminalRuns(db, [interactionRun!.id]);
+    expect((await heartbeat.getRun(interactionRun!.id))?.status).toBe("succeeded");
+
+    const resumeIssueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "blocked" });
+    const resumeRun = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId: resumeIssueId, wakeReason: "issue_status_changed", resumeIntent: true },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(resumeRun).not.toBeNull();
+    await waitForTerminalRuns(db, [resumeRun!.id]);
+    expect((await heartbeat.getRun(resumeRun!.id))?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["todo", "in_progress", "in_review"] as const)(
+    "WG-PLAT-016 leaves runnable %s claim behavior unchanged",
+    async (status) => {
+      const { companyId, agentId } = await seedDirectAgent();
+      const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status });
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.invoke(
+        agentId,
+        "automation",
+        { issueId, wakeReason: "issue_assigned" },
+        "system",
+        { actorType: "system", actorId: "test" },
+      );
+      expect(run).not.toBeNull();
+      await waitForTerminalRuns(db, [run!.id]);
+      expect((await heartbeat.getRun(run!.id))?.status).toBe("succeeded");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("WG-PLAT-005 keeps dirty-workspace failure issue-scoped and retires poisoned session state", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    const staleDirtyError = "Workspace contains uncommitted or untracked changes.";
+    await db.insert(agentRuntimeState).values({
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      stateJson: {},
+      lastError: staleDirtyError,
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: { sessionId: "poisoned-dirty-session" },
+      sessionDisplayId: "poisoned-dirty-session",
+      lastError: staleDirtyError,
+    });
+    mockAdapterState.throwOverride = new WorkspaceValidationFailure(staleDirtyError, {
+      workspaceValidation: { status: "failed", reason: "dirty_workspace" },
+      provider_invocation: { attempted: false },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const failed = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(failed).not.toBeNull();
+    await waitForTerminalRuns(db, [failed!.id]);
+    expect(await heartbeat.getRun(failed!.id)).toMatchObject({
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      error: staleDirtyError,
+    });
+    expect(await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]))
+      .toMatchObject({ status: "idle", errorReason: null });
+    expect(await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)).then((rows) => rows[0]))
+      .toMatchObject({ lastError: null });
+    expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId)))
+      .toHaveLength(0);
+
+    mockAdapterState.throwOverride = null;
+    const nextIssueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    const next = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId: nextIssueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(next).not.toBeNull();
+    await waitForTerminalRuns(db, [next!.id]);
+    expect((await heartbeat.getRun(next!.id))?.status).toBe("succeeded");
+  });
+
+  it("WG-PLAT-005 keeps the agent failed when setup-path session retirement fails", async () => {
+    let triggerInstalled = false;
+    try {
+      const { companyId, agentId } = await seedDirectAgent();
+      const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+      const staleDirtyError = "Workspace contains uncommitted or untracked changes.";
+      const setupFailure = new Error(staleDirtyError) as Error & {
+        code: string;
+        resultJson: Record<string, unknown>;
+      };
+      setupFailure.code = "workspace_validation_failed";
+      setupFailure.resultJson = {
+        workspaceValidation: { status: "failed", reason: "dirty_workspace" },
+        provider_invocation: { attempted: false },
+      };
+      mockWorkspaceRuntimeState.setupFailure = setupFailure;
+      await db.insert(agentRuntimeState).values({
+        agentId,
+        companyId,
+        adapterType: "codex_local",
+        stateJson: {},
+        lastError: staleDirtyError,
+      });
+      await db.insert(agentTaskSessions).values({
+        companyId,
+        agentId,
+        adapterType: "codex_local",
+        taskKey: issueId,
+        sessionParamsJson: { sessionId: "must-not-survive-clean-retirement" },
+        sessionDisplayId: "must-not-survive-clean-retirement",
+        lastError: staleDirtyError,
+      });
+      await db.execute(sql.raw(`
+        create or replace function paperclip_test_fail_session_retirement()
+        returns trigger language plpgsql as $$
+        begin
+          raise exception 'injected session retirement failure';
+        end;
+        $$;
+        create trigger paperclip_test_fail_session_retirement
+        before delete on agent_task_sessions
+        for each row execute function paperclip_test_fail_session_retirement();
+      `));
+      triggerInstalled = true;
+
+      const heartbeat = heartbeatService(db);
+      const run = await heartbeat.invoke(
+        agentId,
+        "automation",
+        { issueId, wakeReason: "issue_assigned" },
+        "system",
+        { actorType: "system", actorId: "test" },
+      );
+      expect(run).not.toBeNull();
+      await waitForTerminalRuns(db, [run!.id]);
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({
+        status: "failed",
+        errorCode: "workspace_validation_failed",
+      });
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]))
+        .toMatchObject({ status: "error", errorReason: expect.stringMatching(/uncommitted|untracked/i) });
+      expect(await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)).then((rows) => rows[0]))
+        .toMatchObject({ lastError: staleDirtyError });
+      expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId)))
+        .toHaveLength(1);
+    } finally {
+      if (triggerInstalled) {
+        await db.execute(sql.raw("drop trigger if exists paperclip_test_fail_session_retirement on agent_task_sessions"));
+        await db.execute(sql.raw("drop function if exists paperclip_test_fail_session_retirement()"));
+      }
+    }
+  });
+
+  it("WG-PLAT-005 keeps the agent failed when runtime lastError changes during guarded retirement", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    const dirtyError = "Workspace contains uncommitted or untracked changes.";
+    const concurrentError = "Concurrent provider credential failure";
+    mockAdapterState.throwOverride = new WorkspaceValidationFailure(dirtyError, {
+      workspaceValidation: { status: "failed", reason: "dirty_workspace" },
+      provider_invocation: { attempted: false },
+    });
+    const heartbeat = heartbeatService(db, {
+      dirtyWorkspaceFailureRetirementHooks: {
+        afterRuntimeRead: async ({ agentId: retiringAgentId }) => {
+          await db.update(agentRuntimeState)
+            .set({ lastError: concurrentError, updatedAt: new Date() })
+            .where(eq(agentRuntimeState.agentId, retiringAgentId));
+        },
+      },
+    });
+
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+    });
+    expect(await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]))
+      .toMatchObject({ status: "error", errorReason: dirtyError });
+    expect(await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)).then((rows) => rows[0]))
+      .toMatchObject({ lastError: concurrentError });
+  });
+
+  it("WG-PLAT-007/010 preserves a successful parent when a child opens between preflight and write", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const parentIssueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: false,
+        stages: [],
+        completionProfile: "direct",
+      },
+    }).where(eq(issues.id, parentIssueId));
+    const childIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: parentIssueId,
+      title: "Open child blocks terminal parent projection",
+      description: "This child must close before its parent can be marked done.",
+      status: "done",
+      priority: "medium",
+      responsibleUserId: "operator",
+      issueNumber: runnableIssueNumber++,
+      identifier: `CHILD-${childIssueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    mockAdapterState.providerTerminalEvidence = true;
+
+    const heartbeat = heartbeatService(db, {
+      terminalIssueReconciliationHooks: {
+        afterDecisionBeforeProjection: async ({ targetStatus }) => {
+          if (targetStatus !== "done") return;
+          await db.update(issues)
+            .set({ status: "todo", completedAt: null, updatedAt: new Date() })
+            .where(eq(issues.id, childIssueId));
+        },
+      },
+    });
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId: parentIssueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "succeeded",
+      contextSnapshot: {
+        gloopsTerminalReconciliationPreserve: {
+          schemaVersion: "gloops.terminal-reconciliation-preserve.v1",
+          reason: "children_not_done",
+          runStatus: "succeeded",
+          recordedAt: expect.any(String),
+        },
+      },
+    });
+    expect(await db.select().from(issues).where(eq(issues.id, parentIssueId)).then((rows) => rows[0]))
+      .toMatchObject({ status: "in_progress" });
+  });
 
   async function seedIssueBudgetHistory(input: {
     companyId: string;

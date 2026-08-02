@@ -8574,9 +8574,17 @@ export function issueRoutes(
         });
       };
 
-      if (executionStageWakeup) {
+      if (executionStageWakeup && (issue.status !== "blocked" || resumeRequested === true)) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (
+        assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        // WG-PLAT-016: a `blocked` issue must never be auto-admitted merely
+        // because the assignee (or executionPolicy / workspace settings)
+        // changed on it. Leaving `blocked` requires an explicit resume.
+        (issue.status !== "blocked" || resumeRequested === true)
+      ) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",

@@ -277,6 +277,37 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("WG-PLAT-016: does not wake the new assignee when a blocked issue's assignee changes without an explicit resume", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: PREVIOUS_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+      executionPolicy: { mode: "auto" },
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+      executionPolicy: { mode: "auto" },
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        executionPolicy: { mode: "auto" },
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("interrupts the active run and wakes the newly assigned agent with handoff context", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,
