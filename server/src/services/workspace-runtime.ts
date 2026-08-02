@@ -450,11 +450,12 @@ function renderWorkspaceTemplate(template: string, input: {
 // text (or silently rendered empty) instead of being expanded. Without this
 // check, sanitizeBranchName() would absorb the leftover `{ } < >` characters
 // into hyphens and admission would proceed with a branch name the operator
-// never intended (e.g. the literal branch `GLO-identifier-<slug>`). Must run
-// on the rendered branch name, before sanitizeBranchName().
+// never intended (e.g. the literal branch `GLO-identifier-<slug>`). Inspect
+// the raw template: substituted values such as an issue title may legitimately
+// contain these characters and are normalized later by sanitizeBranchName().
 function assertWorkspaceBranchTemplateResolved(input: { template: string; renderedBranch: string }) {
   const unsupportedVariables = findUnsupportedWorkspaceBranchTemplateVariables(input.template);
-  const hasStrayPlaceholderSyntax = hasStrayWorkspaceBranchTemplatePlaceholderSyntax(input.renderedBranch);
+  const hasStrayPlaceholderSyntax = hasStrayWorkspaceBranchTemplatePlaceholderSyntax(input.template);
   if (unsupportedVariables.length === 0 && !hasStrayPlaceholderSyntax) return;
 
   const reasons: string[] = [];
@@ -462,7 +463,7 @@ function assertWorkspaceBranchTemplateResolved(input: { template: string; render
     reasons.push(`references unsupported variable(s) ${unsupportedVariables.map((name) => `{{${name}}}`).join(", ")}`);
   }
   if (hasStrayPlaceholderSyntax) {
-    reasons.push(`rendered branch name "${input.renderedBranch}" still contains unresolved placeholder syntax`);
+    reasons.push("template still contains unresolved placeholder syntax");
   }
 
   throw new WorkspacePreparationFailure(
