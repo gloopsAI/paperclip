@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.801.0-gloops.33",
+    "version": "2026.802.0-gloops.34",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:ccf6eadd5d0ad2dd9a555dacf43b62490505652ec3d85168c3c15a2dd2b30393"
+    "digest": "sha256:fb63ebfd959890457a5b80728a35a71da267cb18ff4e4f524768c62c9d1ba53d"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.801.0-gloops.33.json"
+    "vex": "gloops-distribution/security/vex-2026.802.0-gloops.34.json"
   },
   "patches": [
     {
@@ -462,6 +462,17 @@
       "integratedCommits": ["9d5ecf1a6e61aff2d61b4e622a9f8112921af2b5"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalently authenticated, atomic, idempotent reset of an exhausted admission budget that binds the reset to the exact terminal run and denies ambiguous, stale, or cross-company replay."
+    },
+    {
+      "id": "company-scoped-backlog-bankruptcy-admission",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "eca4e83d2716657cbefdf7800ed6b533a0fa5e66",
+      "sourceHead": "e83b590bf2c3c25f859798bcd20494e0a4533d65",
+      "patchDiffSha256": "ee0dc959ab192ab026ec308dcfa623443b31d47dc6a0694b48a5ad31d9c6c6b2",
+      "integratedCommits": ["63ef21ad2bc962559a2bcb79ecb52f177149aa84"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until upstream provides an equivalent provider-free, claim-time company backlog freeze with fail-closed UUID configuration, exact issue readmission bound to explicit normalized resource budgets, deterministic cancellation, and budget-exempt denials."
     }
   ],
   "releasePolicy": {
