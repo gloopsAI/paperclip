@@ -248,7 +248,13 @@ function resolveProfile(input: IssuePacketReadinessInput): IssuePacketProfile {
   return "standard_implement";
 }
 
-function findExactHeadSha(description: string | null | undefined): string | null {
+/**
+ * Extract the first 40-hex exact-head SHA from issue packet description text.
+ * Prefers labeled lines (`Exact head: …`) over a bare SHA match.
+ * Exported so createChild can fail closed when description text disagrees with
+ * structured workspaceStrategy.baseRef (WG-PLAT-008 P1).
+ */
+export function findExactHeadSha(description: string | null | undefined): string | null {
   if (!description) return null;
   const lineMatch = EXACT_HEAD_LINE_RE.exec(description);
   if (lineMatch?.[1]) return lineMatch[1].toLowerCase();

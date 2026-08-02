@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -81,6 +81,12 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import {
+  evaluateIssuePacketReadiness,
+  findExactHeadSha,
+  ISSUE_PACKET_DOR_ENV,
+  ISSUE_PACKET_REASON,
+} from "./issue-packet-readiness.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -343,6 +349,48 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
     };
   }
   return Object.keys(next).length > 0 ? next : null;
+}
+
+const EXACT_HEAD_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+// Internal-only override so the exact-head preflight below always evaluates
+// as if PAPERCLIP_ISSUE_PACKET_DOR=enforce, regardless of the process env
+// (vitest defaults the real DoR mode to "off" so legacy fixtures still pass).
+// This guarantees dispatched child packets are built to satisfy the *strict*
+// gate up front (WG-PLAT-008), not whichever mode happens to be active.
+const FORCE_ISSUE_PACKET_ENFORCE_ENV = { [ISSUE_PACKET_DOR_ENV]: "enforce" } as const;
+
+/**
+ * Derive a candidate exact-head SHA from a (possibly pre-realization) child
+ * executionWorkspaceSettings payload. Only a literal 40-hex baseRef counts —
+ * branch names / refs (e.g. "origin/master") are never treated as an exact
+ * head (WG-PLAT-008).
+ */
+function deriveExactHeadShaFromExecutionWorkspaceSettings(
+  settings: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!settings || typeof settings !== "object") return null;
+  const strategy = (settings as Record<string, unknown>).workspaceStrategy;
+  if (!strategy || typeof strategy !== "object") return null;
+  const baseRef = (strategy as Record<string, unknown>).baseRef;
+  if (typeof baseRef !== "string") return null;
+  const trimmed = baseRef.trim();
+  return EXACT_HEAD_SHA_PATTERN.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+/**
+ * Append a machine-readable exact-head line the DoR gate recognizes
+ * (EXACT_HEAD_LINE_RE / EXACT_HEAD_SHA_RE in issue-packet-readiness.ts),
+ * mirroring the single-child Argus handoff's buildImplementationReviewDescription
+ * (implementation-review-handoff.ts) so decomposed review/release children
+ * carry the same evidence the DoR gate already trusts.
+ */
+function appendExactHeadDescriptionSection(
+  description: string | null | undefined,
+  exactHeadSha: string,
+): string {
+  const base = (description ?? "").trimEnd();
+  const section = `## Exact Head\nExact head: \`${exactHeadSha}\``;
+  return base ? `${base}\n\n${section}\n` : `${section}\n`;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -822,6 +870,55 @@ function createAcceptedPlanDecompositionRequestFingerprint(input: {
     children: input.children.map(normalizeAcceptedPlanDecompositionFingerprintChild),
   }));
   return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * Rebind this-call child drafts onto the durable preallocated ids stored on the
+ * decomposition claim. Sibling blockedByIssueIds that referenced this-call ids
+ * are remapped to the claim's ids so partial resume keeps the same dependency
+ * graph (WG-PLAT-013).
+ */
+function resolveDurableAcceptedPlanChildren(
+  storedRequestedChildren: unknown,
+  childrenWithPreallocatedIds: IssueChildCreateInput[],
+): IssueChildCreateInput[] {
+  if (!Array.isArray(storedRequestedChildren) || storedRequestedChildren.length !== childrenWithPreallocatedIds.length) {
+    return childrenWithPreallocatedIds;
+  }
+
+  const idRemap = new Map<string, string>();
+  for (let index = 0; index < childrenWithPreallocatedIds.length; index += 1) {
+    const callId = childrenWithPreallocatedIds[index]?.id;
+    const storedChild = storedRequestedChildren[index];
+    const storedId =
+      storedChild &&
+      typeof storedChild === "object" &&
+      typeof (storedChild as { id?: unknown }).id === "string" &&
+      (storedChild as { id: string }).id.length > 0
+        ? (storedChild as { id: string }).id
+        : null;
+    if (typeof callId === "string" && callId.length > 0) {
+      idRemap.set(callId, storedId ?? callId);
+    }
+  }
+
+  return childrenWithPreallocatedIds.map((child, index) => {
+    const storedChild = storedRequestedChildren[index];
+    const storedId =
+      storedChild &&
+      typeof storedChild === "object" &&
+      typeof (storedChild as { id?: unknown }).id === "string" &&
+      (storedChild as { id: string }).id.length > 0
+        ? (storedChild as { id: string }).id
+        : null;
+    const durableId = storedId ?? (typeof child.id === "string" && child.id.length > 0 ? child.id : randomUUID());
+    const blockedByIssueIds = (child.blockedByIssueIds ?? []).map((blockerId) => idRemap.get(blockerId) ?? blockerId);
+    return {
+      ...child,
+      id: durableId,
+      ...(blockedByIssueIds.length > 0 ? { blockedByIssueIds } : {}),
+    };
+  });
 }
 
 function normalizeIssuePlanDecompositionChildIds(value: unknown): string[] {
@@ -5691,6 +5788,91 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+
+      // WG-PLAT-008: review/release-profile children must carry a literal
+      // exact-head SHA in the description or the DoR gate
+      // (evaluateIssuePacketReadiness) cancels them as "not ready". The
+      // single-child Argus handoff (implementation-review-handoff.ts) embeds
+      // this explicitly; this generic helper (used by decomposeAcceptedPlan
+      // and any other child-creation caller) did not. Derive it from the
+      // child's structured workspace intent when possible and inject it; if
+      // the profile requires an exact head and none can be derived, fail
+      // typed here instead of silently creating a packet DoR will cancel.
+      //
+      // WG-PLAT-008 P1: when the description already contains exact-head text
+      // AND structured workspaceStrategy.baseRef also carries a 40-hex SHA,
+      // the two sources must agree. A silent SHA-A-in-text / SHA-B-in-settings
+      // disagreement would let the DoR gate pass while the workspace materializes
+      // a different head. Reject (422) on mismatch instead of rewriting.
+      const descriptionWithAcceptanceCriteria = appendAcceptanceCriteriaToDescription(
+        issueData.description,
+        acceptanceCriteria,
+      );
+      const candidateExecutionWorkspaceSettingsForExactHead =
+        inheritedPreRealizationWorkspaceSettings ??
+        (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ??
+        null;
+      const candidateExactHeadSha = deriveExactHeadShaFromExecutionWorkspaceSettings(
+        candidateExecutionWorkspaceSettingsForExactHead,
+      );
+      const descriptionExactHeadSha = findExactHeadSha(descriptionWithAcceptanceCriteria);
+      if (
+        descriptionExactHeadSha &&
+        candidateExactHeadSha &&
+        descriptionExactHeadSha !== candidateExactHeadSha
+      ) {
+        throw unprocessable(
+          `Child issue packet exact-head mismatch: description declares \`${descriptionExactHeadSha}\` but executionWorkspaceSettings.workspaceStrategy.baseRef is \`${candidateExactHeadSha}\`. Align both sources to the same 40-char SHA before dispatching this child.`,
+        );
+      }
+      const exactHeadAssigneeAgentId = issueData.assigneeAgentId ?? null;
+      const exactHeadAssigneeAgent = exactHeadAssigneeAgentId
+        ? await db
+            .select({ role: agents.role, name: agents.name })
+            .from(agents)
+            .where(eq(agents.id, exactHeadAssigneeAgentId))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const exactHeadPreflightInput = {
+        title: issueData.title ?? null,
+        description: descriptionWithAcceptanceCriteria,
+        workMode: issueData.workMode ?? null,
+        status: issueData.status ?? null,
+        assigneeRole: exactHeadAssigneeAgent?.role ?? null,
+        assigneeName: exactHeadAssigneeAgent?.name ?? null,
+      };
+      const exactHeadPreflight = evaluateIssuePacketReadiness(
+        exactHeadPreflightInput,
+        FORCE_ISSUE_PACKET_ENFORCE_ENV,
+      );
+      const exactHeadRequired =
+        exactHeadPreflight.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_EXACT_HEAD) ||
+        exactHeadPreflight.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_RELEASE_ANCHOR);
+      let finalDescription = descriptionWithAcceptanceCriteria;
+      if (exactHeadRequired) {
+        if (!candidateExactHeadSha) {
+          throw unprocessable(
+            `Child issue packet requires an exact-head SHA for profile "${exactHeadPreflight.profile}" but none could be derived from executionWorkspaceSettings.workspaceStrategy.baseRef. Supply a 40-char exact-head baseRef (or embed the exact head directly in the description) before dispatching this child.`,
+          );
+        }
+        // Description is missing the head (exactHeadRequired) — inject from
+        // structured baseRef. descriptionExactHeadSha is null here; if it were
+        // set and mismatched we already rejected above.
+        finalDescription = appendExactHeadDescriptionSection(descriptionWithAcceptanceCriteria, candidateExactHeadSha);
+        const exactHeadVerification = evaluateIssuePacketReadiness(
+          { ...exactHeadPreflightInput, description: finalDescription },
+          FORCE_ISSUE_PACKET_ENFORCE_ENV,
+        );
+        if (
+          exactHeadVerification.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_EXACT_HEAD) ||
+          exactHeadVerification.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_RELEASE_ANCHOR)
+        ) {
+          throw unprocessable(
+            `Child issue packet still missing exact-head evidence after injection for profile "${exactHeadPreflight.profile}".`,
+          );
+        }
+      }
+
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -5702,7 +5884,7 @@ export function issueService(db: Db) {
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        description: finalDescription,
         ...(inheritedPreRealizationWorkspaceSettings
           ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
           : {}),
@@ -5747,9 +5929,70 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!sourceIssue) throw notFound("Source issue not found");
 
+      // WG-PLAT-013: preallocate stable child IDs so callers can declare
+      // prerequisite-child → dependent-child edges via blockedByIssueIds that
+      // resolve against those IDs before any child row exists. Parent-blocking
+      // (blockParentUntilDone) is a separate invariant — it does NOT substitute
+      // for sibling dependency edges that keep a final-audit child idle while
+      // earlier children remain open.
+      const childrenWithPreallocatedIds: IssueChildCreateInput[] = data.children.map((child) => ({
+        ...child,
+        id: typeof child.id === "string" && child.id.length > 0 ? child.id : randomUUID(),
+      }));
+      const preallocatedChildIds = childrenWithPreallocatedIds.map((child) => child.id as string);
+      const preallocatedChildIdSet = new Set(preallocatedChildIds);
+      if (preallocatedChildIdSet.size !== preallocatedChildIds.length) {
+        throw unprocessable(
+          "Accepted-plan decomposition children must declare unique preallocated ids; duplicate child ids are not allowed.",
+        );
+      }
+      for (let childIndex = 0; childIndex < childrenWithPreallocatedIds.length; childIndex += 1) {
+        const child = childrenWithPreallocatedIds[childIndex]!;
+        const childId = child.id as string;
+        const blockedByIssueIds = [...new Set(child.blockedByIssueIds ?? [])];
+        for (const blockerIssueId of blockedByIssueIds) {
+          if (blockerIssueId === childId) {
+            throw unprocessable("Issue cannot be blocked by itself");
+          }
+          if (!preallocatedChildIdSet.has(blockerIssueId)) {
+            // External blockers are validated later by syncBlockedByIssueIds
+            // when the child row is created (must already exist in-company).
+            continue;
+          }
+          const blockerIndex = preallocatedChildIds.indexOf(blockerIssueId);
+          // Children are created in array order under the durable claim cursor.
+          // A forward reference to a later sibling cannot be resolved when this
+          // child is inserted, so fail closed rather than emit a concurrent
+          // runnable dependent.
+          if (blockerIndex < 0 || blockerIndex >= childIndex) {
+            throw unprocessable(
+              "blockedByIssueIds that reference siblings in the same decomposition must point at earlier children (lower index) whose preallocated ids already resolve when this child is created.",
+            );
+          }
+        }
+        // Fail closed: an explicit sibling/external dependency declaration means
+        // the child is not concurrently runnable. Force status=blocked so the
+        // control plane does not treat a todo-with-blockers packet as ready.
+        if (blockedByIssueIds.length > 0) {
+          const status = child.status ?? "todo";
+          if (status !== "done" && status !== "cancelled" && status !== "blocked") {
+            childrenWithPreallocatedIds[childIndex] = {
+              ...child,
+              blockedByIssueIds,
+              status: "blocked",
+            };
+          } else if (blockedByIssueIds.length !== (child.blockedByIssueIds?.length ?? 0)) {
+            childrenWithPreallocatedIds[childIndex] = {
+              ...child,
+              blockedByIssueIds,
+            };
+          }
+        }
+      }
+
       const requestFingerprint = createAcceptedPlanDecompositionRequestFingerprint({
         acceptedPlanRevisionId: data.acceptedPlanRevisionId,
-        children: data.children,
+        children: childrenWithPreallocatedIds,
       });
 
       const initialClaim = await db.transaction(async (tx) => {
@@ -5800,8 +6043,8 @@ export function issueService(db: Db) {
               acceptedInteractionId: acceptedInteraction.id,
               status: "in_flight",
               requestFingerprint,
-              requestedChildCount: data.children.length,
-              requestedChildren: data.children as unknown as Record<string, unknown>[],
+              requestedChildCount: childrenWithPreallocatedIds.length,
+              requestedChildren: childrenWithPreallocatedIds as unknown as Record<string, unknown>[],
               childIssueIds: [],
               ownerAgentId: data.actorAgentId ?? null,
               ownerUserId: data.actorUserId ?? null,
@@ -5821,10 +6064,24 @@ export function issueService(db: Db) {
       });
 
       let currentClaim = initialClaim;
+      // Prefer the durable preallocated ids stored on the claim so a partial
+      // resume (same fingerprint, fresh caller-side UUIDs) still resolves
+      // sibling blockedByIssueIds against the ids that already exist in DB.
+      const durableChildren = resolveDurableAcceptedPlanChildren(
+        initialClaim.requestedChildren,
+        childrenWithPreallocatedIds,
+      );
       const newlyCreatedIssues: Array<typeof issues.$inferSelect> = [];
 
       while (true) {
         const step = await db.transaction(async (tx) => {
+          // WG-PLAT-013 residual: hold the source parent for the entire
+          // create/progress step (parent → claim lock order) so concurrent
+          // decompositions cannot race parent blocker sync or workspace
+          // collision checks after the initial claim transaction releases.
+          await tx.execute(
+            sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssue.id} for update`,
+          );
           await tx.execute(
             sql`select ${issuePlanDecompositions.id}
                 from ${issuePlanDecompositions}
@@ -5843,9 +6100,9 @@ export function issueService(db: Db) {
           }
 
           const existingChildIssueIds = normalizeIssuePlanDecompositionChildIds(claim.childIssueIds);
-          if (claim.status === "completed" || existingChildIssueIds.length >= data.children.length) {
-            const nextIds = existingChildIssueIds.slice(0, data.children.length);
-            if (claim.status === "completed" && nextIds.length === data.children.length) {
+          if (claim.status === "completed" || existingChildIssueIds.length >= durableChildren.length) {
+            const nextIds = existingChildIssueIds.slice(0, durableChildren.length);
+            if (claim.status === "completed" && nextIds.length === durableChildren.length) {
               return {
                 claim,
                 createdIssue: null,
@@ -5878,18 +6135,54 @@ export function issueService(db: Db) {
             };
           }
 
-          const nextChildInput = data.children[existingChildIssueIds.length];
+          const nextChildInput = durableChildren[existingChildIssueIds.length];
           if (!nextChildInput) {
             throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
           }
 
+          // WG-PLAT-009: plan/campaign children are dispatched fan-out work.
+          // The default (no explicit executionWorkspaceId on the child) is
+          // already forced to strategy_only below, which gives each child
+          // its own isolated pre-realization workspace intent instead of
+          // reusing the parent's realized worktree. A single child MAY still
+          // opt into an explicit executionWorkspaceId for deliberate
+          // continuity (e.g. "finish in the exact same workspace planning
+          // ran in") — but if more than one sibling in the same
+          // decomposition targets that same concrete workspace, admitting
+          // both would literally pin two children to one worktree (a dirty
+          // sibling then blocks the next child's admission). Fail closed
+          // instead of silently sharing.
+          if (nextChildInput.executionWorkspaceId) {
+            const collidingSibling = await tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(
+                eq(issues.companyId, sourceIssue.companyId),
+                eq(issues.parentId, sourceIssue.id),
+                eq(issues.executionWorkspaceId, nextChildInput.executionWorkspaceId),
+              ))
+              .then((rows) => rows[0] ?? null);
+            if (collidingSibling) {
+              throw unprocessable(
+                "Only one dispatched plan child may explicitly bind to a given executionWorkspaceId; a sibling child in this decomposition already claims it.",
+              );
+            }
+          }
+
           const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
             ...nextChildInput,
+            // Keep the preallocated id so blockedByIssueIds on later siblings
+            // resolve against the same durable identifiers declared up front.
+            id: nextChildInput.id,
             executionWorkspaceInheritanceMode: "strategy_only",
+            // WG-PLAT-012/013: every decomposed child still gates parent
+            // completion (parent↔child blocks graph). Sibling prerequisite
+            // edges come from the child's own blockedByIssueIds declaration.
+            blockParentUntilDone: nextChildInput.blockParentUntilDone ?? true,
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
           const now = new Date();
-          const nextStatus = nextIds.length === data.children.length ? "completed" : "in_flight";
+          const nextStatus = nextIds.length === durableChildren.length ? "completed" : "in_flight";
           const ownerPatch = await resolveAcceptedPlanClaimOwner({
             dbOrTx: tx,
             claim,
