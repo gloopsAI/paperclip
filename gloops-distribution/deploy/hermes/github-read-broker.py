@@ -12,6 +12,16 @@ Source-inventory operations (``get-repo-source-metadata``, ``list-source-tree``,
 commit SHA only -- never a mutable ref (branch/tag/HEAD/short/uppercase SHA) --
 with path-traversal, binary, oversize, and bounded-entry guards.
 
+``list-source-tree`` walks the repository tree HIERARCHICALLY.  It resolves the
+exact commit to its root tree object and then reads one tree object per path
+component with NON-recursive ``git/trees/<tree_sha>`` requests (never
+``recursive=1``).  A recursive listing of a large repository exceeds the
+upstream ~512 KiB ``run_gh`` response ceiling BEFORE any slicing can occur, so
+each request returns only a single directory's immediate, bounded entries --
+including child tree SHAs and entry types -- and the caller recurses by asking
+again with a deeper ``pathPrefix``.  A single directory whose response exceeds
+the upstream ceiling fails TYPED rather than being silently truncated.
+
 Request schema (single JSON object, one per connection)::
 
     {"operation": "<op>", "repo": "<owner/repo>", ...}
@@ -27,6 +37,7 @@ No credential, token, header, or secret is ever placed in a response.
 from __future__ import annotations
 
 import base64
+import binascii
 import fcntl
 import json
 import os
@@ -38,6 +49,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -65,10 +77,60 @@ REPOSITORY_SCOPE_QUALIFIER_PATTERN = re.compile(
 # 40-character lowercase hex object name -- never a mutable ref (branch, tag,
 # HEAD) nor an abbreviated / uppercase SHA.
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-# Repo-relative source path allowlist.  Rejects absolute paths, ``.``/``..``
-# path components (directory traversal), and anything outside a bounded safe
-# character set.
-SOURCE_PATH_PATTERN = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.?(?:/|$))[A-Za-z0-9._/-]{1,255}$")
+# Repo-relative source paths are validated STRUCTURALLY, one component at a
+# time, rather than against a brittle ASCII allowlist: legitimate Git names use
+# brackets (``[slug].astro``), spaces, ``@``/``+``/``(`` and Unicode, all of
+# which a character allowlist would falsely reject and strand from the
+# inventory.  Every component must be nonempty, byte-bounded, not ``.``/``..``,
+# and free of the separators / NUL / control characters that enable traversal
+# or request smuggling.  Contents-path components are additionally URL-encoded
+# when the GitHub API URL is built.
+MAX_PATH_COMPONENT_BYTES = 255
+MAX_SOURCE_PATH_BYTES = 4096
+# Object types GitHub reports for a tree entry: blob (file), tree (directory),
+# commit (submodule gitlink).  Anything else is malformed evidence.
+TREE_ENTRY_TYPES = frozenset({"blob", "tree", "commit"})
+# Git file modes, bound to entry type.  A mode inconsistent with its type is
+# malformed evidence and must not be relabeled as a trusted exact-tree row.
+TREE_MODE = "040000"
+COMMIT_MODE = "160000"
+BLOB_MODES = frozenset({"100644", "100755", "120000"})
+
+
+def is_safe_path_component(component: str) -> bool:
+    """Structurally validate a single repo-relative path component.
+
+    Accepts any otherwise-legitimate Git name (brackets, spaces, Unicode) and
+    rejects only what enables traversal or smuggling: an empty component,
+    ``.``/``..``, an over-long component, a ``/``/``\\`` separator, NUL, or any
+    C0/DEL/C1 control character.
+    """
+    if not component or component in (".", ".."):
+        return False
+    if len(component.encode("utf-8")) > MAX_PATH_COMPONENT_BYTES:
+        return False
+    for ch in component:
+        if ch in ("/", "\\", "\x00"):
+            return False
+        code = ord(ch)
+        if code < 0x20 or 0x7F <= code <= 0x9F:
+            return False
+    return True
+
+
+def _validate_relative_path(value: str, label: str) -> str:
+    """Validate a full repo-relative path (``a/b/c``) component by component."""
+    if len(value.encode("utf-8")) > MAX_SOURCE_PATH_BYTES:
+        raise BrokerError(f"{label} is too long")
+    if value.startswith("/"):
+        raise BrokerError(f"{label} must be repo-relative, not absolute")
+    for component in value.split("/"):
+        if not is_safe_path_component(component):
+            raise BrokerError(
+                f"{label} contains an empty, '.'/'..', separator, NUL, or "
+                "control component"
+            )
+    return value
 
 ALLOWED_OPERATIONS = frozenset({
     "search-issues",
@@ -522,21 +584,31 @@ def _require_source_path(params: dict[str, Any]) -> str:
     path = params.get("path")
     if not isinstance(path, str) or not path:
         raise BrokerError("path is required")
-    if "\x00" in path or "\\" in path:
-        raise BrokerError("path contains an illegal character")
-    if path.startswith("/"):
-        raise BrokerError("path must be repo-relative, not absolute")
-    for component in path.split("/"):
-        if component in ("", ".", ".."):
-            raise BrokerError("path contains an illegal '.'/'..' or empty component")
-    if not SOURCE_PATH_PATTERN.fullmatch(path):
-        raise BrokerError("path is not an allowed repo-relative source path")
-    return path
+    return _validate_relative_path(path, "path")
 
 
-def op_get_repo_source_metadata(params: dict[str, Any]) -> Any:
-    repo = _require_allowlisted_repo(params)
-    commit = _require_exact_commit(params)
+def _require_source_path_prefix(params: dict[str, Any]) -> str:
+    """Validate the optional directory prefix for hierarchical tree traversal.
+
+    Unlike ``_require_source_path`` an absent/empty prefix is allowed and means
+    the repository root.  A non-empty prefix is validated with the identical
+    traversal / absolute-path / illegal-character guards so no ``..`` component,
+    leading ``/``, backslash, or NUL can reach a ``gh`` call.
+    """
+    prefix = params.get("pathPrefix")
+    if prefix is None or prefix == "":
+        return ""
+    if not isinstance(prefix, str):
+        raise BrokerError("pathPrefix must be a repo-relative directory string")
+    return _validate_relative_path(prefix, "pathPrefix")
+
+
+def _resolve_commit_tree(repo: str, commit: str) -> str:
+    """Resolve an EXACT commit to its root tree SHA, verifying the commit exists.
+
+    Confirms the resolved object name equals the requested commit (defeats a
+    server-side redirect to a different object) and returns the root tree SHA.
+    """
     raw = run_gh(["api", f"/repos/{repo}/commits/{commit}"])
     try:
         data = json.loads(raw) if raw.strip() else {}
@@ -544,54 +616,198 @@ def op_get_repo_source_metadata(params: dict[str, Any]) -> Any:
         raise BrokerError("gh API returned malformed JSON")
     if not isinstance(data, dict):
         raise BrokerError("gh API returned an unexpected commit payload")
-    resolved = data.get("sha")
-    if resolved != commit:
+    if data.get("sha") != commit:
         raise BrokerError(
             "commit SHA verification failed: resolved object does not equal "
             "the requested commit"
         )
-    tree_sha = None
     commit_obj = data.get("commit")
+    tree_sha = None
     if isinstance(commit_obj, dict):
         tree = commit_obj.get("tree")
         if isinstance(tree, dict):
             tree_sha = tree.get("sha")
-    repo_raw = run_gh(["api", f"/repos/{repo}"])
+    if not isinstance(tree_sha, str) or not COMMIT_SHA_PATTERN.fullmatch(tree_sha):
+        raise BrokerError("commit does not resolve to an exact root tree SHA")
+    return tree_sha
+
+
+def _validate_tree_entry(entry: Any) -> dict[str, Any]:
+    """Fail CLOSED on any malformed tree row.
+
+    Every entry must be an object carrying a known type, an exact 40-hex object
+    SHA, and a bounded immediate name with no separators/traversal.  A malformed
+    row is NEVER silently dropped -- dropping it would present a partial
+    directory as exact evidence.
+    """
+    if not isinstance(entry, dict):
+        raise BrokerError("tree entry is not an object; refusing partial inventory")
+    entry_type = entry.get("type")
+    if entry_type not in TREE_ENTRY_TYPES:
+        raise BrokerError("tree entry has an unknown or missing type")
+    sha = entry.get("sha")
+    if not isinstance(sha, str) or not COMMIT_SHA_PATTERN.fullmatch(sha):
+        raise BrokerError("tree entry is missing an exact 40-hex object SHA")
+    name = entry.get("path")
+    if not isinstance(name, str) or not is_safe_path_component(name):
+        raise BrokerError(
+            "tree entry name is missing, empty, a '.'/'..', separator, NUL, or "
+            "control component"
+        )
+    # Mode must be type-consistent; a mismatch is malformed exact-tree evidence.
+    mode = entry.get("mode")
+    mode_ok = (
+        (entry_type == "tree" and mode == TREE_MODE)
+        or (entry_type == "commit" and mode == COMMIT_MODE)
+        or (entry_type == "blob" and mode in BLOB_MODES)
+    )
+    if not mode_ok:
+        raise BrokerError("tree entry mode is missing or inconsistent with its type")
+    # Size: any value present must be a nonnegative int (never bool/float/neg);
+    # a blob MUST carry one, while trees/commits legitimately omit it.
+    size = entry.get("size")
+    if entry_type == "blob":
+        if type(size) is not int or size < 0:
+            raise BrokerError("tree entry blob is missing a valid nonnegative size")
+    elif size is not None and (type(size) is not int or size < 0):
+        raise BrokerError("tree entry has an invalid size")
+    return entry
+
+
+def _read_tree_object(repo: str, tree_sha: str) -> list[dict[str, Any]]:
+    """Read ONE tree object NON-recursively (never ``recursive=1``), FAIL CLOSED.
+
+    Returns the directory's immediate entries.  Every integrity failure raises a
+    TYPED ``BrokerError`` instead of returning a partial/empty directory as exact
+    evidence: an over-ceiling response, a missing/mismatched response SHA, an
+    upstream ``truncated`` flag, a non-list ``tree``, more than
+    ``MAX_TREE_ENTRIES`` immediate entries, or any malformed entry row.  The
+    over-limit and truncation checks live HERE so both intermediate prefix-walk
+    directories and the final target directory are covered identically.
+    """
+    if not COMMIT_SHA_PATTERN.fullmatch(tree_sha):
+        raise BrokerError("tree object name must be an exact 40-character hex SHA")
     try:
-        repo_data = json.loads(repo_raw) if repo_raw.strip() else {}
-    except json.JSONDecodeError:
-        raise BrokerError("gh API returned malformed JSON")
-    repo_meta = select_fields(repo_data, ("default_branch",)) if isinstance(repo_data, dict) else {}
-    return {
-        "repo": repo,
-        "commit": commit,
-        "tree": tree_sha,
-        "default_branch": repo_meta.get("default_branch"),
-    }
-
-
-def op_list_source_tree(params: dict[str, Any]) -> Any:
-    repo = _require_allowlisted_repo(params)
-    commit = _require_exact_commit(params)
-    raw = run_gh(["api", f"/repos/{repo}/git/trees/{commit}?recursive=1"])
+        raw = run_gh(["api", f"/repos/{repo}/git/trees/{tree_sha}"])
+    except BrokerError as error:
+        if "exceeds the bounded-response ceiling" in str(error):
+            raise BrokerError(
+                "single directory tree object exceeds the upstream response "
+                "ceiling; narrow the pathPrefix to a smaller subtree"
+            )
+        raise
     try:
         data = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
         raise BrokerError("gh API returned malformed JSON")
     if not isinstance(data, dict):
         raise BrokerError("gh API returned an unexpected tree payload")
+    if data.get("sha") != tree_sha:
+        raise BrokerError("tree object SHA verification failed")
+    if bool(data.get("truncated")):
+        raise BrokerError(
+            "upstream truncated this directory listing; the inventory would be "
+            "incomplete"
+        )
     tree = data.get("tree")
     if not isinstance(tree, list):
-        tree = []
-    truncated = bool(data.get("truncated")) or len(tree) > MAX_TREE_ENTRIES
-    entries = select_fields(tree[:MAX_TREE_ENTRIES], TREE_ENTRY_FIELDS)
+        raise BrokerError("tree object is missing a well-formed entry list")
+    if len(tree) > MAX_TREE_ENTRIES:
+        raise BrokerError(
+            "single directory exceeds the bounded immediate-entry limit; a Git "
+            "tree object has no continuation cursor so the listing fails closed "
+            "rather than dropping entries"
+        )
+    return [_validate_tree_entry(entry) for entry in tree]
+
+
+def op_get_repo_source_metadata(params: dict[str, Any]) -> Any:
+    repo = _require_allowlisted_repo(params)
+    commit = _require_exact_commit(params)
+    tree_sha = _resolve_commit_tree(repo, commit)
+    repo_raw = run_gh(["api", f"/repos/{repo}"])
+    try:
+        repo_data = json.loads(repo_raw) if repo_raw.strip() else None
+    except json.JSONDecodeError:
+        raise BrokerError("gh API returned malformed JSON")
+    # FAIL CLOSED: a malformed or mismatched repository payload must never be
+    # synthesized into a trusted answer.
+    if not isinstance(repo_data, dict):
+        raise BrokerError("gh API returned an unexpected repository payload")
+    full_name = repo_data.get("full_name")
+    # EXACT equality: GitHub's canonical full_name and the allowlist entries are
+    # canonical, so a case-only variant (gloopsAI/Gloops-UI) must FAIL closed.
+    if not isinstance(full_name, str) or full_name != repo:
+        raise BrokerError(
+            "repository identity verification failed: resolved full_name does "
+            "not equal the requested owner/repo"
+        )
+    default_branch = repo_data.get("default_branch")
+    if not isinstance(default_branch, str) or not default_branch:
+        raise BrokerError("repository metadata is missing a default branch")
     return {
         "repo": repo,
         "commit": commit,
-        "tree": data.get("sha"),
-        "truncated": truncated,
-        "totalReturned": len(entries),
-        "entries": entries,
+        "tree": tree_sha,
+        "default_branch": default_branch,
+    }
+
+
+def op_list_source_tree(params: dict[str, Any]) -> Any:
+    """Return ONE directory's immediate entries via non-recursive tree walking.
+
+    Resolves the exact commit to its root tree, walks the requested ``pathPrefix``
+    one component at a time through non-recursive ``git/trees`` reads, and returns
+    the immediate entries (with child tree SHAs and types) of the target
+    directory.  A single directory that reports more than ``MAX_TREE_ENTRIES``
+    immediate entries -- or that the upstream marks ``truncated`` -- FAILS TYPED
+    and CLOSED: a Git tree object has no in-object continuation cursor, so any
+    silent slice would drop entries and recreate the incomplete-inventory defect.
+    """
+    repo = _require_allowlisted_repo(params)
+    commit = _require_exact_commit(params)
+    prefix = _require_source_path_prefix(params)
+
+    root_tree_sha = _resolve_commit_tree(repo, commit)
+    current_tree_sha = root_tree_sha
+    walked: list[str] = []
+
+    if prefix:
+        for component in prefix.split("/"):
+            # Each intermediate directory read is fully integrity-checked and
+            # fails closed on truncation / over-limit / malformed rows here.
+            entries = _read_tree_object(repo, current_tree_sha)
+            match = next(
+                (
+                    entry
+                    for entry in entries
+                    if entry.get("path") == component and entry.get("type") == "tree"
+                ),
+                None,
+            )
+            if match is None:
+                raise BrokerError(
+                    "pathPrefix does not resolve to a directory at component "
+                    f"'{component}'"
+                )
+            # sha was already validated to be an exact 40-hex object name.
+            current_tree_sha = match["sha"]
+            walked.append(component)
+
+    entries = _read_tree_object(repo, current_tree_sha)
+
+    # Deterministic sort by immediate entry name.
+    ordered = sorted(entries, key=lambda entry: str(entry.get("path") or ""))
+    bounded = select_fields(ordered, TREE_ENTRY_FIELDS)
+    return {
+        "repo": repo,
+        "commit": commit,
+        "rootTree": root_tree_sha,
+        "pathPrefix": prefix,
+        "treeSha": current_tree_sha,
+        "truncated": False,
+        "totalReturned": len(bounded),
+        "entries": bounded,
     }
 
 
@@ -599,24 +815,52 @@ def op_get_source_file(params: dict[str, Any]) -> Any:
     repo = _require_allowlisted_repo(params)
     commit = _require_exact_commit(params)
     path = _require_source_path(params)
-    raw = run_gh(["api", f"/repos/{repo}/contents/{path}?ref={commit}"])
+    # URL-encode each reserved character in the contents path (``[``, ``]``,
+    # space, ...) while preserving the ``/`` directory separators.  The commit is
+    # already an exact 40-hex SHA and is safe to interpolate as the ref.
+    encoded_path = quote(path, safe="/")
+    raw = run_gh(["api", f"/repos/{repo}/contents/{encoded_path}?ref={commit}"])
     try:
         data = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
         raise BrokerError("gh API returned malformed JSON")
     if isinstance(data, list) or not isinstance(data, dict) or data.get("type") != "file":
         raise BrokerError("path does not reference a single file")
+    # FAIL CLOSED on identity: the upstream object must be the exact path we
+    # asked for, carry an exact blob SHA, and later reconcile its reported size
+    # to the decoded byte count.  Otherwise the broker would echo the REQUESTED
+    # coordinates as if verified against unrelated content.
+    if data.get("path") != path:
+        raise BrokerError(
+            "source path verification failed: resolved path does not equal the "
+            "requested path"
+        )
+    blob_sha = data.get("sha")
+    if not isinstance(blob_sha, str) or not COMMIT_SHA_PATTERN.fullmatch(blob_sha):
+        raise BrokerError("source file is missing an exact blob SHA")
     reported_size = data.get("size")
-    if isinstance(reported_size, int) and reported_size > MAX_SOURCE_FILE_BYTES:
+    if not isinstance(reported_size, int) or isinstance(reported_size, bool) or reported_size < 0:
+        raise BrokerError("source file has a missing or invalid size")
+    if reported_size > MAX_SOURCE_FILE_BYTES:
         raise BrokerError("source file exceeds the maximum size")
     if data.get("encoding") != "base64" or not isinstance(data.get("content"), str):
         raise BrokerError("gh API returned an unexpected file encoding")
+    # GitHub documents base64 content wrapped with embedded newlines.  Normalize
+    # ONLY that documented whitespace, then decode with STRICT validation so any
+    # non-base64 / malformed content FAILS CLOSED instead of being silently
+    # repaired by discarding out-of-alphabet bytes (the validate=False defect).
+    normalized = data["content"].replace("\n", "").replace("\r", "")
     try:
-        raw_bytes = base64.b64decode(data["content"], validate=False)
-    except ValueError:
-        raise BrokerError("source file content could not be decoded")
+        raw_bytes = base64.b64decode(normalized, validate=True)
+    except (binascii.Error, ValueError):
+        raise BrokerError("source file content is not valid base64")
     if len(raw_bytes) > MAX_SOURCE_FILE_BYTES:
         raise BrokerError("source file exceeds the maximum size")
+    # Reconcile the upstream-declared blob size with what we actually decoded.
+    if reported_size != len(raw_bytes):
+        raise BrokerError(
+            "source file size does not match the decoded byte count"
+        )
     if b"\x00" in raw_bytes:
         raise BrokerError("source file is not UTF-8 text")
     try:
@@ -627,6 +871,7 @@ def op_get_source_file(params: dict[str, Any]) -> Any:
         "repo": repo,
         "commit": commit,
         "path": path,
+        "sha": blob_sha,
         "encoding": "utf-8",
         "content": text,
         "size": len(raw_bytes),
