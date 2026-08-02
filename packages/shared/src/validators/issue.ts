@@ -33,6 +33,11 @@ import {
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
+import {
+  describeSupportedWorkspaceBranchTemplateVariables,
+  findUnsupportedWorkspaceBranchTemplateVariables,
+  hasStrayWorkspaceBranchTemplatePlaceholderSyntax,
+} from "./execution-workspace.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -106,6 +111,23 @@ export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "agent_default",
 ] as const;
 
+function validateExecutionWorkspaceBranchTemplate(
+  value: { branchTemplate?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  if (!value.branchTemplate) return;
+  const unsupportedVariables = findUnsupportedWorkspaceBranchTemplateVariables(value.branchTemplate);
+  const hasStraySyntax = hasStrayWorkspaceBranchTemplatePlaceholderSyntax(value.branchTemplate);
+  if (unsupportedVariables.length === 0 && !hasStraySyntax) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      `branchTemplate contains an unresolved placeholder. ` +
+      `Supported variables: ${describeSupportedWorkspaceBranchTemplateVariables()}.`,
+    path: ["branchTemplate"],
+  });
+}
+
 const executionWorkspaceStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
@@ -115,7 +137,8 @@ const executionWorkspaceStrategySchema = z
     provisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine(validateExecutionWorkspaceBranchTemplate);
 
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({

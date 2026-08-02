@@ -1120,7 +1120,13 @@ export {
   type ResourceMembershipUpdateResult,
 } from "./types/resource-memberships.js";
 
-export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
+export {
+  workspaceRuntimeControlTargetSchema,
+  SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES,
+  findUnsupportedWorkspaceBranchTemplateVariables,
+  hasStrayWorkspaceBranchTemplatePlaceholderSyntax,
+  describeSupportedWorkspaceBranchTemplateVariables,
+} from "./validators/execution-workspace.js";
 export {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,
