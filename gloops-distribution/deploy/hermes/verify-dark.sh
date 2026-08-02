@@ -17,7 +17,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   check_inactive "${unit}"
 done
 
@@ -120,6 +120,12 @@ else
   echo "FAIL paperclip-github-push-broker.service is not masked" >&2
   failed=1
 fi
+if [[ "$(systemctl is-enabled paperclip-github-read-broker.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-github-read-broker.service is masked"
+else
+  echo "FAIL paperclip-github-read-broker.service is not masked" >&2
+  failed=1
+fi
 if [[ "$(systemctl is-enabled paperclip-platform-ops-broker.service 2>/dev/null || true)" == "masked" ]]; then
   echo "PASS paperclip-platform-ops-broker.service is masked"
 else
@@ -141,6 +147,12 @@ else
   echo "FAIL platform operations broker socket remains projected while dark" >&2
   failed=1
 fi
+if [[ ! -e /run/paperclip-github-read-broker/broker.sock && ! -L /run/paperclip-github-read-broker/broker.sock ]]; then
+  echo "PASS GitHub read-only evidence socket path is absent while dark"
+else
+  echo "FAIL GitHub read-only evidence socket path remains while dark (file, symlink, or socket)" >&2
+  failed=1
+fi
 
 for installed_broker_control in \
   /usr/local/lib/paperclip-gloops/github-push-broker.py \
@@ -149,6 +161,20 @@ for installed_broker_control in \
     echo "PASS installed GitHub push control is immutable: ${installed_broker_control}"
   else
     echo "FAIL installed GitHub push control is missing or mutable: ${installed_broker_control}" >&2
+    failed=1
+  fi
+done
+# WG-PLAT-018: the read-only evidence lane ships BOTH the broker and the client
+# tool, and both must be installed immutably (555:root:root) while dark so a
+# governed install can never strand or omit either half of the read lane.
+for installed_read_control in \
+  /usr/local/lib/paperclip-gloops/github-read-broker.py \
+  /usr/local/lib/paperclip-gloops/tools/github-read-tool.mjs \
+  /usr/local/lib/paperclip-gloops/read-lane-snapshot.sh; do
+  if [[ "$(stat -c '%a:%U:%G' "${installed_read_control}" 2>/dev/null || true)" == '555:root:root' ]]; then
+    echo "PASS installed GitHub read control is immutable: ${installed_read_control}"
+  else
+    echo "FAIL installed GitHub read control is missing or mutable: ${installed_read_control}" >&2
     failed=1
   fi
 done

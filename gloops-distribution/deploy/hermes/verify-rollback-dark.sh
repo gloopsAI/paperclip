@@ -3,6 +3,8 @@ set -euo pipefail
 
 failed=0
 readonly CAMPAIGN_DEADMAN_SOCKET="${PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET_PATH:-/run/paperclip-campaign/deadman.sock}"
+# WG-PLAT-018: symmetric read-lane restore verification helpers.
+source "$(dirname "${BASH_SOURCE[0]}")/read-lane-snapshot.sh"
 for command in docker iptables ss systemctl; do
   if ! command -v "${command}" >/dev/null; then
     echo "FAIL rollback verifier dependency is unavailable: ${command}" >&2
@@ -17,7 +19,7 @@ if ! iptables -nL INPUT >/dev/null 2>&1 || ! iptables -nL DOCKER-USER >/dev/null
   echo 'FAIL rollback verifier cannot inspect firewall topology' >&2
   failed=1
 fi
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if ! active_state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null)"; then
     echo "FAIL rollback verifier cannot inspect unit state: ${unit}" >&2
     failed=1
@@ -31,7 +33,7 @@ if [[ "${paperclip_enablement}" != 'disabled' && "${paperclip_enablement}" != 'm
   echo "FAIL rollback left paperclip.service boot-eligible: ${paperclip_enablement:-unknown}" >&2
   failed=1
 fi
-for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-read-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if [[ "$(systemctl is-enabled "${unit}" 2>/dev/null || true)" != 'masked' ]]; then
     echo "FAIL rollback left governed unit unmasked: ${unit}" >&2
     failed=1
@@ -39,6 +41,21 @@ for unit in paperclip-gloops.service paperclip-gloops-handshake.service papercli
 done
 if [[ -e "${CAMPAIGN_DEADMAN_SOCKET}" || -S "${CAMPAIGN_DEADMAN_SOCKET}" ]]; then
   echo "FAIL rollback left the campaign deadman socket: ${CAMPAIGN_DEADMAN_SOCKET}" >&2
+  failed=1
+fi
+# WG-PLAT-018: the read-only evidence broker socket PATH must be gone -- not
+# merely "not a socket".  A surviving plain file or symlink at the path is a
+# fail-closed violation, so require true path absence (no -e and no -L).
+if [[ -e /run/paperclip-github-read-broker/broker.sock || -L /run/paperclip-github-read-broker/broker.sock ]]; then
+  echo "FAIL rollback left a path at the GitHub read-only evidence broker socket (file, symlink, or socket)" >&2
+  failed=1
+fi
+# The rollback must restore BOTH read-lane files to their recorded pre-install
+# state.  When rollback provides the backup manifest (READ_LANE_BACKUP_DIR) this
+# compares BOTH installed files to the recorded OLD hashes (present -> hash
+# equal; absent -> absent), so a present-pre-state pair verifies by restored
+# HASH rather than by (wrong) absence, and a mixed-version state cannot pass.
+if ! verify_read_lane_restored "${READ_LANE_BACKUP_DIR:-}"; then
   failed=1
 fi
 for marker in \

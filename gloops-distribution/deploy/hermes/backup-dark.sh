@@ -8,6 +8,9 @@ readonly SERVICE_FILE='/etc/systemd/system/paperclip.service'
 readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst'
 readonly COMMISSIONING_ROLLBACK_JOURNAL='/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json'
 
+# WG-PLAT-018: sourceable pre-install snapshot/restore for BOTH read-lane files.
+source "$(dirname "${BASH_SOURCE[0]}")/read-lane-snapshot.sh"
+
 refuse_unresolved_commissioning() {
   local journal="${1:?commissioning rollback journal path is required}"
   if [[ -e "${journal}" || -L "${journal}" ]]; then
@@ -24,7 +27,7 @@ main() {
 
 refuse_unresolved_commissioning "${COMMISSIONING_ROLLBACK_JOURNAL}"
 
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing cold backup while ${unit} is active" >&2
     exit 1
@@ -67,10 +70,17 @@ trap 'rm -rf "${stage}"' EXIT
 tar --zstd -cf "${stage}/paperclip-state.tar.zst" -C /home/paperclip .paperclip
 tar --zstd -cf "${stage}/paperclip-db-physical.tar.zst" -C "${STATE_DIR}/instances/default" db
 install -m 0600 -o root -g root "${SERVICE_FILE}" "${stage}/paperclip.service.before"
+# Capture the PRE-install state (content + old hash, or "absent") of BOTH halves
+# of the read-only evidence lane so rollback can restore them symmetrically.
+capture_read_lane_snapshot "${stage}"
 ln "${HERMES_IMAGE_ARCHIVE}" "${stage}/$(basename "${HERMES_IMAGE_ARCHIVE}")"
 (
   cd "${stage}"
-  sha256sum hermes-execution-*.tar.zst paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before >SHA256SUMS
+  files=(hermes-execution-*.tar.zst paperclip-db-physical.tar.zst paperclip-state.tar.zst paperclip.service.before read-lane.manifest)
+  for snapshot in read-lane.*.before; do
+    [[ -e "${snapshot}" ]] && files+=("${snapshot}")
+  done
+  sha256sum "${files[@]}" >SHA256SUMS
 )
 chmod 0600 "${stage}/SHA256SUMS" "${stage}"/*.zst
 mv "${stage}" "${destination}"

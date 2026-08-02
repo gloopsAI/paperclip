@@ -11,6 +11,7 @@ readonly LOCK='/run/lock/paperclip-controlled-swarm.lock'
 readonly DEADMAN='paperclip-campaign-deadman.service'
 readonly HERMES='paperclip-hermes-execution.service'
 readonly GITHUB_BROKER='paperclip-github-push-broker.service'
+readonly GITHUB_READ_BROKER='paperclip-github-read-broker.service'
 readonly PLATFORM_OPS_BROKER='paperclip-platform-ops-broker.service'
 readonly PAPERCLIP='paperclip-gloops.service'
 readonly COMMISSIONING_RECOVERY='paperclip-controlled-swarm-commissioning-recovery.service'
@@ -148,15 +149,15 @@ cleanup() {
     "${CONFIG_DIR}/github-push-authorization.sha256" \
     "${APPROVAL}" \
     "${approval_in_progress}"
-  systemctl stop "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
-  systemctl mask "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
-  systemctl reset-failed "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl stop "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${GITHUB_READ_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl mask "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${GITHUB_READ_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
+  systemctl reset-failed "${PAPERCLIP}" "${HERMES}" "${GITHUB_BROKER}" "${GITHUB_READ_BROKER}" "${PLATFORM_OPS_BROKER}" "${DEADMAN}" "${COMMISSIONING_RECOVERY}"
   "${LIB_DIR}/verify-dark.sh"
   exit "${status}"
 }
 trap cleanup EXIT
 
-systemctl unmask "${DEADMAN}" "${GITHUB_BROKER}" "${PLATFORM_OPS_BROKER}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
+systemctl unmask "${DEADMAN}" "${GITHUB_BROKER}" "${GITHUB_READ_BROKER}" "${PLATFORM_OPS_BROKER}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
 systemctl daemon-reload
 systemctl enable "${COMMISSIONING_RECOVERY}"
 systemctl start "${DEADMAN}"
@@ -166,12 +167,14 @@ systemctl start "${DEADMAN}"
   --require-status unarmed
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
 systemctl start "${GITHUB_BROKER}"
+systemctl start "${GITHUB_READ_BROKER}"
 systemctl start "${PLATFORM_OPS_BROKER}"
 systemctl start "${HERMES}"
 install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
 systemctl start "${PAPERCLIP}"
 systemctl is-active --quiet "${DEADMAN}"
 systemctl is-active --quiet "${GITHUB_BROKER}"
+systemctl is-active --quiet "${GITHUB_READ_BROKER}"
 systemctl is-active --quiet "${PLATFORM_OPS_BROKER}"
 systemctl is-active --quiet "${HERMES}"
 systemctl is-active --quiet "${PAPERCLIP}"
@@ -186,12 +189,19 @@ curl --fail --silent --show-error --max-time 5 \
 install -d -m 0700 -o root -g root "${STATE_DIR}"
 receipt_tmp="$(mktemp "${STATE_DIR}/activation.XXXXXX")"
 approval_sha256="sha256:$(sha256sum "${approval_in_progress}" | awk '{print $1}')"
+# WG-PLAT-018: bind the activation receipt to BOTH halves of the read-only
+# evidence lane -- the broker AND the client tool file hashes -- so a governed
+# activation can never strand or omit either half.
+read_broker_sha256="sha256:$(sha256sum "${LIB_DIR}/github-read-broker.py" | awk '{print $1}')"
+read_tool_sha256="sha256:$(sha256sum "${LIB_DIR}/tools/github-read-tool.mjs" | awk '{print $1}')"
 python3 - "${receipt_tmp}" "${rehearsal_receipt}" \
   "$("${LIB_DIR}/verify-campaign-deadman.py" \
     --campaign-id "${CAMPAIGN_ID}" \
     --wait-seconds 5 \
     --require-status unarmed)" \
-  "${approval_sha256}" <<'PY'
+  "${approval_sha256}" \
+  "${read_broker_sha256}" \
+  "${read_tool_sha256}" <<'PY'
 import datetime as dt
 import json
 import pathlib
@@ -206,10 +216,13 @@ receipt = {
     "rehearsalReceipt": sys.argv[2],
     "deadmanVerification": sys.argv[3],
     "consumedApprovalSha256": sys.argv[4],
+    "installedReadBrokerSha256": sys.argv[5],
+    "installedReadToolSha256": sys.argv[6],
     "services": {
         "paperclip": "active",
         "hermes": "active",
         "githubPushBroker": "active",
+        "githubReadBroker": "active",
         "platformOpsBroker": "active",
         "campaignDeadman": "active",
     },

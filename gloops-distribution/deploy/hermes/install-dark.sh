@@ -93,6 +93,7 @@ rm -f /run/paperclip-campaign/deadman.sock
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
 sed -i '/^PAPERCLIP_IMAGE=/d' "${CONFIG_DIR}/runtime.env"
 printf 'PAPERCLIP_IMAGE=%s\n' "${IMAGE}" >>"${CONFIG_DIR}/runtime.env"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/read-lane-snapshot.sh" "${LIB_DIR}/read-lane-snapshot.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/wait-paperclip-control-plane.sh" "${LIB_DIR}/wait-paperclip-control-plane.sh"
