@@ -338,7 +338,21 @@ _start_and_verify_read_broker() {
 
 # Run the installed read-tool client.  The bearer token is already de-exported,
 # so this child cannot inherit PAPERCLIP_API_TOKEN.  Prints the client JSON.
-_run_client() { "${READ_TOOL_INSTALL}" "$@"; }
+_run_client() {
+  # Broker verify_peer requires SO_PEERCRED uid == EXPECTED_HERMES_UID (10000 /
+  # hermes-peer). Live upgrades run as root; drop only when root and the
+  # production identity exists. Non-root harnesses/tests keep the mock client
+  # path so the executable suite stays portable.
+  if [[ "$(id -u)" -eq 0 ]] && id -u hermes-peer >/dev/null 2>&1; then
+    if command -v runuser >/dev/null 2>&1; then
+      runuser -u hermes-peer -- "${READ_TOOL_INSTALL}" "$@"
+    else
+      sudo -u hermes-peer -- "${READ_TOOL_INSTALL}" "$@"
+    fi
+  else
+    "${READ_TOOL_INSTALL}" "$@"
+  fi
+}
 
 # STEP 8 -- assert the installed client's response OBJECTS for a source op, not
 # merely its exit code or request coordinates: a wrong-identity exit-0 must FAIL
