@@ -30,9 +30,11 @@ describe("resolveRoleAdmissionPolicy", () => {
     expect(resolveRoleAdmissionPolicy("IMPLEMENTER")?.key).toBe("implementer");
   });
 
-  it("matches Argus, Dispatch, Harbor", () => {
+  it("matches Argus, Dispatch, Scout, Harbor", () => {
     expect(resolveRoleAdmissionPolicy("Argus")?.key).toBe("reviewer");
     expect(resolveRoleAdmissionPolicy("dispatch")?.key).toBe("dispatch");
+    expect(resolveRoleAdmissionPolicy("Scout")?.key).toBe("researcher");
+    expect(resolveRoleAdmissionPolicy("Business Analyst Copilot")?.key).toBe("researcher");
     expect(resolveRoleAdmissionPolicy("Harbor")?.key).toBe("harbor");
   });
 
@@ -176,6 +178,19 @@ describe("evaluateRoleAdmission", () => {
     expect(result).toMatchObject({
       admitted: true,
       roleKey: "dispatch",
+    });
+  });
+
+  it("admits Scout with research-only skills", () => {
+    const result = evaluateRoleAdmission(
+      baseInput({
+        role: "Scout",
+        attachedSkills: ["gloops-evidence-lookup", "research", "paperclip"],
+      }),
+    );
+    expect(result).toMatchObject({
+      admitted: true,
+      roleKey: "researcher",
     });
   });
 

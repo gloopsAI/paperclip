@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issues,
   projects,
   projectWorkspaces,
@@ -245,6 +246,289 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
     return { companyId, agentId };
   }
+
+  async function seedIssueBudgetHistory(input: {
+    companyId: string;
+    agentId: string;
+    priorRunCount: 1 | 2;
+    resourceBudget?: { maxRunsPerTask: number; maxRetriesPerTask: number };
+  }) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: "Recover workspace validation without admission thrash",
+      description: "## Scope\nRestore the verified workspace.\n\n## Acceptance\nThe return owner can resume once.",
+      status: "in_progress",
+      priority: "high",
+      responsibleUserId: "operator",
+      assigneeAgentId: input.agentId,
+      issueNumber: 1,
+      identifier: `REC-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: false,
+        stages: [],
+        ...(input.resourceBudget ? { resourceBudget: input.resourceBudget } : {}),
+      },
+    });
+    const policy = parseExecutionAdmissionPolicy({
+      ...process.env,
+      ...(input.resourceBudget
+        ? {
+            PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: String(input.resourceBudget.maxRunsPerTask),
+            PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: String(input.resourceBudget.maxRetriesPerTask),
+          }
+        : {}),
+    });
+    if (!policy.enabled) throw new Error("expected enabled execution policy");
+    const priorRuns: Array<{ retryOfRunId: string | null }> = [];
+    for (let index = 0; index < input.priorRunCount; index += 1) {
+      const runId = randomUUID();
+      const decision = evaluateExecutionAdmission(
+        policy,
+        priorRuns,
+        index === 0 ? {} : { isAuthorizedIndependentStage: true },
+      );
+      const envelope = buildExecutionAdmissionEnvelope({
+        identity: { budgetId: `issue:${issueId}:default`, epoch: "default" },
+        policy,
+        decision,
+        evaluatedAt: new Date(`2026-08-01T00:00:0${index}Z`),
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "succeeded",
+        startedAt: new Date(`2026-08-01T00:00:0${index}Z`),
+        finishedAt: new Date(`2026-08-01T00:00:1${index}Z`),
+        usageJson: { inputTokens: 1_000, outputTokens: 100, providerInvocationAttempted: true },
+        contextSnapshot: {
+          issueId,
+          skipIssueComment: true,
+          [EXECUTION_ADMISSION_CONTEXT_KEY]: envelope,
+        },
+      });
+      priorRuns.push({ retryOfRunId: null });
+    }
+    return issueId;
+  }
+
+  it.each([
+    "issue_recovery_action_restored",
+    "issue_status_changed",
+    "issue_checked_out",
+    "issue_assigned",
+  ])("admits bounded %s re-entry after a counted run", async (wakeReason) => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedIssueBudgetHistory({ companyId, agentId, priorRunCount: 1 });
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId, wakeReason, skipIssueComment: true },
+      "system",
+      { actorType: "system", actorId: "recovery" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const persisted = await heartbeat.getRun(run!.id);
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.contextSnapshot).toMatchObject({
+      [EXECUTION_ADMISSION_CONTEXT_KEY]: {
+        decision: "allowed",
+        reason: null,
+        observed: { runCount: 1, retryCount: 0 },
+      },
+    });
+  });
+
+  it("durably counts sibling lifecycle re-entry against the retry ceiling", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedIssueBudgetHistory({
+      companyId,
+      agentId,
+      priorRunCount: 1,
+      resourceBudget: { maxRunsPerTask: 3, maxRetriesPerTask: 1 },
+    });
+    const heartbeat = heartbeatService(db);
+    const restored = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId, wakeReason: "issue_recovery_action_restored", skipIssueComment: true },
+      "system",
+      { actorType: "system", actorId: "recovery" },
+    );
+    expect(restored).not.toBeNull();
+    await waitForTerminalRuns(db, [restored!.id]);
+    expect((await heartbeat.getRun(restored!.id))?.status).toBe("succeeded");
+
+    const statusWake = await heartbeat.invoke(
+      agentId,
+      "automation",
+      { issueId, wakeReason: "issue_status_changed", skipIssueComment: true },
+      "system",
+      { actorType: "system", actorId: "recovery" },
+    );
+    expect(statusWake).not.toBeNull();
+    await waitForTerminalRuns(db, [statusWake!.id]);
+    expect(await heartbeat.getRun(statusWake!.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "execution_admission.retry_limit_exhausted",
+      contextSnapshot: {
+        [EXECUTION_ADMISSION_CONTEXT_KEY]: {
+          observed: { runCount: 2, retryCount: 1 },
+        },
+      },
+    });
+  });
+
+  it("admits a verified issue comment as an independent interaction stage", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedIssueBudgetHistory({ companyId, agentId, priorRunCount: 1 });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "operator",
+      body: "Continue with this new board input.",
+    });
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      reason: "issue_commented",
+      payload: { issueId, commentId, mutation: "comment" },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
+        source: "issue.comment",
+        skipIssueComment: true,
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "operator",
+    });
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "succeeded",
+      contextSnapshot: {
+        [EXECUTION_ADMISSION_CONTEXT_KEY]: {
+          decision: "allowed",
+          observed: { runCount: 1, retryCount: 0 },
+        },
+      },
+    });
+  });
+
+  it("does not admit a replayed comment from an unrelated wake actor", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedIssueBudgetHistory({ companyId, agentId, priorRunCount: 1 });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-author",
+      body: "Old board input must not authorize an unrelated wake.",
+    });
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      reason: "issue_commented",
+      payload: { issueId, commentId, mutation: "comment" },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_commented",
+        commentId,
+        wakeCommentId: commentId,
+        source: "issue.comment",
+        skipIssueComment: true,
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "unrelated-user",
+    });
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "execution_admission.retry_limit_exhausted",
+    });
+  });
+
+  it("clears a stale dirty-workspace agent error when restored re-entry is budget-denied", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    await db.update(agents).set({
+      status: "error",
+      errorReason: "Workspace contains uncommitted or untracked changes.",
+    }).where(eq(agents.id, agentId));
+    const issueId = await seedIssueBudgetHistory({ companyId, agentId, priorRunCount: 2 });
+    const recoveryActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "workspace_validation",
+      status: "resolved",
+      cause: "workspace_validation_failed",
+      fingerprint: `workspace:${issueId}`,
+      nextAction: "Restore the workspace.",
+      outcome: "restored",
+      resolvedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      {
+        issueId,
+        wakeReason: "issue_recovery_action_restored",
+        recoveryActionId,
+        recoveryCause: "workspace_validation_failed",
+        skipIssueComment: true,
+      },
+      "system",
+      { actorType: "system", actorId: "recovery" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    expect((await heartbeat.getRun(run!.id))?.errorCode).toBe("execution_admission.run_limit_exhausted");
+    const [persistedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(persistedAgent).toMatchObject({ status: "idle", errorReason: null });
+  });
+
+  it("does not clear a dirty-workspace agent error from unverified restore metadata", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    await db.update(agents).set({
+      status: "error",
+      errorReason: "Workspace contains uncommitted or untracked changes.",
+    }).where(eq(agents.id, agentId));
+    const issueId = await seedIssueBudgetHistory({ companyId, agentId, priorRunCount: 2 });
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      {
+        issueId,
+        wakeReason: "issue_recovery_action_restored",
+        recoveryActionId: randomUUID(),
+        recoveryCause: "workspace_validation_failed",
+        skipIssueComment: true,
+      },
+      "system",
+      { actorType: "system", actorId: "recovery" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    const [persistedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(persistedAgent).toMatchObject({
+      status: "error",
+      errorReason: "Workspace contains uncommitted or untracked changes.",
+    });
+  });
 
   it("admits a guarded reset run under a fresh claim-time budget epoch", async () => {
     const { companyId, agentId } = await seedDirectAgent();

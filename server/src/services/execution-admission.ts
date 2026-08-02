@@ -137,6 +137,11 @@ export type ExecutionAdmissionEnvelope = {
 
 export type PriorExecutionRun = {
   retryOfRunId?: string | null;
+  /**
+   * Durable retry classification for sibling lifecycle wakes that cannot use
+   * the retryOfRunId parent/child shape. Falls back to retryOfRunId when absent.
+   */
+  countsAsRetry?: boolean;
   inputTokens?: number | null;
   cachedInputTokens?: number | null;
   outputTokens?: number | null;
@@ -856,7 +861,9 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
         // Independent workflow stages consume run budget but are not retries.
         // Workspace-validation / preflight-exempt retries also do not increment
         // retryCount (handled above via countsTowardTaskBudget === false).
-        retryCount: total.retryCount + (run.retryOfRunId ? 1 : 0),
+        retryCount: total.retryCount + (
+          (run.countsAsRetry ?? Boolean(run.retryOfRunId)) ? 1 : 0
+        ),
         inputTokens: total.inputTokens + inputSplit.discretionaryInputTokens,
         cachedInputTokens: total.cachedInputTokens + nonNegative(run.cachedInputTokens),
         outputTokens: total.outputTokens + nonNegative(run.outputTokens),
