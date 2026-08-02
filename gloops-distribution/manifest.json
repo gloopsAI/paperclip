@@ -473,6 +473,17 @@
       "integratedCommits": ["cfb00ca2357f4a0809dba21f9f56959a78bf9698"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected distribution and host runtime provide an equivalent fail-closed narrow-change publisher, immutable digest pin transaction, proved rollback, non-activating image pre-pull, and durable live receipt path within the same operator-time budget."
+    },
+    {
+      "id": "fast-container-check-context-isolation",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "cd8dbbcf14e47791781adaf7c6f21d983e91ced6",
+      "sourceHead": "077dc28e28b2c7e7ba409d2bcf3907fd095a0798",
+      "patchDiffSha256": "2fe1741e0cbbe955a5bd6c24d2c19e5c8432d1d4c32e40a46933f4fd77ac337e",
+      "integratedCommits": ["077dc28e28b2c7e7ba409d2bcf3907fd095a0798"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain while the full distribution container check is branch-protection required; the fast publisher must expose a distinct check identity so a skipped fast job cannot collide with full container acceptance."
     }
   ],
   "releasePolicy": {
