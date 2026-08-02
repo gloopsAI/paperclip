@@ -248,6 +248,15 @@ class BrokerError(RuntimeError):
     pass
 
 
+class InstallationTokenRetentionError(BrokerError):
+    """A rejected minted token could not be revoked and needs manual verification."""
+
+    def __init__(self):
+        super().__init__(
+            "GitHub App installation token cleanup failed; manual intervention is required"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
@@ -470,23 +479,30 @@ def mint_installation_token() -> str:
         or any(char.isspace() for char in token)
     ):
         raise BrokerError("GitHub App installation token is malformed")
-    if not isinstance(expires_at, str) or not isinstance(actual_permissions, dict):
-        raise BrokerError("GitHub App installation token metadata is incomplete")
-    expected = {**SOURCE_INVENTORY_PERMISSIONS, "metadata": "read"}
-    normalized = {str(key): str(value) for key, value in actual_permissions.items()}
-    if normalized != expected:
-        raise BrokerError(
-            "GitHub App installation token permissions exceed or miss the requested scope"
-        )
     try:
-        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise BrokerError("GitHub App installation token expiry is malformed") from error
-    seconds = (expiry - datetime.now(timezone.utc)).total_seconds()
-    if seconds < 2700 or seconds > 3900:
-        raise BrokerError(
-            "GitHub App installation token expiry is outside the one-hour envelope"
-        )
+        if not isinstance(expires_at, str) or not isinstance(actual_permissions, dict):
+            raise BrokerError("GitHub App installation token metadata is incomplete")
+        expected = {**SOURCE_INVENTORY_PERMISSIONS, "metadata": "read"}
+        normalized = {str(key): str(value) for key, value in actual_permissions.items()}
+        if normalized != expected:
+            raise BrokerError(
+                "GitHub App installation token permissions exceed or miss the requested scope"
+            )
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise BrokerError("GitHub App installation token expiry is malformed") from error
+        seconds = (expiry - datetime.now(timezone.utc)).total_seconds()
+        if seconds < 2700 or seconds > 3900:
+            raise BrokerError(
+                "GitHub App installation token expiry is outside the one-hour envelope"
+            )
+    except Exception:
+        try:
+            _request_json("DELETE", "/installation/token", token)
+        except Exception as cleanup_error:
+            raise InstallationTokenRetentionError() from cleanup_error
+        raise
     return token
 
 
