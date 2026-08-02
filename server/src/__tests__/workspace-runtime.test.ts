@@ -1275,6 +1275,41 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.stat(path.join(realized.cwd, ".git"))).resolves.toBeTruthy();
   });
 
+  it("allows placeholder syntax in supported issue.title data to reach branch sanitization", async () => {
+    const repoRoot = await createTempRepo();
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "feature/{{issue.title}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "GLO-447",
+        title: "Fix <login>",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("feature/Fix-login");
+    expect(realized.created).toBe(true);
+    await expect(fs.stat(path.join(realized.cwd, ".git"))).resolves.toBeTruthy();
+  });
+
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
