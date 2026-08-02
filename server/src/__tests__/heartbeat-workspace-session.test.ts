@@ -17,6 +17,7 @@ import {
   buildEffectiveRunSessionConfigMetadata,
   buildEffectiveRunWorkspaceConfigMetadata,
   buildWorkspaceConfigFreshnessOperation,
+  classifyManagedWorkspaceCloneFailureReason,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -2522,6 +2523,217 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("classifyManagedWorkspaceCloneFailureReason", () => {
+  it("classifies authentication failures as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: Authentication failed for 'https://github.com/acme/gloops-ui.git/'",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies publickey permission denials as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "remote: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies a multi-method publickey,password rejection as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "git@github.com: Permission denied (publickey,password).\nfatal: Could not read from remote repository.",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies a full gssapi/publickey OpenSSH method-list rejection as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "git@example.com: Permission denied (gssapi-keyex,gssapi-with-mic,publickey).",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies a closed publickey rejection at end-of-string as credential missing (boundary: $)", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason("git@github.com: Permission denied (publickey)"),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies a closed publickey rejection followed by a newline as credential missing (boundary: whitespace)", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "git@github.com: Permission denied (publickey)\nfatal: Could not read from remote repository.",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies disabled terminal prompts as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  // WG-PLAT-015: "repository not found" is AMBIGUOUS -- a typo'd, deleted, or
+  // genuinely nonexistent public repo returns it with no credential involved --
+  // so it must NOT be claimed as credential-missing.
+  it("classifies a repository-not-found response as a generic clone failure (ambiguous, not credential)", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "remote: Repository not found.\nfatal: repository 'https://github.com/acme/typo-repo.git/' not found",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: a bare "Permission denied" is AMBIGUOUS -- local filesystem
+  // EACCES surfaces the same phrase -- so it must NOT be claimed as
+  // credential-missing. Only the SSH rejection form "Permission denied
+  // (publickey)" counts as an auth signal (covered above).
+  it("classifies a local filesystem EACCES as a generic clone failure (ambiguous, not credential)", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: could not create leading directories of '/var/lib/paperclip/gloops-ui': Permission denied",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: a diagnostic that merely mentions "publickey" without being
+  // the "Permission denied (publickey)" rejection must NOT be claimed as
+  // credential-missing.
+  it("classifies an informational publickey ssh diagnostic as a generic clone failure (not a rejection)", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "debug1: Authentications that can continue: publickey,password\ndebug1: Next authentication method: publickey",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: the auth signal is a "Permission denied (<methods>)" list where
+  // every token is a known SSH method AND the closing paren is present. A
+  // malformed continuation (garbage token glued on, no closing paren) must NOT
+  // classify as credential.
+  it("classifies a malformed publickey rejection (missing closing paren) as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "remote: Permission denied (publickeyGARBAGE and more noise with no closing paren",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: a closed "(...)" whose inner text is not a comma-separated
+  // list of method tokens (here it contains spaces/garbage) is not a recognized
+  // OpenSSH rejection -> generic.
+  it("classifies a closed paren pair with a non-method-list body as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "Permission denied (publickey-agent unavailable) while negotiating",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: a FULLY-CLOSED, comma-separated method list is still generic
+  // when ANY token is not a known OpenSSH method ("kerberos" here). It must NOT
+  // be claimed as credential-missing even though the parentheses are balanced.
+  it("classifies a closed method-list containing an unknown token (kerberos) as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "git@example.com: Permission denied (publickey,kerberos).",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: a valid closed list immediately followed by glued garbage (no
+  // period / whitespace / end-of-string boundary after ")") is not a genuine
+  // rejection line -> generic. Guards the trailing-boundary lookahead.
+  it("classifies a closed publickey list with garbage glued after the paren as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason("Permission denied (publickey)agent unavailable"),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // WG-PLAT-015: a bare "Permission denied" with no parenthesized method list
+  // (e.g. a password retry prompt) is ambiguous -> generic.
+  it("classifies a bare permission-denied (no method list) as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason("Permission denied, please try again."),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  it("classifies a missing local repository as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: repository '/tmp/does-not-exist.git' does not exist",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  it("classifies a network timeout as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: unable to connect to example.com: example.com[0: 93.184.216.34]: errno=Connection timed out",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  it("classifies case-insensitively for lowercase auth-failure text", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: authentication failed for 'https://github.com/acme/gloops-ui.git/'",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies case-insensitively for uppercase auth-failure text", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "FATAL: AUTHENTICATION FAILED FOR 'HTTPS://GITHUB.COM/ACME/GLOOPS-UI.GIT/'",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  // WG-PLAT-015: git's generic transport preamble ("fatal: unable to access
+  // '<url>': <cause>") is emitted for DNS/TLS/socket failures too, so it must
+  // NOT be treated as an auth signal on its own. A pure DNS/network failure
+  // wrapped in that preamble must classify as a generic clone failure...
+  it("classifies a DNS failure wrapped in 'unable to access' as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: unable to access 'https://github.com/acme/gloops-ui.git/': Could not resolve host: github.com",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  it("classifies a TLS failure wrapped in 'unable to access' as a generic clone failure", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: unable to access 'https://ghe.internal/acme/gloops-ui.git/': SSL certificate problem: unable to get local issuer certificate",
+      ),
+    ).toBe("preferred_workspace_clone_failed");
+  });
+
+  // ...while the SAME preamble carrying an HTTP 401/403 auth rejection must
+  // still classify as credential-missing.
+  it("classifies an HTTP 403 wrapped in 'unable to access' as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: unable to access 'https://github.com/acme/gloops-ui.git/': The requested URL returned error: 403",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
+  });
+
+  it("classifies an HTTP 401 wrapped in 'unable to access' as credential missing", () => {
+    expect(
+      classifyManagedWorkspaceCloneFailureReason(
+        "fatal: unable to access 'https://github.com/acme/gloops-ui.git/': The requested URL returned error: 401",
+      ),
+    ).toBe("preferred_workspace_clone_credential_missing");
   });
 });
 
