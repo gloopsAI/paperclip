@@ -495,6 +495,17 @@
       "integratedCommits": ["bd92535238b63019cae195baa4037e5f45ea4fdd"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected distribution and dark-install verifier equivalently classify every diff status without rename hiding, isolate candidate code from write credentials, rollback any post-mutation restart-preparation failure, and prove the cache refresher inactive and disabled while dark."
+    },
+    {
+      "id": "fast-pin-final-review-closure",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "41412fd0e0fa0124837f27c090ce93758b51a9b4",
+      "sourceHead": "64e15c75e7159851960e7adc2d5dd3c8411159a5",
+      "patchDiffSha256": "219e5cb8cce809cb26e415b3b72f3b846456d39822a0ede4f17b890456de9cab",
+      "integratedCommits": ["64e15c75e7159851960e7adc2d5dd3c8411159a5"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until pull-request image builds and stable-push publication have equivalently separate authority, every successful pin proves a valid full source revision, and dark verification distinguishes an installed disabled timer from an active or enabled schedule."
     }
   ],
   "releasePolicy": {
