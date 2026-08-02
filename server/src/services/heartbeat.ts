@@ -1396,6 +1396,49 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
+// Managed-clone failures for a private repo without a usable credential
+// surface distinctive git/transport error text. Classify those separately
+// from other clone failures (disk, network, bad ref, ...) so the typed
+// failure names the actual gap instead of a generic "clone failed".
+//
+// This must stay AUTH-SPECIFIC. Match ONLY causes that unambiguously prove a
+// missing/rejected credential:
+//   - HTTP 401/403, including git's "The requested URL returned error: 401|403"
+//   - "authentication failed"
+//   - an OpenSSH auth REJECTION "Permission denied (<methods>)": a full,
+//     closing-paren-terminated, comma-separated list in which EVERY token is a
+//     KNOWN SSH auth method (publickey, password, keyboard-interactive,
+//     gssapi-with-mic, gssapi-keyex, hostbased), and the closing paren is
+//     followed by a real rejection boundary (period, whitespace/newline, or
+//     end-of-string). This matches "(publickey)", "(publickey,password)", and
+//     "(gssapi-keyex,gssapi-with-mic,publickey)". An unknown/garbage token, a
+//     missing closing paren, or garbage glued directly after ")" (e.g.
+//     "(publickey)agent") does NOT match.
+//   - a prompt for, or failure to read, credentials with no tty
+//     ("could not read Username|Password", "terminal prompts disabled")
+//
+// Deliberately EXCLUDED because they are ambiguous (they do NOT prove a
+// credential gap):
+//   - git's generic transport preamble "fatal: unable to access '<url>': ..."
+//     (also emitted for DNS/TLS/socket failures)
+//   - a bare "permission denied" (local filesystem EACCES surfaces this too)
+//   - a bare "publickey" mention (informational ssh auth-method diagnostics
+//     list it without being a "Permission denied (...)" rejection)
+//   - a "(publickey..." continuation with an unknown token or no closing paren
+//   - "repository not found" (a typo'd, deleted, or genuinely nonexistent
+//     public repo returns this with no credential involved)
+// Everything not matched here falls through to the generic clone-failed reason.
+const MANAGED_CLONE_CREDENTIAL_FAILURE_PATTERN =
+  /authentication failed|permission denied \((?:publickey|password|keyboard-interactive|gssapi-with-mic|gssapi-keyex|hostbased)(?:,(?:publickey|password|keyboard-interactive|gssapi-with-mic|gssapi-keyex|hostbased))*\)(?=[.\s]|$)|could not read username|could not read password|terminal prompts disabled|401 unauthorized|403 forbidden|returned error: 401|returned error: 403/i;
+
+export function classifyManagedWorkspaceCloneFailureReason(
+  cause: string,
+): "preferred_workspace_clone_credential_missing" | "preferred_workspace_clone_failed" {
+  return MANAGED_CLONE_CREDENTIAL_FAILURE_PATTERN.test(cause)
+    ? "preferred_workspace_clone_credential_missing"
+    : "preferred_workspace_clone_failed";
+}
+
 async function quarantineCorruptManagedWorkspace(cwd: string): Promise<string> {
   const quarantinePath = `${cwd}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   await fs.rename(cwd, quarantinePath);
@@ -7738,17 +7781,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
+    const preferredWorkspace = preferredProjectWorkspaceId
+      ? projectWorkspaceRows.find((workspace) => workspace.id === preferredProjectWorkspaceId) ?? null
+      : null;
+    // WG-PLAT-015: the run targets a project (workspaceProjectId set) and the
+    // issue/context names a preferred project workspace that is ABSENT from
+    // that project's candidate set. Fail typed BEFORE either branch below,
+    // regardless of how many candidate rows exist:
+    //   - zero rows   -> the `if (workspaceProjectId)` path below would create a
+    //     generic managed workspace with `repoUrl: null` (an unrelated repo);
+    //   - nonzero rows -> the loop would iterate sibling rows (different repos)
+    //     or fall through to the agent's shared fallback cwd.
+    // Both are cross-repo fallthrough. The explicit `useProjectWorkspace:false`
+    // opt-out leaves workspaceProjectId null, so this guard is skipped there.
+    if (workspaceProjectId && preferredProjectWorkspaceId && !preferredWorkspace) {
+      const cause = `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
+      throw new WorkspacePreparationFailure(
+        `Preferred project workspace "${preferredProjectWorkspaceId}" is not available on this project; refusing to fall back to a different repository. ${cause}`,
+        {
+          reason: "preferred_workspace_row_missing",
+          projectId: resolvedProjectId,
+          workspaceId: preferredProjectWorkspaceId,
+          repoUrl: null,
+          cause,
+        },
+      );
+    }
+
     if (projectWorkspaceRows.length > 0) {
-      const preferredWorkspace = preferredProjectWorkspaceId
-        ? projectWorkspaceRows.find((workspace) => workspace.id === preferredProjectWorkspaceId) ?? null
-        : null;
       const missingProjectCwds: string[] = [];
       let hasConfiguredProjectCwd = false;
-      let preferredWorkspaceWarning: string | null = null;
-      if (preferredProjectWorkspaceId && !preferredWorkspace) {
-        preferredWorkspaceWarning =
-          `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
-      }
       for (const workspace of projectWorkspaceRows) {
         let projectCwd = readNonEmptyString(workspace.cwd);
         let managedWorkspaceWarning: string | null = null;
@@ -7762,8 +7824,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
           } catch (error) {
+            const cause = error instanceof Error ? error.message : String(error);
+            // The issue's configured/preferred project workspace could not be
+            // cloned or prepared. Fail typed against THAT workspace/repo here
+            // instead of `continue`-ing to try a sibling project workspace row
+            // (a different repo) or falling through to the agent's shared
+            // fallback cwd below, which may hold a stale checkout of an
+            // unrelated repo from a previous run. See WG-PLAT-015.
             if (preferredWorkspace?.id === workspace.id) {
-              preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
+              const messagePrefix =
+                `Preferred project workspace "${workspace.id}" for repo "${workspace.repoUrl ?? "unknown"}" failed managed-clone preparation; refusing to fall back to a different repository.`;
+              const reason = classifyManagedWorkspaceCloneFailureReason(cause);
+              if (reason === "preferred_workspace_clone_credential_missing") {
+                // Not transient: retrying without a provisioned credential
+                // will never succeed. Route to a human/owner instead of the
+                // dispatcher's immediate-recovery retry loop (which is only
+                // suppressed for ConfigurationIncompleteFailure, not
+                // WorkspacePreparationFailure). See WG-PLAT-015.
+                throw new ConfigurationIncompleteFailure(`${messagePrefix} ${cause}`, {
+                  configurationIncomplete: {
+                    reason,
+                    companyId: agent.companyId,
+                    projectId: resolvedProjectId,
+                    workspaceId: workspace.id,
+                    repoUrl: workspace.repoUrl ?? null,
+                    cause,
+                  },
+                });
+              }
+              throw new WorkspacePreparationFailure(`${messagePrefix} ${cause}`, {
+                reason,
+                projectId: resolvedProjectId,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl ?? null,
+                cause,
+              });
             }
             continue;
           }
@@ -7782,14 +7877,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
             workspaceHints,
-            warnings: [preferredWorkspaceWarning, managedWorkspaceWarning].filter(
-              (value): value is string => Boolean(value),
-            ),
+            warnings: managedWorkspaceWarning ? [managedWorkspaceWarning] : [],
           };
         }
         if (preferredWorkspace?.id === workspace.id) {
-          preferredWorkspaceWarning =
-            `Selected project workspace path "${projectCwd}" is not available yet.`;
+          // WG-PLAT-015: the issue's preferred project workspace has an
+          // explicit checkout path that is MISSING on disk. Recording a
+          // warning and continuing would fall through to a sibling row (a
+          // DIFFERENT repo) or the agent's shared fallback cwd, dispatching
+          // work against an unrelated repository. Fail typed against the
+          // intended workspace/repo instead -- same stop as the managed-clone
+          // failure path above.
+          const cause = `Selected project workspace path "${projectCwd}" is not available.`;
+          throw new WorkspacePreparationFailure(
+            `Preferred project workspace "${workspace.id}" for repo "${workspace.repoUrl ?? "unknown"}" checkout path "${projectCwd}" is not available; refusing to fall back to a different repository. ${cause}`,
+            {
+              reason: "preferred_workspace_cwd_missing",
+              projectId: resolvedProjectId,
+              workspaceId: workspace.id,
+              repoUrl: workspace.repoUrl ?? null,
+              cause,
+            },
+          );
         }
         missingProjectCwds.push(projectCwd);
       }
@@ -7797,9 +7906,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
-      if (preferredWorkspaceWarning) {
-        warnings.push(preferredWorkspaceWarning);
-      }
       if (missingProjectCwds.length > 0) {
         const firstMissing = missingProjectCwds[0];
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
