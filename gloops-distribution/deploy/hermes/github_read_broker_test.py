@@ -2291,6 +2291,132 @@ class SourceInventoryAppTokenTests(unittest.TestCase):
         assert isinstance(captured["body"], dict)
         self.assertNotIn("repository_ids", captured["body"])
 
+    def test_production_mint_revokes_token_rejected_for_excess_permissions(self):
+        expires = (
+            datetime.now(timezone.utc) + timedelta(seconds=3600)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        calls: list[tuple[str, str]] = []
+
+        def fake_request(method, path, token, body=None):
+            calls.append((method, path))
+            if method == "POST":
+                return {
+                    "token": self.SECRET_TOKEN,
+                    "expires_at": expires,
+                    "permissions": {"contents": "write", "metadata": "read"},
+                }
+            if method == "DELETE":
+                return {}
+            raise AssertionError((method, path, body))
+
+        with patch.object(broker, "TEST_MODE", False):
+            with patch.object(broker, "load_app_config", return_value={"installationId": 1}):
+                with patch.object(broker, "_app_jwt", return_value="header.payload.sig"):
+                    with patch.object(broker, "_request_json", side_effect=fake_request):
+                        with self.assertRaisesRegex(
+                            broker.BrokerError,
+                            "permissions exceed or miss",
+                        ):
+                            broker.mint_installation_token()
+
+        self.assertEqual(
+            calls,
+            [
+                ("POST", "/app/installations/1/access_tokens"),
+                ("DELETE", "/installation/token"),
+            ],
+        )
+
+    def test_production_mint_revokes_token_rejected_for_invalid_expiry(self):
+        invalid_expiries = {
+            "malformed": "not-a-timestamp",
+            "too-short": (
+                datetime.now(timezone.utc) + timedelta(seconds=120)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "too-long": (
+                datetime.now(timezone.utc) + timedelta(seconds=7200)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        for label, expires_at in invalid_expiries.items():
+            with self.subTest(label=label):
+                calls: list[tuple[str, str]] = []
+
+                def fake_request(method, path, token, body=None):
+                    calls.append((method, path))
+                    if method == "POST":
+                        return {
+                            "token": self.SECRET_TOKEN,
+                            "expires_at": expires_at,
+                            "permissions": {"contents": "read", "metadata": "read"},
+                        }
+                    if method == "DELETE":
+                        return {}
+                    raise AssertionError((method, path, body))
+
+                with patch.object(broker, "TEST_MODE", False):
+                    with patch.object(
+                        broker,
+                        "load_app_config",
+                        return_value={"installationId": 1},
+                    ):
+                        with patch.object(
+                            broker,
+                            "_app_jwt",
+                            return_value="header.payload.sig",
+                        ):
+                            with patch.object(
+                                broker,
+                                "_request_json",
+                                side_effect=fake_request,
+                            ):
+                                with self.assertRaises(broker.BrokerError):
+                                    broker.mint_installation_token()
+
+                self.assertEqual(
+                    calls,
+                    [
+                        ("POST", "/app/installations/1/access_tokens"),
+                        ("DELETE", "/installation/token"),
+                    ],
+                )
+
+    def test_production_mint_cleanup_failure_is_typed_retention_error(self):
+        expires = (
+            datetime.now(timezone.utc) + timedelta(seconds=3600)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        calls: list[tuple[str, str]] = []
+
+        def fake_request(method, path, token, body=None):
+            calls.append((method, path))
+            if method == "POST":
+                return {
+                    "token": self.SECRET_TOKEN,
+                    "expires_at": expires,
+                    "permissions": {"contents": "write", "metadata": "read"},
+                }
+            if method == "DELETE":
+                raise broker.BrokerError("GitHub App API DELETE failed")
+            raise AssertionError((method, path, body))
+
+        with patch.object(broker, "TEST_MODE", False):
+            with patch.object(broker, "load_app_config", return_value={"installationId": 1}):
+                with patch.object(broker, "_app_jwt", return_value="header.payload.sig"):
+                    with patch.object(broker, "_request_json", side_effect=fake_request):
+                        with self.assertRaises(
+                            broker.InstallationTokenRetentionError
+                        ) as ctx:
+                            broker.mint_installation_token()
+
+        self.assertIn("manual intervention", str(ctx.exception))
+        self.assertNotIn(self.SECRET_TOKEN, str(ctx.exception))
+        self.assertEqual(
+            calls,
+            [
+                ("POST", "/app/installations/1/access_tokens"),
+                ("DELETE", "/installation/token"),
+            ],
+        )
+
     def test_production_mint_failure_is_typed_broker_error(self):
         with patch.object(broker, "TEST_MODE", False):
             with patch.object(
