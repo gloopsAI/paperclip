@@ -95,6 +95,8 @@ sed -i '/^PAPERCLIP_IMAGE=/d' "${CONFIG_DIR}/runtime.env"
 printf 'PAPERCLIP_IMAGE=%s\n' "${IMAGE}" >>"${CONFIG_DIR}/runtime.env"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/backup-dark.sh" "${LIB_DIR}/backup-dark.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/preflight.sh" "${LIB_DIR}/preflight.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/pin-paperclip-image.sh" "${LIB_DIR}/pin-paperclip-image.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/pull-latest-stable.sh" "${LIB_DIR}/pull-latest-stable.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/wait-paperclip-control-plane.sh" "${LIB_DIR}/wait-paperclip-control-plane.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-runtime-deadman.sh" "${LIB_DIR}/verify-runtime-deadman.sh"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/campaign-deadman.py" "${LIB_DIR}/campaign-deadman.py"
@@ -170,11 +172,11 @@ if [[ ! -f "${CONFIG_DIR}/github-broker-receipt-token" ]]; then
   install -m 0640 -o root -g paperclip "${token_stage}" "${CONFIG_DIR}/github-broker-receipt-token"
   rm -f "${token_stage}"
 fi
-[[ "$(stat -c '%a:%U:%G' "${CONFIG_DIR}/github-broker-receipt-token")" == '640:root:paperclip' ]] \
-  && grep -Eq '^pcp_broker_[0-9a-f]{64}$' "${CONFIG_DIR}/github-broker-receipt-token" || {
+if [[ "$(stat -c '%a:%U:%G' "${CONFIG_DIR}/github-broker-receipt-token")" != '640:root:paperclip' ]] \
+  || ! grep -Eq '^pcp_broker_[0-9a-f]{64}$' "${CONFIG_DIR}/github-broker-receipt-token"; then
   echo "the Paperclip broker receipt token is missing, malformed, or not root-protected" >&2
   exit 1
-}
+fi
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-handshake.service" /usr/local/lib/systemd/system/paperclip-gloops-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
@@ -186,6 +188,8 @@ install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-campaign-deadman.service" /usr/local/lib/systemd/system/paperclip-campaign-deadman.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-controlled-swarm-commissioning-recovery.service" /usr/local/lib/systemd/system/paperclip-controlled-swarm-commissioning-recovery.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/gloops-image-cache-refresh.service" /usr/local/lib/systemd/system/gloops-image-cache-refresh.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/gloops-image-cache-refresh.timer" /usr/local/lib/systemd/system/gloops-image-cache-refresh.timer
 
 "${LIB_DIR}/provision-tirith.sh"
 
@@ -206,6 +210,7 @@ systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl disable --now gloops-image-cache-refresh.timer gloops-image-cache-refresh.service 2>/dev/null || true
 systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
 systemctl reset-failed paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 

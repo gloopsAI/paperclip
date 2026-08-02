@@ -14,6 +14,10 @@ const workflowPath = new URL(
   "../.github/workflows/gloops-distribution.yml",
   import.meta.url,
 );
+const fastWorkflowPath = new URL(
+  "../.github/workflows/gloops-distribution-fast.yml",
+  import.meta.url,
+);
 const runtimeEnvPath = new URL(
   "../gloops-distribution/deploy/hermes/runtime.env",
   import.meta.url,
@@ -64,6 +68,26 @@ const loadHermesExecutionImagePath = new URL(
 );
 const preflightPath = new URL(
   "../gloops-distribution/deploy/hermes/preflight.sh",
+  import.meta.url,
+);
+const pinPaperclipImagePath = new URL(
+  "../gloops-distribution/deploy/hermes/pin-paperclip-image.sh",
+  import.meta.url,
+);
+const pinPaperclipImageTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh",
+  import.meta.url,
+);
+const pullLatestStablePath = new URL(
+  "../gloops-distribution/deploy/hermes/pull-latest-stable.sh",
+  import.meta.url,
+);
+const imageCacheRefreshServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/gloops-image-cache-refresh.service",
+  import.meta.url,
+);
+const imageCacheRefreshTimerPath = new URL(
+  "../gloops-distribution/deploy/hermes/gloops-image-cache-refresh.timer",
   import.meta.url,
 );
 const waitPaperclipControlPlanePath = new URL(
@@ -330,6 +354,7 @@ const hermesRouteReceiptReadmePath = new URL("README.md", hermesRouteReceiptDir)
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
+const fastWorkflow = readFileSync(fastWorkflowPath, "utf8");
 const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
 const handshakeService = readFileSync(handshakeServicePath, "utf8");
@@ -342,6 +367,11 @@ const buildHermesExecutionImage = readFileSync(buildHermesExecutionImagePath, "u
 const verifyHermesCommandSecurityImage = readFileSync(verifyHermesCommandSecurityImagePath, "utf8");
 const loadHermesExecutionImage = readFileSync(loadHermesExecutionImagePath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
+const pinPaperclipImage = readFileSync(pinPaperclipImagePath, "utf8");
+const pinPaperclipImageTest = readFileSync(pinPaperclipImageTestPath, "utf8");
+const pullLatestStable = readFileSync(pullLatestStablePath, "utf8");
+const imageCacheRefreshService = readFileSync(imageCacheRefreshServicePath, "utf8");
+const imageCacheRefreshTimer = readFileSync(imageCacheRefreshTimerPath, "utf8");
 const waitPaperclipControlPlane = readFileSync(waitPaperclipControlPlanePath, "utf8");
 const verifyRuntimeDeadman = readFileSync(verifyRuntimeDeadmanPath, "utf8");
 const verifyDark = readFileSync(verifyDarkPath, "utf8");
@@ -1534,6 +1564,40 @@ for (const required of [
   }
 }
 for (const required of [
+  'paths-ignore:',
+  '"packages/adapters/hermes/src/**"',
+  '"server/src/services/execution-admission.ts"',
+  '"server/src/services/guarded-admission-reset.ts"',
+  '"gloops-distribution/deploy/hermes/pin-paperclip-image.sh"',
+  'Fast-only stable pushes publish through gloops-distribution-fast.yml',
+]) {
+  if (!workflow.includes(required)) {
+    fail(`full distribution workflow is missing fast-only push exclusion ${required}`);
+  }
+}
+for (const required of [
+  "name: GLoops Distribution Fast",
+  "workflow_dispatch:",
+  "node scripts/classify-gloops-fast-path.mjs",
+  "pnpm --filter @paperclipai/hermes-paperclip-adapter typecheck",
+  "pnpm --filter @paperclipai/server typecheck",
+  "src/gateway/server/execute.test.ts",
+  "server/src/services/execution-admission.test.ts",
+  "server/src/__tests__/guarded-admission-reset.test.ts",
+  "server/src/__tests__/heartbeat-comment-wake-batching.test.ts",
+  "bash gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh",
+  "timeout-minutes: 15",
+  "type=sha,prefix=sha-",
+  "type=raw,value=stable,enable=${{ github.ref == 'refs/heads/gloops/stable' }}",
+  "linux/amd64,linux/arm64",
+  "provenance: mode=max",
+  "scope=gloops-distribution",
+]) {
+  if (!fastWorkflow.includes(required)) {
+    fail(`fast distribution workflow is missing ${required}`);
+  }
+}
+for (const required of [
   "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
   "--network paperclip-handshake --ip 172.30.241.4",
   "--header 'Host: 127.0.0.1'",
@@ -2308,6 +2372,83 @@ if (
   !preflight.includes('[[ "${PAPERCLIP_IMAGE:-}" == "${EXPECTED_IMAGE}" ]]')
 ) {
   fail("preflight.sh must bind the runtime image to the root-owned approved-image receipt");
+}
+for (const required of [
+  "^ghcr\\.io/gloopsai/paperclip-gloops@sha256:[a-f0-9]{64}$",
+  "/etc/paperclip-gloops/approved-image",
+  "/etc/paperclip-gloops/runtime.env",
+  "/var/lib/paperclip-gloops/controlled-swarm/supervisor-operational-closure.json",
+  "/var/lib/paperclip-gloops/receipts",
+  "runtime.env must contain exactly one PAPERCLIP_IMAGE line",
+  "supervisor operational closure receipt is missing required keys",
+  "github-app.json does not match the active credential receipt repository boundary",
+  "auth.json, config.yaml, cron-disabled, policy.json",
+  "2770:10000:985",
+  "verify-hermes-execution-profile.sh",
+  "pin-backups",
+  '"${SYSTEMCTL}" restart',
+  "journalctl",
+  "ROLLBACK OK",
+  "gloops.paperclip-image-pin.v1",
+  "org.opencontainers.image.revision",
+  "http://127.0.0.1:3100/api/health",
+]) {
+  if (!pinPaperclipImage.includes(required)) {
+    fail(`immutable Paperclip pin tool is missing ${required}`);
+  }
+}
+for (const required of [
+  "DRY RUN OK",
+  "PIN OK",
+  "PREPULL UPDATED",
+  "PREPULL UNCHANGED",
+  "systemctl restart paperclip-gloops.service",
+]) {
+  if (!pinPaperclipImageTest.includes(required)) {
+    fail(`Paperclip pin test is missing ${required}`);
+  }
+}
+for (const required of [
+  'readonly TAGGED_IMAGE="${REPOSITORY}:stable"',
+  "{{json .RepoDigests}}",
+  "gloops.paperclip-image-prepull.v1",
+  '"activationPerformed": False',
+  "/var/lib/paperclip-gloops/prepull",
+]) {
+  if (!pullLatestStable.includes(required)) {
+    fail(`stable image pre-pull tool is missing ${required}`);
+  }
+}
+for (const forbidden of ["systemctl restart", "approved-image.tmp", "PAPERCLIP_IMAGE="]) {
+  if (pullLatestStable.includes(forbidden)) {
+    fail(`stable image pre-pull tool contains activation surface ${forbidden}`);
+  }
+}
+for (const required of [
+  "ExecStart=/usr/local/lib/paperclip-gloops/pull-latest-stable.sh",
+  "NoNewPrivileges=true",
+  "ProtectSystem=strict",
+  "ReadWritePaths=/var/lib/paperclip-gloops /run/docker.sock",
+]) {
+  if (!imageCacheRefreshService.includes(required)) {
+    fail(`stable image cache service is missing ${required}`);
+  }
+}
+for (const required of ["OnUnitActiveSec=5m", "Persistent=true", "WantedBy=timers.target"]) {
+  if (!imageCacheRefreshTimer.includes(required)) {
+    fail(`stable image cache timer is missing ${required}`);
+  }
+}
+for (const required of [
+  '"${SCRIPT_DIR}/pin-paperclip-image.sh" "${LIB_DIR}/pin-paperclip-image.sh"',
+  '"${SCRIPT_DIR}/pull-latest-stable.sh" "${LIB_DIR}/pull-latest-stable.sh"',
+  '"${SCRIPT_DIR}/gloops-image-cache-refresh.service"',
+  '"${SCRIPT_DIR}/gloops-image-cache-refresh.timer"',
+  "systemctl disable --now gloops-image-cache-refresh.timer gloops-image-cache-refresh.service",
+]) {
+  if (!installDark.includes(required)) {
+    fail(`dark installer is missing fast deployment asset handling ${required}`);
+  }
 }
 for (const [label, contents] of [
   ["paperclip-gloops.service", service],

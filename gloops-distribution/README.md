@@ -50,6 +50,17 @@ Publishing an image does not activate Paperclip. Production restart, schedules,
 heartbeats, agent wakes, provider credentials, MTE activation, and live mutation
 remain separate operator-controlled actions.
 
+Narrow Hermes adapter/admission changes also run through
+`.github/workflows/gloops-distribution-fast.yml`. That workflow independently
+classifies the complete diff, rejects mixed changes, runs package typechecks and
+focused Hermes/admission/reset tests (plus comment-wake batching when
+`heartbeat.ts` changes), and builds the same `gloops-production` target. On a
+fast-only push to `gloops/stable` it publishes `sha-<shortsha>` and `stable`
+within a 15-minute target; the full workflow remains mandatory for PR branch
+protection and for schema, migration, dependency, UI, multi-package, tag, or
+otherwise mixed changes. The exact operator pin and host pre-pull commands live
+in [`deploy/hermes/README.md`](./deploy/hermes/README.md).
+
 ## Hermes execution-only profile
 
 The Paperclip control plane and Hermes execution plane are separate containers

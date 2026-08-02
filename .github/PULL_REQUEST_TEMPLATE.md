@@ -63,6 +63,15 @@
 
 -
 
+## GLoops stable distribution guardrails
+
+<!-- Complete these when the PR targets gloops/stable; otherwise mark N/A. -->
+
+- [ ] Product behavior and its focused regression test land together (or the PR explains why one side is N/A)
+- [ ] I will not treat a red/failed/skipped container publication as deployable
+- [ ] Any live Hermes pin will use `gloops-distribution/deploy/hermes/pin-paperclip-image.sh`
+- [ ] I confirmed whether the fast-path allowlist or full GLoops Distribution applies
+
 > For core feature work, check [`ROADMAP.md`](ROADMAP.md) first and discuss it in `#dev` before opening the PR. Feature PRs that overlap with planned core work may need to be redirected — check the roadmap first. See `CONTRIBUTING.md`.
 
 ## Model Used

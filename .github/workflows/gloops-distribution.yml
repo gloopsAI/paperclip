@@ -9,6 +9,18 @@ on:
       - "gloops/stable"
     tags:
       - "gloops/v*"
+    # Fast-only stable pushes publish through gloops-distribution-fast.yml.
+    # Tag pushes ignore path filters and still run this full release workflow.
+    paths-ignore:
+      - "packages/adapters/hermes/src/**"
+      - "server/src/services/execution-admission.ts"
+      - "server/src/services/execution-admission.test.ts"
+      - "server/src/services/guarded-admission-reset.ts"
+      - "server/src/services/heartbeat.ts"
+      - "server/src/__tests__/guarded-admission-reset.test.ts"
+      - "server/src/__tests__/heartbeat-comment-wake-batching.test.ts"
+      - "gloops-distribution/deploy/hermes/pin-paperclip-image.sh"
+      - "gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh"
 
 # One canonical publication per ref. Successive merges to gloops/stable share
 # refs/heads/gloops/stable, so older in-flight multiarch release runs are
@@ -88,8 +100,8 @@ jobs:
           target: gloops-production
           platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ github.event_name == 'push' }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=gloops-distribution
+          cache-to: type=gha,mode=max,scope=gloops-distribution
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true

@@ -1,0 +1,19 @@
+[Unit]
+Description=Pre-pull the latest GLoops Paperclip stable image without activating it
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/paperclip-gloops/pull-latest-stable.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/paperclip-gloops /run/docker.sock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictRealtime=true
