@@ -869,8 +869,14 @@ if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }
-if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true$/m.test(runtimeEnv)) {
-  fail("runtime-changing source must keep the release-pin activation interlock engaged");
+if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false$/m.test(runtimeEnv)) {
+  fail("release distribution must clear the release-pin activation interlock");
+}
+if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089$/m.test(runtimeEnv)) {
+  fail("release distribution must freeze execution claims for the exact Gloops company");
+}
+if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=$/m.test(runtimeEnv)) {
+  fail("release distribution must not auto-readmit a successor issue");
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
@@ -2237,14 +2243,14 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
   }
 }
-if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false")) {
-  fail("dark verification bypasses the source-only release-pin interlock");
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
+  fail("dark verification still requires the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",
