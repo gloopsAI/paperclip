@@ -517,9 +517,30 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
+// Decomposition children may carry a client-preallocated UUID so sibling
+// blockedByIssueIds can name later dependents before any row exists. Ordinary
+// createChild keeps no public `id` field — only this surface accepts it.
+export const createAcceptedPlanDecompositionChildSchema = withCreateIssueStatusDefault(
+  createIssueBaseSchema
+    .omit({
+      parentId: true,
+      inheritExecutionWorkspaceFromIssueId: true,
+      watchdogDiscovery: true,
+    })
+    .extend({
+      id: z.string().uuid().optional(),
+      acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      blockParentUntilDone: z.boolean().optional().default(false),
+    }),
+);
+
+export type CreateAcceptedPlanDecompositionChild = z.infer<
+  typeof createAcceptedPlanDecompositionChildSchema
+>;
+
 export const createAcceptedPlanDecompositionSchema = z.object({
   acceptedPlanRevisionId: z.string().uuid(),
-  children: z.array(createChildIssueSchema).min(1).max(25),
+  children: z.array(createAcceptedPlanDecompositionChildSchema).min(1).max(25),
 });
 
 export type CreateAcceptedPlanDecomposition = z.infer<typeof createAcceptedPlanDecompositionSchema>;

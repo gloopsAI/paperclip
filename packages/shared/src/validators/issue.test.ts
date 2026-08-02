@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createAcceptedPlanDecompositionSchema,
   createIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionWorkspaceSettingsSchema,
@@ -580,5 +581,40 @@ describe("issue validators", () => {
         },
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("createAcceptedPlanDecompositionSchema preallocated child ids", () => {
+  const implementId = "11111111-1111-4111-8111-111111111111";
+  const auditId = "22222222-2222-4222-8222-222222222222";
+
+  it("preserves optional preallocated child ids and sibling blockedByIssueIds", () => {
+    const result = createAcceptedPlanDecompositionSchema.safeParse({
+      acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      children: [
+        { id: implementId, title: "Implement", status: "todo" },
+        {
+          id: auditId,
+          title: "Final audit",
+          status: "blocked",
+          blockedByIssueIds: [implementId],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.children[0]?.id).toBe(implementId);
+    expect(result.data.children[1]?.id).toBe(auditId);
+    expect(result.data.children[1]?.blockedByIssueIds).toEqual([implementId]);
+  });
+
+  it("still accepts children without preallocated ids", () => {
+    const result = createAcceptedPlanDecompositionSchema.safeParse({
+      acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      children: [{ title: "Only title", status: "todo" }],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.children[0]?.id).toBeUndefined();
   });
 });

@@ -2146,6 +2146,61 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
+    it("preserves client-preallocated child ids and sibling blockedByIssueIds on accepted-plan HTTP surface", async () => {
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
+        ambiguous: false,
+        agent: reference === ownerAgentId ? makeAgent(ownerAgentId) : null,
+      }));
+      // Distinct from fixture issueId/companyId constants above.
+      const implementId = "a1111111-1111-4111-8111-111111111111";
+      const reviewId = "a2222222-2222-4222-8222-222222222222";
+      const auditId = "a3333333-3333-4333-8333-333333333333";
+      const app = await createApp(ownerActor());
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+        .send({
+          acceptedPlanRevisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          children: [
+            { id: implementId, title: "Implement", assigneeAgentId: ownerAgentId },
+            {
+              id: reviewId,
+              title: "Review",
+              assigneeAgentId: ownerAgentId,
+              blockedByIssueIds: [implementId],
+            },
+            {
+              id: auditId,
+              title: "Final audit",
+              assigneeAgentId: ownerAgentId,
+              blockedByIssueIds: [implementId, reviewId],
+            },
+          ],
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const decompositionInput = mockIssueService.decomposeAcceptedPlan.mock.calls[0]?.[1];
+      const children = decompositionInput.children as Array<Record<string, unknown>>;
+      expect(children).toEqual([
+        expect.objectContaining({
+          id: implementId,
+          title: "Implement",
+          status: "todo",
+        }),
+        expect.objectContaining({
+          id: reviewId,
+          title: "Review",
+          status: "todo",
+          blockedByIssueIds: [implementId],
+        }),
+        expect.objectContaining({
+          id: auditId,
+          title: "Final audit",
+          status: "todo",
+          blockedByIssueIds: [implementId, reviewId],
+        }),
+      ]);
+    });
+
     it("preserves normal accepted-plan decomposition parallel wakeups outside watchdog context", async () => {
       mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
         ambiguous: false,
