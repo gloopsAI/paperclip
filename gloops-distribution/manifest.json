@@ -462,6 +462,17 @@
       "integratedCommits": ["9d5ecf1a6e61aff2d61b4e622a9f8112921af2b5"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalently authenticated, atomic, idempotent reset of an exhausted admission budget that binds the reset to the exact terminal run and denies ambiguous, stale, or cross-company replay."
+    },
+    {
+      "id": "fast-hermes-image-pin-distribution",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "3fe523ebfafd4d28753af022f8d1e2d774e3de84",
+      "sourceHead": "cfb00ca2357f4a0809dba21f9f56959a78bf9698",
+      "patchDiffSha256": "bf85a274d349464e300db548fc67b19e1fb9dc3ca8fe79295babdc0b6f29bc73",
+      "integratedCommits": ["cfb00ca2357f4a0809dba21f9f56959a78bf9698"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected distribution and host runtime provide an equivalent fail-closed narrow-change publisher, immutable digest pin transaction, proved rollback, non-activating image pre-pull, and durable live receipt path within the same operator-time budget."
     }
   ],
   "releasePolicy": {
