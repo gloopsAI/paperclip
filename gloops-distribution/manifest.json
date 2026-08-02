@@ -484,6 +484,17 @@
       "integratedCommits": ["077dc28e28b2c7e7ba409d2bcf3907fd095a0798"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain while the full distribution container check is branch-protection required; the fast publisher must expose a distinct check identity so a skipped fast job cannot collide with full container acceptance."
+    },
+    {
+      "id": "fast-pin-independent-review-hardening",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "edec3023d476ea33b55506851f5a126feee860d9",
+      "sourceHead": "bd92535238b63019cae195baa4037e5f45ea4fdd",
+      "patchDiffSha256": "6d81eec7def01bf3058a66657286840b55b5b583f786361c297163c0451e84db",
+      "integratedCommits": ["bd92535238b63019cae195baa4037e5f45ea4fdd"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until the selected distribution and dark-install verifier equivalently classify every diff status without rename hiding, isolate candidate code from write credentials, rollback any post-mutation restart-preparation failure, and prove the cache refresher inactive and disabled while dark."
     }
   ],
   "releasePolicy": {
