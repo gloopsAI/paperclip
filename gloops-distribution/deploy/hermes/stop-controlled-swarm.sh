@@ -27,11 +27,13 @@ rm -f \
 systemctl stop paperclip-campaign-deadman.service
 systemctl stop paperclip-controlled-swarm-commissioning-recovery.service
 systemctl stop paperclip-github-push-broker.service
+systemctl stop paperclip-github-read-broker.service
 systemctl stop paperclip-platform-ops-broker.service
 systemctl mask \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
   paperclip-github-push-broker.service \
+  paperclip-github-read-broker.service \
   paperclip-platform-ops-broker.service \
   paperclip-campaign-deadman.service \
   paperclip-controlled-swarm-commissioning-recovery.service
@@ -39,6 +41,7 @@ for unit in \
   paperclip-gloops.service \
   paperclip-hermes-execution.service \
   paperclip-github-push-broker.service \
+  paperclip-github-read-broker.service \
   paperclip-platform-ops-broker.service \
   paperclip-campaign-deadman.service \
   paperclip-controlled-swarm-commissioning-recovery.service
