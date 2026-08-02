@@ -1548,6 +1548,49 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("preserves accepted-plan preallocated child ids and prerequisite edges through route validation (WG-PLAT-013)", async () => {
+    const implementationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    const reviewId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+    const finalAuditId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        children: [
+          {
+            id: implementationId,
+            title: "Implement accepted plan",
+            status: "todo",
+          },
+          {
+            id: reviewId,
+            title: "Review implementation",
+            status: "todo",
+            blockedByIssueIds: [implementationId],
+          },
+          {
+            id: finalAuditId,
+            title: "Final audit",
+            status: "todo",
+            blockedByIssueIds: [implementationId, reviewId],
+          },
+        ],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const decompositionInput = mockIssueService.decomposeAcceptedPlan.mock.calls[0]?.[1];
+    const children = decompositionInput.children as Array<Record<string, unknown>>;
+    expect(children.map((child) => child.id)).toEqual([
+      implementationId,
+      reviewId,
+      finalAuditId,
+    ]);
+    expect(children[1]?.blockedByIssueIds).toEqual([implementationId]);
+    expect(children[2]?.blockedByIssueIds).toEqual([implementationId, reviewId]);
+  }, 15_000);
+
   it("allows board users to set explicit cheap issue assignee profile overrides", async () => {
     const app = await createApp(boardActor());
 
