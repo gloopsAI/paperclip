@@ -1589,6 +1589,10 @@ for (const required of [
   "server/src/__tests__/heartbeat-comment-wake-batching.test.ts",
   "bash gloops-distribution/deploy/hermes/pin_paperclip_image_test.sh",
   "fast-container:",
+  "fast-container-build:",
+  "Build without publication authority",
+  "github.event_name != 'push'",
+  "github.event_name == 'push'",
   "packages: write",
   "timeout-minutes: 15",
   "type=sha,prefix=sha-",
@@ -2459,6 +2463,7 @@ for (const required of [
   "gloops-image-cache-refresh.timer",
   "gloops-image-cache-refresh.timer is disabled",
   "gloops-(runner|exec|watchdog|image-cache-refresh)",
+  "list-unit-files --type=timer",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verifier is missing image cache refresh assertion ${required}`);

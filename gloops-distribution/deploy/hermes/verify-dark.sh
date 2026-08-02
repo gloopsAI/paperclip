@@ -396,11 +396,20 @@ else
   failed=1
 fi
 
-if systemctl list-timers --all --no-legend | grep -Ei 'paperclip|gloops-(runner|exec|watchdog|image-cache-refresh)|hermes-agent'; then
+if systemctl list-timers --no-legend | grep -Ei 'paperclip|gloops-(runner|exec|watchdog|image-cache-refresh)|hermes-agent'; then
   echo "FAIL a Paperclip-related timer is scheduled" >&2
   failed=1
 else
   echo "PASS no Paperclip-related timer is scheduled"
+fi
+
+if systemctl list-unit-files --type=timer --no-legend \
+  | grep -E 'paperclip|gloops-(runner|exec|watchdog|image-cache-refresh)|hermes-agent' \
+  | grep -Ev '(disabled|masked|static)'; then
+  echo "FAIL a Paperclip-related timer is enabled" >&2
+  failed=1
+else
+  echo "PASS Paperclip-related timers are disabled, masked, or static"
 fi
 
 if systemctl list-unit-files --type=service --no-legend | grep -E 'paperclip|gloops-(runner|image-cache-refresh)|hermes-agent' | grep -Ev '(disabled|masked|static)'; then

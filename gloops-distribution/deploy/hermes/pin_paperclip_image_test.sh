@@ -6,6 +6,7 @@ readonly OLD_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:aaaaaaaaaaaaaaaaaaa
 readonly NEW_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 readonly FAILED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 readonly RESET_FAILED_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+readonly BAD_REV_IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:1111111111111111111111111111111111111111111111111111111111111111'
 readonly IMAGE_ID='sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
 readonly REVISION='dddddddddddddddddddddddddddddddddddddddd'
 
@@ -190,6 +191,32 @@ assert supervisor["approvedImage"] == expected_image
 assert len(list((root / "var/lib/paperclip-gloops/receipts").glob("pin-paperclip-image-*.json"))) == 1
 PY
 unset PAPERCLIP_TEST_FAIL_NEXT_RESET PAPERCLIP_TEST_RESET_STATE
+export PAPERCLIP_TEST_NEW_IMAGE="${NEW_IMAGE}"
+
+# A healthy container without a valid source revision is not receiptable. The
+# candidate must roll back instead of emitting a weak or misleading proof.
+export PAPERCLIP_TEST_NEW_IMAGE="${BAD_REV_IMAGE}"
+export PAPERCLIP_TEST_REVISION='<no value>'
+if "${SCRIPT_DIR}/pin-paperclip-image.sh" --skip-pull "${BAD_REV_IMAGE}" \
+  >"${test_root}/bad-revision.out" 2>"${test_root}/bad-revision.err"; then
+  echo 'expected an invalid image revision label to fail the pin command' >&2
+  exit 1
+fi
+grep -Fq 'running image revision label is not a full lowercase Git SHA' "${test_root}/bad-revision.err"
+grep -Fq 'ROLLBACK OK' "${test_root}/bad-revision.err"
+grep -Fqx "${NEW_IMAGE}" "${root}/etc/paperclip-gloops/approved-image"
+grep -Fqx "PAPERCLIP_IMAGE=${NEW_IMAGE}" "${root}/etc/paperclip-gloops/runtime.env"
+python3 - "${root}" "${NEW_IMAGE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root, expected_image = Path(sys.argv[1]), sys.argv[2]
+supervisor = json.loads((root / "var/lib/paperclip-gloops/controlled-swarm/supervisor-operational-closure.json").read_text())
+assert supervisor["approvedImage"] == expected_image
+assert len(list((root / "var/lib/paperclip-gloops/receipts").glob("pin-paperclip-image-*.json"))) == 1
+PY
+export PAPERCLIP_TEST_REVISION="${REVISION}"
 export PAPERCLIP_TEST_NEW_IMAGE="${NEW_IMAGE}"
 
 export PAPERCLIP_PREPULL_TEST_MODE=1

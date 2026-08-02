@@ -392,6 +392,11 @@ if ! container_image="$("${DOCKER}" inspect --format '{{.Config.Image}}' papercl
   handle_live_failure
   exit 1
 fi
+if [[ ! "${revision}" =~ ^[a-f0-9]{40}$ ]]; then
+  echo "running image revision label is not a full lowercase Git SHA: ${revision}" >&2
+  handle_live_failure
+  exit 1
+fi
 if [[ "${container_image}" != "${target_image}" ]]; then
   echo "running container image does not match target: ${container_image}" >&2
   handle_live_failure
