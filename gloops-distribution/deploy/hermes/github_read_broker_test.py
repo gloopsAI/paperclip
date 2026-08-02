@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
@@ -743,10 +744,418 @@ class GitHubReadBrokerTests(unittest.TestCase):
     # Allowlist is exactly the two Induct repositories
     # -------------------------------------------------------------------------
 
-    def test_allowlist_contains_exactly_two_repos(self):
-        self.assertEqual(len(broker.ALLOWED_REPOSITORIES), 2)
+    def test_allowlist_contains_exactly_four_repos(self):
+        self.assertEqual(len(broker.ALLOWED_REPOSITORIES), 4)
         self.assertIn("InductAI/induct", broker.ALLOWED_REPOSITORIES)
         self.assertIn("InductAI/induct-knowledge", broker.ALLOWED_REPOSITORIES)
+        self.assertIn("gloopsAI/gloops-ui", broker.ALLOWED_REPOSITORIES)
+        self.assertIn("gloopsAI/paperclip-gym", broker.ALLOWED_REPOSITORIES)
+
+
+# =============================================================================
+# WG-PLAT-017: bounded, read-only source-inventory operations at an EXACT
+# immutable commit.  Each security guard (mutable-ref rejection, exact-SHA
+# verification, path-traversal rejection, binary rejection, oversize/bounded
+# rejection) is exercised independently below.
+# =============================================================================
+
+VALID_SHA = "0123456789abcdef0123456789abcdef01234567"
+OTHER_SHA = "fedcba9876543210fedcba9876543210fedcba98"
+TREE_SHA = "aaaabbbbccccdddd0000111122223333444455556"[:40]
+BLOB_SHA = "1111222233334444555566667777888899990000"
+
+SOURCE_OPS = ("get-repo-source-metadata", "list-source-tree", "get-source-file")
+ALLOWLISTED_SOURCE_REPOS = ("gloopsAI/gloops-ui", "gloopsAI/paperclip-gym")
+
+
+class SourceInventoryTests(unittest.TestCase):
+    """Tests for get-repo-source-metadata, list-source-tree, get-source-file."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tempdir.name)
+        self.runtime = self.dir / "run"
+        self.state = self.dir / "state"
+        self.socket_path = self.runtime / "broker.sock"
+        self.lock_path = self.state / "command.lock"
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def paths(self):
+        return patch.multiple(
+            broker,
+            RUNTIME_DIR=self.runtime,
+            STATE_DIR=self.state,
+            SOCKET_PATH=self.socket_path,
+            COMMAND_LOCK=self.lock_path,
+            TEST_MODE=True,
+        )
+
+    # -- mock builders --------------------------------------------------------
+
+    def _metadata_mock(self, repo, sha, tree_sha=TREE_SHA, resolved=None,
+                       default_branch="main"):
+        resolved = sha if resolved is None else resolved
+
+        def mock(args, env=None):
+            path = args[1]
+            if path == f"/repos/{repo}/commits/{sha}":
+                # Include an author email to prove it is never returned.
+                return json.dumps({
+                    "sha": resolved,
+                    "commit": {
+                        "tree": {"sha": tree_sha},
+                        "author": {"email": "leak@example.com", "name": "A"},
+                    },
+                    "author": {"login": "octocat"},
+                })
+            if path == f"/repos/{repo}":
+                return json.dumps({
+                    "default_branch": default_branch,
+                    "full_name": repo,
+                    "private": True,
+                })
+            raise AssertionError(f"unexpected gh api path: {path}")
+
+        return mock
+
+    def _tree_mock(self, entries, truncated=False, tree_sha=TREE_SHA):
+        def mock(args, env=None):
+            return json.dumps({"sha": tree_sha, "truncated": truncated, "tree": entries})
+        return mock
+
+    def _file_mock(self, content_bytes, size=None, encoding="base64", type_="file"):
+        def mock(args, env=None):
+            payload = {
+                "type": type_,
+                "encoding": encoding,
+                "content": base64.b64encode(content_bytes).decode(),
+                "size": len(content_bytes) if size is None else size,
+            }
+            return json.dumps(payload)
+        return mock
+
+    # -- happy paths (authorization separation: each op for each repo) --------
+
+    def test_get_repo_source_metadata_happy_path_all_repos(self):
+        for repo in ALLOWLISTED_SOURCE_REPOS:
+            with self.subTest(repo=repo):
+                with self.paths():
+                    with patch.object(broker, "run_gh",
+                                      side_effect=self._metadata_mock(repo, VALID_SHA)):
+                        result = broker.process_request({
+                            "operation": "get-repo-source-metadata",
+                            "repo": repo,
+                            "commit": VALID_SHA,
+                        })
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["data"]["repo"], repo)
+                self.assertEqual(result["data"]["commit"], VALID_SHA)
+                self.assertEqual(result["data"]["tree"], TREE_SHA)
+                self.assertEqual(result["data"]["default_branch"], "main")
+                # No author email or private flag leaks through.
+                self.assertNotIn("leak@example.com", json.dumps(result))
+
+    def test_list_source_tree_happy_path_all_repos(self):
+        entries = [
+            {"path": "src/app.ts", "mode": "100644", "type": "blob",
+             "sha": BLOB_SHA, "size": 12, "url": "https://api/blob"},
+            {"path": "src", "mode": "040000", "type": "tree",
+             "sha": TREE_SHA, "url": "https://api/tree"},
+        ]
+        for repo in ALLOWLISTED_SOURCE_REPOS:
+            with self.subTest(repo=repo):
+                with self.paths():
+                    with patch.object(broker, "run_gh",
+                                      side_effect=self._tree_mock(entries)):
+                        result = broker.process_request({
+                            "operation": "list-source-tree",
+                            "repo": repo,
+                            "commit": VALID_SHA,
+                        })
+                self.assertTrue(result["ok"])
+                data = result["data"]
+                self.assertEqual(data["repo"], repo)
+                self.assertEqual(data["commit"], VALID_SHA)
+                self.assertFalse(data["truncated"])
+                self.assertEqual(data["totalReturned"], 2)
+                self.assertEqual(data["entries"][0]["path"], "src/app.ts")
+                self.assertEqual(data["entries"][0]["type"], "blob")
+                # Only the allowed per-entry fields; no raw url/content.
+                self.assertNotIn("url", data["entries"][0])
+                self.assertNotIn("content", data["entries"][0])
+
+    def test_get_source_file_happy_path_all_repos(self):
+        body = b"export const x = 1;\n"
+        for repo in ALLOWLISTED_SOURCE_REPOS:
+            with self.subTest(repo=repo):
+                with self.paths():
+                    with patch.object(broker, "run_gh",
+                                      side_effect=self._file_mock(body)):
+                        result = broker.process_request({
+                            "operation": "get-source-file",
+                            "repo": repo,
+                            "commit": VALID_SHA,
+                            "path": "src/app.ts",
+                        })
+                self.assertTrue(result["ok"])
+                data = result["data"]
+                self.assertEqual(data["repo"], repo)
+                self.assertEqual(data["commit"], VALID_SHA)
+                self.assertEqual(data["path"], "src/app.ts")
+                self.assertEqual(data["encoding"], "utf-8")
+                self.assertEqual(data["content"], body.decode())
+                self.assertEqual(data["size"], len(body))
+
+    def test_get_source_file_uses_exact_sha_as_ref(self):
+        captured = []
+
+        def mock(args, env=None):
+            captured.append(args)
+            return json.dumps({
+                "type": "file", "encoding": "base64",
+                "content": base64.b64encode(b"ok").decode(), "size": 2,
+            })
+
+        with self.paths():
+            with patch.object(broker, "run_gh", side_effect=mock):
+                broker.process_request({
+                    "operation": "get-source-file",
+                    "repo": "gloopsAI/gloops-ui",
+                    "commit": VALID_SHA,
+                    "path": "src/app.ts",
+                })
+        # ref must be the 40-char SHA, never a branch/tag.
+        self.assertIn(f"?ref={VALID_SHA}", captured[0][1])
+
+    # -- authorization separation: non-allowlisted repo rejected for each op --
+
+    def test_source_ops_reject_non_allowlisted_repo(self):
+        for op in SOURCE_OPS:
+            with self.subTest(op=op):
+                with self.paths():
+                    mock = MagicMock()
+                    with patch.object(broker, "run_gh", mock):
+                        with self.assertRaisesRegex(broker.BrokerError, "allowlist"):
+                            broker.process_request({
+                                "operation": op,
+                                "repo": "attacker/secret-repo",
+                                "commit": VALID_SHA,
+                                "path": "src/app.ts",
+                            })
+                    mock.assert_not_called()
+
+    # -- mutable-ref rejection (all ops) --------------------------------------
+
+    def test_source_ops_reject_mutable_refs(self):
+        bad_refs = ["main", "HEAD", "v1.2.3", "abc1234", "A" * 40, VALID_SHA[:39]]
+        for op in SOURCE_OPS:
+            for bad in bad_refs:
+                with self.subTest(op=op, commit=bad):
+                    with self.paths():
+                        mock = MagicMock()
+                        with patch.object(broker, "run_gh", mock):
+                            with self.assertRaisesRegex(broker.BrokerError,
+                                                        "exact 40-character"):
+                                broker.process_request({
+                                    "operation": op,
+                                    "repo": "gloopsAI/gloops-ui",
+                                    "commit": bad,
+                                    "path": "src/app.ts",
+                                })
+                        mock.assert_not_called()
+
+    # -- exact-SHA verification -----------------------------------------------
+
+    def test_metadata_rejects_sha_mismatch(self):
+        repo = "gloopsAI/gloops-ui"
+        with self.paths():
+            with patch.object(broker, "run_gh",
+                              side_effect=self._metadata_mock(repo, VALID_SHA,
+                                                              resolved=OTHER_SHA)):
+                with self.assertRaisesRegex(broker.BrokerError,
+                                            "verification failed"):
+                    broker.process_request({
+                        "operation": "get-repo-source-metadata",
+                        "repo": repo,
+                        "commit": VALID_SHA,
+                    })
+
+    # -- path-traversal / absolute-path rejection (no gh call) ----------------
+
+    def test_get_source_file_rejects_path_traversal(self):
+        bad_paths = [
+            "../etc/passwd", "a/../../b", "/etc/passwd", "a/./b",
+            "..", "a/..", "a//b", "a\\b", "with\x00nul", "",
+        ]
+        for bad in bad_paths:
+            with self.subTest(path=bad):
+                with self.paths():
+                    mock = MagicMock()
+                    with patch.object(broker, "run_gh", mock):
+                        with self.assertRaises(broker.BrokerError):
+                            broker.process_request({
+                                "operation": "get-source-file",
+                                "repo": "gloopsAI/gloops-ui",
+                                "commit": VALID_SHA,
+                                "path": bad,
+                            })
+                    mock.assert_not_called()
+
+    # -- binary rejection -----------------------------------------------------
+
+    def test_get_source_file_rejects_nul_byte(self):
+        with self.paths():
+            with patch.object(broker, "run_gh",
+                              side_effect=self._file_mock(b"abc\x00def")):
+                with self.assertRaisesRegex(broker.BrokerError, "not UTF-8 text"):
+                    broker.process_request({
+                        "operation": "get-source-file",
+                        "repo": "gloopsAI/gloops-ui",
+                        "commit": VALID_SHA,
+                        "path": "src/app.ts",
+                    })
+
+    def test_get_source_file_rejects_invalid_utf8(self):
+        with self.paths():
+            with patch.object(broker, "run_gh",
+                              side_effect=self._file_mock(b"\xff\xfe\xfa\xc0")):
+                with self.assertRaisesRegex(broker.BrokerError, "not UTF-8 text"):
+                    broker.process_request({
+                        "operation": "get-source-file",
+                        "repo": "gloopsAI/gloops-ui",
+                        "commit": VALID_SHA,
+                        "path": "src/app.ts",
+                    })
+
+    # -- oversize rejection ---------------------------------------------------
+
+    def test_get_source_file_rejects_reported_oversize(self):
+        with self.paths():
+            # Reported size exceeds the cap; rejected BEFORE decode.
+            with patch.object(broker, "run_gh",
+                              side_effect=self._file_mock(
+                                  b"small",
+                                  size=broker.MAX_SOURCE_FILE_BYTES + 1)):
+                with self.assertRaisesRegex(broker.BrokerError,
+                                            "exceeds the maximum size"):
+                    broker.process_request({
+                        "operation": "get-source-file",
+                        "repo": "gloopsAI/gloops-ui",
+                        "commit": VALID_SHA,
+                        "path": "src/app.ts",
+                    })
+
+    def test_get_source_file_rejects_decoded_oversize(self):
+        big = b"a" * (broker.MAX_SOURCE_FILE_BYTES + 10)
+        with self.paths():
+            # Reported size understates the truth; decoded-length check catches it.
+            with patch.object(broker, "run_gh",
+                              side_effect=self._file_mock(big, size=10)):
+                with self.assertRaisesRegex(broker.BrokerError,
+                                            "exceeds the maximum size"):
+                    broker.process_request({
+                        "operation": "get-source-file",
+                        "repo": "gloopsAI/gloops-ui",
+                        "commit": VALID_SHA,
+                        "path": "src/app.ts",
+                    })
+
+    def test_get_source_file_rejects_directory_response(self):
+        def mock(args, env=None):
+            return json.dumps([{"type": "file", "name": "a.ts"}])
+        with self.paths():
+            with patch.object(broker, "run_gh", side_effect=mock):
+                with self.assertRaisesRegex(broker.BrokerError,
+                                            "does not reference a single file"):
+                    broker.process_request({
+                        "operation": "get-source-file",
+                        "repo": "gloopsAI/gloops-ui",
+                        "commit": VALID_SHA,
+                        "path": "src",
+                    })
+
+    # -- bounded-entry behavior for list-source-tree --------------------------
+
+    def test_list_source_tree_caps_entries(self):
+        entries = [
+            {"path": f"f{i}.ts", "mode": "100644", "type": "blob",
+             "sha": BLOB_SHA, "size": 1}
+            for i in range(broker.MAX_TREE_ENTRIES + 50)
+        ]
+        with self.paths():
+            with patch.object(broker, "run_gh",
+                              side_effect=self._tree_mock(entries, truncated=False)):
+                result = broker.process_request({
+                    "operation": "list-source-tree",
+                    "repo": "gloopsAI/gloops-ui",
+                    "commit": VALID_SHA,
+                })
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["truncated"])
+        self.assertEqual(result["data"]["totalReturned"], broker.MAX_TREE_ENTRIES)
+        self.assertEqual(len(result["data"]["entries"]), broker.MAX_TREE_ENTRIES)
+
+    def test_list_source_tree_propagates_github_truncated_flag(self):
+        entries = [{"path": "a.ts", "mode": "100644", "type": "blob",
+                    "sha": BLOB_SHA, "size": 1}]
+        with self.paths():
+            with patch.object(broker, "run_gh",
+                              side_effect=self._tree_mock(entries, truncated=True)):
+                result = broker.process_request({
+                    "operation": "list-source-tree",
+                    "repo": "gloopsAI/gloops-ui",
+                    "commit": VALID_SHA,
+                })
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["truncated"])
+        self.assertEqual(result["data"]["totalReturned"], 1)
+
+    # -- credential non-disclosure passes through the source ops --------------
+
+    def test_source_file_response_strips_credentials(self):
+        def mock(args, env=None):
+            return json.dumps({
+                "type": "file", "encoding": "base64",
+                "content": base64.b64encode(b"safe").decode(), "size": 4,
+                "token": "ghs_should_not_appear",
+            })
+        with self.paths():
+            with patch.object(broker, "run_gh", side_effect=mock):
+                result = broker.process_request({
+                    "operation": "get-source-file",
+                    "repo": "gloopsAI/gloops-ui",
+                    "commit": VALID_SHA,
+                    "path": "src/app.ts",
+                })
+        self.assertNotIn("ghs_", json.dumps(result))
+
+    # -- regression: existing ops + allowlist wiring --------------------------
+
+    def test_existing_ops_still_reject_non_allowlisted_repo(self):
+        for op in ("list-issues", "get-pr", "search-issues"):
+            with self.subTest(op=op):
+                with self.paths():
+                    with self.assertRaisesRegex(broker.BrokerError, "allowlist"):
+                        broker.process_request({
+                            "operation": op,
+                            "repo": "attacker/secret-repo",
+                            "number": 1,
+                            "query": "x",
+                        })
+
+    def test_allowed_operations_is_original_eight_plus_three(self):
+        original = {
+            "search-issues", "list-issues", "get-issue", "search-prs",
+            "list-prs", "get-pr", "get-pr-status", "get-pr-checks",
+        }
+        added = {"get-repo-source-metadata", "list-source-tree", "get-source-file"}
+        self.assertEqual(broker.ALLOWED_OPERATIONS, original | added)
+        self.assertEqual(len(broker.ALLOWED_OPERATIONS), 11)
+        for op in added:
+            self.assertIn(op, broker.OPERATIONS)
+            self.assertTrue(callable(broker.OPERATIONS[op]))
 
 
 if __name__ == "__main__":

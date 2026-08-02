@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Root-owned read-only GitHub evidence broker.
 
-Serves bounded, read-only GitHub issue/PR evidence for the allowlisted
-Induct repositories over a peer-authenticated Unix socket.  Uses the existing
-root ``gh`` CLI authentication without copying, printing, mounting, or
-returning credentials.  A separate socket from the one-run push broker so the
-push path is untouched.
+Serves bounded, read-only GitHub issue/PR and source-inventory evidence for
+the allowlisted Induct repositories over a peer-authenticated Unix socket.
+Uses the existing root ``gh`` CLI authentication without copying, printing,
+mounting, or returning credentials.  A separate socket from the one-run push
+broker so the push path is untouched.
+
+Source-inventory operations (``get-repo-source-metadata``, ``list-source-tree``,
+``get-source-file``) inspect repository source at an EXACT immutable 40-char
+commit SHA only -- never a mutable ref (branch/tag/HEAD/short/uppercase SHA) --
+with path-traversal, binary, oversize, and bounded-entry guards.
 
 Request schema (single JSON object, one per connection)::
 
@@ -21,6 +26,7 @@ No credential, token, header, or secret is ever placed in a response.
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import json
 import os
@@ -46,12 +52,23 @@ STATE_DIR = Path(os.environ.get("GLOOPS_GITHUB_READ_BROKER_STATE_DIR", "/var/lib
 ALLOWED_REPOSITORIES = frozenset({
     "InductAI/induct",
     "InductAI/induct-knowledge",
+    "gloopsAI/gloops-ui",
+    "gloopsAI/paperclip-gym",
 })
 
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPOSITORY_SCOPE_QUALIFIER_PATTERN = re.compile(
     r"(?i)(?:^|\s)(?:repo|org|user):"
 )
+
+# Source-inventory guards.  A commit reference must be an EXACT immutable
+# 40-character lowercase hex object name -- never a mutable ref (branch, tag,
+# HEAD) nor an abbreviated / uppercase SHA.
+COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+# Repo-relative source path allowlist.  Rejects absolute paths, ``.``/``..``
+# path components (directory traversal), and anything outside a bounded safe
+# character set.
+SOURCE_PATH_PATTERN = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.?(?:/|$))[A-Za-z0-9._/-]{1,255}$")
 
 ALLOWED_OPERATIONS = frozenset({
     "search-issues",
@@ -62,11 +79,18 @@ ALLOWED_OPERATIONS = frozenset({
     "get-pr",
     "get-pr-status",
     "get-pr-checks",
+    "get-repo-source-metadata",
+    "list-source-tree",
+    "get-source-file",
 })
 
 MAX_REQUEST_BYTES = 8 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_GH_OUTPUT_BYTES = 512 * 1024
+# Source-inventory bounds: cap tree listings and reject oversize source files
+# before decoding.  These are independent of the response byte cap above.
+MAX_TREE_ENTRIES = 1000
+MAX_SOURCE_FILE_BYTES = 256 * 1024
 GH_TIMEOUT_SECONDS = 30
 EXPECTED_HERMES_UID = 10_000
 HERMES_GID = 10_000
@@ -114,6 +138,8 @@ SEARCH_PR_FIELDS = (
     "number", "title", "state", "isDraft", "createdAt", "updatedAt", "author", "url",
     "repository",
 )
+# Per-entry fields returned by list-source-tree; never raw blob content.
+TREE_ENTRY_FIELDS = ("path", "type", "mode", "sha", "size")
 
 SEARCH_RESULT_LIMIT = 30
 LIST_LIMIT = 30
@@ -461,6 +487,152 @@ def op_get_pr_checks(params: dict[str, Any]) -> Any:
     return data
 
 
+# ---------------------------------------------------------------------------
+# Source-inventory operations (read-only, EXACT immutable commit only)
+# ---------------------------------------------------------------------------
+
+def _require_allowlisted_repo(params: dict[str, Any]) -> str:
+    """Re-check the repo allowlist inside the handler (defense in depth).
+
+    ``validate_request`` already gates the allowlist, but each source-inventory
+    handler independently re-enforces it so no operation can be reached for a
+    non-allowlisted repository even if request wiring changes.
+    """
+    repo = params.get("repo")
+    if not isinstance(repo, str) or not REPOSITORY_PATTERN.match(repo):
+        raise BrokerError("repo is required and must be owner/repo")
+    if repo not in ALLOWED_REPOSITORIES:
+        raise BrokerError(f"repository {repo} is not in the allowlist")
+    return repo
+
+
+def _require_exact_commit(params: dict[str, Any]) -> str:
+    """Reject mutable/inexact refs; require an EXACT 40-char lowercase hex SHA."""
+    commit = params.get("commit")
+    if not isinstance(commit, str) or not COMMIT_SHA_PATTERN.fullmatch(commit):
+        raise BrokerError(
+            "commit must be an exact 40-character lowercase hex SHA; mutable "
+            "refs (branch, tag, HEAD) and short/uppercase SHAs are rejected"
+        )
+    return commit
+
+
+def _require_source_path(params: dict[str, Any]) -> str:
+    """Reject path traversal / absolute paths BEFORE any gh call."""
+    path = params.get("path")
+    if not isinstance(path, str) or not path:
+        raise BrokerError("path is required")
+    if "\x00" in path or "\\" in path:
+        raise BrokerError("path contains an illegal character")
+    if path.startswith("/"):
+        raise BrokerError("path must be repo-relative, not absolute")
+    for component in path.split("/"):
+        if component in ("", ".", ".."):
+            raise BrokerError("path contains an illegal '.'/'..' or empty component")
+    if not SOURCE_PATH_PATTERN.fullmatch(path):
+        raise BrokerError("path is not an allowed repo-relative source path")
+    return path
+
+
+def op_get_repo_source_metadata(params: dict[str, Any]) -> Any:
+    repo = _require_allowlisted_repo(params)
+    commit = _require_exact_commit(params)
+    raw = run_gh(["api", f"/repos/{repo}/commits/{commit}"])
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        raise BrokerError("gh API returned malformed JSON")
+    if not isinstance(data, dict):
+        raise BrokerError("gh API returned an unexpected commit payload")
+    resolved = data.get("sha")
+    if resolved != commit:
+        raise BrokerError(
+            "commit SHA verification failed: resolved object does not equal "
+            "the requested commit"
+        )
+    tree_sha = None
+    commit_obj = data.get("commit")
+    if isinstance(commit_obj, dict):
+        tree = commit_obj.get("tree")
+        if isinstance(tree, dict):
+            tree_sha = tree.get("sha")
+    repo_raw = run_gh(["api", f"/repos/{repo}"])
+    try:
+        repo_data = json.loads(repo_raw) if repo_raw.strip() else {}
+    except json.JSONDecodeError:
+        raise BrokerError("gh API returned malformed JSON")
+    repo_meta = select_fields(repo_data, ("default_branch",)) if isinstance(repo_data, dict) else {}
+    return {
+        "repo": repo,
+        "commit": commit,
+        "tree": tree_sha,
+        "default_branch": repo_meta.get("default_branch"),
+    }
+
+
+def op_list_source_tree(params: dict[str, Any]) -> Any:
+    repo = _require_allowlisted_repo(params)
+    commit = _require_exact_commit(params)
+    raw = run_gh(["api", f"/repos/{repo}/git/trees/{commit}?recursive=1"])
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        raise BrokerError("gh API returned malformed JSON")
+    if not isinstance(data, dict):
+        raise BrokerError("gh API returned an unexpected tree payload")
+    tree = data.get("tree")
+    if not isinstance(tree, list):
+        tree = []
+    truncated = bool(data.get("truncated")) or len(tree) > MAX_TREE_ENTRIES
+    entries = select_fields(tree[:MAX_TREE_ENTRIES], TREE_ENTRY_FIELDS)
+    return {
+        "repo": repo,
+        "commit": commit,
+        "tree": data.get("sha"),
+        "truncated": truncated,
+        "totalReturned": len(entries),
+        "entries": entries,
+    }
+
+
+def op_get_source_file(params: dict[str, Any]) -> Any:
+    repo = _require_allowlisted_repo(params)
+    commit = _require_exact_commit(params)
+    path = _require_source_path(params)
+    raw = run_gh(["api", f"/repos/{repo}/contents/{path}?ref={commit}"])
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        raise BrokerError("gh API returned malformed JSON")
+    if isinstance(data, list) or not isinstance(data, dict) or data.get("type") != "file":
+        raise BrokerError("path does not reference a single file")
+    reported_size = data.get("size")
+    if isinstance(reported_size, int) and reported_size > MAX_SOURCE_FILE_BYTES:
+        raise BrokerError("source file exceeds the maximum size")
+    if data.get("encoding") != "base64" or not isinstance(data.get("content"), str):
+        raise BrokerError("gh API returned an unexpected file encoding")
+    try:
+        raw_bytes = base64.b64decode(data["content"], validate=False)
+    except ValueError:
+        raise BrokerError("source file content could not be decoded")
+    if len(raw_bytes) > MAX_SOURCE_FILE_BYTES:
+        raise BrokerError("source file exceeds the maximum size")
+    if b"\x00" in raw_bytes:
+        raise BrokerError("source file is not UTF-8 text")
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BrokerError("source file is not UTF-8 text")
+    return {
+        "repo": repo,
+        "commit": commit,
+        "path": path,
+        "encoding": "utf-8",
+        "content": text,
+        "size": len(raw_bytes),
+    }
+
+
 OPERATIONS = {
     "search-issues": op_search_issues,
     "list-issues": op_list_issues,
@@ -470,6 +642,9 @@ OPERATIONS = {
     "get-pr": op_get_pr,
     "get-pr-status": op_get_pr_status,
     "get-pr-checks": op_get_pr_checks,
+    "get-repo-source-metadata": op_get_repo_source_metadata,
+    "list-source-tree": op_list_source_tree,
+    "get-source-file": op_get_source_file,
 }
 
 
