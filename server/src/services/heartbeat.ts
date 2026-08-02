@@ -5342,6 +5342,12 @@ export interface HeartbeatServiceOptions {
   queuedRunClaimHooks?: {
     /** Test/coordination seam after issue preflight and before the claim transaction. */
     afterIssuePreflight?: (input: { runId: string; issueId: string; agentId: string }) => Promise<void>;
+    /** Test/coordination seam after dependency readiness is read inside the claim transaction. */
+    afterDependencyReadBeforeClaimUpdate?: (input: {
+      runId: string;
+      issueId: string;
+      agentId: string;
+    }) => Promise<void>;
   };
 }
 
@@ -11195,6 +11201,94 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
+  function issueBlockersResolvedClaimGuard(input: {
+    companyId: string;
+    issueId: string;
+    resolvedBlockerIssueId: string;
+  }) {
+    return sql<boolean>`
+      exists (
+        select 1
+        from issue_relations resolved_binding
+        where resolved_binding.company_id = ${input.companyId}
+          and resolved_binding.type = 'blocks'
+          and resolved_binding.related_issue_id = ${input.issueId}
+          and resolved_binding.issue_id = ${input.resolvedBlockerIssueId}
+      )
+      and not exists (
+        select 1
+        from issue_relations dependency_edge
+        join issues blocker_issue on blocker_issue.id = dependency_edge.issue_id
+        where dependency_edge.company_id = ${input.companyId}
+          and dependency_edge.type = 'blocks'
+          and dependency_edge.related_issue_id = ${input.issueId}
+          and (
+            blocker_issue.status <> 'done'
+            or (
+              blocker_issue.execution_workspace_id is not null
+              and coalesce(
+                (
+                  select
+                    attributed_op.phase = 'workspace_finalize'
+                    and attributed_op.status = 'succeeded'
+                  from workspace_operations attributed_op
+                  where attributed_op.company_id = ${input.companyId}
+                    and attributed_op.execution_workspace_id = blocker_issue.execution_workspace_id
+                    and attributed_op.issue_id = blocker_issue.id
+                  order by attributed_op.started_at desc
+                  limit 1
+                ),
+                (
+                  select
+                    unattributed_op.phase = 'workspace_finalize'
+                    and unattributed_op.status = 'succeeded'
+                  from workspace_operations unattributed_op
+                  where unattributed_op.company_id = ${input.companyId}
+                    and unattributed_op.execution_workspace_id = blocker_issue.execution_workspace_id
+                    and unattributed_op.issue_id is null
+                  order by unattributed_op.started_at desc
+                  limit 1
+                ),
+                true
+              ) = false
+            )
+          )
+      )
+    `;
+  }
+
+  async function denyIssueBlockersResolvedClaimRace(input: {
+    tx: Pick<Db, "update">;
+    run: typeof heartbeatRuns.$inferSelect;
+    claimedAt: Date;
+    nextContext: Record<string, unknown>;
+    envelope: ExecutionAdmissionEnvelope | null;
+  }): Promise<Extract<ExecutionAdmissionClaim, { kind: "denied" }> | null> {
+    const errorCode = "issue_dependencies_blocked";
+    const reason = "Cancelled because issue dependency readiness changed at the queued-to-running claim boundary";
+    const denied = await input.tx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        contextSnapshot: input.nextContext,
+        finishedAt: input.claimedAt,
+        updatedAt: input.claimedAt,
+        error: reason,
+        errorCode,
+        resultJson: {
+          ...parseObject(input.run.resultJson),
+          stopReason: errorCode,
+          timeoutFired: false,
+        },
+      })
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    return denied
+      ? { kind: "denied", run: denied, errorCode, reason, envelope: input.envelope }
+      : null;
+  }
+
   async function enforceIssueRunnableAdmissionAtClaim(input: {
     tx: Pick<Db, "select" | "update">;
     run: typeof heartbeatRuns.$inferSelect;
@@ -11204,12 +11298,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     nextContext: Record<string, unknown>;
     envelope: ExecutionAdmissionEnvelope | null;
   }): Promise<
-    | { kind: "admitted"; trustedTerminalNonOwningDeferredCommentDelivery: boolean }
+    | {
+        kind: "admitted";
+        trustedTerminalNonOwningDeferredCommentDelivery: boolean;
+        trustedDependencyReadyWake: boolean;
+      }
     | { kind: "denied"; result: Extract<ExecutionAdmissionClaim, { kind: "denied" }> }
     | { kind: "lost_race" }
   > {
     if (!input.issueId) {
-      return { kind: "admitted", trustedTerminalNonOwningDeferredCommentDelivery: false };
+      return {
+        kind: "admitted",
+        trustedTerminalNonOwningDeferredCommentDelivery: false,
+        trustedDependencyReadyWake: false,
+      };
     }
 
     const currentIssue = await input.tx
@@ -11223,20 +11325,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       (currentIssue.status === "done" || currentIssue.status === "cancelled") &&
       await isTrustedNonOwningDeferredCommentDelivery(input.tx, input.run, input.context),
     );
+    const trustedDependencyResolvedWake = currentIssue
+      ? await isTrustedIssueBlockersResolvedWake(
+          input.tx,
+          input.run,
+          input.context,
+          input.issueId,
+        )
+      : false;
+    const dependencyReadiness = trustedDependencyResolvedWake
+      ? await issuesSvc
+          .listDependencyReadiness(input.run.companyId, [input.issueId], input.tx)
+          .then((rows) => rows.get(input.issueId!) ?? null)
+      : null;
+    if (trustedDependencyResolvedWake) {
+      await options.queuedRunClaimHooks?.afterDependencyReadBeforeClaimUpdate?.({
+        runId: input.run.id,
+        issueId: input.issueId,
+        agentId: input.run.agentId,
+      });
+    }
+    const dependencyReadyWake = Boolean(
+      trustedDependencyResolvedWake &&
+      currentIssue?.status === "blocked" &&
+      dependencyReadiness?.isDependencyReady &&
+      dependencyReadiness.blockerIssueIds.includes(
+        readNonEmptyString(input.context.resolvedBlockerIssueId)!,
+      ),
+    );
     const runnableAdmission = currentIssue
       ? evaluateIssueRunnableAdmission({
           issueStatus: currentIssue.status,
-          interactionWake: allowsIssueInteractionWake(input.context),
+          interactionWake: allowsIssueInteractionWake(input.context) || dependencyReadyWake,
           resumeIntent: input.context.resumeIntent === true,
         })
       : { admitted: false, reasonCode: ADMISSION_REASON.ISSUE_NOT_RUNNABLE };
     if (trustedTerminalNonOwningDeferredCommentDelivery || runnableAdmission.admitted) {
-      return { kind: "admitted", trustedTerminalNonOwningDeferredCommentDelivery };
+      return {
+        kind: "admitted",
+        trustedTerminalNonOwningDeferredCommentDelivery,
+        trustedDependencyReadyWake: dependencyReadyWake,
+      };
     }
 
-    const errorCode = runnableAdmission.reasonCode ?? ADMISSION_REASON.ISSUE_NOT_RUNNABLE;
+    const dependencyBecameBlocked = Boolean(
+      trustedDependencyResolvedWake &&
+      dependencyReadiness &&
+      !dependencyReadiness.isDependencyReady,
+    );
+    const errorCode = dependencyBecameBlocked
+      ? "issue_dependencies_blocked"
+      : runnableAdmission.reasonCode ?? ADMISSION_REASON.ISSUE_NOT_RUNNABLE;
     const currentStatus = currentIssue?.status ?? "missing";
-    const reason = `Cancelled because current issue status "${currentStatus}" does not admit this claim`;
+    const reason = dependencyBecameBlocked
+      ? "Cancelled because issue dependencies became blocked before the queued run could claim"
+      : `Cancelled because current issue status "${currentStatus}" does not admit this claim`;
     const denied = await input.tx
       .update(heartbeatRuns)
       .set({
@@ -11249,6 +11392,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: {
           ...parseObject(input.run.resultJson),
           stopReason: errorCode,
+          ...(dependencyBecameBlocked
+            ? {
+                unresolvedBlockerIssueIds:
+                  dependencyReadiness?.unresolvedBlockerIssueIds ?? [],
+              }
+            : {}),
           timeoutFired: false,
         },
       })
@@ -11332,9 +11481,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             startedAt: run.startedAt ?? claimedAt,
             updatedAt: claimedAt,
           })
-          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+          .where(and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "queued"),
+            issueRunnableAdmission.trustedDependencyReadyWake
+              ? issueBlockersResolvedClaimGuard({
+                  companyId: run.companyId,
+                  issueId: issueId!,
+                  resolvedBlockerIssueId: readNonEmptyString(context.resolvedBlockerIssueId)!,
+                })
+              : undefined,
+          ))
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (!claimed && issueRunnableAdmission.trustedDependencyReadyWake) {
+          const denied = await denyIssueBlockersResolvedClaimRace({
+            tx,
+            run,
+            claimedAt,
+            nextContext,
+            envelope: null,
+          });
+          if (denied) return denied;
+        }
         return claimed
           ? {
               kind: "claimed" as const,
@@ -11637,9 +11806,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           startedAt: run.startedAt ?? claimedAt,
           updatedAt: claimedAt,
         })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .where(and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.status, "queued"),
+          issueRunnableAdmission.trustedDependencyReadyWake
+            ? issueBlockersResolvedClaimGuard({
+                companyId: run.companyId,
+                issueId: issueId!,
+                resolvedBlockerIssueId: readNonEmptyString(context.resolvedBlockerIssueId)!,
+              })
+            : undefined,
+        ))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (!claimed && issueRunnableAdmission.trustedDependencyReadyWake) {
+        const denied = await denyIssueBlockersResolvedClaimRace({
+          tx,
+          run,
+          claimedAt,
+          nextContext: claimContext,
+          envelope,
+        });
+        if (denied) return denied;
+      }
       return claimed
         ? {
             kind: "claimed" as const,
@@ -11998,10 +12187,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
+      const readiness = dependencyReadiness.get(issueId);
+      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
+        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
+        return null;
+      }
+
+      const trustedDependencyReadyWake = Boolean(
+        claimIssueContext?.status === "blocked" &&
+        readiness?.isDependencyReady &&
+        readiness.blockerIssueIds.includes(readNonEmptyString(context.resolvedBlockerIssueId)!) &&
+        await isTrustedIssueBlockersResolvedWake(db, run, context, issueId),
+      );
       if (claimIssueContext && !trustedTerminalNonOwningDeferredCommentDelivery) {
         const runnableAdmission = evaluateIssueRunnableAdmission({
           issueStatus: claimIssueContext.status,
-          interactionWake: allowsIssueInteractionWake(context),
+          interactionWake: allowsIssueInteractionWake(context) || trustedDependencyReadyWake,
           resumeIntent: context.resumeIntent === true,
         });
         if (!runnableAdmission.admitted) {
@@ -12021,15 +12225,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
           return null;
         }
-      }
-
-      const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
-      const readiness = dependencyReadiness.get(issueId);
-      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
-        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
-        return null;
       }
 
       // Issue packet DoR: deny claim before execution admission / Hermes work-prep.
@@ -12266,6 +12461,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ))
       .limit(1)
       .then((rows) => rows.length === 1);
+  }
+
+  async function isTrustedIssueBlockersResolvedWake(
+    query: Pick<Db, "select">,
+    run: typeof heartbeatRuns.$inferSelect,
+    context: Record<string, unknown>,
+    issueId: string,
+  ) {
+    const resolvedBlockerIssueId = readNonEmptyString(context.resolvedBlockerIssueId);
+    if (
+      readNonEmptyString(context.wakeReason) !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON ||
+      !resolvedBlockerIssueId ||
+      !run.wakeupRequestId
+    ) {
+      return false;
+    }
+
+    const wake = await query
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, run.wakeupRequestId),
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+        eq(agentWakeupRequests.runId, run.id),
+        eq(agentWakeupRequests.reason, ISSUE_BLOCKERS_RESOLVED_WAKE_REASON),
+        eq(agentWakeupRequests.requestedByActorType, "system"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const payload = parseObject(wake?.payload);
+    return Boolean(
+      wake &&
+      readNonEmptyString(payload.issueId) === issueId &&
+      readNonEmptyString(payload.resolvedBlockerIssueId) === resolvedBlockerIssueId,
+    );
   }
 
   async function evaluateQueuedRunStaleness(
