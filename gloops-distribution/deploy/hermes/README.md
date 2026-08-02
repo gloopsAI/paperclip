@@ -84,7 +84,7 @@ sudo ./install-dark.sh
 
 The installation succeeds only if `verify-dark.sh` proves that the service is masked, the activation marker is absent, no container or listener exists, and related services/timers remain inactive.
 
-Release `2026.801.0-gloops.33` Paperclip image `sha256:ccf6eadd5d0ad2dd9a555dacf43b62490505652ec3d85168c3c15a2dd2b30393` was built from merge `9d5ecf1a6e61aff2d61b4e622a9f8112921af2b5`, passed workflow `30700630684` attempt 1, and has GitHub build provenance bound to that digest; mutable tag `sha-9d5ecf1` is a discovery aid only. Its Hermes execution image remains `sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b`, retained in the root-only archive whose SHA-256 is `94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637`. This release adds a guarded, authenticated reset path for an exhausted admission budget. It binds a reset to the exact terminal admission facts, is atomic and idempotent, and rejects stale, ambiguous, cross-company, or replayed resets. It retains exact requested-model binding with fail-closed route evidence, requested and resolved model truth in the terminal route receipt, broker-mode credential lifecycle recovery, the truthful zero-work broker topology, one-run/one-push authority boundary, atomic settlement, prepared request acknowledgement, authoritative Hermes route-and-usage receipts, terminal evidence reconciliation, and the certified execution, repository, credential, WIP, historical-isolation, recovery, inert activation, successor campaign identity, and fail-dark boundaries. It is a bounded release candidate and does not itself authorize recurring autonomy, authority widening, or provider fallback outside the Ollama → Grok CLI → Codex policy.
+Release `2026.802.0-gloops.34` Paperclip image `sha256:fb63ebfd959890457a5b80728a35a71da267cb18ff4e4f524768c62c9d1ba53d` was built from merge `63ef21ad2bc962559a2bcb79ecb52f177149aa84`, passed workflow `30768936124` attempt 1, and has GitHub build provenance bound to that digest; mutable tag `sha-63ef21a` is a discovery aid only. Its Hermes execution image remains `sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b`, retained in the root-only archive whose SHA-256 is `94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637`. This release adds a fail-closed, company-scoped backlog-bankruptcy claim barrier. Frozen-company claims cancel before provider invocation and consume no task budget; reviewed successors remain denied unless the exact issue is allowlisted and carries a valid explicit resource budget, while non-frozen companies retain their prior path. It retains the guarded exhausted-admission reset, exact requested-model binding with fail-closed route evidence, requested and resolved model truth in the terminal route receipt, broker-mode credential lifecycle recovery, the truthful zero-work broker topology, one-run/one-push authority boundary, atomic settlement, prepared request acknowledgement, authoritative Hermes route-and-usage receipts, terminal evidence reconciliation, and the certified execution, repository, credential, WIP, historical-isolation, recovery, inert activation, successor campaign identity, and fail-dark boundaries. It is a bounded reliability release and does not itself authorize product work, recurring autonomy, authority widening, or provider fallback outside the Ollama → Grok CLI → Codex policy.
 
 Hermes execution image `sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b` preserves the live charter-pack, capacity-allocation, and terminal-reconciliation work while adding compatibility between the existing authoritative route-receipt boundary and Hermes' native `moa` virtual provider. It admits a native MoA preset only when the acting model and every reference model resolve to the subscription-included Ollama Cloud provider, records the real acting route, and reuses Hermes' own combined advisor-plus-actor usage snapshot for the terminal receipt rather than maintaining a second accounting path. The root-only archive is `hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst` with SHA-256 `94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637`.
 
@@ -195,7 +195,8 @@ comma-separated UUID list. A queued heartbeat for a listed company is cancelled
 before adapter invocation with `backlog_bankruptcy.company_frozen`. Companies
 not listed continue to claim normally. This is an execution-claim barrier only:
 it does not reject issue creation or rewrite existing issue, assignment, or
-workspace state.
+workspace state. Release `2026.802.0-gloops.34` binds the list to the sole live
+Gloops company, `89ed0964-d918-4fcc-b830-5be49d2d4089`.
 
 `PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS` is an optional,
 comma-separated UUID list for explicit successor work. A listed issue is
@@ -203,7 +204,9 @@ admitted inside a frozen company only when execution admission is enabled and
 the issue has an explicit `executionPolicy.resourceBudget`; otherwise the claim
 is cancelled with `backlog_bankruptcy.readmit_budget_required`. Both denial
 codes are provider-free and do not consume task run/retry budget. Empty values
-disable the bankruptcy policy. The policy is parsed at service startup, so a
+disable the corresponding list; this release leaves the successor readmit list
+empty, so GLO-2227 remains unwoken and cannot claim through the exception. The
+policy is parsed at service startup, so a
 governed configuration change requires a Paperclip restart and a fresh live
 receipt.
 
