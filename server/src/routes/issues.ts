@@ -7415,7 +7415,7 @@ export function issueRoutes(
         actor.actorType,
       );
       await assertCanManageIssueMonitor(access, req, sourceIssue.companyId, child.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
-      const childIssueId = randomUUID();
+      const childIssueId = child.id ?? randomUUID();
       const sourceTrust = await sourceTrustForActorWrite({
         id: childIssueId,
         companyId: sourceIssue.companyId,
