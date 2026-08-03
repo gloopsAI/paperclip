@@ -57,6 +57,7 @@ for installed_control in \
   /usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py \
   /usr/local/lib/paperclip-gloops/rehearse-controlled-swarm-commissioning-recovery.py \
   /usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py \
+  /usr/local/lib/paperclip-gloops/paperclip-hostctl.py \
   /usr/local/lib/paperclip-gloops/stop-controlled-swarm.sh \
   /usr/local/lib/paperclip-gloops/observe-controlled-swarm.py; do
   installed_control_stat="$(stat -c '%a:%U:%G' "${installed_control}" 2>/dev/null || true)"

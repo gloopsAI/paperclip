@@ -114,6 +114,14 @@ const setControlledSwarmCommissioningPath = new URL(
   "../gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py",
   import.meta.url,
 );
+const paperclipHostctlPath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-hostctl.py",
+  import.meta.url,
+);
+const paperclipHostctlTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip_hostctl_test.py",
+  import.meta.url,
+);
 const stopControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/stop-controlled-swarm.sh",
   import.meta.url,
@@ -360,6 +368,7 @@ const controlledSwarmCommissioningRecoveryService = readFileSync(
   "utf8",
 );
 const setControlledSwarmCommissioning = readFileSync(setControlledSwarmCommissioningPath, "utf8");
+const paperclipHostctl = readFileSync(paperclipHostctlPath, "utf8");
 const stopControlledSwarm = readFileSync(stopControlledSwarmPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
   .split("\n")
@@ -381,6 +390,14 @@ const hermesRouteReceiptReadme = readFileSync(
   hermesRouteReceiptReadmePath,
   "utf8",
 );
+try {
+  execFileSync("python3", [paperclipHostctlTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Paperclip host-writer lock tests failed: ${error instanceof Error ? error.message : error}`);
+}
 try {
   execFileSync("python3", [hermesRouteReceiptApplicatorTestPath.pathname], {
     encoding: "utf8",
@@ -1052,6 +1069,12 @@ for (const [surface, content, required] of [
   ["controlled-swarm commissioning revalidation", controlledSwarmCommissioner, "require_compact_instructions=True"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "commissioning barrier line is missing or duplicated"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "os.replace(temporary, path)"],
+  ["host writer controller install", installDark, 'paperclip-hostctl.py" "${LIB_DIR}/paperclip-hostctl.py'],
+  ["host writer controller", paperclipHostctl, "fcntl.LOCK_EX | fcntl.LOCK_NB"],
+  ["host writer identity journal", paperclipHostctl, '"event": "pre"'],
+  ["host writer terminal receipt", paperclipHostctl, '"event": "post"'],
+  ["host writer out-of-band guard", paperclipHostctl, "runtime.env hash mismatch refuses mutation"],
+  ["commissioning host writer delegation", setControlledSwarmCommissioning, "paperclip-hostctl.py"],
   ["controlled-swarm stop", stopControlledSwarm, "verify-dark.sh"],
   ["controlled-swarm stop", stopControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
 ]) {

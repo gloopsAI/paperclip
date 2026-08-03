@@ -7,10 +7,13 @@ import argparse
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 
 
 KEY = "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED"
+DEFAULT_RUNTIME_ENV = Path("/etc/paperclip-gloops/runtime.env")
+HOSTCTL = Path("/usr/local/lib/paperclip-gloops/paperclip-hostctl.py")
 
 
 def set_barrier(path: Path, commissioned: bool) -> bool:
@@ -53,11 +56,27 @@ def main() -> int:
     parser.add_argument(
         "--runtime-env",
         type=Path,
-        default=Path("/etc/paperclip-gloops/runtime.env"),
+        default=DEFAULT_RUNTIME_ENV,
     )
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit("commissioning barrier mutation must run as root")
+    if args.runtime_env == DEFAULT_RUNTIME_ENV and HOSTCTL.exists():
+        command = [
+            str(HOSTCTL),
+            "apply",
+            "--agent-slug",
+            os.environ.get("PAPERCLIP_HOST_WRITER_AGENT", "legacy-root-commissioner"),
+            "--session-id",
+            os.environ.get("PAPERCLIP_HOST_WRITER_SESSION", f"pid-{os.getpid()}"),
+            "--mission-id",
+            os.environ.get("PAPERCLIP_HOST_WRITER_MISSION", "controlled-swarm-commissioning"),
+            "--intent",
+            f"set controlled-swarm commissioning barrier {args.value}",
+            "--set",
+            f"{KEY}={args.value}",
+        ]
+        return subprocess.run(command, check=False).returncode
     set_barrier(args.runtime_env, args.value == "true")
     return 0
 
