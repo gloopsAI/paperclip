@@ -1,8 +1,8 @@
 {
   "appId": 4307157,
   "installationId": 146796843,
-  "repositoryId": 1297008772,
-  "repository": "gloopsAI/gloops-paperclip-plugin",
+  "repositoryId": 1299155335,
+  "repository": "gloopsAI/paperclip",
   "privateKeyPath": "/etc/paperclip-gloops/github-app/private-key.pem",
   "boardTokenPath": "/etc/paperclip-gloops/operator-board-token"
 }

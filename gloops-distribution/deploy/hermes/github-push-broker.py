@@ -891,11 +891,15 @@ def post_prepared(connection: sqlite3.Connection, nonce: str, receipt: dict[str,
 
 def verify_github_repository(module: Any, config: dict[str, Any], token: str, authorization: dict[str, Any]) -> None:
     repository = module.request_json("GET", f"/repositories/{authorization['repositoryId']}", token)
+    # GitHub's default branch may differ from Paperclip's governed publication
+    # base. compare_work_facts() binds that base separately; this check binds
+    # the App token and authorization to the exact repository boundary.
     if (
         not isinstance(repository, dict)
         or repository.get("id") != authorization["repositoryId"]
         or repository.get("full_name") != authorization["repositoryFullName"]
-        or repository.get("default_branch") != authorization["defaultBranch"]
+        or not isinstance(repository.get("default_branch"), str)
+        or not repository["default_branch"]
         or config["repositoryId"] != authorization["repositoryId"]
         or config["repository"] != authorization["repositoryFullName"]
     ):

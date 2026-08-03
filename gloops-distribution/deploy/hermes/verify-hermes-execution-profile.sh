@@ -177,8 +177,8 @@ if jq -e '
     "credentialType": "root-owned-unix-socket-broker",
     "appId": 4307157,
     "installationId": 146796843,
-    "repositoryId": 1297008772,
-    "allowedRepositories": ["gloopsAI/gloops-paperclip-plugin"],
+    "repositoryId": 1299155335,
+    "allowedRepositories": ["gloopsAI/paperclip"],
     "permissions": {"contents":"write","metadata":"read"},
     "credentialMount": "none",
     "maximumLifetimeSeconds": 3600,
@@ -309,8 +309,8 @@ fi
 if jq -e '
   .appId == 4307157 and
   .installationId == 146796843 and
-  .repositoryId == 1297008772 and
-  .repository == "gloopsAI/gloops-paperclip-plugin" and
+  .repositoryId == 1299155335 and
+  .repository == "gloopsAI/paperclip" and
   .privateKeyPath == "/etc/paperclip-gloops/github-app/private-key.pem"
 ' "${APP_CONFIG}" >/dev/null 2>&1 \
   && [[ "$(stat -c '%a:%U:%G' "${APP_CONFIG}" 2>/dev/null || true)" == '600:root:root' ]] \

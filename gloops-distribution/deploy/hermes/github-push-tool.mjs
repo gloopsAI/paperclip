@@ -12,10 +12,12 @@ const OID_PATTERN = /^[0-9a-f]{40}$/;
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_OBJECTS = 100_000;
 const MAX_PACK_BYTES = 64 * 1024 * 1024;
+const MAX_TREE_LIST_BYTES = 32 * 1024 * 1024;
+const TREE_LIST_TIMEOUT_MS = 30_000;
 const DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 const DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
-const ACCEPTED_BLOB_MODES = new Set(["100644", "100755"]);
-const ACCEPTED_TREE_MODE = "040000";
+const ACCEPTED_BLOB_MODES = new Set(["100644", "100755", "120000"]);
+const MAX_SYMLINK_TARGET_BYTES = 4096;
 
 function fail(message) {
   throw new Error(message);
@@ -125,43 +127,279 @@ async function resolveRepositoryGitContext(repoDir) {
   };
 }
 
-async function collectTreeObjects(gitdir, treeOid, output) {
-  if (output.has(treeOid)) return;
-  output.add(treeOid);
-  if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
-  const { tree } = await git.readTree({ fs, gitdir, oid: treeOid });
-  for (const entry of tree) {
-    if (!OID_PATTERN.test(entry.oid)) fail("tree contains a malformed object id");
-    if (
-      (entry.type === "tree" && entry.mode !== ACCEPTED_TREE_MODE)
-      || (entry.type === "blob" && !ACCEPTED_BLOB_MODES.has(entry.mode))
-      || (entry.type !== "tree" && entry.type !== "blob")
-    ) {
+function validateSymlinkTarget(blob, entryPath) {
+  if (!(blob instanceof Uint8Array) || blob.byteLength === 0 || blob.byteLength > MAX_SYMLINK_TARGET_BYTES) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  let target;
+  try {
+    target = new TextDecoder("utf-8", { fatal: true }).decode(blob);
+  } catch {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  if (
+    path.posix.isAbsolute(target)
+    || /^[A-Za-z]:/u.test(target)
+    || target.includes("\\")
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(target)
+  ) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(entryPath), target));
+  const resolvesThroughGitBoundary = resolved
+    .split("/")
+    .some((segment) => segment.toLowerCase() === ".git");
+  if (
+    resolved === ".."
+    || resolved.startsWith("../")
+    || path.posix.isAbsolute(resolved)
+    || resolvesThroughGitBoundary
+  ) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+}
+
+function runNativeObjectInventory(gitdir, revisions, label) {
+  if (!Array.isArray(revisions) || revisions.length === 0) fail(`${label} is unavailable`);
+  const result = spawnSync(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, "rev-list", "--objects", "--no-object-names", "--stdin"],
+    {
+      input: `${revisions.join("\n")}\n`,
+      env: { PATH: "/usr/bin:/bin", HOME: gitdir, GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: MAX_TREE_LIST_BYTES,
+      timeout: TREE_LIST_TIMEOUT_MS,
+    },
+  );
+  if (result.error?.code === "ENOBUFS") fail(`${label} exceeds the output ceiling`);
+  if (result.error?.code === "ETIMEDOUT") fail(`${label} exceeds the time ceiling`);
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? `${label} failed`;
+    fail(`${label} failed: ${detail.slice(0, 500)}`);
+  }
+  const oids = result.stdout.toString("utf8").split("\n").filter(Boolean);
+  if (oids.length === 0 || oids.length > MAX_OBJECTS || oids.some((oid) => !OID_PATTERN.test(oid))) {
+    fail(`${label} returned a malformed or oversized object set`);
+  }
+  return new Set(oids);
+}
+
+async function validateChangedEntries(gitdir, commits, availableObjects) {
+  if (commits.length === 0) fail("changed-entry validation has no commits");
+  const result = spawnSync(
+    "/usr/bin/git",
+    [
+      "--git-dir", gitdir,
+      "diff-tree", "--stdin", "-r", "--raw", "-z", "--root", "-m", "--no-commit-id", "--no-renames",
+    ],
+    {
+      input: `${commits.join("\n")}\n`,
+      env: { PATH: "/usr/bin:/bin", HOME: gitdir, GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: MAX_TREE_LIST_BYTES,
+      timeout: TREE_LIST_TIMEOUT_MS,
+    },
+  );
+  if (result.error?.code === "ENOBUFS") fail("changed-entry validation exceeds the output ceiling");
+  if (result.error?.code === "ETIMEDOUT") fail("changed-entry validation exceeds the time ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native changed-entry validation failed";
+    fail(`native changed-entry validation failed: ${detail.slice(0, 500)}`);
+  }
+  let output;
+  try {
+    output = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+  } catch {
+    fail("native changed-entry validation returned a malformed path");
+  }
+  if (output.length > 0 && !output.endsWith("\0")) {
+    fail("native changed-entry validation returned a malformed entry");
+  }
+  const records = output.slice(0, -1).split("\0").filter(Boolean);
+  if (records.length % 2 !== 0 || records.length / 2 > MAX_OBJECTS) {
+    fail("native changed-entry validation returned a malformed or oversized entry set");
+  }
+  for (let index = 0; index < records.length; index += 2) {
+    const header = records[index];
+    const entryPath = records[index + 1];
+    const match = /^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z][0-9]*)$/.exec(header);
+    if (!match || !entryPath) fail("native changed-entry validation returned a malformed entry");
+    const [, , mode, , oid] = match;
+    if (mode === "000000" && oid === ZERO_OID) continue;
+    if (!ACCEPTED_BLOB_MODES.has(mode) || !availableObjects.has(oid)) {
       fail("tree contains an unsupported object type or mode");
     }
-    if (entry.type === "tree") {
-      await collectTreeObjects(gitdir, entry.oid, output);
-    } else {
-      output.add(entry.oid);
-      if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    if (mode === "120000") {
+      const { blob } = await git.readBlob({ fs, gitdir, oid });
+      validateSymlinkTarget(blob, entryPath);
     }
   }
 }
 
-async function collectCommitClosure(gitdir, commitOid) {
-  const objects = new Set();
+function runRevisionWalk(gitdir, commitOid, baseOid) {
+  const revisions = baseOid
+    ? [commitOid, `^${baseOid}`]
+    : [commitOid, "--not", "--remotes"];
+  const result = spawnSync(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, "rev-list", "--topo-order", "--boundary", ...revisions],
+    {
+      encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 30_000,
+    },
+  );
+  if (result.error?.code === "ENOBUFS") fail("base-aware revision walk exceeds the output ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "revision walk failed";
+    fail(`base-aware revision walk failed: ${detail.slice(0, 500)}`);
+  }
+  const commits = [];
+  const boundaries = [];
+  for (const line of result.stdout.split("\n").filter(Boolean)) {
+    const isBoundary = line.startsWith("-");
+    const oid = isBoundary ? line.slice(1) : line;
+    if (!OID_PATTERN.test(oid)) fail("base-aware revision walk returned a malformed object id");
+    (isBoundary ? boundaries : commits).push(oid);
+  }
+  if (commits.length === 0 || commits[0] !== commitOid || commits.length > MAX_OBJECTS) {
+    fail("repository HEAD is not ahead of a bounded published base");
+  }
+  if (baseOid && !boundaries.includes(baseOid)) {
+    fail("explicit base object is not an ancestor boundary of repository HEAD");
+  }
+  return {
+    commits: [...new Set(commits)],
+    boundaries: [...new Set(boundaries)],
+  };
+}
+
+async function collectCommitClosure(gitdir, commitOid, baseOid = "") {
+  if (!OID_PATTERN.test(commitOid)) fail("commit closure contains a malformed object id");
+  if (baseOid && (!OID_PATTERN.test(baseOid) || baseOid === ZERO_OID)) {
+    fail("base object must be a non-zero SHA-1 commit");
+  }
+  const { commits, boundaries } = runRevisionWalk(gitdir, commitOid, baseOid);
+  const commitSet = new Set(commits);
+  const boundarySet = new Set(boundaries);
+  const commitTrees = [];
+  for (const oid of commits) {
+    const { commit } = await git.readCommit({ fs, gitdir, oid });
+    commitTrees.push(commit.tree);
+    for (const parent of commit.parent) {
+      if (!commitSet.has(parent) && !boundarySet.has(parent)) {
+        fail("base-aware revision walk does not close over the new commit graph");
+      }
+    }
+  }
+  if (boundaries.length === 0) {
+    fail("published base boundary is unavailable; refusing an unbounded history walk");
+  }
+  const boundaryTrees = [];
+  for (const boundary of boundaries) {
+    const { commit } = await git.readCommit({ fs, gitdir, oid: boundary });
+    boundaryTrees.push(commit.tree);
+  }
+  const newObjects = runNativeObjectInventory(
+    gitdir,
+    [commitOid, ...boundaries.map((oid) => `^${oid}`)],
+    "new-object inventory",
+  );
+  if (commits.some((oid) => !newObjects.has(oid)) || boundaries.some((oid) => newObjects.has(oid))) {
+    fail("new-object inventory disagrees with the bounded commit graph");
+  }
+  const objects = runNativeObjectInventory(
+    gitdir,
+    [...commitTrees, ...boundaryTrees],
+    "snapshot-object inventory",
+  );
+  for (const oid of [...commits, ...boundaries]) objects.add(oid);
+  if (objects.size > MAX_OBJECTS || [...newObjects].some((oid) => !objects.has(oid))) {
+    fail("snapshot-object inventory does not contain the bounded new objects");
+  }
+  await validateChangedEntries(gitdir, commits, objects);
+  return [...objects].sort();
+}
+
+async function collectImportedCommitClosure(gitdir, commitOid, indexedOids) {
+  const commits = [];
+  const boundaries = new Set();
+  const commitTrees = [];
+  const boundaryTrees = [];
+  const seen = new Set();
   const pending = [commitOid];
   while (pending.length > 0) {
     const oid = pending.pop();
-    if (objects.has(oid)) continue;
-    if (!OID_PATTERN.test(oid)) fail("commit closure contains a malformed object id");
-    objects.add(oid);
-    if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    if (seen.has(oid)) continue;
+    if (!OID_PATTERN.test(oid) || !indexedOids.has(oid)) {
+      fail("commit closure contains a missing or malformed object id");
+    }
+    seen.add(oid);
+    if (seen.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
     const { commit } = await git.readCommit({ fs, gitdir, oid });
-    await collectTreeObjects(gitdir, commit.tree, objects);
+    const reachesUnpackedParent = commit.parent.length === 0
+      || commit.parent.some((parent) => !indexedOids.has(parent));
+    if (oid !== commitOid && reachesUnpackedParent) {
+      boundaries.add(oid);
+      boundaryTrees.push(commit.tree);
+      continue;
+    }
+    if (!indexedOids.has(commit.tree)) fail("commit closure contains a missing tree root");
+    commits.push(oid);
+    commitTrees.push(commit.tree);
     for (const parent of commit.parent) pending.push(parent);
   }
-  return [...objects].sort();
+  if (boundaries.size === 0) fail("published base boundary is unavailable; refusing an unbounded history walk");
+  const newObjects = runNativeObjectInventory(
+    gitdir,
+    [commitOid, ...[...boundaries].map((oid) => `^${oid}`)],
+    "imported new-object inventory",
+  );
+  const objects = runNativeObjectInventory(
+    gitdir,
+    [...commitTrees, ...boundaryTrees],
+    "imported snapshot-object inventory",
+  );
+  for (const oid of [...commits, ...boundaries]) objects.add(oid);
+  if (
+    objects.size !== indexedOids.size
+    || [...objects].some((oid) => !indexedOids.has(oid))
+    || [...newObjects].some((oid) => !objects.has(oid))
+  ) {
+    fail("imported object inventory does not match the declared pack");
+  }
+  await validateChangedEntries(gitdir, commits, objects);
+  return { objects: [...objects].sort(), boundaries: [...boundaries].sort() };
+}
+
+function packCommitClosure(gitdir, objectOids) {
+  const result = spawnSync(
+    "/usr/bin/git",
+    [
+      "--git-dir", gitdir,
+      "pack-objects",
+      "--stdout",
+      "--no-reuse-delta",
+      "--no-reuse-object",
+    ],
+    {
+      input: `${objectOids.join("\n")}\n`,
+      maxBuffer: MAX_PACK_BYTES + 1,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1",
+      },
+      timeout: 90_000,
+    },
+  );
+  if (result.error?.code === "ENOBUFS") fail("commit pack exceeds the byte ceiling");
+  if (result.error?.code === "ETIMEDOUT") fail("commit pack exceeds the time ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native pack failed";
+    fail(`native commit pack failed: ${detail.slice(0, 500)}`);
+  }
+  return result.stdout;
 }
 
 function writeExclusive(filepath, bytes) {
@@ -210,8 +448,8 @@ async function clientCommand(args) {
   const { gitdir, headOid: newOid } = await resolveRepositoryGitContext(repoDir);
   if (!OID_PATTERN.test(newOid)) fail("repository HEAD is not a SHA-1 commit");
   await git.readCommit({ fs, gitdir, oid: newOid });
-  const objectOids = await collectCommitClosure(gitdir, newOid);
-  const { packfile } = await git.packObjects({ fs, gitdir, oids: objectOids, write: false });
+  const objectOids = await collectCommitClosure(gitdir, newOid, args.get("--base-oid") ?? "");
+  const packfile = packCommitClosure(gitdir, objectOids);
   if (!(packfile instanceof Uint8Array) || packfile.byteLength <= 0 || packfile.byteLength > MAX_PACK_BYTES) {
     fail("commit pack is empty or exceeds the byte ceiling");
   }
@@ -323,7 +561,11 @@ async function importWorkerBundle(args) {
   if (indexed.length !== declared.length || indexed.some((oid, index) => oid !== declared[index])) {
     fail("pack objects differ from the declared content-addressed bundle");
   }
-  const reachable = await collectCommitClosure(gitdir, request.expectedNewOid);
+  const { objects: reachable, boundaries } = await collectImportedCommitClosure(
+    gitdir,
+    request.expectedNewOid,
+    new Set(indexed),
+  );
   if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
     const reachableSet = new Set(reachable);
     const indexedSet = new Set(indexed);
@@ -335,7 +577,7 @@ async function importWorkerBundle(args) {
       + `extra=${extra.join(",") || "none"})`,
     );
   }
-  return { request, gitdir };
+  return { request, gitdir, boundaries };
 }
 
 async function validateCommand(args) {
@@ -344,7 +586,7 @@ async function validateCommand(args) {
 }
 
 async function workerCommand(args) {
-  const { request, gitdir } = await importWorkerBundle(args);
+  const { request, gitdir, boundaries } = await importWorkerBundle(args);
   const tokenPath = process.env.CREDENTIALS_DIRECTORY
     ? path.join(process.env.CREDENTIALS_DIRECTORY, "github-token")
     : "";
@@ -358,6 +600,12 @@ async function workerCommand(args) {
     value: request.expectedNewOid,
     force: false,
   });
+  if (boundaries.length > 0) {
+    fs.writeFileSync(path.join(gitdir, "shallow"), `${boundaries.join("\n")}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+  }
   // Supply the non-secret GitHub App username in the URL so Git only asks the
   // isolated credential helper for the short-lived installation token.
   const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
@@ -379,7 +627,6 @@ async function workerCommand(args) {
       "push",
       "--porcelain",
       "--no-force",
-      "--no-thin",
       url,
       `refs/heads/paperclip-source:${request.remoteRef}`,
     ],

@@ -29,9 +29,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/lib/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/lib/index.js
 var require_lib = __commonJS({
-  "node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/lib/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/lib/index.js"(exports2, module2) {
     "use strict";
     var AsyncLock = function(opts) {
       opts = opts || {};
@@ -254,17 +254,17 @@ var require_lib = __commonJS({
   }
 });
 
-// node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/index.js
 var require_async_lock = __commonJS({
-  "node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/async-lock@1.4.1/node_modules/async-lock/index.js"(exports2, module2) {
     "use strict";
     module2.exports = require_lib();
   }
 });
 
-// node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits_browser.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits_browser.js
 var require_inherits_browser = __commonJS({
-  "node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits_browser.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits_browser.js"(exports2, module2) {
     if (typeof Object.create === "function") {
       module2.exports = function inherits(ctor, superCtor) {
         if (superCtor) {
@@ -294,9 +294,9 @@ var require_inherits_browser = __commonJS({
   }
 });
 
-// node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits.js
 var require_inherits = __commonJS({
-  "node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/inherits@2.0.4/node_modules/inherits/inherits.js"(exports2, module2) {
     try {
       util = require("util");
       if (typeof util.inherits !== "function") throw "";
@@ -308,9 +308,9 @@ var require_inherits = __commonJS({
   }
 });
 
-// node_modules/.pnpm/safe-buffer@5.2.1/node_modules/safe-buffer/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/safe-buffer@5.2.1/node_modules/safe-buffer/index.js
 var require_safe_buffer = __commonJS({
-  "node_modules/.pnpm/safe-buffer@5.2.1/node_modules/safe-buffer/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/safe-buffer@5.2.1/node_modules/safe-buffer/index.js"(exports2, module2) {
     var buffer = require("buffer");
     var Buffer2 = buffer.Buffer;
     function copyProps(src, dst) {
@@ -366,9 +366,9 @@ var require_safe_buffer = __commonJS({
   }
 });
 
-// node_modules/.pnpm/isarray@2.0.5/node_modules/isarray/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/isarray@2.0.5/node_modules/isarray/index.js
 var require_isarray = __commonJS({
-  "node_modules/.pnpm/isarray@2.0.5/node_modules/isarray/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/isarray@2.0.5/node_modules/isarray/index.js"(exports2, module2) {
     var toString = {}.toString;
     module2.exports = Array.isArray || function(arr) {
       return toString.call(arr) == "[object Array]";
@@ -376,121 +376,121 @@ var require_isarray = __commonJS({
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/type.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/type.js
 var require_type = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/type.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/type.js"(exports2, module2) {
     "use strict";
     module2.exports = TypeError;
   }
 });
 
-// node_modules/.pnpm/es-object-atoms@1.1.1/node_modules/es-object-atoms/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-object-atoms@1.1.1/node_modules/es-object-atoms/index.js
 var require_es_object_atoms = __commonJS({
-  "node_modules/.pnpm/es-object-atoms@1.1.1/node_modules/es-object-atoms/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-object-atoms@1.1.1/node_modules/es-object-atoms/index.js"(exports2, module2) {
     "use strict";
     module2.exports = Object;
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/index.js
 var require_es_errors = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/index.js"(exports2, module2) {
     "use strict";
     module2.exports = Error;
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/eval.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/eval.js
 var require_eval = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/eval.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/eval.js"(exports2, module2) {
     "use strict";
     module2.exports = EvalError;
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/range.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/range.js
 var require_range = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/range.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/range.js"(exports2, module2) {
     "use strict";
     module2.exports = RangeError;
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/ref.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/ref.js
 var require_ref = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/ref.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/ref.js"(exports2, module2) {
     "use strict";
     module2.exports = ReferenceError;
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/syntax.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/syntax.js
 var require_syntax = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/syntax.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/syntax.js"(exports2, module2) {
     "use strict";
     module2.exports = SyntaxError;
   }
 });
 
-// node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/uri.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/uri.js
 var require_uri = __commonJS({
-  "node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/uri.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors/uri.js"(exports2, module2) {
     "use strict";
     module2.exports = URIError;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/abs.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/abs.js
 var require_abs = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/abs.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/abs.js"(exports2, module2) {
     "use strict";
     module2.exports = Math.abs;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/floor.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/floor.js
 var require_floor = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/floor.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/floor.js"(exports2, module2) {
     "use strict";
     module2.exports = Math.floor;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/max.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/max.js
 var require_max = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/max.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/max.js"(exports2, module2) {
     "use strict";
     module2.exports = Math.max;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/min.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/min.js
 var require_min = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/min.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/min.js"(exports2, module2) {
     "use strict";
     module2.exports = Math.min;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/pow.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/pow.js
 var require_pow = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/pow.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/pow.js"(exports2, module2) {
     "use strict";
     module2.exports = Math.pow;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/round.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/round.js
 var require_round = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/round.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/round.js"(exports2, module2) {
     "use strict";
     module2.exports = Math.round;
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/isNaN.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/isNaN.js
 var require_isNaN = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/isNaN.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/isNaN.js"(exports2, module2) {
     "use strict";
     module2.exports = Number.isNaN || function isNaN2(a) {
       return a !== a;
@@ -498,9 +498,9 @@ var require_isNaN = __commonJS({
   }
 });
 
-// node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/sign.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/sign.js
 var require_sign = __commonJS({
-  "node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/sign.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics/sign.js"(exports2, module2) {
     "use strict";
     var $isNaN = require_isNaN();
     module2.exports = function sign(number) {
@@ -512,17 +512,17 @@ var require_sign = __commonJS({
   }
 });
 
-// node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/gOPD.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/gOPD.js
 var require_gOPD = __commonJS({
-  "node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/gOPD.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/gOPD.js"(exports2, module2) {
     "use strict";
     module2.exports = Object.getOwnPropertyDescriptor;
   }
 });
 
-// node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/index.js
 var require_gopd = __commonJS({
-  "node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/gopd@1.2.0/node_modules/gopd/index.js"(exports2, module2) {
     "use strict";
     var $gOPD = require_gOPD();
     if ($gOPD) {
@@ -536,9 +536,9 @@ var require_gopd = __commonJS({
   }
 });
 
-// node_modules/.pnpm/es-define-property@1.0.1/node_modules/es-define-property/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-define-property@1.0.1/node_modules/es-define-property/index.js
 var require_es_define_property = __commonJS({
-  "node_modules/.pnpm/es-define-property@1.0.1/node_modules/es-define-property/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/es-define-property@1.0.1/node_modules/es-define-property/index.js"(exports2, module2) {
     "use strict";
     var $defineProperty = Object.defineProperty || false;
     if ($defineProperty) {
@@ -552,9 +552,9 @@ var require_es_define_property = __commonJS({
   }
 });
 
-// node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/shams.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/shams.js
 var require_shams = __commonJS({
-  "node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/shams.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/shams.js"(exports2, module2) {
     "use strict";
     module2.exports = function hasSymbols() {
       if (typeof Symbol !== "function" || typeof Object.getOwnPropertySymbols !== "function") {
@@ -607,9 +607,9 @@ var require_shams = __commonJS({
   }
 });
 
-// node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/index.js
 var require_has_symbols = __commonJS({
-  "node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols/index.js"(exports2, module2) {
     "use strict";
     var origSymbol = typeof Symbol !== "undefined" && Symbol;
     var hasSymbolSham = require_shams();
@@ -631,26 +631,26 @@ var require_has_symbols = __commonJS({
   }
 });
 
-// node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Reflect.getPrototypeOf.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Reflect.getPrototypeOf.js
 var require_Reflect_getPrototypeOf = __commonJS({
-  "node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Reflect.getPrototypeOf.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Reflect.getPrototypeOf.js"(exports2, module2) {
     "use strict";
     module2.exports = typeof Reflect !== "undefined" && Reflect.getPrototypeOf || null;
   }
 });
 
-// node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Object.getPrototypeOf.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Object.getPrototypeOf.js
 var require_Object_getPrototypeOf = __commonJS({
-  "node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Object.getPrototypeOf.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/Object.getPrototypeOf.js"(exports2, module2) {
     "use strict";
     var $Object = require_es_object_atoms();
     module2.exports = $Object.getPrototypeOf || null;
   }
 });
 
-// node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/implementation.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/implementation.js
 var require_implementation = __commonJS({
-  "node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/implementation.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/implementation.js"(exports2, module2) {
     "use strict";
     var ERROR_MESSAGE = "Function.prototype.bind called on incompatible ";
     var toStr = Object.prototype.toString;
@@ -724,42 +724,42 @@ var require_implementation = __commonJS({
   }
 });
 
-// node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/index.js
 var require_function_bind = __commonJS({
-  "node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind/index.js"(exports2, module2) {
     "use strict";
     var implementation = require_implementation();
     module2.exports = Function.prototype.bind || implementation;
   }
 });
 
-// node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionCall.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionCall.js
 var require_functionCall = __commonJS({
-  "node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionCall.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionCall.js"(exports2, module2) {
     "use strict";
     module2.exports = Function.prototype.call;
   }
 });
 
-// node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionApply.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionApply.js
 var require_functionApply = __commonJS({
-  "node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionApply.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/functionApply.js"(exports2, module2) {
     "use strict";
     module2.exports = Function.prototype.apply;
   }
 });
 
-// node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/reflectApply.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/reflectApply.js
 var require_reflectApply = __commonJS({
-  "node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/reflectApply.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/reflectApply.js"(exports2, module2) {
     "use strict";
     module2.exports = typeof Reflect !== "undefined" && Reflect && Reflect.apply;
   }
 });
 
-// node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/actualApply.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/actualApply.js
 var require_actualApply = __commonJS({
-  "node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/actualApply.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/actualApply.js"(exports2, module2) {
     "use strict";
     var bind = require_function_bind();
     var $apply = require_functionApply();
@@ -769,9 +769,9 @@ var require_actualApply = __commonJS({
   }
 });
 
-// node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/index.js
 var require_call_bind_apply_helpers = __commonJS({
-  "node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/index.js"(exports2, module2) {
     "use strict";
     var bind = require_function_bind();
     var $TypeError = require_type();
@@ -786,9 +786,9 @@ var require_call_bind_apply_helpers = __commonJS({
   }
 });
 
-// node_modules/.pnpm/dunder-proto@1.0.1/node_modules/dunder-proto/get.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/dunder-proto@1.0.1/node_modules/dunder-proto/get.js
 var require_get = __commonJS({
-  "node_modules/.pnpm/dunder-proto@1.0.1/node_modules/dunder-proto/get.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/dunder-proto@1.0.1/node_modules/dunder-proto/get.js"(exports2, module2) {
     "use strict";
     var callBind = require_call_bind_apply_helpers();
     var gOPD = require_gopd();
@@ -817,9 +817,9 @@ var require_get = __commonJS({
   }
 });
 
-// node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/index.js
 var require_get_proto = __commonJS({
-  "node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto/index.js"(exports2, module2) {
     "use strict";
     var reflectGetProto = require_Reflect_getPrototypeOf();
     var originalGetProto = require_Object_getPrototypeOf();
@@ -837,9 +837,9 @@ var require_get_proto = __commonJS({
   }
 });
 
-// node_modules/.pnpm/hasown@2.0.4/node_modules/hasown/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/hasown@2.0.4/node_modules/hasown/index.js
 var require_hasown = __commonJS({
-  "node_modules/.pnpm/hasown@2.0.4/node_modules/hasown/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/hasown@2.0.4/node_modules/hasown/index.js"(exports2, module2) {
     "use strict";
     var call = Function.prototype.call;
     var $hasOwn = Object.prototype.hasOwnProperty;
@@ -848,9 +848,9 @@ var require_hasown = __commonJS({
   }
 });
 
-// node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic/index.js
 var require_get_intrinsic = __commonJS({
-  "node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic/index.js"(exports2, module2) {
     "use strict";
     var undefined2;
     var $Object = require_es_object_atoms();
@@ -1179,9 +1179,9 @@ var require_get_intrinsic = __commonJS({
   }
 });
 
-// node_modules/.pnpm/call-bound@1.0.4/node_modules/call-bound/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bound@1.0.4/node_modules/call-bound/index.js
 var require_call_bound = __commonJS({
-  "node_modules/.pnpm/call-bound@1.0.4/node_modules/call-bound/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bound@1.0.4/node_modules/call-bound/index.js"(exports2, module2) {
     "use strict";
     var GetIntrinsic = require_get_intrinsic();
     var callBindBasic = require_call_bind_apply_helpers();
@@ -1202,9 +1202,9 @@ var require_call_bound = __commonJS({
   }
 });
 
-// node_modules/.pnpm/is-callable@1.2.7/node_modules/is-callable/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/is-callable@1.2.7/node_modules/is-callable/index.js
 var require_is_callable = __commonJS({
-  "node_modules/.pnpm/is-callable@1.2.7/node_modules/is-callable/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/is-callable@1.2.7/node_modules/is-callable/index.js"(exports2, module2) {
     "use strict";
     var fnToStr = Function.prototype.toString;
     var reflectApply = typeof Reflect === "object" && Reflect !== null && Reflect.apply;
@@ -1320,9 +1320,9 @@ var require_is_callable = __commonJS({
   }
 });
 
-// node_modules/.pnpm/for-each@0.3.5/node_modules/for-each/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/for-each@0.3.5/node_modules/for-each/index.js
 var require_for_each = __commonJS({
-  "node_modules/.pnpm/for-each@0.3.5/node_modules/for-each/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/for-each@0.3.5/node_modules/for-each/index.js"(exports2, module2) {
     "use strict";
     var isCallable = require_is_callable();
     var toStr = Object.prototype.toString;
@@ -1380,9 +1380,9 @@ var require_for_each = __commonJS({
   }
 });
 
-// node_modules/.pnpm/possible-typed-array-names@1.1.0/node_modules/possible-typed-array-names/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/possible-typed-array-names@1.1.0/node_modules/possible-typed-array-names/index.js
 var require_possible_typed_array_names = __commonJS({
-  "node_modules/.pnpm/possible-typed-array-names@1.1.0/node_modules/possible-typed-array-names/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/possible-typed-array-names@1.1.0/node_modules/possible-typed-array-names/index.js"(exports2, module2) {
     "use strict";
     module2.exports = [
       "Float16Array",
@@ -1401,9 +1401,9 @@ var require_possible_typed_array_names = __commonJS({
   }
 });
 
-// node_modules/.pnpm/available-typed-arrays@1.0.7/node_modules/available-typed-arrays/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/available-typed-arrays@1.0.7/node_modules/available-typed-arrays/index.js
 var require_available_typed_arrays = __commonJS({
-  "node_modules/.pnpm/available-typed-arrays@1.0.7/node_modules/available-typed-arrays/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/available-typed-arrays@1.0.7/node_modules/available-typed-arrays/index.js"(exports2, module2) {
     "use strict";
     var possibleNames = require_possible_typed_array_names();
     var g = typeof globalThis === "undefined" ? global : globalThis;
@@ -1419,9 +1419,9 @@ var require_available_typed_arrays = __commonJS({
   }
 });
 
-// node_modules/.pnpm/define-data-property@1.1.4/node_modules/define-data-property/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/define-data-property@1.1.4/node_modules/define-data-property/index.js
 var require_define_data_property = __commonJS({
-  "node_modules/.pnpm/define-data-property@1.1.4/node_modules/define-data-property/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/define-data-property@1.1.4/node_modules/define-data-property/index.js"(exports2, module2) {
     "use strict";
     var $defineProperty = require_es_define_property();
     var $SyntaxError = require_syntax();
@@ -1467,9 +1467,9 @@ var require_define_data_property = __commonJS({
   }
 });
 
-// node_modules/.pnpm/has-property-descriptors@1.0.2/node_modules/has-property-descriptors/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-property-descriptors@1.0.2/node_modules/has-property-descriptors/index.js
 var require_has_property_descriptors = __commonJS({
-  "node_modules/.pnpm/has-property-descriptors@1.0.2/node_modules/has-property-descriptors/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-property-descriptors@1.0.2/node_modules/has-property-descriptors/index.js"(exports2, module2) {
     "use strict";
     var $defineProperty = require_es_define_property();
     var hasPropertyDescriptors = function hasPropertyDescriptors2() {
@@ -1489,9 +1489,9 @@ var require_has_property_descriptors = __commonJS({
   }
 });
 
-// node_modules/.pnpm/set-function-length@1.2.2/node_modules/set-function-length/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/set-function-length@1.2.2/node_modules/set-function-length/index.js
 var require_set_function_length = __commonJS({
-  "node_modules/.pnpm/set-function-length@1.2.2/node_modules/set-function-length/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/set-function-length@1.2.2/node_modules/set-function-length/index.js"(exports2, module2) {
     "use strict";
     var GetIntrinsic = require_get_intrinsic();
     var define2 = require_define_data_property();
@@ -1542,9 +1542,9 @@ var require_set_function_length = __commonJS({
   }
 });
 
-// node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/applyBind.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/applyBind.js
 var require_applyBind = __commonJS({
-  "node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/applyBind.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers/applyBind.js"(exports2, module2) {
     "use strict";
     var bind = require_function_bind();
     var $apply = require_functionApply();
@@ -1555,9 +1555,9 @@ var require_applyBind = __commonJS({
   }
 });
 
-// node_modules/.pnpm/call-bind@1.0.9/node_modules/call-bind/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind@1.0.9/node_modules/call-bind/index.js
 var require_call_bind = __commonJS({
-  "node_modules/.pnpm/call-bind@1.0.9/node_modules/call-bind/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/call-bind@1.0.9/node_modules/call-bind/index.js"(exports2, module2) {
     "use strict";
     var setFunctionLength = require_set_function_length();
     var $defineProperty = require_es_define_property();
@@ -1580,9 +1580,9 @@ var require_call_bind = __commonJS({
   }
 });
 
-// node_modules/.pnpm/has-tostringtag@1.0.2/node_modules/has-tostringtag/shams.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-tostringtag@1.0.2/node_modules/has-tostringtag/shams.js
 var require_shams2 = __commonJS({
-  "node_modules/.pnpm/has-tostringtag@1.0.2/node_modules/has-tostringtag/shams.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/has-tostringtag@1.0.2/node_modules/has-tostringtag/shams.js"(exports2, module2) {
     "use strict";
     var hasSymbols = require_shams();
     module2.exports = function hasToStringTagShams() {
@@ -1591,9 +1591,9 @@ var require_shams2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/which-typed-array@1.1.22/node_modules/which-typed-array/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/which-typed-array@1.1.22/node_modules/which-typed-array/index.js
 var require_which_typed_array = __commonJS({
-  "node_modules/.pnpm/which-typed-array@1.1.22/node_modules/which-typed-array/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/which-typed-array@1.1.22/node_modules/which-typed-array/index.js"(exports2, module2) {
     "use strict";
     var forEach = require_for_each();
     var availableTypedArrays = require_available_typed_arrays();
@@ -1715,9 +1715,9 @@ var require_which_typed_array = __commonJS({
   }
 });
 
-// node_modules/.pnpm/is-typed-array@1.1.15/node_modules/is-typed-array/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/is-typed-array@1.1.15/node_modules/is-typed-array/index.js
 var require_is_typed_array = __commonJS({
-  "node_modules/.pnpm/is-typed-array@1.1.15/node_modules/is-typed-array/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/is-typed-array@1.1.15/node_modules/is-typed-array/index.js"(exports2, module2) {
     "use strict";
     var whichTypedArray = require_which_typed_array();
     module2.exports = function isTypedArray(value) {
@@ -1726,9 +1726,9 @@ var require_is_typed_array = __commonJS({
   }
 });
 
-// node_modules/.pnpm/typed-array-buffer@1.0.3/node_modules/typed-array-buffer/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/typed-array-buffer@1.0.3/node_modules/typed-array-buffer/index.js
 var require_typed_array_buffer = __commonJS({
-  "node_modules/.pnpm/typed-array-buffer@1.0.3/node_modules/typed-array-buffer/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/typed-array-buffer@1.0.3/node_modules/typed-array-buffer/index.js"(exports2, module2) {
     "use strict";
     var $TypeError = require_type();
     var callBound = require_call_bound();
@@ -1743,9 +1743,9 @@ var require_typed_array_buffer = __commonJS({
   }
 });
 
-// node_modules/.pnpm/to-buffer@1.2.2/node_modules/to-buffer/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/to-buffer@1.2.2/node_modules/to-buffer/index.js
 var require_to_buffer = __commonJS({
-  "node_modules/.pnpm/to-buffer@1.2.2/node_modules/to-buffer/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/to-buffer@1.2.2/node_modules/to-buffer/index.js"(exports2, module2) {
     "use strict";
     var Buffer2 = require_safe_buffer().Buffer;
     var isArray = require_isarray();
@@ -1807,9 +1807,9 @@ var require_to_buffer = __commonJS({
   }
 });
 
-// node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/hash.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/hash.js
 var require_hash = __commonJS({
-  "node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/hash.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/hash.js"(exports2, module2) {
     "use strict";
     var Buffer2 = require_safe_buffer().Buffer;
     var toBuffer = require_to_buffer();
@@ -1868,9 +1868,9 @@ var require_hash = __commonJS({
   }
 });
 
-// node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/sha1.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/sha1.js
 var require_sha1 = __commonJS({
-  "node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/sha1.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/sha.js@2.4.12/node_modules/sha.js/sha1.js"(exports2, module2) {
     "use strict";
     var inherits = require_inherits();
     var Hash = require_hash();
@@ -1955,9 +1955,9 @@ var require_sha1 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/crc-32@1.2.2/node_modules/crc-32/crc32.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/crc-32@1.2.2/node_modules/crc-32/crc32.js
 var require_crc32 = __commonJS({
-  "node_modules/.pnpm/crc-32@1.2.2/node_modules/crc-32/crc32.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/crc-32@1.2.2/node_modules/crc-32/crc32.js"(exports2) {
     var CRC32;
     (function(factory) {
       if (typeof DO_NOT_EXPORT_CRC === "undefined") {
@@ -2053,9 +2053,9 @@ var require_crc32 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/common.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/common.js
 var require_common = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/common.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/common.js"(exports2) {
     "use strict";
     var TYPED_OK = typeof Uint8Array !== "undefined" && typeof Uint16Array !== "undefined" && typeof Int32Array !== "undefined";
     function _has(obj, key) {
@@ -2144,9 +2144,9 @@ var require_common = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/trees.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/trees.js
 var require_trees = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/trees.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/trees.js"(exports2) {
     "use strict";
     var utils = require_common();
     var Z_FIXED = 4;
@@ -2786,9 +2786,9 @@ var require_trees = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/adler32.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/adler32.js
 var require_adler32 = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/adler32.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/adler32.js"(exports2, module2) {
     "use strict";
     function adler32(adler, buf, len, pos) {
       var s1 = adler & 65535 | 0, s2 = adler >>> 16 & 65535 | 0, n = 0;
@@ -2808,9 +2808,9 @@ var require_adler32 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/crc32.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/crc32.js
 var require_crc322 = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/crc32.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/crc32.js"(exports2, module2) {
     "use strict";
     function makeTable() {
       var c, table = [];
@@ -2836,9 +2836,9 @@ var require_crc322 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/messages.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/messages.js
 var require_messages = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/messages.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/messages.js"(exports2, module2) {
     "use strict";
     module2.exports = {
       2: "need dictionary",
@@ -2863,9 +2863,9 @@ var require_messages = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/deflate.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/deflate.js
 var require_deflate = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/deflate.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/deflate.js"(exports2) {
     "use strict";
     var utils = require_common();
     var trees = require_trees();
@@ -3912,9 +3912,9 @@ var require_deflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/strings.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/strings.js
 var require_strings = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/strings.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/utils/strings.js"(exports2) {
     "use strict";
     var utils = require_common();
     var STR_APPLY_OK = true;
@@ -4054,9 +4054,9 @@ var require_strings = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/zstream.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/zstream.js
 var require_zstream = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/zstream.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/zstream.js"(exports2, module2) {
     "use strict";
     function ZStream() {
       this.input = null;
@@ -4076,9 +4076,9 @@ var require_zstream = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/deflate.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/deflate.js
 var require_deflate2 = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/deflate.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/deflate.js"(exports2) {
     "use strict";
     var zlib_deflate = require_deflate();
     var utils = require_common();
@@ -4237,9 +4237,9 @@ var require_deflate2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inffast.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inffast.js
 var require_inffast = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inffast.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inffast.js"(exports2, module2) {
     "use strict";
     var BAD = 30;
     var TYPE = 12;
@@ -4466,9 +4466,9 @@ var require_inffast = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inftrees.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inftrees.js
 var require_inftrees = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inftrees.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inftrees.js"(exports2, module2) {
     "use strict";
     var utils = require_common();
     var MAXBITS = 15;
@@ -4782,9 +4782,9 @@ var require_inftrees = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inflate.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inflate.js
 var require_inflate = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inflate.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/inflate.js"(exports2) {
     "use strict";
     var utils = require_common();
     var adler32 = require_adler32();
@@ -6021,9 +6021,9 @@ var require_inflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/constants.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/constants.js
 var require_constants = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/constants.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/constants.js"(exports2, module2) {
     "use strict";
     module2.exports = {
       /* Allowed flush values; see deflate() and inflate() below for details */
@@ -6068,9 +6068,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/gzheader.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/gzheader.js
 var require_gzheader = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/gzheader.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/zlib/gzheader.js"(exports2, module2) {
     "use strict";
     function GZheader() {
       this.text = 0;
@@ -6088,9 +6088,9 @@ var require_gzheader = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/inflate.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/inflate.js
 var require_inflate2 = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/inflate.js"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/lib/inflate.js"(exports2) {
     "use strict";
     var zlib_inflate = require_inflate();
     var utils = require_common();
@@ -6262,9 +6262,9 @@ var require_inflate2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pako@1.0.11/node_modules/pako/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/index.js
 var require_pako = __commonJS({
-  "node_modules/.pnpm/pako@1.0.11/node_modules/pako/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pako@1.0.11/node_modules/pako/index.js"(exports2, module2) {
     "use strict";
     var assign = require_common().assign;
     var deflate = require_deflate2();
@@ -6276,9 +6276,9 @@ var require_pako = __commonJS({
   }
 });
 
-// node_modules/.pnpm/pify@4.0.1/node_modules/pify/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pify@4.0.1/node_modules/pify/index.js
 var require_pify = __commonJS({
-  "node_modules/.pnpm/pify@4.0.1/node_modules/pify/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/pify@4.0.1/node_modules/pify/index.js"(exports2, module2) {
     "use strict";
     var processFn = (fn, options) => function(...args) {
       const P = options.promiseModule;
@@ -6341,9 +6341,9 @@ var require_pify = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ignore@5.3.2/node_modules/ignore/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/ignore@5.3.2/node_modules/ignore/index.js
 var require_ignore = __commonJS({
-  "node_modules/.pnpm/ignore@5.3.2/node_modules/ignore/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/ignore@5.3.2/node_modules/ignore/index.js"(exports2, module2) {
     function makeArray(subject) {
       return Array.isArray(subject) ? subject : [subject];
     }
@@ -6728,9 +6728,9 @@ var require_ignore = __commonJS({
   }
 });
 
-// node_modules/.pnpm/clean-git-ref@2.0.1/node_modules/clean-git-ref/lib/index.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/clean-git-ref@2.0.1/node_modules/clean-git-ref/lib/index.js
 var require_lib2 = __commonJS({
-  "node_modules/.pnpm/clean-git-ref@2.0.1/node_modules/clean-git-ref/lib/index.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/clean-git-ref@2.0.1/node_modules/clean-git-ref/lib/index.js"(exports2, module2) {
     "use strict";
     function escapeRegExp(string) {
       return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -6761,9 +6761,9 @@ var require_lib2 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/onp.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/onp.js
 var require_onp = __commonJS({
-  "node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/onp.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/onp.js"(exports2, module2) {
     module2.exports = function(a_, b_) {
       var a = a_, b = b_, m = a.length, n = b.length, reverse = false, ed = null, offset = m + 1, path2 = [], pathposi = [], ses = [], lcs = "", SES_DELETE = -1, SES_COMMON = 0, SES_ADD = 1;
       var tmp1, tmp2;
@@ -6890,9 +6890,9 @@ var require_onp = __commonJS({
   }
 });
 
-// node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/diff3.js
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/diff3.js
 var require_diff3 = __commonJS({
-  "node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/diff3.js"(exports2, module2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/diff3@0.0.3/node_modules/diff3/diff3.js"(exports2, module2) {
     var onp = require_onp();
     function longestCommonSubsequence(file1, file2) {
       var diff = new onp(file1, file2);
@@ -7092,9 +7092,9 @@ var require_diff3 = __commonJS({
   }
 });
 
-// node_modules/.pnpm/isomorphic-git@1.38.8/node_modules/isomorphic-git/index.cjs
+// ../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/isomorphic-git@1.38.8/node_modules/isomorphic-git/index.cjs
 var require_isomorphic_git = __commonJS({
-  "node_modules/.pnpm/isomorphic-git@1.38.8/node_modules/isomorphic-git/index.cjs"(exports2) {
+  "../../../.grok/worktrees/code-autonomy-strategy/grokbuzz2/REPOS/paperclip-n6-recovery/node_modules/.pnpm/isomorphic-git@1.38.8/node_modules/isomorphic-git/index.cjs"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     function _interopDefault(ex) {
@@ -16316,7 +16316,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
         packfile: new Uint8Array(packfile)
       };
     }
-    async function packObjects2({
+    async function packObjects({
       fs: fs2,
       dir,
       gitdir = join(dir, ".git"),
@@ -16835,7 +16835,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
       });
       return blob;
     }
-    async function readBlob({
+    async function readBlob2({
       fs: fs2,
       dir,
       gitdir = join(dir, ".git"),
@@ -17042,7 +17042,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
         throw err;
       }
     }
-    async function readTree2({
+    async function readTree({
       fs: fs2,
       dir,
       gitdir = join(dir, ".git"),
@@ -18423,15 +18423,15 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
       listTags,
       log,
       merge,
-      packObjects: packObjects2,
+      packObjects,
       pull,
       push,
-      readBlob,
+      readBlob: readBlob2,
       readCommit: readCommit2,
       readNote,
       readObject,
       readTag,
-      readTree: readTree2,
+      readTree,
       remove,
       removeNote,
       renameBranch,
@@ -18495,15 +18495,15 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
     exports2.listTags = listTags;
     exports2.log = log;
     exports2.merge = merge;
-    exports2.packObjects = packObjects2;
+    exports2.packObjects = packObjects;
     exports2.pull = pull;
     exports2.push = push;
-    exports2.readBlob = readBlob;
+    exports2.readBlob = readBlob2;
     exports2.readCommit = readCommit2;
     exports2.readNote = readNote;
     exports2.readObject = readObject;
     exports2.readTag = readTag;
-    exports2.readTree = readTree2;
+    exports2.readTree = readTree;
     exports2.remove = remove;
     exports2.removeNote = removeNote;
     exports2.renameBranch = renameBranch;
@@ -18539,10 +18539,12 @@ var OID_PATTERN = /^[0-9a-f]{40}$/;
 var RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 var MAX_OBJECTS = 1e5;
 var MAX_PACK_BYTES = 64 * 1024 * 1024;
+var MAX_TREE_LIST_BYTES = 32 * 1024 * 1024;
+var TREE_LIST_TIMEOUT_MS = 3e4;
 var DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 var DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
-var ACCEPTED_BLOB_MODES = /* @__PURE__ */ new Set(["100644", "100755"]);
-var ACCEPTED_TREE_MODE = "040000";
+var ACCEPTED_BLOB_MODES = /* @__PURE__ */ new Set(["100644", "100755", "120000"]);
+var MAX_SYMLINK_TARGET_BYTES = 4096;
 function fail(message) {
   throw new Error(message);
 }
@@ -18641,38 +18643,267 @@ async function resolveRepositoryGitContext(repoDir) {
     headOid: await resolveHeadOid(resolvedCommonGitdir, import_node_path.default.join(resolvedGitdir, "HEAD"))
   };
 }
-async function collectTreeObjects(gitdir, treeOid, output) {
-  if (output.has(treeOid)) return;
-  output.add(treeOid);
-  if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
-  const { tree } = await git.readTree({ fs: import_node_fs.default, gitdir, oid: treeOid });
-  for (const entry of tree) {
-    if (!OID_PATTERN.test(entry.oid)) fail("tree contains a malformed object id");
-    if (entry.type === "tree" && entry.mode !== ACCEPTED_TREE_MODE || entry.type === "blob" && !ACCEPTED_BLOB_MODES.has(entry.mode) || entry.type !== "tree" && entry.type !== "blob") {
+function validateSymlinkTarget(blob, entryPath) {
+  if (!(blob instanceof Uint8Array) || blob.byteLength === 0 || blob.byteLength > MAX_SYMLINK_TARGET_BYTES) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  let target;
+  try {
+    target = new TextDecoder("utf-8", { fatal: true }).decode(blob);
+  } catch {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  if (import_node_path.default.posix.isAbsolute(target) || /^[A-Za-z]:/u.test(target) || target.includes("\\") || /[\u0000-\u001f\u007f-\u009f]/u.test(target)) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  const resolved = import_node_path.default.posix.normalize(import_node_path.default.posix.join(import_node_path.default.posix.dirname(entryPath), target));
+  const resolvesThroughGitBoundary = resolved.split("/").some((segment) => segment.toLowerCase() === ".git");
+  if (resolved === ".." || resolved.startsWith("../") || import_node_path.default.posix.isAbsolute(resolved) || resolvesThroughGitBoundary) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+}
+function runNativeObjectInventory(gitdir, revisions, label) {
+  if (!Array.isArray(revisions) || revisions.length === 0) fail(`${label} is unavailable`);
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, "rev-list", "--objects", "--no-object-names", "--stdin"],
+    {
+      input: `${revisions.join("\n")}
+`,
+      env: { PATH: "/usr/bin:/bin", HOME: gitdir, GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: MAX_TREE_LIST_BYTES,
+      timeout: TREE_LIST_TIMEOUT_MS
+    }
+  );
+  if (result.error?.code === "ENOBUFS") fail(`${label} exceeds the output ceiling`);
+  if (result.error?.code === "ETIMEDOUT") fail(`${label} exceeds the time ceiling`);
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? `${label} failed`;
+    fail(`${label} failed: ${detail.slice(0, 500)}`);
+  }
+  const oids = result.stdout.toString("utf8").split("\n").filter(Boolean);
+  if (oids.length === 0 || oids.length > MAX_OBJECTS || oids.some((oid) => !OID_PATTERN.test(oid))) {
+    fail(`${label} returned a malformed or oversized object set`);
+  }
+  return new Set(oids);
+}
+async function validateChangedEntries(gitdir, commits, availableObjects) {
+  if (commits.length === 0) fail("changed-entry validation has no commits");
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
+    [
+      "--git-dir",
+      gitdir,
+      "diff-tree",
+      "--stdin",
+      "-r",
+      "--raw",
+      "-z",
+      "--root",
+      "-m",
+      "--no-commit-id",
+      "--no-renames"
+    ],
+    {
+      input: `${commits.join("\n")}
+`,
+      env: { PATH: "/usr/bin:/bin", HOME: gitdir, GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: MAX_TREE_LIST_BYTES,
+      timeout: TREE_LIST_TIMEOUT_MS
+    }
+  );
+  if (result.error?.code === "ENOBUFS") fail("changed-entry validation exceeds the output ceiling");
+  if (result.error?.code === "ETIMEDOUT") fail("changed-entry validation exceeds the time ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native changed-entry validation failed";
+    fail(`native changed-entry validation failed: ${detail.slice(0, 500)}`);
+  }
+  let output;
+  try {
+    output = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+  } catch {
+    fail("native changed-entry validation returned a malformed path");
+  }
+  if (output.length > 0 && !output.endsWith("\0")) {
+    fail("native changed-entry validation returned a malformed entry");
+  }
+  const records = output.slice(0, -1).split("\0").filter(Boolean);
+  if (records.length % 2 !== 0 || records.length / 2 > MAX_OBJECTS) {
+    fail("native changed-entry validation returned a malformed or oversized entry set");
+  }
+  for (let index = 0; index < records.length; index += 2) {
+    const header = records[index];
+    const entryPath = records[index + 1];
+    const match = /^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z][0-9]*)$/.exec(header);
+    if (!match || !entryPath) fail("native changed-entry validation returned a malformed entry");
+    const [, , mode, , oid] = match;
+    if (mode === "000000" && oid === ZERO_OID) continue;
+    if (!ACCEPTED_BLOB_MODES.has(mode) || !availableObjects.has(oid)) {
       fail("tree contains an unsupported object type or mode");
     }
-    if (entry.type === "tree") {
-      await collectTreeObjects(gitdir, entry.oid, output);
-    } else {
-      output.add(entry.oid);
-      if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    if (mode === "120000") {
+      const { blob } = await git.readBlob({ fs: import_node_fs.default, gitdir, oid });
+      validateSymlinkTarget(blob, entryPath);
     }
   }
 }
-async function collectCommitClosure(gitdir, commitOid) {
-  const objects = /* @__PURE__ */ new Set();
+function runRevisionWalk(gitdir, commitOid, baseOid) {
+  const revisions = baseOid ? [commitOid, `^${baseOid}`] : [commitOid, "--not", "--remotes"];
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, "rev-list", "--topo-order", "--boundary", ...revisions],
+    {
+      encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 3e4
+    }
+  );
+  if (result.error?.code === "ENOBUFS") fail("base-aware revision walk exceeds the output ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "revision walk failed";
+    fail(`base-aware revision walk failed: ${detail.slice(0, 500)}`);
+  }
+  const commits = [];
+  const boundaries = [];
+  for (const line of result.stdout.split("\n").filter(Boolean)) {
+    const isBoundary = line.startsWith("-");
+    const oid = isBoundary ? line.slice(1) : line;
+    if (!OID_PATTERN.test(oid)) fail("base-aware revision walk returned a malformed object id");
+    (isBoundary ? boundaries : commits).push(oid);
+  }
+  if (commits.length === 0 || commits[0] !== commitOid || commits.length > MAX_OBJECTS) {
+    fail("repository HEAD is not ahead of a bounded published base");
+  }
+  if (baseOid && !boundaries.includes(baseOid)) {
+    fail("explicit base object is not an ancestor boundary of repository HEAD");
+  }
+  return {
+    commits: [...new Set(commits)],
+    boundaries: [...new Set(boundaries)]
+  };
+}
+async function collectCommitClosure(gitdir, commitOid, baseOid = "") {
+  if (!OID_PATTERN.test(commitOid)) fail("commit closure contains a malformed object id");
+  if (baseOid && (!OID_PATTERN.test(baseOid) || baseOid === ZERO_OID)) {
+    fail("base object must be a non-zero SHA-1 commit");
+  }
+  const { commits, boundaries } = runRevisionWalk(gitdir, commitOid, baseOid);
+  const commitSet = new Set(commits);
+  const boundarySet = new Set(boundaries);
+  const commitTrees = [];
+  for (const oid of commits) {
+    const { commit } = await git.readCommit({ fs: import_node_fs.default, gitdir, oid });
+    commitTrees.push(commit.tree);
+    for (const parent of commit.parent) {
+      if (!commitSet.has(parent) && !boundarySet.has(parent)) {
+        fail("base-aware revision walk does not close over the new commit graph");
+      }
+    }
+  }
+  if (boundaries.length === 0) {
+    fail("published base boundary is unavailable; refusing an unbounded history walk");
+  }
+  const boundaryTrees = [];
+  for (const boundary of boundaries) {
+    const { commit } = await git.readCommit({ fs: import_node_fs.default, gitdir, oid: boundary });
+    boundaryTrees.push(commit.tree);
+  }
+  const newObjects = runNativeObjectInventory(
+    gitdir,
+    [commitOid, ...boundaries.map((oid) => `^${oid}`)],
+    "new-object inventory"
+  );
+  if (commits.some((oid) => !newObjects.has(oid)) || boundaries.some((oid) => newObjects.has(oid))) {
+    fail("new-object inventory disagrees with the bounded commit graph");
+  }
+  const objects = runNativeObjectInventory(
+    gitdir,
+    [...commitTrees, ...boundaryTrees],
+    "snapshot-object inventory"
+  );
+  for (const oid of [...commits, ...boundaries]) objects.add(oid);
+  if (objects.size > MAX_OBJECTS || [...newObjects].some((oid) => !objects.has(oid))) {
+    fail("snapshot-object inventory does not contain the bounded new objects");
+  }
+  await validateChangedEntries(gitdir, commits, objects);
+  return [...objects].sort();
+}
+async function collectImportedCommitClosure(gitdir, commitOid, indexedOids) {
+  const commits = [];
+  const boundaries = /* @__PURE__ */ new Set();
+  const commitTrees = [];
+  const boundaryTrees = [];
+  const seen = /* @__PURE__ */ new Set();
   const pending = [commitOid];
   while (pending.length > 0) {
     const oid = pending.pop();
-    if (objects.has(oid)) continue;
-    if (!OID_PATTERN.test(oid)) fail("commit closure contains a malformed object id");
-    objects.add(oid);
-    if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    if (seen.has(oid)) continue;
+    if (!OID_PATTERN.test(oid) || !indexedOids.has(oid)) {
+      fail("commit closure contains a missing or malformed object id");
+    }
+    seen.add(oid);
+    if (seen.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
     const { commit } = await git.readCommit({ fs: import_node_fs.default, gitdir, oid });
-    await collectTreeObjects(gitdir, commit.tree, objects);
+    const reachesUnpackedParent = commit.parent.length === 0 || commit.parent.some((parent) => !indexedOids.has(parent));
+    if (oid !== commitOid && reachesUnpackedParent) {
+      boundaries.add(oid);
+      boundaryTrees.push(commit.tree);
+      continue;
+    }
+    if (!indexedOids.has(commit.tree)) fail("commit closure contains a missing tree root");
+    commits.push(oid);
+    commitTrees.push(commit.tree);
     for (const parent of commit.parent) pending.push(parent);
   }
-  return [...objects].sort();
+  if (boundaries.size === 0) fail("published base boundary is unavailable; refusing an unbounded history walk");
+  const newObjects = runNativeObjectInventory(
+    gitdir,
+    [commitOid, ...[...boundaries].map((oid) => `^${oid}`)],
+    "imported new-object inventory"
+  );
+  const objects = runNativeObjectInventory(
+    gitdir,
+    [...commitTrees, ...boundaryTrees],
+    "imported snapshot-object inventory"
+  );
+  for (const oid of [...commits, ...boundaries]) objects.add(oid);
+  if (objects.size !== indexedOids.size || [...objects].some((oid) => !indexedOids.has(oid)) || [...newObjects].some((oid) => !objects.has(oid))) {
+    fail("imported object inventory does not match the declared pack");
+  }
+  await validateChangedEntries(gitdir, commits, objects);
+  return { objects: [...objects].sort(), boundaries: [...boundaries].sort() };
+}
+function packCommitClosure(gitdir, objectOids) {
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
+    [
+      "--git-dir",
+      gitdir,
+      "pack-objects",
+      "--stdout",
+      "--no-reuse-delta",
+      "--no-reuse-object"
+    ],
+    {
+      input: `${objectOids.join("\n")}
+`,
+      maxBuffer: MAX_PACK_BYTES + 1,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1"
+      },
+      timeout: 9e4
+    }
+  );
+  if (result.error?.code === "ENOBUFS") fail("commit pack exceeds the byte ceiling");
+  if (result.error?.code === "ETIMEDOUT") fail("commit pack exceeds the time ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native pack failed";
+    fail(`native commit pack failed: ${detail.slice(0, 500)}`);
+  }
+  return result.stdout;
 }
 function writeExclusive(filepath, bytes) {
   const fd = import_node_fs.default.openSync(filepath, import_node_fs.default.constants.O_CREAT | import_node_fs.default.constants.O_EXCL | import_node_fs.default.constants.O_WRONLY, 384);
@@ -18719,8 +18950,8 @@ async function clientCommand(args) {
   const { gitdir, headOid: newOid } = await resolveRepositoryGitContext(repoDir);
   if (!OID_PATTERN.test(newOid)) fail("repository HEAD is not a SHA-1 commit");
   await git.readCommit({ fs: import_node_fs.default, gitdir, oid: newOid });
-  const objectOids = await collectCommitClosure(gitdir, newOid);
-  const { packfile } = await git.packObjects({ fs: import_node_fs.default, gitdir, oids: objectOids, write: false });
+  const objectOids = await collectCommitClosure(gitdir, newOid, args.get("--base-oid") ?? "");
+  const packfile = packCommitClosure(gitdir, objectOids);
   if (!(packfile instanceof Uint8Array) || packfile.byteLength <= 0 || packfile.byteLength > MAX_PACK_BYTES) {
     fail("commit pack is empty or exceeds the byte ceiling");
   }
@@ -18821,7 +19052,11 @@ async function importWorkerBundle(args) {
   if (indexed.length !== declared.length || indexed.some((oid, index) => oid !== declared[index])) {
     fail("pack objects differ from the declared content-addressed bundle");
   }
-  const reachable = await collectCommitClosure(gitdir, request.expectedNewOid);
+  const { objects: reachable, boundaries } = await collectImportedCommitClosure(
+    gitdir,
+    request.expectedNewOid,
+    new Set(indexed)
+  );
   if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
     const reachableSet = new Set(reachable);
     const indexedSet = new Set(indexed);
@@ -18831,7 +19066,7 @@ async function importWorkerBundle(args) {
       `pack contains extra objects or does not close over the expected commit (reachable=${reachable.length}, indexed=${indexed.length}, missing=${missing.join(",") || "none"}, extra=${extra.join(",") || "none"})`
     );
   }
-  return { request, gitdir };
+  return { request, gitdir, boundaries };
 }
 async function validateCommand(args) {
   const { request } = await importWorkerBundle(args);
@@ -18839,7 +19074,7 @@ async function validateCommand(args) {
 `);
 }
 async function workerCommand(args) {
-  const { request, gitdir } = await importWorkerBundle(args);
+  const { request, gitdir, boundaries } = await importWorkerBundle(args);
   const tokenPath = import_node_process.default.env.CREDENTIALS_DIRECTORY ? import_node_path.default.join(import_node_process.default.env.CREDENTIALS_DIRECTORY, "github-token") : "";
   if (!tokenPath) fail("worker credential boundary is unavailable");
   const token = import_node_fs.default.readFileSync(tokenPath, "utf8").trim();
@@ -18851,6 +19086,13 @@ async function workerCommand(args) {
     value: request.expectedNewOid,
     force: false
   });
+  if (boundaries.length > 0) {
+    import_node_fs.default.writeFileSync(import_node_path.default.join(gitdir, "shallow"), `${boundaries.join("\n")}
+`, {
+      flag: "wx",
+      mode: 384
+    });
+  }
   const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
   const credentialHelper = [
     "!f() {",
@@ -18867,7 +19109,6 @@ async function workerCommand(args) {
       "push",
       "--porcelain",
       "--no-force",
-      "--no-thin",
       url,
       `refs/heads/paperclip-source:${request.remoteRef}`
     ],
