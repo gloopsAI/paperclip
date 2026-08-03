@@ -9,6 +9,11 @@
  * - enforce (default outside tests): deny with stable error codes
  * - observe: allow but return would-deny codes for logging
  * - off: no-op
+ *
+ * Thrash cooldown (implement path only):
+ * - PAPERCLIP_DISPATCH_THRASH_COOLDOWN_SEC (default 900)
+ * - PAPERCLIP_DISPATCH_THRASH_MIN_FAILS (default 1)
+ * - PAPERCLIP_DISPATCH_THRASH_ERROR_CODES (comma-separated override)
  */
 
 const FULL_SHA_RE = /\b[0-9a-f]{40}\b/i;
@@ -16,6 +21,18 @@ const EXACT_HEAD_LINE_RE =
   /(?:^|\n)\s*(?:exact\s*head|head\s*sha|headsha|base\s*sha|commit\s*sha)\s*[:=]?\s*`?([0-9a-f]{40})`?/i;
 
 export const DISPATCH_ASSIGN_ENV = "PAPERCLIP_DISPATCH_ASSIGN_POLICY";
+export const DISPATCH_THRASH_COOLDOWN_SEC_ENV = "PAPERCLIP_DISPATCH_THRASH_COOLDOWN_SEC";
+export const DISPATCH_THRASH_MIN_FAILS_ENV = "PAPERCLIP_DISPATCH_THRASH_MIN_FAILS";
+export const DISPATCH_THRASH_ERROR_CODES_ENV = "PAPERCLIP_DISPATCH_THRASH_ERROR_CODES";
+
+export const DEFAULT_THRASH_COOLDOWN_SEC = 900;
+export const DEFAULT_THRASH_MIN_FAILS = 1;
+/** Matches heartbeat WORKSPACE_VALIDATION_FAILURE_CODE / WORKSPACE_PREPARATION_FAILURE_CODE / process_lost. */
+export const DEFAULT_THRASH_ERROR_CODES = new Set([
+  "workspace_validation_failed",
+  "workspace_preparation_failed",
+  "process_lost",
+]);
 
 export const DISPATCH_ASSIGN_REASON = {
   ASSIGNEE_NOT_ALLOWLISTED: "dispatch.assignee_not_allowlisted",
@@ -25,6 +42,113 @@ export const DISPATCH_ASSIGN_REASON = {
   ISSUE_UNBOUND_WAKE: "dispatch.issue_unbound_wake",
   OK: "dispatch.ok",
 } as const;
+
+export type ThrashRunSignal = {
+  errorCode?: string | null;
+  status?: string | null;
+  finishedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+};
+
+export type ThrashCooldownResolution = {
+  thrashBlocked: boolean;
+  thrashDetail: string | null;
+  matchCount: number;
+};
+
+type EnvMap = NodeJS.ProcessEnv | Record<string, string | undefined>;
+
+function parsePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  opts?: { min?: number },
+): number {
+  const min = opts?.min ?? 0;
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < min) return fallback;
+  return Math.floor(n);
+}
+
+export function getThrashCooldownSec(env: EnvMap = process.env): number {
+  return parsePositiveInt(env[DISPATCH_THRASH_COOLDOWN_SEC_ENV], DEFAULT_THRASH_COOLDOWN_SEC, {
+    min: 0,
+  });
+}
+
+export function getThrashMinFails(env: EnvMap = process.env): number {
+  return parsePositiveInt(env[DISPATCH_THRASH_MIN_FAILS_ENV], DEFAULT_THRASH_MIN_FAILS, {
+    min: 1,
+  });
+}
+
+function thrashErrorCodeSet(env: EnvMap): Set<string> {
+  const raw = env[DISPATCH_THRASH_ERROR_CODES_ENV];
+  if (!raw?.trim()) return DEFAULT_THRASH_ERROR_CODES;
+  return new Set(
+    raw
+      .split(/[,\s]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+export function isThrashErrorCode(
+  code: string | null | undefined,
+  env: EnvMap = process.env,
+): boolean {
+  if (!code?.trim()) return false;
+  return thrashErrorCodeSet(env).has(code.trim().toLowerCase());
+}
+
+function parseRunTimestamp(run: ThrashRunSignal): Date | null {
+  const raw = run.finishedAt ?? run.createdAt;
+  if (raw == null) return null;
+  const d = raw instanceof Date ? raw : new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Pure: given recent failed runs for the issue, decide thrash block.
+ * Counts runs with thrash-class errorCode inside the cooldown window.
+ * Prefer status === "failed"; missing status is still a candidate when errorCode matches.
+ */
+export function resolveThrashCooldownFromRuns(input: {
+  runs: ThrashRunSignal[];
+  now?: Date;
+  env?: EnvMap;
+}): ThrashCooldownResolution {
+  const env = input.env ?? process.env;
+  const cooldownSec = getThrashCooldownSec(env);
+  const minFails = getThrashMinFails(env);
+  const now = input.now ?? new Date();
+  const windowStartMs = now.getTime() - cooldownSec * 1000;
+
+  let matchCount = 0;
+  const matchedCodes: string[] = [];
+  for (const run of input.runs) {
+    const status = (run.status ?? "").trim().toLowerCase();
+    // Explicit non-failed statuses never count; missing status may if errorCode matches.
+    if (status && status !== "failed") continue;
+    if (!isThrashErrorCode(run.errorCode, env)) continue;
+    const ts = parseRunTimestamp(run);
+    if (!ts || ts.getTime() < windowStartMs) continue;
+    matchCount += 1;
+    if (run.errorCode?.trim()) matchedCodes.push(run.errorCode.trim());
+  }
+
+  const thrashBlocked = matchCount >= minFails;
+  if (!thrashBlocked) {
+    return { thrashBlocked: false, thrashDetail: null, matchCount };
+  }
+
+  const uniqueCodes = [...new Set(matchedCodes)];
+  const thrashDetail =
+    `thrash cooldown: ${matchCount} thrash-class fail(s) in last ${cooldownSec}s` +
+    (uniqueCodes.length > 0 ? ` (${uniqueCodes.join(", ")})` : "");
+
+  return { thrashBlocked: true, thrashDetail, matchCount };
+}
 
 export type DispatchAssignReasonCode =
   (typeof DISPATCH_ASSIGN_REASON)[keyof typeof DISPATCH_ASSIGN_REASON];
@@ -253,8 +377,15 @@ export function evaluateDispatchAssignment(input: {
     }
   }
 
+  // Thrash cooldown only blocks implement-style assigns (Wren/Mason/engineer).
+  // Pure review assigns (Argus/qa) proceed even when thrashBlocked is true.
   if (input.thrashBlocked) {
-    reasonCodes.push(DISPATCH_ASSIGN_REASON.THRASH_COOLDOWN);
+    const pureReviewAssign = isReviewAssignee && !isImplementAssignee;
+    const implementStyleAssign =
+      isImplementAssignee || (implement && !review && !isReviewAssignee);
+    if (!pureReviewAssign && implementStyleAssign) {
+      reasonCodes.push(DISPATCH_ASSIGN_REASON.THRASH_COOLDOWN);
+    }
   }
 
   // dedupe

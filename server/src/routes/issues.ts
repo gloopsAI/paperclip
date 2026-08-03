@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -191,6 +191,9 @@ import {
 import {
   evaluateDispatchAssignment,
   DISPATCH_ASSIGN_REASON,
+  getThrashCooldownSec,
+  isDispatchActor,
+  resolveThrashCooldownFromRuns,
 } from "../services/dispatch-assignment-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -7989,6 +7992,40 @@ export function issueRoutes(
             typeof updateFields.description === "string"
               ? updateFields.description
               : existing.description;
+          // Thrash cooldown query only when actor is Dispatch (avoid extra DB for others)
+          let thrashBlocked = false;
+          let thrashDetail: string | null = null;
+          const actorIsDispatch = isDispatchActor({
+            actorType: "agent",
+            actorAgentId: req.actor.agentId,
+            actorAgentName: dispatchActor?.name ?? null,
+            actorAgentRole: dispatchActor?.role ?? null,
+          });
+          if (actorIsDispatch) {
+            const cooldownSec = getThrashCooldownSec(process.env);
+            const since = new Date(Date.now() - cooldownSec * 1000);
+            const thrashRuns = await db
+              .select({
+                errorCode: heartbeatRuns.errorCode,
+                status: heartbeatRuns.status,
+                finishedAt: heartbeatRuns.finishedAt,
+                createdAt: heartbeatRuns.createdAt,
+              })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, existing.companyId),
+                  eq(heartbeatRuns.status, "failed"),
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${existing.id}`,
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since}`,
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.createdAt))
+              .limit(20);
+            const thrash = resolveThrashCooldownFromRuns({ runs: thrashRuns });
+            thrashBlocked = thrash.thrashBlocked;
+            thrashDetail = thrash.thrashDetail;
+          }
           const decision = evaluateDispatchAssignment({
             actorType: "agent",
             actorAgentId: req.actor.agentId,
@@ -8002,6 +8039,8 @@ export function issueRoutes(
             issueWorkMode: existing.workMode,
             projectWorkspaceId: pwsId,
             workspaceRepoRef,
+            thrashBlocked,
+            thrashDetail,
           });
           if (decision.actorIsDispatch && decision.reasonCodes.length > 0) {
             logger.info(
