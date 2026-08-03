@@ -222,12 +222,36 @@ const COORDINATION_ROLE_ALIASES = [
   "project manager",
 ] as const;
 
+/** Sentinel/Harbor host plane babysitting residual (not product implement work). */
+const OPS_PLANE_RESIDUAL_TITLE_RE = /\[sentinel\/plane\]/i;
+const OPS_PLANE_RESIDUAL_DESC_RE = /##\s*plane residual\s*\(ops\b/i;
+
+/**
+ * True for plane-steward ops residuals. These must not take the product
+ * implement/review/release workspace-admit path (C2 create / C1 claim).
+ */
+export function isOpsPlaneResidualPacket(
+  input: Pick<IssuePacketReadinessInput, "title" | "description">,
+): boolean {
+  const title = input.title ?? "";
+  const description = input.description ?? "";
+  return (
+    OPS_PLANE_RESIDUAL_TITLE_RE.test(title) || OPS_PLANE_RESIDUAL_DESC_RE.test(description)
+  );
+}
+
 function resolveProfile(input: IssuePacketReadinessInput): IssuePacketProfile {
   const status = normalizeToken(input.status);
   if (status === "done" || status === "cancelled") return "exempt";
 
   const workMode = normalizeToken(input.workMode);
   if (workMode === "skill_test" || workMode === "ask") return "probe";
+
+  // Host plane residuals (Sentinel/Harbor loops) are coordination-shaped ops work,
+  // even when assignee is Harbor (release role) or Sentinel (engineer).
+  if (isOpsPlaneResidualPacket(input)) {
+    return "coordination";
+  }
 
   const title = input.title ?? "";
   const description = input.description ?? "";

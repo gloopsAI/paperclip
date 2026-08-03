@@ -4,6 +4,7 @@ import {
   evaluateIssuePacketReadiness,
   extractMarkdownSection,
   getIssuePacketDorMode,
+  isOpsPlaneResidualPacket,
   type IssuePacketReadinessInput,
 } from "./issue-packet-readiness.js";
 
@@ -326,6 +327,77 @@ describe("evaluateIssuePacketReadiness — coordination", () => {
     );
     expect(result.ready).toBe(false);
     expect(result.reasonCodes).toContain(ISSUE_PACKET_REASON.MISSING_OBJECTIVE);
+  });
+});
+
+describe("evaluateIssuePacketReadiness — ops plane residual", () => {
+  const opsDescription = [
+    "## Plane residual (ops — not product code work)",
+    "Restore Induct SDLC plane preflight to green without paging Zach.",
+    "",
+    "## Codes",
+    "```json",
+    '{"criticalCodes":["lease.dirty_or_missing"]}',
+    "```",
+    "",
+    "## Recommended recipes",
+    "- `induct-lease-refresh`",
+    "",
+    "## Bounds",
+    "- Do not page Zach",
+    "",
+    "## Decision/Outcome",
+    "Plane preflight green with empty criticalCodes and campaign hours ≥ 12.",
+  ].join("\n");
+
+  it("detects ops residual by title prefix and desc header", () => {
+    expect(
+      isOpsPlaneResidualPacket({
+        title: "[Sentinel/Plane] induct lease dirty",
+        description: "no marker body",
+      }),
+    ).toBe(true);
+    expect(
+      isOpsPlaneResidualPacket({
+        title: "Some residual",
+        description: opsDescription,
+      }),
+    ).toBe(true);
+    expect(
+      isOpsPlaneResidualPacket({
+        title: "Implement product feature",
+        description: "## Scope\n- a.ts\n## Acceptance\ndone",
+      }),
+    ).toBe(false);
+  });
+
+  it("classifies as coordination even when assignee is Harbor/release", () => {
+    const result = evaluateIssuePacketReadiness(
+      {
+        title: "[Sentinel/Plane] campaign deadline / epoch",
+        description: opsDescription,
+        assigneeName: "Harbor",
+        assigneeRole: "devops",
+      },
+      ENFORCE,
+    );
+    expect(result.profile).toBe("coordination");
+    expect(result.ready).toBe(true);
+  });
+
+  it("classifies as coordination for Sentinel engineer without implement packet", () => {
+    const result = evaluateIssuePacketReadiness(
+      {
+        title: "[Sentinel/Plane] induct lease dirty",
+        description: opsDescription,
+        assigneeName: "Sentinel",
+        assigneeRole: "engineer",
+      },
+      ENFORCE,
+    );
+    expect(result.profile).toBe("coordination");
+    expect(result.ready).toBe(true);
+    expect(result.reasonCodes).toEqual([]);
   });
 });
 
