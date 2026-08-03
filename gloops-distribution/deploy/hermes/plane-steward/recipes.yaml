@@ -1,0 +1,182 @@
+# Plane Steward recipe pack (C5)
+# Machine-readable twin: recipes.json (stdlib loader). Keep in sync.
+# schemaVersion: gloops.plane-steward.recipes.v1
+
+schemaVersion: gloops.plane-steward.recipes.v1
+
+authority:
+  allowed:
+    - hostctl.apply
+    - board.issue.patch
+    - agent.wakeup.issue_bound
+  forbidden:
+    - product.code.free_edit
+    - company.unfreeze_whole
+    - induct.unpause
+    - heartbeat_scheduler.enable
+    - agent.wakeup.naked
+
+defaults:
+  dryRun: true
+  requireExclusiveWriter: true
+  requireAllowlistedPath: true
+  heartbeatSchedulerEnabled: false
+
+pathAllowlistRoots:
+  - /opt/data/workspace/
+  - /opt/paperclip/hermes-execution-state/workspace/
+
+recipes:
+  - id: dirty-tree-clean
+    title: Clean dirty git tree on managed workspace
+    signals:
+      - workspace_admit.dirty_tree
+      - workspace_validation_failed:dirty
+      - dirty_tree
+    authority: [local.git.reset_clean]
+    requires:
+      exclusiveWriter: true
+      allowlistedPath: true
+      cwdIsGit: true
+    params:
+      cwd: { type: path, required: true }
+      mode: { type: enum, values: [reset-hard-clean-fdx], default: reset-hard-clean-fdx }
+    steps:
+      - verify path under allowlist roots
+      - verify exclusive-writer / hostctl holder not conflicting
+      - git status --porcelain (observe)
+      - git reset --hard HEAD
+      - git clean -fdx
+    failClosed:
+      - path outside allowlist
+      - not a git worktree
+      - exclusive-writer required and missing
+
+  - id: wrong-head-rebase
+    title: Checkout exact 40-char SHA on managed workspace
+    signals:
+      - workspace_admit.head_mismatch
+      - workspace_admit.expected_head_not_full_sha
+      - exact_head_mismatch
+      - head_mismatch
+    authority: [local.git.checkout_detach]
+    requires:
+      exclusiveWriter: true
+      allowlistedPath: true
+      cwdIsGit: true
+      expectedShaFull40: true
+    params:
+      cwd: { type: path, required: true }
+      expectedSha: { type: sha40, required: true }
+    steps:
+      - reject if expectedSha is not full 40-char lowercase hex
+      - verify path under allowlist roots
+      - git fetch origin <sha> when missing (optional; may use bootstrap)
+      - git checkout --detach <expectedSha>
+      - verify HEAD == expectedSha
+    failClosed:
+      - branch name as expected head
+      - short/uppercase SHA
+      - path outside allowlist
+
+  - id: acl-fix
+    title: Make workspace readable by node/995 runner
+    signals:
+      - workspace_admit.cwd_not_readable
+      - acl_denied
+      - EACCES
+    authority: [local.fs.acl]
+    requires:
+      exclusiveWriter: true
+      allowlistedPath: true
+    params:
+      cwd: { type: path, required: true }
+      uid: { type: int, default: 995 }
+      gid: { type: int, default: 995 }
+    steps:
+      - verify path under allowlist roots
+      - chmod -R u+rwX,g+rX (bounded)
+      - optional setfacl -m u:995:rx on tree
+      - verify access as uid 995 is possible (stat)
+    failClosed:
+      - path outside allowlist
+      - chown to arbitrary uid outside node/995
+
+  - id: readmit-budget-bound-wake
+    title: Attach resourceBudget, hostctl READMIT one UUID, issue-bound wake
+    signals:
+      - readmit_budget_required
+      - backlog_bankruptcy.company_frozen
+      - execution_admission.issue_unbound
+      - cancel_lt_5s
+    authority:
+      - hostctl.apply
+      - board.issue.patch
+      - agent.wakeup.issue_bound
+    requires:
+      issueIdUuid: true
+      resourceBudgetPresentOrAttachable: true
+      singleUuidReadmit: true
+    params:
+      issueId: { type: uuid, required: true }
+      agentId: { type: string, required: true }
+      resourceBudget:
+        type: object
+        required: false
+        default:
+          maxInputTokens: 200000
+          maxOutputTokens: 32000
+      hostctlIdentity:
+        type: object
+        required: true
+        fields: [agentSlug, sessionId, missionId]
+    steps:
+      - reject if issueId missing/null
+      - PATCH issue executionPolicy.resourceBudget if missing
+      - hostctl apply READMIT: append issue UUID to BACKLOG + CONTROLLED_SWARM lists only
+      - POST /agents/{id}/wakeup with payload.issueId (never naked)
+      - HEARTBEAT_SCHEDULER_ENABLED must remain false
+    failClosed:
+      - null issueId
+      - whole-company unfreeze
+      - enabling HEARTBEAT_SCHEDULER
+      - multi-uuid bulk readmit without explicit list
+
+  - id: never-enable-global-heartbeat-scheduler
+    title: "Guard: refuse enabling HEARTBEAT_SCHEDULER under controlled-swarm"
+    signals:
+      - preflight_death_spiral
+      - HEARTBEAT_SCHEDULER_ENABLED=true
+      - controlled_swarm_envelope
+    authority: [hostctl.apply.read_only_guard]
+    requires:
+      controlledSwarmContext: true
+    params: {}
+    steps:
+      - read runtime.env HEARTBEAT_SCHEDULER_ENABLED
+      - "if true under controlled-swarm: hostctl apply set false (only when --apply)"
+      - never set true from this recipe
+    failClosed:
+      - any request to enable HEARTBEAT_SCHEDULER_ENABLED=true
+    hardRule: HEARTBEAT_SCHEDULER stays false under controlled-swarm
+
+  - id: null-issueId-wake-reject
+    title: Reject null-issueId wake; re-issue with payload.issueId
+    signals:
+      - company_frozen_with_null_issueId
+      - execution_admission.issue_unbound
+      - wakeup_missing_issueId
+    authority: [agent.wakeup.issue_bound]
+    requires:
+      issueIdUuid: true
+    params:
+      issueId: { type: uuid, required: true }
+      agentId: { type: string, required: true }
+    steps:
+      - detect wake/invoke with null/missing payload.issueId
+      - do NOT thrash company READMIT / unfreeze
+      - "re-issue POST /agents/{id}/wakeup with {payload: {issueId}}"
+      - prefer assignment rebind if checkout DoR 422
+    failClosed:
+      - naked wake without issueId
+      - treating null-issueId as company_frozen requiring unfreeze
