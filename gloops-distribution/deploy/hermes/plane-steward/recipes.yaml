@@ -229,3 +229,19 @@ recipes:
     command: python3 /usr/local/lib/paperclip-gloops/bin/campaign-deadline-alert.py
     applyCommand: python3 /usr/local/lib/paperclip-gloops/bin/campaign-deadline-alert.py --apply
     notes: Once-per-epoch. Never renews or opens a campaign.
+
+  - id: harbor-campaign-reopen
+    title: Harbor standing reopen of campaign epoch (open-campaign-24h)
+    signals:
+      - campaign.deadline_lt_6h
+      - campaign.missing_epoch
+      - campaign.deadline_lt_12h
+      - campaign_deadline_imminent
+      - harbor_campaign_reopen
+    dryRunDefault: true
+    command: /usr/local/lib/paperclip-gloops/bin/harbor-campaign-reopen.sh --dry-run
+    applyCommand: /usr/local/lib/paperclip-gloops/bin/harbor-campaign-reopen.sh --execute --confirm-execute
+    notes: >
+      Harbor-only. Requires standing auth (zach-standing-delegation).
+      Wraps open-campaign-24h.sh + export deadline. Sentinel must never invoke.
+

@@ -1,0 +1,18 @@
+[Unit]
+Description=Paperclip Harbor plane loop (standing campaign reopen)
+After=network-online.target paperclip-gloops.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/paperclip-gloops/runtime.env
+EnvironmentFile=-/etc/paperclip-gloops/communications.env
+Environment=PAPERCLIP_API=http://127.0.0.1:3100
+Environment=PAPERCLIP_BOARD_TOKEN_FILE=/etc/paperclip-gloops/operator-board-token
+Environment=PAPERCLIP_COMPANY_ID=89ed0964-d918-4fcc-b830-5be49d2d4089
+Environment=PAPERCLIP_HARBOR_AGENT_ID=a3a1cb4c-390a-4d40-9a88-8609183ed012
+Environment=HARBOR_CAMPAIGN_REOPEN_BIN=/usr/local/lib/paperclip-gloops/bin/harbor-campaign-reopen.sh
+Environment=HARBOR_REOPEN_STANDING_AUTH=/var/lib/paperclip-gloops/campaign-deadman/standing/harbor-reopen-authorized.json
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/plane-steward/harbor-plane-loop.py
+Nice=10

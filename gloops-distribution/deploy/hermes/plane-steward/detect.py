@@ -135,6 +135,15 @@ SIGNAL_TO_RECIPE: list[tuple[str, str, re.Pattern[str] | None]] = [
         ),
     ),
     (
+        "harbor_campaign_reopen",
+        "harbor-campaign-reopen",
+        re.compile(
+            r"harbor.?campaign.?reopen|campaign\.deadline_lt_6h|campaign\.missing_epoch|"
+            r"standing.?harbor.?reopen|OPEN CAMPAIGN 24H",
+            re.I,
+        ),
+    ),
+    (
         "campaign_deadline_block",
         "sdlc-preflight-block",
         re.compile(

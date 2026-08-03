@@ -355,6 +355,30 @@
         "preflight campaign.deadline_* codes"
       ],
       "notes": "Once-per-epoch alert. Never renews or opens a campaign."
+    },
+    {
+      "id": "harbor-campaign-reopen",
+      "title": "Harbor standing reopen of campaign epoch (open-campaign-24h)",
+      "signals": [
+        "campaign.deadline_lt_6h",
+        "campaign.missing_epoch",
+        "campaign.deadline_lt_12h",
+        "campaign_deadline_imminent",
+        "harbor_campaign_reopen"
+      ],
+      "authority": [
+        "harbor.standing_reopen",
+        "host.campaign.open_via_standing_auth"
+      ],
+      "dryRunDefault": true,
+      "command": "/usr/local/lib/paperclip-gloops/bin/harbor-campaign-reopen.sh --dry-run",
+      "applyCommand": "/usr/local/lib/paperclip-gloops/bin/harbor-campaign-reopen.sh --execute --confirm-execute",
+      "when": [
+        "campaign hours remaining under 6",
+        "standing Harbor auth present",
+        "residual [Harbor/Campaign] or [Sentinel/Plane] with campaign codes"
+      ],
+      "notes": "Harbor-only. Requires standing auth at campaign-deadman/standing/harbor-reopen-authorized.json (Zach one-time delegation). Wraps host open-campaign-24h.sh + export-campaign-deadline-to-runtime.sh. Sentinel must never invoke this. maxAutoReopensPerDay from standing file."
     }
   ]
 }

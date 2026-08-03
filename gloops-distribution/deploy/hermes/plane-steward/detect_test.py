@@ -94,6 +94,17 @@ class DetectTest(unittest.TestCase):
         self.assertTrue(any(m["recipeId"] == "campaign-deadline-alert" for m in matches))
         self.assertTrue(any(m["signal"] == "campaign_deadline_imminent" for m in matches))
 
+    def test_harbor_campaign_reopen_signal(self) -> None:
+        matches = detect.detect_in_text(
+            "Harbor standing reopen residual campaign.deadline_lt_6h OPEN CAMPAIGN 24H"
+        )
+        self.assertTrue(any(m["recipeId"] == "harbor-campaign-reopen" for m in matches))
+
+    def test_recipes_include_harbor_campaign_reopen(self) -> None:
+        pack = detect.load_recipes()
+        ids = {r["id"] for r in pack["recipes"]}
+        self.assertIn("harbor-campaign-reopen", ids)
+
     def test_induct_lease_stale(self) -> None:
         matches = detect.detect_events(
             [{"errorCode": "lease.dirty_or_missing", "detail": "verify-induct-lease failed"}]
