@@ -23,6 +23,10 @@ function git(cwd, ...args) {
   return result.stdout.trim();
 }
 
+function markRemoteBase(repo, oid = "HEAD") {
+  git(repo, "update-ref", "refs/remotes/origin/gloops/stable", oid);
+}
+
 function runTool(args, cwd, env = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [tool, ...args], {
@@ -112,10 +116,297 @@ test("client emits a content-addressed commit closure without retaining ingress 
   git(repo, "init");
   git(repo, "config", "user.name", "Calibration");
   git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "proof.txt"), "remote base\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "remote base");
+  markRemoteBase(repo);
   fs.writeFileSync(path.join(repo, "proof.txt"), "one owner, one run, one push\n");
   git(repo, "add", "proof.txt");
   git(repo, "commit", "-m", "calibration proof");
   await runClientAgainstBroker(repo, root);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("client bounds a deep history at the direct remote-base parent", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-deep-history-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  for (let index = 0; index < 80; index += 1) {
+    fs.writeFileSync(path.join(repo, "history.txt"), `history ${index}\n`);
+    git(repo, "add", "history.txt");
+    git(repo, "commit", "-m", `history ${index}`);
+  }
+  const base = git(repo, "rev-parse", "HEAD");
+  const preBase = git(repo, "rev-parse", "HEAD~1");
+  markRemoteBase(repo, base);
+  fs.writeFileSync(path.join(repo, "proof.txt"), "bounded delta\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "bounded delta");
+
+  const manifest = await runClientAgainstBroker(repo, root);
+  assert.ok(manifest.objectOids.includes(base));
+  assert.ok(!manifest.objectOids.includes(preBase));
+  assert.ok(manifest.objectCount <= 8, `expected bounded closure, got ${manifest.objectCount}`);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("client includes every commit in a local stack above the published base", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-stacked-history-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "proof.txt"), "base\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "published base");
+  const base = git(repo, "rev-parse", "HEAD");
+  markRemoteBase(repo, base);
+  const commits = [];
+  for (let index = 0; index < 3; index += 1) {
+    fs.writeFileSync(path.join(repo, "proof.txt"), `stack ${index}\n`);
+    git(repo, "add", "proof.txt");
+    git(repo, "commit", "-m", `stack ${index}`);
+    commits.push(git(repo, "rev-parse", "HEAD"));
+  }
+  const manifest = await runClientAgainstBroker(repo, root);
+  assert.ok(manifest.objectOids.includes(base));
+  for (const oid of commits) assert.ok(manifest.objectOids.includes(oid));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("client fails closed when a remote-base parent is unavailable", async (t) => {
+  await t.test("root commit has no base", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-root-base-"));
+    const repo = path.join(root, "repo");
+    fs.mkdirSync(repo);
+    git(repo, "init");
+    git(repo, "config", "user.name", "Calibration");
+    git(repo, "config", "user.email", "calibration@example.com");
+    fs.writeFileSync(path.join(repo, "proof.txt"), "root\n");
+    git(repo, "add", "proof.txt");
+    git(repo, "commit", "-m", "root");
+    const result = await runTool([
+      "client",
+      "--run-id", runId,
+      "--repo-dir", repo,
+      "--socket", path.join(root, "missing.sock"),
+      "--ingress", root,
+    ], repo);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /no remote-base parent/);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await t.test("declared base object is missing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-missing-base-"));
+    const repo = path.join(root, "repo");
+    fs.mkdirSync(repo);
+    git(repo, "init");
+    git(repo, "config", "user.name", "Calibration");
+    git(repo, "config", "user.email", "calibration@example.com");
+    fs.writeFileSync(path.join(repo, "proof.txt"), "root\n");
+    git(repo, "add", "proof.txt");
+    git(repo, "commit", "-m", "root");
+    const tree = git(repo, "rev-parse", "HEAD^{tree}");
+    const missing = "f".repeat(40);
+    const body = [
+      `tree ${tree}`,
+      `parent ${missing}`,
+      "author Calibration <calibration@example.com> 1700000000 +0000",
+      "committer Calibration <calibration@example.com> 1700000000 +0000",
+      "",
+      "missing base",
+      "",
+    ].join("\n");
+    const literal = spawnSync("git", ["hash-object", "--literally", "-t", "commit", "-w", "--stdin"], {
+      cwd: repo,
+      input: body,
+      encoding: "utf8",
+    });
+    assert.equal(literal.status, 0, literal.stderr);
+    git(repo, "update-ref", "HEAD", literal.stdout.trim());
+    const result = await runTool([
+      "client",
+      "--run-id", runId,
+      "--repo-dir", repo,
+      "--socket", path.join(root, "missing.sock"),
+      "--ingress", root,
+    ], repo);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Could not (?:read|find)|not found|missing/i);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+test("client accepts contained committed symlinks in the content-addressed closure", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-contained-symlink-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "base.txt"), "remote base\n");
+  git(repo, "add", "base.txt");
+  git(repo, "commit", "-m", "remote base");
+  markRemoteBase(repo);
+  fs.mkdirSync(path.join(repo, ".claude", "skills"), { recursive: true });
+  fs.mkdirSync(path.join(repo, ".agents", "skills"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "skills"), { recursive: true });
+  fs.writeFileSync(path.join(repo, ".agents", "skills", "company-creator"), "company creator\n");
+  fs.writeFileSync(path.join(repo, "skills", "paperclip"), "paperclip\n");
+  fs.symlinkSync("../../.agents/skills/company-creator", path.join(repo, ".claude", "skills", "company-creator"));
+  fs.symlinkSync("../../skills/paperclip", path.join(repo, ".claude", "skills", "paperclip"));
+  git(repo, "add", "--all");
+  git(repo, "commit", "-m", "contained symlink closure");
+
+  await runClientAgainstBroker(repo, root);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("client rejects unsafe committed symlink targets before contacting the broker", async (t) => {
+  const cases = [
+    ["absolute", "/etc/passwd"],
+    ["escaping", "../../../outside"],
+    ["git-boundary", "../../.git/config"],
+    ["case-folded-git-boundary", "../../.GIT/hooks"],
+    ["nested-git-boundary", "../../sub/.git/config"],
+    ["windows-drive-absolute", "C:/outside"],
+    ["windows-drive-relative", "C:outside"],
+    ["control-bearing", "bad\npath"],
+    ["backslash-bearing", "..\\..\\outside"],
+  ];
+  for (const [name, target] of cases) {
+    await t.test(name, async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `github-push-client-${name}-symlink-`));
+      const repo = path.join(root, "repo");
+      fs.mkdirSync(path.join(repo, ".claude", "skills"), { recursive: true });
+      git(repo, "init");
+      git(repo, "config", "user.name", "Calibration");
+      git(repo, "config", "user.email", "calibration@example.com");
+      fs.writeFileSync(path.join(repo, "base.txt"), "remote base\n");
+      git(repo, "add", "base.txt");
+      git(repo, "commit", "-m", "remote base");
+      markRemoteBase(repo);
+      fs.symlinkSync(target, path.join(repo, ".claude", "skills", "unsafe"));
+      git(repo, "add", "--all");
+      git(repo, "commit", "-m", `${name} symlink target`);
+      const result = await runTool([
+        "client",
+        "--run-id", runId,
+        "--repo-dir", repo,
+        "--socket", path.join(root, "missing.sock"),
+        "--ingress", root,
+      ], repo);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /unsafe symbolic link target/);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+  }
+});
+
+test("client revalidates a reused symlink subtree in every repository path context", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-reused-symlink-tree-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(path.join(repo, "deep", "nested"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "nested"), { recursive: true });
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "base.txt"), "remote base\n");
+  git(repo, "add", "base.txt");
+  git(repo, "commit", "-m", "remote base");
+  markRemoteBase(repo);
+  fs.writeFileSync(path.join(repo, "inside"), "inside\n");
+  fs.symlinkSync("../../inside", path.join(repo, "deep", "nested", "link"));
+  fs.symlinkSync("../../inside", path.join(repo, "nested", "link"));
+  git(repo, "add", "--all");
+  git(repo, "commit", "-m", "same symlink tree in safe and escaping contexts");
+  assert.equal(
+    git(repo, "rev-parse", "HEAD:deep/nested"),
+    git(repo, "rev-parse", "HEAD:nested"),
+    "fixture must reuse the exact same tree object",
+  );
+
+  const result = await runTool([
+    "client",
+    "--run-id", runId,
+    "--repo-dir", repo,
+    "--socket", path.join(root, "missing.sock"),
+    "--ingress", root,
+  ], repo);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unsafe symbolic link target/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("client rejects empty, oversized, and non-UTF-8 symlink blobs", async (t) => {
+  const cases = [
+    ["empty", Buffer.alloc(0)],
+    ["oversized", Buffer.alloc(4097, "a")],
+    ["non-utf8", Buffer.from([0xff])],
+  ];
+  for (const [name, blob] of cases) {
+    await t.test(name, async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `github-push-client-${name}-symlink-blob-`));
+      const repo = path.join(root, "repo");
+      fs.mkdirSync(repo);
+      git(repo, "init");
+      git(repo, "config", "user.name", "Calibration");
+      git(repo, "config", "user.email", "calibration@example.com");
+      fs.writeFileSync(path.join(repo, "base.txt"), "remote base\n");
+      git(repo, "add", "base.txt");
+      git(repo, "commit", "-m", "remote base");
+      markRemoteBase(repo);
+      const hashed = spawnSync("git", ["hash-object", "-w", "--stdin"], {
+        cwd: repo,
+        input: blob,
+        encoding: "utf8",
+      });
+      assert.equal(hashed.status, 0, hashed.stderr);
+      const oid = hashed.stdout.trim();
+      git(repo, "update-index", "--add", "--cacheinfo", `120000,${oid},.claude/skills/unsafe`);
+      git(repo, "commit", "-m", `${name} symlink blob`);
+      const result = await runTool([
+        "client",
+        "--run-id", runId,
+        "--repo-dir", repo,
+        "--socket", path.join(root, "missing.sock"),
+        "--ingress", root,
+      ], repo);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /unsafe symbolic link target/);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+  }
+});
+
+test("client rejects a committed gitlink before contacting the broker", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-gitlink-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "base.txt"), "base\n");
+  git(repo, "add", "base.txt");
+  git(repo, "commit", "-m", "base");
+  const base = git(repo, "rev-parse", "HEAD");
+  markRemoteBase(repo, base);
+  git(repo, "update-index", "--add", "--cacheinfo", `160000,${base},vendor/submodule`);
+  git(repo, "commit", "-m", "gitlink must be rejected");
+  const result = await runTool([
+    "client",
+    "--run-id", runId,
+    "--repo-dir", repo,
+    "--socket", path.join(root, "missing.sock"),
+    "--ingress", root,
+  ], repo);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unsupported object type or mode/);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -131,6 +422,7 @@ test("client emits a commit closure from a Paperclip-managed git worktree", asyn
   fs.writeFileSync(path.join(repo, "proof.txt"), "base\n");
   git(repo, "add", "proof.txt");
   git(repo, "commit", "-m", "base");
+  markRemoteBase(repo);
   fs.mkdirSync(worktreeParent, { recursive: true });
   git(repo, "worktree", "add", "-b", "paperclip-run", worktree, "HEAD");
   fs.writeFileSync(path.join(worktree, "proof.txt"), "worktree proof\n");
@@ -169,6 +461,10 @@ test("worker imports a complete closure into a native bare repository", async ()
   git(repo, "init");
   git(repo, "config", "user.name", "Calibration");
   git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "base.txt"), "remote base\n");
+  git(repo, "add", "base.txt");
+  git(repo, "commit", "-m", "remote base");
+  const parent = git(repo, "rev-parse", "HEAD");
   fs.mkdirSync(path.join(repo, "nested"), { recursive: true });
   fs.writeFileSync(path.join(repo, "nested", "proof.txt"), "complete closure\n");
   git(repo, "add", "nested/proof.txt");
@@ -176,13 +472,14 @@ test("worker imports a complete closure into a native bare repository", async ()
   const head = git(repo, "rev-parse", "HEAD");
   const objectOids = [
     head,
+    parent,
     git(repo, "rev-parse", "HEAD^{tree}"),
     git(repo, "rev-parse", "HEAD:nested"),
     git(repo, "rev-parse", "HEAD:nested/proof.txt"),
   ].sort();
-  const packed = spawnSync("git", ["pack-objects", "--stdout", "--revs"], {
+  const packed = spawnSync("git", ["pack-objects", "--stdout"], {
     cwd: repo,
-    input: `${head}\n`,
+    input: `${objectOids.join("\n")}\n`,
   });
   assert.equal(packed.status, 0, packed.stderr?.toString());
   fs.writeFileSync(pack, packed.stdout);
@@ -205,7 +502,7 @@ test("worker imports a complete closure into a native bare repository", async ()
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("worker rejects a committed symlink before making a request", async () => {
+test("worker accepts a contained committed symlink closure", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-symlink-"));
   const repo = path.join(root, "repo");
   const gitdir = path.join(root, "worker.git");
@@ -216,17 +513,22 @@ test("worker rejects a committed symlink before making a request", async () => {
   git(repo, "config", "user.name", "Calibration");
   git(repo, "config", "user.email", "calibration@example.com");
   fs.writeFileSync(path.join(repo, "target.txt"), "target\n");
+  git(repo, "add", "target.txt");
+  git(repo, "commit", "-m", "remote base");
+  const parent = git(repo, "rev-parse", "HEAD");
   fs.symlinkSync("target.txt", path.join(repo, "link.txt"));
-  git(repo, "add", "target.txt", "link.txt");
-  git(repo, "commit", "-m", "symlink must be rejected");
+  git(repo, "add", "link.txt");
+  git(repo, "commit", "-m", "contained symlink closure");
   const head = git(repo, "rev-parse", "HEAD");
-  const objectOids = git(repo, "rev-list", "--objects", "--no-object-names", "HEAD")
-    .split("\n")
-    .filter(Boolean)
-    .sort();
-  const packed = spawnSync("git", ["pack-objects", "--stdout", "--revs"], {
+  const objectOids = [
+    head,
+    parent,
+    git(repo, "rev-parse", "HEAD^{tree}"),
+    git(repo, "rev-parse", "HEAD:link.txt"),
+  ].sort();
+  const packed = spawnSync("git", ["pack-objects", "--stdout"], {
     cwd: repo,
-    input: `${head}\n`,
+    input: `${objectOids.join("\n")}\n`,
   });
   assert.equal(packed.status, 0, packed.stderr?.toString());
   fs.writeFileSync(pack, packed.stdout);
@@ -242,8 +544,7 @@ test("worker rejects a committed symlink before making a request", async () => {
     gitdir,
   }));
   const result = await runTool(["validate", "--request", request], root);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /unsupported object type or mode/);
+  assert.equal(result.status, 0, result.stderr);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

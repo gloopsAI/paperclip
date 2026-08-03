@@ -16316,7 +16316,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
         packfile: new Uint8Array(packfile)
       };
     }
-    async function packObjects2({
+    async function packObjects({
       fs: fs2,
       dir,
       gitdir = join(dir, ".git"),
@@ -16835,7 +16835,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
       });
       return blob;
     }
-    async function readBlob({
+    async function readBlob2({
       fs: fs2,
       dir,
       gitdir = join(dir, ".git"),
@@ -18423,10 +18423,10 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
       listTags,
       log,
       merge,
-      packObjects: packObjects2,
+      packObjects,
       pull,
       push,
-      readBlob,
+      readBlob: readBlob2,
       readCommit: readCommit2,
       readNote,
       readObject,
@@ -18495,10 +18495,10 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
     exports2.listTags = listTags;
     exports2.log = log;
     exports2.merge = merge;
-    exports2.packObjects = packObjects2;
+    exports2.packObjects = packObjects;
     exports2.pull = pull;
     exports2.push = push;
-    exports2.readBlob = readBlob;
+    exports2.readBlob = readBlob2;
     exports2.readCommit = readCommit2;
     exports2.readNote = readNote;
     exports2.readObject = readObject;
@@ -18541,8 +18541,9 @@ var MAX_OBJECTS = 1e5;
 var MAX_PACK_BYTES = 64 * 1024 * 1024;
 var DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 var DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
-var ACCEPTED_BLOB_MODES = /* @__PURE__ */ new Set(["100644", "100755"]);
+var ACCEPTED_BLOB_MODES = /* @__PURE__ */ new Set(["100644", "100755", "120000"]);
 var ACCEPTED_TREE_MODE = "040000";
+var MAX_SYMLINK_TARGET_BYTES = 4096;
 function fail(message) {
   throw new Error(message);
 }
@@ -18641,38 +18642,178 @@ async function resolveRepositoryGitContext(repoDir) {
     headOid: await resolveHeadOid(resolvedCommonGitdir, import_node_path.default.join(resolvedGitdir, "HEAD"))
   };
 }
-async function collectTreeObjects(gitdir, treeOid, output) {
-  if (output.has(treeOid)) return;
-  output.add(treeOid);
-  if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+function validateSymlinkTarget(blob, entryPath) {
+  if (!(blob instanceof Uint8Array) || blob.byteLength === 0 || blob.byteLength > MAX_SYMLINK_TARGET_BYTES) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  let target;
+  try {
+    target = new TextDecoder("utf-8", { fatal: true }).decode(blob);
+  } catch {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  if (import_node_path.default.posix.isAbsolute(target) || /^[A-Za-z]:/u.test(target) || target.includes("\\") || /[\u0000-\u001f\u007f-\u009f]/u.test(target)) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+  const resolved = import_node_path.default.posix.normalize(import_node_path.default.posix.join(import_node_path.default.posix.dirname(entryPath), target));
+  const resolvesThroughGitBoundary = resolved.split("/").some((segment) => segment.toLowerCase() === ".git");
+  if (resolved === ".." || resolved.startsWith("../") || import_node_path.default.posix.isAbsolute(resolved) || resolvesThroughGitBoundary) {
+    fail("tree contains an unsafe symbolic link target");
+  }
+}
+async function collectTreeInventory(gitdir, treeOid, inventory, treePath = "", visitedTreeContexts = /* @__PURE__ */ new Set()) {
+  const visitKey = `${treeOid}\0${treePath}`;
+  if (visitedTreeContexts.has(visitKey)) return;
+  visitedTreeContexts.add(visitKey);
+  if (visitedTreeContexts.size > MAX_OBJECTS) fail("commit closure exceeds the tree-context ceiling");
+  inventory.trees.add(treeOid);
+  if (inventory.trees.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
   const { tree } = await git.readTree({ fs: import_node_fs.default, gitdir, oid: treeOid });
   for (const entry of tree) {
+    const entryPath = treePath ? `${treePath}/${entry.path}` : entry.path;
     if (!OID_PATTERN.test(entry.oid)) fail("tree contains a malformed object id");
     if (entry.type === "tree" && entry.mode !== ACCEPTED_TREE_MODE || entry.type === "blob" && !ACCEPTED_BLOB_MODES.has(entry.mode) || entry.type !== "tree" && entry.type !== "blob") {
       fail("tree contains an unsupported object type or mode");
     }
+    if (entry.type === "blob" && entry.mode === "120000") {
+      const { blob } = await git.readBlob({ fs: import_node_fs.default, gitdir, oid: entry.oid });
+      validateSymlinkTarget(blob, entryPath);
+      inventory.symlinks.add(entry.oid);
+    } else if (entry.type === "blob") {
+      inventory.blobs.add(entry.oid);
+    }
     if (entry.type === "tree") {
-      await collectTreeObjects(gitdir, entry.oid, output);
-    } else {
-      output.add(entry.oid);
-      if (output.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+      await collectTreeInventory(
+        gitdir,
+        entry.oid,
+        inventory,
+        entryPath,
+        visitedTreeContexts
+      );
+    }
+    if (inventory.trees.size + inventory.symlinks.size + inventory.blobs.size > MAX_OBJECTS) {
+      fail("commit closure exceeds the object-count ceiling");
     }
   }
 }
-async function collectCommitClosure(gitdir, commitOid) {
+function runRevisionWalk(gitdir, commitOid, baseOid) {
+  const revisions = baseOid ? [commitOid, `^${baseOid}`] : [commitOid, "--not", "--remotes"];
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, "rev-list", "--topo-order", "--boundary", ...revisions],
+    {
+      encoding: "utf8",
+      env: { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 3e4
+    }
+  );
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "revision walk failed";
+    fail(`base-aware revision walk failed: ${detail.slice(0, 500)}`);
+  }
+  const commits = [];
+  const boundaries = [];
+  for (const line of result.stdout.split("\n").filter(Boolean)) {
+    const isBoundary = line.startsWith("-");
+    const oid = isBoundary ? line.slice(1) : line;
+    if (!OID_PATTERN.test(oid)) fail("base-aware revision walk returned a malformed object id");
+    (isBoundary ? boundaries : commits).push(oid);
+  }
+  if (commits.length === 0 || commits[0] !== commitOid || commits.length > MAX_OBJECTS) {
+    fail("repository HEAD is not ahead of a bounded published base");
+  }
+  if (baseOid && !boundaries.includes(baseOid)) {
+    fail("explicit base object is not an ancestor boundary of repository HEAD");
+  }
+  return {
+    commits: [...new Set(commits)],
+    boundaries: [...new Set(boundaries)]
+  };
+}
+async function collectCommitClosure(gitdir, commitOid, baseOid = "") {
+  if (!OID_PATTERN.test(commitOid)) fail("commit closure contains a malformed object id");
+  if (baseOid && (!OID_PATTERN.test(baseOid) || baseOid === ZERO_OID)) {
+    fail("base object must be a non-zero SHA-1 commit");
+  }
+  const { commits, boundaries } = runRevisionWalk(gitdir, commitOid, baseOid);
+  const commitSet = new Set(commits);
+  const boundarySet = new Set(boundaries);
+  const objects = new Set(boundaries);
+  for (const oid of commits) {
+    const { commit } = await git.readCommit({ fs: import_node_fs.default, gitdir, oid });
+    objects.add(oid);
+    for (const parent of commit.parent) {
+      if (!commitSet.has(parent) && !boundarySet.has(parent)) {
+        fail("base-aware revision walk does not close over the new commit graph");
+      }
+    }
+    const inventory = { trees: /* @__PURE__ */ new Set(), symlinks: /* @__PURE__ */ new Set(), blobs: /* @__PURE__ */ new Set() };
+    await collectTreeInventory(gitdir, commit.tree, inventory);
+    for (const objectOid of [...inventory.trees, ...inventory.symlinks, ...inventory.blobs]) {
+      objects.add(objectOid);
+    }
+    if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+  }
+  if (boundaries.length === 0) {
+    fail("published base boundary is unavailable; refusing an unbounded history walk");
+  }
+  for (const boundary of boundaries) await git.readCommit({ fs: import_node_fs.default, gitdir, oid: boundary });
+  return [...objects].sort();
+}
+async function collectImportedCommitClosure(gitdir, commitOid, indexedOids) {
   const objects = /* @__PURE__ */ new Set();
+  const boundaries = /* @__PURE__ */ new Set();
   const pending = [commitOid];
   while (pending.length > 0) {
     const oid = pending.pop();
     if (objects.has(oid)) continue;
-    if (!OID_PATTERN.test(oid)) fail("commit closure contains a malformed object id");
+    if (!OID_PATTERN.test(oid) || !indexedOids.has(oid)) {
+      fail("commit closure contains a missing or malformed object id");
+    }
     objects.add(oid);
     if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
     const { commit } = await git.readCommit({ fs: import_node_fs.default, gitdir, oid });
-    await collectTreeObjects(gitdir, commit.tree, objects);
+    if (oid !== commitOid && !indexedOids.has(commit.tree)) {
+      boundaries.add(oid);
+      continue;
+    }
+    const inventory = { trees: /* @__PURE__ */ new Set(), symlinks: /* @__PURE__ */ new Set(), blobs: /* @__PURE__ */ new Set() };
+    await collectTreeInventory(gitdir, commit.tree, inventory);
+    for (const objectOid of [...inventory.trees, ...inventory.symlinks, ...inventory.blobs]) {
+      objects.add(objectOid);
+    }
     for (const parent of commit.parent) pending.push(parent);
   }
-  return [...objects].sort();
+  return { objects: [...objects].sort(), boundaries: [...boundaries].sort() };
+}
+function packCommitClosure(gitdir, objectOids) {
+  const result = (0, import_node_child_process.spawnSync)(
+    "/usr/bin/git",
+    [
+      "--git-dir",
+      gitdir,
+      "pack-objects",
+      "--stdout",
+      "--no-reuse-delta",
+      "--no-reuse-object"
+    ],
+    {
+      input: `${objectOids.join("\n")}
+`,
+      maxBuffer: MAX_PACK_BYTES + 1,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1"
+      }
+    }
+  );
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native pack failed";
+    fail(`native commit pack failed: ${detail.slice(0, 500)}`);
+  }
+  return result.stdout;
 }
 function writeExclusive(filepath, bytes) {
   const fd = import_node_fs.default.openSync(filepath, import_node_fs.default.constants.O_CREAT | import_node_fs.default.constants.O_EXCL | import_node_fs.default.constants.O_WRONLY, 384);
@@ -18719,8 +18860,8 @@ async function clientCommand(args) {
   const { gitdir, headOid: newOid } = await resolveRepositoryGitContext(repoDir);
   if (!OID_PATTERN.test(newOid)) fail("repository HEAD is not a SHA-1 commit");
   await git.readCommit({ fs: import_node_fs.default, gitdir, oid: newOid });
-  const objectOids = await collectCommitClosure(gitdir, newOid);
-  const { packfile } = await git.packObjects({ fs: import_node_fs.default, gitdir, oids: objectOids, write: false });
+  const objectOids = await collectCommitClosure(gitdir, newOid, args.get("--base-oid") ?? "");
+  const packfile = packCommitClosure(gitdir, objectOids);
   if (!(packfile instanceof Uint8Array) || packfile.byteLength <= 0 || packfile.byteLength > MAX_PACK_BYTES) {
     fail("commit pack is empty or exceeds the byte ceiling");
   }
@@ -18821,7 +18962,11 @@ async function importWorkerBundle(args) {
   if (indexed.length !== declared.length || indexed.some((oid, index) => oid !== declared[index])) {
     fail("pack objects differ from the declared content-addressed bundle");
   }
-  const reachable = await collectCommitClosure(gitdir, request.expectedNewOid);
+  const { objects: reachable, boundaries } = await collectImportedCommitClosure(
+    gitdir,
+    request.expectedNewOid,
+    new Set(indexed)
+  );
   if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
     const reachableSet = new Set(reachable);
     const indexedSet = new Set(indexed);
@@ -18831,7 +18976,7 @@ async function importWorkerBundle(args) {
       `pack contains extra objects or does not close over the expected commit (reachable=${reachable.length}, indexed=${indexed.length}, missing=${missing.join(",") || "none"}, extra=${extra.join(",") || "none"})`
     );
   }
-  return { request, gitdir };
+  return { request, gitdir, boundaries };
 }
 async function validateCommand(args) {
   const { request } = await importWorkerBundle(args);
@@ -18839,7 +18984,7 @@ async function validateCommand(args) {
 `);
 }
 async function workerCommand(args) {
-  const { request, gitdir } = await importWorkerBundle(args);
+  const { request, gitdir, boundaries } = await importWorkerBundle(args);
   const tokenPath = import_node_process.default.env.CREDENTIALS_DIRECTORY ? import_node_path.default.join(import_node_process.default.env.CREDENTIALS_DIRECTORY, "github-token") : "";
   if (!tokenPath) fail("worker credential boundary is unavailable");
   const token = import_node_fs.default.readFileSync(tokenPath, "utf8").trim();
@@ -18851,6 +18996,13 @@ async function workerCommand(args) {
     value: request.expectedNewOid,
     force: false
   });
+  if (boundaries.length > 0) {
+    import_node_fs.default.writeFileSync(import_node_path.default.join(gitdir, "shallow"), `${boundaries.join("\n")}
+`, {
+      flag: "wx",
+      mode: 384
+    });
+  }
   const url = `https://x-access-token@github.com/${request.repositoryFullName}.git`;
   const credentialHelper = [
     "!f() {",
@@ -18867,7 +19019,6 @@ async function workerCommand(args) {
       "push",
       "--porcelain",
       "--no-force",
-      "--no-thin",
       url,
       `refs/heads/paperclip-source:${request.remoteRef}`
     ],
