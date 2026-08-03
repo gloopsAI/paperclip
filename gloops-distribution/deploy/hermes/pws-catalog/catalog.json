@@ -3,7 +3,7 @@
   "notes": [
     "Standing project workspace catalog for hermes.",
     "refreshPolicy.timerMinutes drives systemd timer / cron cadence.",
-    "Never use branch name as expected head for implement packets — always full 40-char SHA.",
+    "Never use branch name as expected head for implement packets \u2014 always full 40-char SHA.",
     "paperclip@pin uses controlled-swarm pin when known; otherwise tracks defaultBranch SHA."
   ],
   "entries": [
@@ -51,6 +51,21 @@
       },
       "pinSha": null,
       "notes": "W1 hazard: do not copy projectWorkspaceId from gym parents onto gloops-ui implement issues."
+    },
+    {
+      "id": "induct-main",
+      "name": "induct@main",
+      "repo": "InductAI/induct",
+      "repoUrl": "https://github.com/InductAI/induct.git",
+      "defaultBranch": "main",
+      "cwdTemplate": "/opt/data/workspace/induct-main",
+      "refreshPolicy": {
+        "mode": "track-branch-sha",
+        "timerMinutes": 60,
+        "description": "Resolve latest main SHA and materialize; packets pin full 40-char SHA"
+      },
+      "pinSha": null,
+      "notes": "Induct product repo. First-time swarm lease 2026-08-03. Never inherit gym/gloops-ui PWS."
     }
   ]
 }

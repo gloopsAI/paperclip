@@ -188,6 +188,10 @@ import {
   primaryWorkspaceAdmitErrorCode,
   runWorkspaceAdmitPreflight,
 } from "../services/workspace-admit-preflight.js";
+import {
+  evaluateDispatchAssignment,
+  DISPATCH_ASSIGN_REASON,
+} from "../services/dispatch-assignment-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -7967,6 +7971,59 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
+        // P2: Dispatch hard assign policy (fail-closed when actor is Dispatch)
+        if (req.actor.type === "agent" && req.actor.agentId && nextAssigneeAgentId) {
+          const [dispatchActor, assigneeAgent] = await Promise.all([
+            agentsSvc.getById(req.actor.agentId),
+            agentsSvc.getById(nextAssigneeAgentId),
+          ]);
+          let workspaceRepoRef: string | null = null;
+          const pwsId =
+            updateFields.projectWorkspaceId !== undefined
+              ? (updateFields.projectWorkspaceId as string | null)
+              : existing.projectWorkspaceId;
+          // best-effort: description/title from update or existing
+          const title =
+            typeof updateFields.title === "string" ? updateFields.title : existing.title;
+          const description =
+            typeof updateFields.description === "string"
+              ? updateFields.description
+              : existing.description;
+          const decision = evaluateDispatchAssignment({
+            actorType: "agent",
+            actorAgentId: req.actor.agentId,
+            actorAgentName: dispatchActor?.name ?? null,
+            actorAgentRole: dispatchActor?.role ?? null,
+            assigneeAgentId: nextAssigneeAgentId,
+            assigneeAgentName: assigneeAgent?.name ?? null,
+            assigneeAgentRole: assigneeAgent?.role ?? null,
+            issueTitle: title,
+            issueDescription: description,
+            issueWorkMode: existing.workMode,
+            projectWorkspaceId: pwsId,
+            workspaceRepoRef,
+          });
+          if (decision.actorIsDispatch && decision.reasonCodes.length > 0) {
+            logger.info(
+              {
+                issueId: existing.id,
+                actorAgentId: req.actor.agentId,
+                assigneeAgentId: nextAssigneeAgentId,
+                mode: decision.mode,
+                reasonCodes: decision.reasonCodes,
+              },
+              "dispatch assignment policy",
+            );
+          }
+          if (!decision.allowed) {
+            throw unprocessable(decision.details || "Dispatch assignment policy denied", {
+              code: decision.reasonCodes[0] ?? DISPATCH_ASSIGN_REASON.ASSIGNEE_NOT_ALLOWLISTED,
+              reasonCodes: decision.reasonCodes,
+              details: decision.details,
+              mode: decision.mode,
+            });
+          }
+        }
         await assertCanAssignTasks(req, existing.companyId, {
           issueId: existing.id,
           projectId: await resolveAssignmentProjectId({
