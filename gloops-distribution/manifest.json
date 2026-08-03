@@ -480,7 +480,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "88bdc05c05c01943a21c04fdf90bcb76211c87a6",
       "sourceHead": "48f609d89645182ab618f707988b1ac9df139d22",
-      "patchDiffSha256": "01b1eb35d953119c4829223e6045511f4b28f654ac839e6553cc6c2d3fa0f197",
+      "patchDiffSha256": "a00d7236cab1e5d0880ac05368bf30c8d584b0571b9f17da5cc78b556aab6745",
       "integratedCommits": ["b3233636a20790097f6c082b64fc34bbd2065a33"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalent host-wide exclusive mutation controller with named writer identity, durable pre/post journal, SIGTERM-safe receipts, fail-closed drift refusal, and terminal restore evidence for Paperclip host writes."
