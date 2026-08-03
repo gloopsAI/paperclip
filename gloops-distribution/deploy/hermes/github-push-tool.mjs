@@ -289,7 +289,9 @@ async function collectImportedCommitClosure(gitdir, commitOid, indexedOids) {
     objects.add(oid);
     if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
     const { commit } = await git.readCommit({ fs, gitdir, oid });
-    if (oid !== commitOid && !indexedOids.has(commit.tree)) {
+    const reachesUnpackedParent = commit.parent.length === 0
+      || commit.parent.some((parent) => !indexedOids.has(parent));
+    if (oid !== commitOid && (!indexedOids.has(commit.tree) || reachesUnpackedParent)) {
       boundaries.add(oid);
       continue;
     }
@@ -321,9 +323,11 @@ function packCommitClosure(gitdir, objectOids) {
         HOME: gitdir,
         GIT_CONFIG_NOSYSTEM: "1",
       },
+      timeout: 90_000,
     },
   );
   if (result.error?.code === "ENOBUFS") fail("commit pack exceeds the byte ceiling");
+  if (result.error?.code === "ETIMEDOUT") fail("commit pack exceeds the time ceiling");
   if (result.status !== 0) {
     const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native pack failed";
     fail(`native commit pack failed: ${detail.slice(0, 500)}`);

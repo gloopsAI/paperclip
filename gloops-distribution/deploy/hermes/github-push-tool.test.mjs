@@ -550,6 +550,51 @@ test("worker accepts a contained committed symlink closure", async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("worker recognizes a root base boundary when an empty tip reuses its tree", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-empty-tip-"));
+  const repo = path.join(root, "repo");
+  const gitdir = path.join(root, "worker.git");
+  const pack = path.join(root, "input.pack");
+  const request = path.join(root, "request.json");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "proof.txt"), "same tree\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "root base");
+  const base = git(repo, "rev-parse", "HEAD");
+  git(repo, "commit", "--allow-empty", "-m", "empty bounded tip");
+  const head = git(repo, "rev-parse", "HEAD");
+  assert.equal(git(repo, "rev-parse", "HEAD^{tree}"), git(repo, "rev-parse", `${base}^{tree}`));
+  const objectOids = [
+    head,
+    base,
+    git(repo, "rev-parse", "HEAD^{tree}"),
+    git(repo, "rev-parse", "HEAD:proof.txt"),
+  ].sort();
+  const packed = spawnSync("git", ["pack-objects", "--stdout"], {
+    cwd: repo,
+    input: `${objectOids.join("\n")}\n`,
+  });
+  assert.equal(packed.status, 0, packed.stderr?.toString());
+  fs.writeFileSync(pack, packed.stdout);
+  fs.writeFileSync(request, JSON.stringify({
+    schemaVersion: "gloops.github-push-worker-request.v1",
+    repositoryFullName: "gloopsAI/gloops-paperclip-plugin",
+    defaultBranch: "main",
+    remoteRef: `refs/heads/paperclip/${runId}/calibration`,
+    expectedOldOid: "0".repeat(40),
+    expectedNewOid: head,
+    objectOids,
+    packPath: pack,
+    gitdir,
+  }));
+  const result = await runTool(["validate", "--request", request], root);
+  assert.equal(result.status, 0, result.stderr);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("isolated shallow repository pushes a bounded stack to a remote that holds the base", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-native-shallow-"));
   const repo = path.join(root, "repo");
