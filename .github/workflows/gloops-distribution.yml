@@ -43,6 +43,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Hydrate declared patch history
+        run: node gloops-distribution/scripts/hydrate-patch-history.mjs
+
       - name: Verify owned distribution manifest
         run: node scripts/verify-gloops-distribution.mjs
 
