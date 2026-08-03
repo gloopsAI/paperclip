@@ -8,7 +8,7 @@ for expected_runtime_line in \
   'PAPERCLIP_MTE_ENABLED=false' \
   'HEARTBEAT_SCHEDULER_ENABLED=false' \
   'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' \
-  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' \
+  'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' \
   'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' \
   'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' \
@@ -104,7 +104,8 @@ python3 -m unittest \
   gloops-distribution/deploy/hermes/verify_campaign_deadman_test.py \
   gloops-distribution/deploy/hermes/verify_predecessor_campaign_epoch_test.py \
   gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
-  gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py
+  gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
+  gloops-distribution/deploy/hermes/paperclip_hostctl_test.py
 gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
 
 head_sha="$(git rev-parse HEAD)"
@@ -145,6 +146,9 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
     gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py \
     gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
+    gloops-distribution/deploy/hermes/paperclip-hostctl.py \
+    gloops-distribution/deploy/hermes/paperclip_hostctl_test.py \
+    gloops-distribution/deploy/hermes/HOST_WRITER_LOCK.md \
     gloops-distribution/deploy/hermes/stop-controlled-swarm.sh \
     gloops-distribution/deploy/hermes/observe-controlled-swarm.py \
     gloops-distribution/deploy/hermes/paperclip-campaign-deadman.service \

@@ -114,6 +114,14 @@ const setControlledSwarmCommissioningPath = new URL(
   "../gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py",
   import.meta.url,
 );
+const paperclipHostctlPath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-hostctl.py",
+  import.meta.url,
+);
+const paperclipHostctlTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip_hostctl_test.py",
+  import.meta.url,
+);
 const stopControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/stop-controlled-swarm.sh",
   import.meta.url,
@@ -360,6 +368,7 @@ const controlledSwarmCommissioningRecoveryService = readFileSync(
   "utf8",
 );
 const setControlledSwarmCommissioning = readFileSync(setControlledSwarmCommissioningPath, "utf8");
+const paperclipHostctl = readFileSync(paperclipHostctlPath, "utf8");
 const stopControlledSwarm = readFileSync(stopControlledSwarmPath, "utf8");
 const rehearseZeroWorkExecutable = rehearseZeroWork
   .split("\n")
@@ -381,6 +390,14 @@ const hermesRouteReceiptReadme = readFileSync(
   hermesRouteReceiptReadmePath,
   "utf8",
 );
+try {
+  execFileSync("python3", [paperclipHostctlTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Paperclip host-writer lock tests failed: ${error instanceof Error ? error.message : error}`);
+}
 try {
   execFileSync("python3", [hermesRouteReceiptApplicatorTestPath.pathname], {
     encoding: "utf8",
@@ -869,8 +886,8 @@ if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }
-if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false$/m.test(runtimeEnv)) {
-  fail("release distribution must clear the release-pin activation interlock");
+if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true$/m.test(runtimeEnv)) {
+  fail("runtime-changing source must keep the release-pin activation interlock engaged");
 }
 if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089$/m.test(runtimeEnv)) {
   fail("release distribution must freeze the exact GLoops company backlog");
@@ -1052,6 +1069,12 @@ for (const [surface, content, required] of [
   ["controlled-swarm commissioning revalidation", controlledSwarmCommissioner, "require_compact_instructions=True"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "commissioning barrier line is missing or duplicated"],
   ["controlled-swarm commissioning barrier", setControlledSwarmCommissioning, "os.replace(temporary, path)"],
+  ["host writer controller install", installDark, 'paperclip-hostctl.py" "${LIB_DIR}/paperclip-hostctl.py'],
+  ["host writer controller", paperclipHostctl, "fcntl.LOCK_EX | fcntl.LOCK_NB"],
+  ["host writer identity journal", paperclipHostctl, '"event": "pre"'],
+  ["host writer terminal receipt", paperclipHostctl, '"event": "post"'],
+  ["host writer out-of-band guard", paperclipHostctl, "runtime.env hash mismatch refuses mutation"],
+  ["commissioning host writer delegation", setControlledSwarmCommissioning, "paperclip-hostctl.py"],
   ["controlled-swarm stop", stopControlledSwarm, "verify-dark.sh"],
   ["controlled-swarm stop", stopControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
 ]) {
@@ -2254,7 +2277,7 @@ for (const required of [
   "FAIL a zero-work egress proof rule remains installed while dark",
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
-  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
+  "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true",
   "PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089",
   "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
 ]) {
@@ -2262,8 +2285,8 @@ for (const required of [
     fail(`dark verification is missing revocation evidence ${required}`);
   }
 }
-if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true")) {
-  fail("dark verification still requires the source-only release-pin interlock");
+if (verifyDark.includes("PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false")) {
+  fail("dark verification bypasses the source-only release-pin interlock");
 }
 for (const required of [
   "verify_chain(records, \"lifecycleId\")",

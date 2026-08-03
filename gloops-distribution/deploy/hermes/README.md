@@ -142,6 +142,12 @@ sudo ./rollback.sh --check /opt/paperclip/backups/dark-install-YYYYMMDDTHHMMSSZ
 
 ## Controlled-swarm rehearsal and activation
 
+After installation, all production `runtime.env` mutations and Paperclip-unit
+`systemctl` actions use the root-only host writer controller. Its fail-fast
+kernel lock, identity sidecar, hash guard, and append-only terminal receipts are
+defined in [HOST_WRITER_LOCK.md](./HOST_WRITER_LOCK.md). Direct environment
+edits and bare unit mutations are out of policy.
+
 Activation is not part of dark installation. After the accepted source is
 published and a separate release-pin change binds its immutable digest, run the
 root-only controls in this order:
