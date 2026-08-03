@@ -59,7 +59,9 @@ BROKER_TRANSITION_DISTRIBUTIONS = {
 # it is not environment-configurable, and a config naming any repository
 # outside this set fails closed exactly like the previous single-repo pin.
 ALLOWED_REPOSITORIES = frozenset({
+    "gloopsAI/gloops-autonomy-gym",
     "gloopsAI/gloops-paperclip-plugin",
+    "gloopsAI/paperclip",
     "gloopsAI/paperclip-gym",
 })
 
@@ -231,8 +233,13 @@ def verify_repository(config: dict[str, object], token: str) -> None:
     if len(matching) != 1:
         raise CredentialError("GitHub App token repository does not match the configured boundary")
     detail = request_json("GET", f"/repos/{config['repository']}", token)
-    if not isinstance(detail, dict) or detail.get("private") is not True or detail.get("id") != config["repositoryId"]:
-        raise CredentialError("GitHub App private repository boundary is unobservable")
+    if (
+        not isinstance(detail, dict)
+        or not isinstance(detail.get("private"), bool)
+        or detail.get("id") != config["repositoryId"]
+        or detail.get("full_name") != config["repository"]
+    ):
+        raise CredentialError("GitHub App repository boundary is unobservable")
 
 
 def fsync_directory(path: Path) -> None:
