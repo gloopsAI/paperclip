@@ -87,6 +87,10 @@ import {
   ISSUE_PACKET_DOR_ENV,
   ISSUE_PACKET_REASON,
 } from "./issue-packet-readiness.js";
+import {
+  evaluateWorkspaceAdmitCreateRequirements,
+  getWorkspaceAdmitCreateMode,
+} from "./workspace-admit-preflight.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -5873,11 +5877,20 @@ export function issueService(db: Db) {
         }
       }
 
+      // C3: only inherit parent projectWorkspaceId when same project (fail-closed).
+      // Cross-project children must not inherit paperclip-gym PWS onto gloops-ui work.
+      const childProjectId = issueData.projectId ?? parent.projectId;
+      const inheritParentProjectWorkspace =
+        inheritStrategyOnly &&
+        Boolean(parent.projectWorkspaceId) &&
+        Boolean(childProjectId) &&
+        childProjectId === parent.projectId &&
+        issueData.projectWorkspaceId == null;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
+        projectId: childProjectId,
+        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritParentProjectWorkspace ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -6344,6 +6357,9 @@ export function issueService(db: Db) {
       }
       const createInTransaction = async (tx: DbTransaction) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        // C2/C3: track caller-explicit workspace ids before inheritance/defaults fill them.
+        const explicitProjectWorkspaceId = issueData.projectWorkspaceId ?? null;
+        const explicitExecutionWorkspaceId = explicitlySelectedExecutionWorkspaceId;
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
@@ -6364,9 +6380,9 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
-            projectWorkspaceId = workspaceSource.projectWorkspaceId;
-          }
+          // C3: never auto-inherit projectWorkspaceId from parent/source.
+          // Cross-repo product work (paperclip-gym → gloops-ui) thrash path.
+          // Same-project defaults still apply via project policy / primary PWS below.
           if (
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
@@ -6488,6 +6504,67 @@ export function issueService(db: Db) {
             executionWorkspaceSettings: issueData.executionWorkspaceSettings,
           });
         }
+
+        // C2: implement/review/release creates require explicit workspace + 40-char baseRef.
+        {
+          let resolvedBaseRefSha: string | null = findExactHeadSha(issueData.description ?? null);
+          if (!resolvedBaseRefSha) {
+            resolvedBaseRefSha = deriveExactHeadShaFromExecutionWorkspaceSettings(executionWorkspaceSettings);
+          }
+          if (!resolvedBaseRefSha && projectWorkspaceId) {
+            const pwsRefs = await tx
+              .select({
+                repoRef: projectWorkspaces.repoRef,
+                defaultRef: projectWorkspaces.defaultRef,
+              })
+              .from(projectWorkspaces)
+              .where(
+                and(
+                  eq(projectWorkspaces.id, projectWorkspaceId),
+                  eq(projectWorkspaces.companyId, companyId),
+                ),
+              )
+              .then((rows) => rows[0] ?? null);
+            for (const candidate of [pwsRefs?.repoRef, pwsRefs?.defaultRef]) {
+              if (typeof candidate === "string" && EXACT_HEAD_SHA_PATTERN.test(candidate.trim())) {
+                resolvedBaseRefSha = candidate.trim().toLowerCase();
+                break;
+              }
+            }
+          }
+          let createAssigneeRole: string | null = null;
+          let createAssigneeName: string | null = null;
+          if (issueData.assigneeAgentId) {
+            const createAssignee = await tx
+              .select({ role: agents.role, name: agents.name })
+              .from(agents)
+              .where(eq(agents.id, issueData.assigneeAgentId))
+              .then((rows) => rows[0] ?? null);
+            createAssigneeRole = createAssignee?.role ?? null;
+            createAssigneeName = createAssignee?.name ?? null;
+          }
+          const createAdmit = evaluateWorkspaceAdmitCreateRequirements({
+            title: issueData.title ?? null,
+            description: issueData.description ?? null,
+            workMode: issueData.workMode ?? null,
+            status: issueData.status ?? null,
+            assigneeRole: createAssigneeRole,
+            assigneeName: createAssigneeName,
+            explicitProjectWorkspaceId: Boolean(explicitProjectWorkspaceId),
+            explicitExecutionWorkspaceId: Boolean(explicitExecutionWorkspaceId),
+            resolvedBaseRefSha,
+          });
+          if (createAdmit.mode === "observe" && createAdmit.required && createAdmit.reasonCodes.length > 0) {
+            // Observe: allow create but surface structural gaps in thrown path only on enforce.
+          }
+          if (createAdmit.mode === "enforce" && !createAdmit.ok) {
+            throw unprocessable(
+              `Workspace admit create gate (C2): ${createAdmit.details} ` +
+                `(mode=${getWorkspaceAdmitCreateMode()}, codes=${createAdmit.reasonCodes.join(",")})`,
+            );
+          }
+        }
+
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
         const [maxRow] = await tx

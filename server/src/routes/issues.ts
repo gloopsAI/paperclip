@@ -181,6 +181,13 @@ import {
   ISSUE_PACKET_REASON,
   evaluateIssuePacketReadiness,
 } from "../services/issue-packet-readiness.js";
+import {
+  WORKSPACE_ADMIT_REASON,
+  getWorkspaceAdmitMode,
+  issueRequiresWorkspaceAdmit,
+  primaryWorkspaceAdmitErrorCode,
+  runWorkspaceAdmitPreflight,
+} from "../services/workspace-admit-preflight.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -8981,6 +8988,73 @@ export function issueRoutes(
       return;
     }
 
+    // C1 workspace admit: hard gate before checkout mutates or wakes the agent.
+    const workspaceAdmitMode = getWorkspaceAdmitMode();
+    const workspaceAdmitPacketInput = {
+      title: issue.title,
+      description: issue.description,
+      workMode: issue.workMode,
+      status: issue.status,
+      assigneeRole: checkoutAgent?.role ?? null,
+      assigneeName: checkoutAgent?.name ?? null,
+      repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+    };
+    if (
+      workspaceAdmitMode !== "off" &&
+      issueRequiresWorkspaceAdmit(workspaceAdmitPacketInput)
+    ) {
+      const workspaceAdmit = await runWorkspaceAdmitPreflight(db, {
+        companyId: issue.companyId,
+        issue: {
+          id: issue.id,
+          title: issue.title,
+          description: issue.description,
+          workMode: issue.workMode,
+          status: issue.status,
+          projectWorkspaceId: issue.projectWorkspaceId,
+          executionWorkspaceId: issue.executionWorkspaceId,
+          projectId: issue.projectId,
+          parentId: issue.parentId,
+        },
+        assignee: {
+          role: checkoutAgent?.role ?? null,
+          name: checkoutAgent?.name ?? null,
+        },
+      });
+      if (!workspaceAdmit.admitted) {
+        logger.info(
+          {
+            issueId: issue.id,
+            mode: workspaceAdmitMode,
+            reasonCodes: workspaceAdmit.reasonCodes,
+            expectedHeadSha: workspaceAdmit.expectedHeadSha,
+            observedHeadSha: workspaceAdmit.observedHeadSha,
+            projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+            cwd: workspaceAdmit.cwd,
+          },
+          "workspace admit preflight: not admitted on checkout",
+        );
+      }
+      if (workspaceAdmitMode === "enforce" && !workspaceAdmit.admitted) {
+        const errorCode = primaryWorkspaceAdmitErrorCode(workspaceAdmit);
+        res.status(422).json({
+          error: errorCode,
+          errorCode,
+          reasonCodes: workspaceAdmit.reasonCodes,
+          expectedHeadSha: workspaceAdmit.expectedHeadSha,
+          observedHeadSha: workspaceAdmit.observedHeadSha,
+          projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+          cwd: workspaceAdmit.cwd,
+          repoUrl: workspaceAdmit.repoUrl,
+          checks: workspaceAdmit.checks,
+          details: workspaceAdmit.details,
+          mode: workspaceAdmitMode,
+          gate: "workspace_admit",
+        });
+        return;
+      }
+    }
+
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
@@ -9122,6 +9196,153 @@ export function issueRoutes(
     res.json({
       issueId: issue.id,
       companyId: issue.companyId,
+      ...evaluation,
+    });
+  });
+
+  /**
+   * Read-only workspace admit preflight (C1 tool).
+   * Always computes when requested; never mutates. Useful for Dispatch before wake.
+   */
+  router.post("/issues/:id/workspace-admit", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const body = (req.body ?? {}) as {
+      assigneeAgentId?: unknown;
+      assigneeRole?: unknown;
+      assigneeName?: unknown;
+      allowDirty?: unknown;
+      requireExpectedHead?: unknown;
+    };
+    const bodyAssigneeAgentId =
+      typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+        ? body.assigneeAgentId.trim()
+        : null;
+    const agentId = bodyAssigneeAgentId ?? issue.assigneeAgentId;
+    const agent = agentId ? await agentsSvc.getById(agentId) : null;
+
+    const assigneeRole =
+      typeof body.assigneeRole === "string" && body.assigneeRole.trim().length > 0
+        ? body.assigneeRole.trim()
+        : agent?.role ?? null;
+    const assigneeName =
+      typeof body.assigneeName === "string" && body.assigneeName.trim().length > 0
+        ? body.assigneeName.trim()
+        : agent?.name ?? null;
+
+    const evaluation = await runWorkspaceAdmitPreflight(db, {
+      companyId: issue.companyId,
+      issue: {
+        id: issue.id,
+        title: issue.title,
+        description: issue.description,
+        workMode: issue.workMode,
+        status: issue.status,
+        projectWorkspaceId: issue.projectWorkspaceId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        projectId: issue.projectId,
+        parentId: issue.parentId,
+      },
+      assignee: { role: assigneeRole, name: assigneeName },
+      allowDirty: body.allowDirty === true,
+      requireExpectedHead: body.requireExpectedHead !== false,
+    });
+
+    res.json({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      mode: getWorkspaceAdmitMode(),
+      requiresWorkspaceAdmit: issueRequiresWorkspaceAdmit({
+        title: issue.title,
+        description: issue.description,
+        workMode: issue.workMode,
+        status: issue.status,
+        assigneeRole,
+        assigneeName,
+        repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+      }),
+      errorCode: evaluation.admitted
+        ? WORKSPACE_ADMIT_REASON.OK
+        : primaryWorkspaceAdmitErrorCode(evaluation),
+      ...evaluation,
+    });
+  });
+
+  router.post("/companies/:companyId/issues/:issueId/workspace-admit", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const issueId = req.params.issueId as string;
+    assertCompanyAccess(req, companyId);
+    const issue = await svc.getById(issueId);
+    if (!issue || issue.companyId !== companyId) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const body = (req.body ?? {}) as {
+      assigneeAgentId?: unknown;
+      assigneeRole?: unknown;
+      assigneeName?: unknown;
+      allowDirty?: unknown;
+      requireExpectedHead?: unknown;
+    };
+    const bodyAssigneeAgentId =
+      typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0
+        ? body.assigneeAgentId.trim()
+        : null;
+    const agentId = bodyAssigneeAgentId ?? issue.assigneeAgentId;
+    const agent = agentId ? await agentsSvc.getById(agentId) : null;
+
+    const assigneeRole =
+      typeof body.assigneeRole === "string" && body.assigneeRole.trim().length > 0
+        ? body.assigneeRole.trim()
+        : agent?.role ?? null;
+    const assigneeName =
+      typeof body.assigneeName === "string" && body.assigneeName.trim().length > 0
+        ? body.assigneeName.trim()
+        : agent?.name ?? null;
+
+    const evaluation = await runWorkspaceAdmitPreflight(db, {
+      companyId: issue.companyId,
+      issue: {
+        id: issue.id,
+        title: issue.title,
+        description: issue.description,
+        workMode: issue.workMode,
+        status: issue.status,
+        projectWorkspaceId: issue.projectWorkspaceId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        projectId: issue.projectId,
+        parentId: issue.parentId,
+      },
+      assignee: { role: assigneeRole, name: assigneeName },
+      allowDirty: body.allowDirty === true,
+      requireExpectedHead: body.requireExpectedHead !== false,
+    });
+
+    res.json({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      mode: getWorkspaceAdmitMode(),
+      requiresWorkspaceAdmit: issueRequiresWorkspaceAdmit({
+        title: issue.title,
+        description: issue.description,
+        workMode: issue.workMode,
+        status: issue.status,
+        assigneeRole,
+        assigneeName,
+        repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+      }),
+      errorCode: evaluation.admitted
+        ? WORKSPACE_ADMIT_REASON.OK
+        : primaryWorkspaceAdmitErrorCode(evaluation),
       ...evaluation,
     });
   });
