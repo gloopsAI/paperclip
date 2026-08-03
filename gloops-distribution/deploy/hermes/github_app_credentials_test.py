@@ -44,7 +44,12 @@ class BrokerLifecycleTests(unittest.TestCase):
     def test_repository_config_allowlist_is_fixed_and_fail_closed(self):
         self.assertEqual(
             broker.ALLOWED_REPOSITORIES,
-            frozenset({"gloopsAI/gloops-paperclip-plugin", "gloopsAI/paperclip-gym"}),
+            frozenset({
+                "gloopsAI/gloops-autonomy-gym",
+                "gloopsAI/gloops-paperclip-plugin",
+                "gloopsAI/paperclip",
+                "gloopsAI/paperclip-gym",
+            }),
         )
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "github-app.json"
@@ -60,7 +65,6 @@ class BrokerLifecycleTests(unittest.TestCase):
                 config_path.write_text(broker.json.dumps(base))
                 self.assertEqual(broker.load_config(), base)
                 for repository in (
-                    "gloopsAI/paperclip",
                     "gloopsAI/gloops-paperclip-plugin-fork",
                     "attacker/paperclip-gym",
                 ):
@@ -75,7 +79,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             "repositoryId": 3,
             "repository": "gloopsAI/paperclip-gym",
         }
-        detail = {"private": True, "id": 3}
+        detail = {"private": True, "id": 3, "full_name": "gloopsAI/paperclip-gym"}
 
         def responses(repositories, total_count):
             def request(_method, path, _token, _body=None):
@@ -100,7 +104,7 @@ class BrokerLifecycleTests(unittest.TestCase):
             broker,
             "request_json",
             side_effect=responses(both + [{"id": 5, "full_name": "gloopsAI/other"}], 3),
-        ), self.assertRaisesRegex(broker.CredentialError, "not restricted to the fixed"):
+        ), self.assertRaisesRegex(broker.CredentialError, "outside the fixed allowlist"):
             broker.verify_repository(config, "ghs_token")
         with patch.object(
             broker,
@@ -119,6 +123,23 @@ class BrokerLifecycleTests(unittest.TestCase):
             "request_json",
             side_effect=responses([both[0]], 1),
         ), self.assertRaisesRegex(broker.CredentialError, "does not match the configured boundary"):
+            broker.verify_repository(config, "ghs_token")
+
+    def test_public_repository_boundary_is_observable_from_installation_inventory(self):
+        config = {
+            "appId": 1,
+            "installationId": 2,
+            "repositoryId": 5,
+            "repository": "gloopsAI/paperclip",
+        }
+        repository = {"id": 5, "full_name": "gloopsAI/paperclip"}
+
+        def request(_method, path, _token, _body=None):
+            if path.startswith("/installation/repositories"):
+                return {"total_count": 1, "repositories": [repository]}
+            return {"private": False, "id": 5, "full_name": "gloopsAI/paperclip"}
+
+        with patch.object(broker, "request_json", side_effect=request):
             broker.verify_repository(config, "ghs_token")
 
     def test_pre_mint_intent_is_durable_before_the_external_request(self):
@@ -337,6 +358,7 @@ class BrokerLifecycleTests(unittest.TestCase):
         read = ("ghs_read_installation_token", "2026-07-15T10:00:00Z", {"contents": "read"})
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)), \
                 patch.object(broker, "mint", side_effect=[write, read]), \
+                patch.object(broker, "revoke_value"), \
                 patch.object(broker.os, "chown"):
             broker.refresh_role(config, "hermes")
             with self.assertRaisesRegex(broker.CredentialError, "boundary has drifted"):

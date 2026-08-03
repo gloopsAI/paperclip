@@ -107,6 +107,34 @@ class GitHubPushBrokerTests(unittest.TestCase):
             ), self.assertRaisesRegex(broker.BrokerError, "digest does not match"):
                 broker.load_authorization()
 
+    def test_repository_verification_allows_governed_non_default_base_branch(self):
+        authorization = {
+            **self.authorization("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            "repositoryId": 1299155335,
+            "repositoryFullName": "gloopsAI/paperclip",
+            "defaultBranch": "gloops/stable",
+        }
+        config = {
+            "repositoryId": 1299155335,
+            "repository": "gloopsAI/paperclip",
+        }
+        module = Mock()
+        module.request_json.return_value = {
+            "id": 1299155335,
+            "full_name": "gloopsAI/paperclip",
+            "default_branch": "master",
+        }
+
+        broker.verify_github_repository(module, config, "token", authorization)
+
+        module.request_json.return_value = {
+            "id": 1297008772,
+            "full_name": "gloopsAI/gloops-paperclip-plugin",
+            "default_branch": "master",
+        }
+        with self.assertRaisesRegex(broker.BrokerError, "metadata conflicts"):
+            broker.verify_github_repository(module, config, "token", authorization)
+
     def test_allocation_is_durable_single_use_and_journal_is_hash_chained(self):
         run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         authorization = self.authorization(run_id)
