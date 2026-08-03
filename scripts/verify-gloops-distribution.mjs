@@ -541,6 +541,23 @@ function git(...args) {
   }).trim();
 }
 
+function gitCanonicalDiff(range) {
+  return execFileSync(
+    "git",
+    ["diff", "--no-color", "--full-index", range],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  ).trim();
+}
+
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -2448,6 +2465,23 @@ for (const patch of manifest.patches ?? []) {
   }
   if (!/^[0-9a-f]{64}$/.test(patch.patchDiffSha256 ?? "")) {
     fail(`${patch.id}: patchDiffSha256 must be a SHA-256 digest`);
+  }
+  try {
+    const canonicalDiff = gitCanonicalDiff(
+      `${patch.sourceBase}..${patch.sourceHead}`,
+    );
+    const canonicalDigest = createHash("sha256")
+      .update(canonicalDiff)
+      .digest("hex");
+    if (canonicalDigest !== patch.patchDiffSha256) {
+      fail(
+        `${patch.id}: patchDiffSha256 does not match canonical full-index digest (expected ${canonicalDigest})`,
+      );
+    }
+  } catch (error) {
+    fail(
+      `${patch.id}: cannot compute canonical patch digest: ${error instanceof Error ? error.message : error}`,
+    );
   }
   if (!patch.owner || !patch.retirementCondition) {
     fail(`${patch.id}: owner and retirementCondition are required`);

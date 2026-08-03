@@ -26,7 +26,7 @@
       "upstreamPullRequest": "https://github.com/paperclipai/paperclip/pull/8114",
       "sourceBase": "412a04c964915fd45e15675f064d24332d50f6cc",
       "sourceHead": "90a2731a91882cf71457dabb25ad3ae4b51ed3c1",
-      "patchDiffSha256": "8c475e0aa67fa1cbbfc27dea407402cb0783f5b0f5bcc3a6c92427274451cb22",
+      "patchDiffSha256": "bab81e8b65d3077a3ecd63a91801b4a2289d627ce8727e4ec39e57c7cbaf1a13",
       "integratedCommits": [
         "dc827db561ffa8e876a11dab86e69a02e8d3071d",
         "b25c58e56edde327dbff8beab02260711a536b94"
@@ -40,7 +40,7 @@
       "upstreamPullRequest": "https://github.com/paperclipai/paperclip/pull/9494",
       "sourceBase": "c36f1a4afd91e4ddf0e5c7224b288ce722c7404f",
       "sourceHead": "92967463a7e44aa7388f3ceff88448ffa380333a",
-      "patchDiffSha256": "690f4bea8da5c324d6fd87cdc9620af5e56e2c7972a68c2dc99383083688b616",
+      "patchDiffSha256": "ab90ad835168bb25a19c0f0f630c8d69910104aa679f7a091e4dc0dd84178ce4",
       "integratedCommits": [
         "2f4291cac56432e6435ec4a43e8faf86157cddc4",
         "71268240cc9b2303ae5d5cb9fa1c70f42a722759"
@@ -54,7 +54,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "71268240cc9b2303ae5d5cb9fa1c70f42a722759",
       "sourceHead": "90e02b03274fadc7f4c336354c769403b2d5aae4",
-      "patchDiffSha256": "48f6a24078ea57d1e44189969362d9587049aa9ea999b33b22bbf959ff0ba628",
+      "patchDiffSha256": "6f209d9ea99632c48468fca62b7c1438cd071312d17b7aad46e73517c1796427",
       "integratedCommits": ["90e02b03274fadc7f4c336354c769403b2d5aae4"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain as a GLoops distribution policy unless upstream provides equivalent digest-pinned base images and explicit agent-CLI build arguments; any upstreaming is tracked separately from runtime delivery."
@@ -65,7 +65,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "5962343692bf0bed65dc8deb9a8d5c9895687e05",
       "sourceHead": "ceec206764047115cc07c3abecc57d32f2da47b0",
-      "patchDiffSha256": "a79258ce53359db2a2f56e06eefe8585851345923d1818b9c7e3db60e59bde9b",
+      "patchDiffSha256": "3dd4fe372f7f2a8ee82b171d9d6c2e984b257e59eeff40d59eb2746f054f2b87",
       "integratedCommits": ["ceec206764047115cc07c3abecc57d32f2da47b0"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalently minimal compiled control-plane runtime target with no coding-agent CLIs or build/test toolchain, plus exact-digest SBOM, provenance, secret-scan, and VEX acceptance."
@@ -76,7 +76,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "0ca09f6c816c63b997ff1d5d1847be08d1fd7527",
       "sourceHead": "2473fd3959fb61d0b9e5e705d992226f709690ef",
-      "patchDiffSha256": "ac29cd06f44f8b05ecc65b760bd655938a076a0846ee40569ba060f4ec1c35f9",
+      "patchDiffSha256": "cbd6211cfd96f4c4dc8e53405c9d6a10bdacbb3e6fe430225c5edf420a508bd1",
       "integratedCommits": ["2473fd3959fb61d0b9e5e705d992226f709690ef"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the production image starts from persisted legacy state under a read-only root filesystem, with build-time native-library preparation and state-path lockstep enforced by release verification."
@@ -87,7 +87,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "2473fd3959fb61d0b9e5e705d992226f709690ef",
       "sourceHead": "cbc5d2dd99eec69da24f773735d214089babd2f4",
-      "patchDiffSha256": "59fca9b1a401948029666eaa1a8aabe7f5472b66e9c492e61862c2e40f37930c",
+      "patchDiffSha256": "069093390d5e3c80eec41d6f7b3fad196ece1fd2ffd3ceb72ecf65537f0595fd",
       "integratedCommits": ["a5735da54ad5ae2a78eb4aa04ce2594b53fef9ee"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides one claim-time task execution budget spanning every retry and recovery producer, with atomic concurrent admission, operator-only reset epochs, and persisted allow/deny receipts."
@@ -98,7 +98,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "77576bdd27576d989f8b8d238b53943f948d764f",
       "sourceHead": "a466a31ce79fb4f304fdffb9cda849077f8ceaec",
-      "patchDiffSha256": "c9a9f2c9c2ee95b1608287ab0246e3c223e22dbfa2510ffa14c820f8043bd9b8",
+      "patchDiffSha256": "db5e8a5b7dab392211e0b04fd52cf2d4a6975cdedc988071412924ff83f19bfb",
       "integratedCommits": [
         "676eed68fe4c40606d623580e2d4086fc49a651d",
         "9331f1415cffb1c73a141f8e2e2f7e41ed241500",
@@ -116,7 +116,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "aba18711d6bd00aee3efa98fc34c39b0f6217a34",
       "sourceHead": "b2c9c6d4a7d4e29eff2d64dd6b1101fca5ef9f21",
-      "patchDiffSha256": "463803cac0107ae65842aae1f306d40d3f4ca9fd51f6475a8ab359d02402d284",
+      "patchDiffSha256": "4e38c81985f89cff09a9a5c7beffdbfd8047979f4ab8b0b83e3a5cc5aff0da44",
       "integratedCommits": ["8944e9a6b802d06b8a86d2cd76cedb42cee7a56a"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected admission implementation proves that a zero-retry budget admits exactly one initial execution while every direct continuation, including legacy or corrupt-envelope parent chains, remains fail-closed."
@@ -127,7 +127,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "5bc39e96eabbfcab69e839e543e7c00d521496df",
       "sourceHead": "0855ff58b3bb41d631ccca87b4aa4d604d0396cc",
-      "patchDiffSha256": "507fc69fb5014ffd0304580092a8bd0c75e64b4af54991d71cdc68a63eabfcba",
+      "patchDiffSha256": "f48f6be76777044f460d83e57efb53f47610afb91bea7c00f3e820629e41b12c",
       "integratedCommits": ["0855ff58b3bb41d631ccca87b4aa4d604d0396cc"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Paperclip-to-Hermes execution boundary provides equivalent provider-invocation truth, exact clean-SHA admission, bounded one-run/zero-recovery behavior, absolute adapter deadlines, row-locked terminal transitions, and independently accepted evidence."
@@ -138,7 +138,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "aed23812f4f40deaf0f29aa076bf0e53e2cdded1",
       "sourceHead": "cb742d542c23c7922c1ec2e828e2c97eb91c45a7",
-      "patchDiffSha256": "db0e2c0c1edb861c67e6b01f5453fff340d1079c386d2ee405d46367aed34e01",
+      "patchDiffSha256": "630392dba678266ebd5b4cf7551da936ed2c62adf8e6e7189c24673823ca406b",
       "integratedCommits": ["cb742d542c23c7922c1ec2e828e2c97eb91c45a7"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Hermes runtime proves graceful cross-UID supervisor shutdown with an exact capability allowlist, no privileged or host-PID mode, and zero-work rehearsal rejection of forced, failed, or residual-container shutdown."
@@ -149,7 +149,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "ddfe9fcb86123118bd6280001f4d3c0ce38202b7",
       "sourceHead": "41bfbb7dbf0eaab4d0ebcd45f16333e348100985",
-      "patchDiffSha256": "fcd86849f5f7e0f1ea4428a3189aee6e31c7e8d9c97f7abf05140e5bd14e0d51",
+      "patchDiffSha256": "01284dd7afa6b628b7a2c010d1444dd7610b9e8fab4943908e6b825211ca6317",
       "integratedCommits": ["41bfbb7dbf0eaab4d0ebcd45f16333e348100985"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the bounded execution profile derives its sole repository grant and observer path from the accepted work charter without admitting any undeclared repository or broader GitHub authority."
@@ -160,7 +160,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "b609136514e4176132790232815bd8071a97ac4a",
       "sourceHead": "ebaa929944fbdc6bb5fd5bec11d68e20da01ab13",
-      "patchDiffSha256": "b12511e7d0ac39d2af5a32bb872eba037ded4f99b489fd1d2fb4bdcf69743fc8",
+      "patchDiffSha256": "c95ca79213ae798aa0652fa50822472d3b4541fb51720fd585311f692edb5f92",
       "integratedCommits": ["ebaa929944fbdc6bb5fd5bec11d68e20da01ab13"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Paperclip and Hermes runtimes provide equivalent company-and-path-bound plugin secret resolution, independently owned one-repository GitHub App token lifecycles, stateless installation-token compatibility, and fail-closed cleanup retention."
@@ -171,7 +171,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "834de68921aa3ab87e7e09052ee2a849d4291ee5",
       "sourceHead": "e4a556ff166026936f671325080171af8b2bbfef",
-      "patchDiffSha256": "55008f6c91f639c9338c5b08a1acc58a3e77394933cca31a3ead9e26d0d1b0a6",
+      "patchDiffSha256": "a249483b2d923d7ca0f9579909d1b752bd9846f1453726d03541283e34653fad",
       "integratedCommits": ["e4a556ff166026936f671325080171af8b2bbfef"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the internal-only handshake topology has an equivalent executable host readiness path with no published port, exact fixed-address proof, and fail-closed topology verification."
@@ -182,7 +182,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "e4a556ff166026936f671325080171af8b2bbfef",
       "sourceHead": "d5670f593167a3099da198ec45ec4a9231168332",
-      "patchDiffSha256": "4c91b7fddb46eec7bc2f8973096920da3b8de23c9aafd17b27f22c98c541edf3",
+      "patchDiffSha256": "e76981e9feb2774fa09820cdc9f297e1a38c93b867fc779483c72899c3e524a7",
       "integratedCommits": ["d5670f593167a3099da198ec45ec4a9231168332"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected control plane provides an equivalent authenticated operator-only mode that suppresses reconciliation, heartbeat and routine scheduling, retries, plugin coordinators and workers, automatic backups, deletion, and telemetry."
@@ -193,7 +193,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "d5670f593167a3099da198ec45ec4a9231168332",
       "sourceHead": "ed0c817217d00f41e9eaf13f389a28c855ad6b65",
-      "patchDiffSha256": "ce6a4efef35d26081031b1c5dc468c093259b1077d28f29cc275a11baaff5138",
+      "patchDiffSha256": "8b4bc9fba89cf7e09382d649b1cc15c33b91a944a14f3003e631b76c97a9f276",
       "integratedCommits": ["ed0c817217d00f41e9eaf13f389a28c855ad6b65"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the readiness path has equivalent conntrack-scoped response admission plus live bridge-and-firewall regression proof, and every operator-only app startup path has direct executable negative coverage."
@@ -204,7 +204,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "0ec0377ef7ba65de2db6085590d9ca4da8228c3c",
       "sourceHead": "5208ac5cb18fec960c6536351d47870b1ad54e0a",
-      "patchDiffSha256": "a4fcb995e4b53d9345c9a07c7da163cfe6c2b9fc0b90f793f28838012afa66cb",
+      "patchDiffSha256": "c777e4e4c5df6412bf506daec9bbda531699be23058d3aa404ed85ed3f824f8e",
       "integratedCommits": ["5208ac5cb18fec960c6536351d47870b1ad54e0a"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Paperclip-to-Hermes adapter has equivalent reproducible exact-runtime reference certification, startup update checks cannot create undeclared network egress, and the bounded runtime deadman is independently proven in the installed environment."
@@ -215,7 +215,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "a62185c3cecd4d5a0c05209fe8aa5089486a7e10",
       "sourceHead": "3c1fe3e1c59a9c94130291d2732ce2e3e06f1889",
-      "patchDiffSha256": "04d67140bdef681532be7105d1b91ed32417d107eb56b3e9c4e79e42462a5254",
+      "patchDiffSha256": "460fb93207edd14010610c1273290891d3bb32362c6aed53968fafe52b6d3e69",
       "integratedCommits": ["3c1fe3e1c59a9c94130291d2732ce2e3e06f1889"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides equivalent company-wide serialized WIP admission, historical-work cutoffs, fair queue pumping, non-reentrant recovery, and bounded retry ownership with exact receipts."
@@ -226,7 +226,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "3c1fe3e1c59a9c94130291d2732ce2e3e06f1889",
       "sourceHead": "0568a4c0d1a196c8bc57c316e50a6aaf6add6a5b",
-      "patchDiffSha256": "46d9828570c2856d7e35ffbeef2c273dba60d62a7cf995c7f7b67d7d48fed5b3",
+      "patchDiffSha256": "410d35b8403b7c58bab532d4b334ad630d637a6cba5ff924114898693f31830e",
       "integratedCommits": ["0568a4c0d1a196c8bc57c316e50a6aaf6add6a5b"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime and host provide an equivalent root-owned, write-once 24-hour campaign epoch; fail-closed claim-time admission; restart-stable non-renewal; expiry shutdown; immutable evidence; and rollback verification that cannot certify a surviving broker or socket."
@@ -237,7 +237,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "3c6f7acbe4d3240b747391b951c0603312f78802",
       "sourceHead": "db2e9b209cba7390bc91592ddca1417cbea72138",
-      "patchDiffSha256": "f9c77d365040bd17d4ef49ff72a1307c11ab1c55fc1ab2c4497952da48712b5b",
+      "patchDiffSha256": "01cdff886ce6731c41661aed4b86dc0340d7544ccbfbf9936259fc7f167a28b8",
       "integratedCommits": ["db2e9b209cba7390bc91592ddca1417cbea72138"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides equivalent one-use artifact-bound inert activation, an application-level execution-commissioning barrier, root-only observation and stop controls, accelerated installed-deadman proof with cleanup-bound receipts, and independently accepted exact-head operational evidence."
@@ -248,7 +248,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "db2e9b209cba7390bc91592ddca1417cbea72138",
       "sourceHead": "f440085b1bd6249f7cd751e21ae93a933195d45f",
-      "patchDiffSha256": "f409861872c75df5b4f8f07c396c1f763cc51be19bc96fca5cdc57f83ea3fa86",
+      "patchDiffSha256": "072f4ca68b07303025e88247e000daf8ea79c9762d65becb15f080dce70493a9",
       "integratedCommits": [
         "e1ff426690c347b60c8a7134e93b8cef79e2397a",
         "f440085b1bd6249f7cd751e21ae93a933195d45f"
@@ -262,7 +262,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "77497abbe8c4bfad81b9100371806a603c3c95fd",
       "sourceHead": "90be60c5445d6a5d3fd42a6c729df45f6b76a605",
-      "patchDiffSha256": "35541523203621982d5900961097c3dbc4dcd91b623d0afee8e700a9a276bd55",
+      "patchDiffSha256": "0ffa6373d6e3bb9189529db51dca81d761067be3bbd9066d86ba8d81d3a543b8",
       "integratedCommits": ["90be60c5445d6a5d3fd42a6c729df45f6b76a605"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides an equivalent one-use, exact-roster commissioning transaction with a durable versioned phase journal, bounded orphan recovery under an exact false execution barrier, SIGKILL rehearsal at every durable phase, post-restart revalidation, fail-closed rollback, non-replayable stop semantics, and behavioral authority-boundary evidence."
@@ -273,7 +273,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "308d955866d28df2e8a233026ef977cf3caa8875",
       "sourceHead": "bdd506f1dae20ac4c52bc7134a1788d3ae5279fc",
-      "patchDiffSha256": "4c545fc213b3230fb46b4a1e0b800fb16864822340cebf19a9501511c6696d8b",
+      "patchDiffSha256": "051356b07a6e0623a500d1df24b0e4572aa0640bf293ba15cf8a39439db465bf",
       "integratedCommits": ["bdd506f1dae20ac4c52bc7134a1788d3ae5279fc"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream synchronizes empty plugin job manifests before replacement-worker startup, pauses and unregisters removed durable schedules, and preserves closed-interval zero-work proof with no plugin job runs."
@@ -284,7 +284,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "09cdcb96ed272580da257edf7757d5dcf24c79af",
       "sourceHead": "250df82e971024199cf6893564c59d430616f7e5",
-      "patchDiffSha256": "f6eb1e7aeb686c9024c3d54c00b9ed6738a3274b466e6b04ade92a68685025e6",
+      "patchDiffSha256": "86a3586eebfb8a248f0c1d379b7965a431b249ae8cc6a9640d57e173113b17dc",
       "integratedCommits": ["682f5e1adcfc4dd35ca7e14d6dea7a7836e0415b"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected Paperclip-to-Hermes runtime enforces equivalent explicit comment policy, bounded turn and stage accounting, and independently counted review stages with admission and wake-batching regression proof."
@@ -295,7 +295,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "682f5e1adcfc4dd35ca7e14d6dea7a7836e0415b",
       "sourceHead": "f2fc4c58f6fa2f41e8c8dc53240cc8d9ad119ff2",
-      "patchDiffSha256": "4b7f042abaf08a3377d8aa1754227fbee0491103fe571f53532c98e3322a9291",
+      "patchDiffSha256": "a879841376d6f205aa05a875dec6406521f55def27dbc6daf2780ecc434631a9",
       "integratedCommits": [
         "cef5d0c9448e2dc4b8fd3ad8bda89e27143c5ee1",
         "2024c43f86986cacb64e1ab4d05175f8c167f2f3",
@@ -312,7 +312,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "ae07379154d698a6f9304f603e80c5f7b2f1b324",
       "sourceHead": "f45545bd5617b9b5850cc7e69670fd28dbbe0cbb",
-      "patchDiffSha256": "e9aa31e13e05fd513364d72f7e340be619252e65ce54f6fe6a8cd129117d84d4",
+      "patchDiffSha256": "2bb297e2fe967c130eb4693f3a2dc72e763c2edcfa210db2626591182a89c49c",
       "integratedCommits": [
         "c267036b460e7e4d6fc28de26b6b2d7a5d2d15f2",
         "f45545bd5617b9b5850cc7e69670fd28dbbe0cbb"
@@ -326,7 +326,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "be25ae3cf8fea8c029675a003a291d2e192d6982",
       "sourceHead": "6f281e404e99dc6dd72889419f7aa8c53b3821c8",
-      "patchDiffSha256": "4f61e44fe23244b7c7ce5bc7c3adeb60d69af2e789b03eba5813469aaee0f813",
+      "patchDiffSha256": "745010f915fb5f349bc4491b345bc1bcf0df011f87601361e24841f91f8f3c98",
       "integratedCommits": ["b4cb86d99f3edaf179470890521e6f5428817647"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host runtime provides equivalent exact-installed-topology SIGKILL recovery proof for every durable commissioning phase, binds canonical and systemd-loaded recovery-unit properties plus credential lifecycle history, restores both execution barriers false after each phase, and emits an independently accepted content-addressed receipt."
@@ -337,7 +337,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "762c1793ddbad042acb71b2d77b8ea9368020ab2",
       "sourceHead": "54ca481a0ad92bb65dac61deaa3fd73be3b35654",
-      "patchDiffSha256": "dc5d4544b1c9c5790c57822c67527daa8b49f12ce1c0ca50f0e5180a7c89c656",
+      "patchDiffSha256": "9f62330df2c999cb409dcd36a6b8f8d647770025cb4efd20bceac63e0d50a048",
       "integratedCommits": ["68950a9c3f3abba7e5f6f296533faa2754ebbc93"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the successor campaign has terminated and the selected runtime provides equivalent collision-resistant, non-renewable campaign identity, immutable expired-predecessor proof, explicit campaign binding at every deadman verification call, and stale-work admission exclusion."
@@ -348,7 +348,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "c2c4c50bedf4090b0142440df05d04e7c7ec0536",
       "sourceHead": "989f0e3d419830d41f37dac4fb879b6843ade705",
-      "patchDiffSha256": "1cecd1d0c216877d2bed2dc10b5b2e688e4ffdee803335af4dd4d6aa2452ad92",
+      "patchDiffSha256": "5cb8da71fe10c18e56e24766569c50416a85a9ebdb529035dd15365f31fa60a6",
       "integratedCommits": ["23f2f9ebfe31d394593f102fe1b6dffc752ece54"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host supervisor provides equivalent bounded restart-rate reconciliation immediately before checked control-plane recovery restarts and manual dark shutdown tolerates unloaded-unit cleanup only behind the complete authoritative dark verifier."
@@ -359,7 +359,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "0282940a824eb61b80c6ad54856b4586ac0bbba1",
       "sourceHead": "1014a43fac8d83c0481a70ac900d328915841f46",
-      "patchDiffSha256": "87f99ede9b2fcdea174d503b9030eb5a43a6b04d40fc94f6d635f06a55488236",
+      "patchDiffSha256": "649594541a9676e8e7d7c8073523acf80f901526278ee24de377ef99f5a2f52d",
       "integratedCommits": ["2d189c87dd4766a99b53095a215274b979458c68"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host supervisor equivalently treats reset-failed as best-effort cleanup while preserving checked failure semantics for the actual Paperclip restart during interrupted-commissioning recovery."
@@ -370,7 +370,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "bab9ea3d4471742cb8d9d3fd73873ede14e1484c",
       "sourceHead": "33917cd90c137dee84da2506ec0d4b676c54c1ec",
-      "patchDiffSha256": "dcd2c2c39d800fb0308403387b4c086447571b29b5f2907a1003cf6d28ed9dcb",
+      "patchDiffSha256": "e63cdd5b584642e0bf343a85229047a6d9bb76219c07b237b73995453bfc140e",
       "integratedCommits": ["3a15c109b3d6e05d0aeb0396a97fa21c91159021"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected host supervisor provides an equivalent root-locked commissioning transition that admits only a structurally valid barrier-enabled rollback journal bound to the exact approval digest while all orphaned, malformed, wrong-phase, or mismatched journals remain fail-closed."
@@ -381,7 +381,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "6133539cb752819ffdd69ea0f0aa02e31954cbec",
       "sourceHead": "175bcda2c35b6ae9b0f1a9a1ad0e945a0184e4e2",
-      "patchDiffSha256": "7a45a62bd6f29e9eda2e635f98a3026e6764e6264569e3d9bc03d19c0500b31a",
+      "patchDiffSha256": "480890ff09148c74f1d081846b9fc469d8395d76e40198faa3b76cb650886505",
       "integratedCommits": ["433c91de12837d2b6ea8d0dec2bc556be32f4435"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected provider runtime emits equivalent fail-closed, domain-separated route and usage evidence over the exact request bytes, provider attempts, terminal event, and final status, with the locked source and immutable derivative image no longer required."
@@ -392,7 +392,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "8a264199c65a6c1e86e2000b25405c3098062b58",
       "sourceHead": "84b871f898db80526405e9e0be0fdf5c1054aaa8",
-      "patchDiffSha256": "d9ee7fe1e3b546143f089529a5f6f64188e05bedbbf5da1775656988374355a8",
+      "patchDiffSha256": "8aba20056de52497418e6de769b9eb958d345020888cc4ee7443e98884f8bdd1",
       "integratedCommits": ["f06426802d1ebe3e3694361287379a1dfe79f481"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected provider runtime durably acknowledges the exact serialized request bytes, SHA-256 digest, identity tuple, and idempotency key before any provider invocation, with contradictory replay rejected without mutation."
@@ -403,7 +403,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "82dbe65d4df117891dc33f808873d4fd98e3e4d8",
       "sourceHead": "005bacad0eb840529f5d915cd078c5f264866289",
-      "patchDiffSha256": "03a568d452c38ae10f96241c50acb505c370a5cbea62421f67cea8801db393c1",
+      "patchDiffSha256": "547f3342869d176f48ea04eb200b7dbc31374b9cfcddeb8b478eab6c490d94b7",
       "integratedCommits": ["5ff58795928d240e49c98a6401da0086a4b5bfc9"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected provider runtime and control plane equivalently reconcile exact raw and canonical terminal evidence, resolved route/model, terminal status, and usage against the prepared request and run identities before successful settlement, with immutable idempotent persistence and contradictory replay rejection."
@@ -414,7 +414,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "7535735138da09b8dbfa8100913efd7e27825141",
       "sourceHead": "b9c10090132c74ff67ba4d1051386c847e4b5694",
-      "patchDiffSha256": "7a71e1df05d7c3d501f3db5861a96c0208332abf0aa63d9f77123df027858712",
+      "patchDiffSha256": "05b008c7a5b9621761578bdc10e57036c02b680c70f61368cd8a40ea4fcf0de8",
       "integratedCommits": ["15213ed6139cbf8b481528a0f8aefecbb5ac221e"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected control plane provides an equivalent single transaction for terminal run state, provider evidence, normalized usage, cost, durable budget hard stop, accounting continuation, and repository-mutation disposition, with rollback to non-terminal state and conflicting replay rejection."
@@ -425,7 +425,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "61e818f07f312146c4b01a58f1dab3060030818c",
       "sourceHead": "be175c0bbfcbc419181857ead64ee38a76429303",
-      "patchDiffSha256": "f1124101b8775c0a764e8cae5c1cfa412644550c5d2613515d6c1b8831ed1875",
+      "patchDiffSha256": "48720f8eb814e6c4d9b8c48a9a175fce1fec722e99281e614837af4b2ce797c9",
       "integratedCommits": ["b7dda2871dc373dd6083291fd3c94d21fd97cc52"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the selected runtime provides an equivalent root-owned, run-bound, repository-bound, branch-bound, expiring one-push broker with credential-free preflight, immutable regular-file-only Git closure validation, memory-only write credentials, no Hermes GitHub token, uncertain-write reconciliation without replay, and terminal receipt settlement."
@@ -436,7 +436,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "91fa2a22400a799ecc33c91e361ea6ea3b947bd9",
       "sourceHead": "7e69d9643e9ad550636c4a4f248ad761b10c9739",
-      "patchDiffSha256": "6379826051f82bf035dc5d32126734a022c0d41a3dc6f5ad5720d86c10087d19",
+      "patchDiffSha256": "90d0310fd18b737ff472f9800ae822248fe56dd48d04f13c54a37f54ad32e066",
       "integratedCommits": ["209e3c22c942342642e0aa41c90301105b892c2f"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until the installed zero-work proof equivalently includes every required root-owned runtime dependency, refuses unresolved broker recovery before startup, locks and counts repository-mutation receipts across the closed interval, and restores the complete authoritative dark topology on every exit."
@@ -447,7 +447,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "1448302af034fa272141da549e25260f7650fc5a",
       "sourceHead": "0290705e5123946ee168c0a469c1a80d44468fd8",
-      "patchDiffSha256": "6b60d8ddea3cfdff4ec791136d24b42d4f7242689a3318f20041fffb764c1747",
+      "patchDiffSha256": "b2ac517048e8e3fb845952503d4d1fbab927cbe28e7c0871dac65262cbc38573",
       "integratedCommits": ["d38a769487af8dffc73d3d30b088cc1122a8638c"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until broker-mode credential lifecycles are natively projector-only, legacy dual-role receipts remain verifiable, and any stranded pre-schema broker receipt can be reconciled through an equivalently exact, hash-chained, crash-idempotent transition bound to its source distribution and successful stop evidence."
@@ -458,7 +458,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "d658bfc9a707d05aae704365cdd59ee89e741a64",
       "sourceHead": "0ab3ac50d23c603045fc2a6dbf3a548f2526268f",
-      "patchDiffSha256": "e96f26e7393b33e3f395a6db40c560ad332b5ba66b7ae261db8a07551cfb6ac8",
+      "patchDiffSha256": "6eb995f8469fea4e1a221e85107e23b4f0b3c6c82ff94c5b25feb09a41095317",
       "integratedCommits": ["9d5ecf1a6e61aff2d61b4e622a9f8112921af2b5"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalently authenticated, atomic, idempotent reset of an exhausted admission budget that binds the reset to the exact terminal run and denies ambiguous, stale, or cross-company replay."
@@ -469,7 +469,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "eca4e83d2716657cbefdf7800ed6b533a0fa5e66",
       "sourceHead": "e83b590bf2c3c25f859798bcd20494e0a4533d65",
-      "patchDiffSha256": "ee0dc959ab192ab026ec308dcfa623443b31d47dc6a0694b48a5ad31d9c6c6b2",
+      "patchDiffSha256": "1214e1d425d4628926455cdb88b52279d52e1a28248df6877a2f1b2685088ff1",
       "integratedCommits": ["63ef21ad2bc962559a2bcb79ecb52f177149aa84"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalent provider-free, claim-time company backlog freeze with fail-closed UUID configuration, exact issue readmission bound to explicit normalized resource budgets, deterministic cancellation, and budget-exempt denials."
@@ -480,7 +480,7 @@
       "upstreamPullRequest": null,
       "sourceBase": "88bdc05c05c01943a21c04fdf90bcb76211c87a6",
       "sourceHead": "48f609d89645182ab618f707988b1ac9df139d22",
-      "patchDiffSha256": "01b1eb35d953119c4829223e6045511f4b28f654ac839e6553cc6c2d3fa0f197",
+      "patchDiffSha256": "c265f118cc5384e44b0cc80c919f28d7141d44bf482ece9c8840fc8cb93c7278",
       "integratedCommits": ["b3233636a20790097f6c082b64fc34bbd2065a33"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalent host-wide exclusive mutation controller with named writer identity, durable pre/post journal, SIGTERM-safe receipts, fail-closed drift refusal, and terminal restore evidence for Paperclip host writes."
