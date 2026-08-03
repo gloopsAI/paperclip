@@ -1,0 +1,12 @@
+[Unit]
+Description=Paperclip campaign T-4h deadline alert (once per epoch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/paperclip-gloops/runtime.env
+EnvironmentFile=-/etc/paperclip-gloops/communications.env
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/bin/campaign-deadline-alert.py --apply
+Nice=10

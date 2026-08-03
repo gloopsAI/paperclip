@@ -13,6 +13,7 @@ import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middlewa
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { serverVersion } from "./version.js";
 import { healthRoutes } from "./routes/health.js";
+import { planeStatusRoutes } from "./routes/plane-status.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
@@ -267,6 +268,12 @@ export async function createApp(
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       databaseBackupHealth: opts.databaseBackupHealth,
+    }),
+  );
+  api.use(
+    "/plane-status",
+    planeStatusRoutes({
+      deploymentMode: opts.deploymentMode,
     }),
   );
   api.use(openApiRoutes());
