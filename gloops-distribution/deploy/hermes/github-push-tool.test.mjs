@@ -197,7 +197,7 @@ test("client fails closed when a remote-base parent is unavailable", async (t) =
       "--ingress", root,
     ], repo);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /no remote-base parent/);
+    assert.match(result.stderr, /published base boundary is unavailable/);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -237,7 +237,7 @@ test("client fails closed when a remote-base parent is unavailable", async (t) =
       "--ingress", root,
     ], repo);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Could not (?:read|find)|not found|missing/i);
+    assert.match(result.stderr, /base-aware revision walk failed/i);
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
@@ -474,6 +474,7 @@ test("worker imports a complete closure into a native bare repository", async ()
     head,
     parent,
     git(repo, "rev-parse", "HEAD^{tree}"),
+    git(repo, "rev-parse", "HEAD:base.txt"),
     git(repo, "rev-parse", "HEAD:nested"),
     git(repo, "rev-parse", "HEAD:nested/proof.txt"),
   ].sort();
@@ -525,6 +526,7 @@ test("worker accepts a contained committed symlink closure", async () => {
     parent,
     git(repo, "rev-parse", "HEAD^{tree}"),
     git(repo, "rev-parse", "HEAD:link.txt"),
+    git(repo, "rev-parse", "HEAD:target.txt"),
   ].sort();
   const packed = spawnSync("git", ["pack-objects", "--stdout"], {
     cwd: repo,
@@ -545,6 +547,59 @@ test("worker accepts a contained committed symlink closure", async () => {
   }));
   const result = await runTool(["validate", "--request", request], root);
   assert.equal(result.status, 0, result.stderr);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("isolated shallow repository pushes a bounded stack to a remote that holds the base", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-native-shallow-"));
+  const repo = path.join(root, "repo");
+  const remote = path.join(root, "remote.git");
+  const worker = path.join(root, "worker.git");
+  const pack = path.join(root, "input.pack");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "unchanged.txt"), "remote-held\n");
+  fs.writeFileSync(path.join(repo, "changed.txt"), "base\n");
+  git(repo, "add", "--all");
+  git(repo, "commit", "-m", "published base");
+  const base = git(repo, "rev-parse", "HEAD");
+  git(root, "init", "--bare", remote);
+  git(repo, "push", remote, `HEAD:refs/heads/gloops/stable`);
+  fs.writeFileSync(path.join(repo, "changed.txt"), "new\n");
+  git(repo, "add", "changed.txt");
+  git(repo, "commit", "-m", "bounded change");
+  const head = git(repo, "rev-parse", "HEAD");
+  const objectOids = new Set([head, base, git(repo, "rev-parse", "HEAD^{tree}")]);
+  for (const line of git(repo, "ls-tree", "-r", "HEAD").split("\n")) {
+    const oid = /^\d+ \w+ ([0-9a-f]{40})\t/u.exec(line)?.[1];
+    if (oid) objectOids.add(oid);
+  }
+  const packed = spawnSync("git", ["pack-objects", "--stdout"], {
+    cwd: repo,
+    input: `${[...objectOids].join("\n")}\n`,
+  });
+  assert.equal(packed.status, 0, packed.stderr?.toString());
+  fs.writeFileSync(pack, packed.stdout);
+  git(root, "init", "--bare", worker);
+  const workerPack = path.join(worker, "objects", "pack", "input.pack");
+  fs.copyFileSync(pack, workerPack);
+  git(root, "--git-dir", worker, "index-pack", workerPack);
+  git(root, "--git-dir", worker, "update-ref", "refs/heads/paperclip-source", head);
+  fs.writeFileSync(path.join(worker, "shallow"), `${base}\n`);
+  git(
+    root,
+    "--git-dir", worker,
+    "push",
+    "--porcelain",
+    remote,
+    `refs/heads/paperclip-source:refs/heads/paperclip/${runId}/calibration`,
+  );
+  assert.equal(
+    git(root, "--git-dir", remote, "rev-parse", `refs/heads/paperclip/${runId}/calibration`),
+    head,
+  );
   fs.rmSync(root, { recursive: true, force: true });
 });
 

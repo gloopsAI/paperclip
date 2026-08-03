@@ -18708,6 +18708,9 @@ function runRevisionWalk(gitdir, commitOid, baseOid) {
       timeout: 3e4
     }
   );
+  if (result.error?.code === "ENOBUFS") {
+    fail("commit pack exceeds the byte ceiling");
+  }
   if (result.status !== 0) {
     const detail = result.stderr.trim().split("\n").at(-1) ?? "revision walk failed";
     fail(`base-aware revision walk failed: ${detail.slice(0, 500)}`);
