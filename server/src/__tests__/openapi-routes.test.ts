@@ -37,6 +37,7 @@ const apiPrefixes: Record<string, string> = {
   "file-resources.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "plane-status.ts": "/api/plane-status",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",
@@ -83,10 +84,10 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
-  if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
+  if ((file === "companies.ts" || file === "health.ts" || file === "plane-status.ts") && routePath === "/") {
     return prefix;
   }
-  if (file === "companies.ts" || file === "health.ts") {
+  if (file === "companies.ts" || file === "health.ts" || file === "plane-status.ts") {
     return `${prefix}${routePath}`;
   }
   if (file === "auth.ts") {

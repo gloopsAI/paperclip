@@ -964,6 +964,37 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/plane-status",
+  tags: ["health"],
+  summary: "Induct SDLC plane status",
+  responses: {
+    200: r.ok(z.object({
+      status: z.enum(["ok", "degraded"]),
+      version: z.string(),
+      schemaVersion: z.string(),
+      ok: z.boolean(),
+      codes: z.array(z.string()).optional(),
+      criticalCodes: z.array(z.string()).optional(),
+      warningCodes: z.array(z.string()).optional(),
+      campaign: z.object({
+        id: z.string().nullable().optional(),
+        deadlineAt: z.string().nullable().optional(),
+        hoursRemaining: z.number().nullable().optional(),
+      }).optional(),
+      commissioned: z.boolean().optional(),
+      schedulerEnabled: z.boolean().optional(),
+      pinImage: z.string().nullable().optional(),
+      approvedImage: z.string().nullable().optional(),
+      hoursRemaining: z.number().nullable().optional(),
+      hostPreflight: z.null().optional(),
+      hostPreflightNote: z.string().optional(),
+    })),
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/openapi.json",
   tags: ["health"],
   summary: "Get the generated OpenAPI document",
