@@ -12,10 +12,11 @@ const OID_PATTERN = /^[0-9a-f]{40}$/;
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_OBJECTS = 100_000;
 const MAX_PACK_BYTES = 64 * 1024 * 1024;
+const MAX_TREE_LIST_BYTES = 32 * 1024 * 1024;
+const TREE_LIST_TIMEOUT_MS = 30_000;
 const DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 const DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
 const ACCEPTED_BLOB_MODES = new Set(["100644", "100755", "120000"]);
-const ACCEPTED_TREE_MODE = "040000";
 const MAX_SYMLINK_TARGET_BYTES = 4096;
 
 function fail(message) {
@@ -158,50 +159,78 @@ function validateSymlinkTarget(blob, entryPath) {
   }
 }
 
-async function collectTreeInventory(
-  gitdir,
-  treeOid,
-  inventory,
-  treePath = "",
-  visitedTreeContexts = new Set(),
-) {
-  const visitKey = `${treeOid}\u0000${treePath}`;
-  if (visitedTreeContexts.has(visitKey)) return;
-  visitedTreeContexts.add(visitKey);
-  if (visitedTreeContexts.size > MAX_OBJECTS) fail("commit closure exceeds the tree-context ceiling");
-  inventory.trees.add(treeOid);
-  if (inventory.trees.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
-  const { tree } = await git.readTree({ fs, gitdir, oid: treeOid });
-  for (const entry of tree) {
-    const entryPath = treePath ? `${treePath}/${entry.path}` : entry.path;
-    if (!OID_PATTERN.test(entry.oid)) fail("tree contains a malformed object id");
-    if (
-      (entry.type === "tree" && entry.mode !== ACCEPTED_TREE_MODE)
-      || (entry.type === "blob" && !ACCEPTED_BLOB_MODES.has(entry.mode))
-      || (entry.type !== "tree" && entry.type !== "blob")
-    ) {
+function runNativeObjectInventory(gitdir, revisions, label) {
+  if (!Array.isArray(revisions) || revisions.length === 0) fail(`${label} is unavailable`);
+  const result = spawnSync(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, "rev-list", "--objects", "--no-object-names", "--stdin"],
+    {
+      input: `${revisions.join("\n")}\n`,
+      env: { PATH: "/usr/bin:/bin", HOME: gitdir, GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: MAX_TREE_LIST_BYTES,
+      timeout: TREE_LIST_TIMEOUT_MS,
+    },
+  );
+  if (result.error?.code === "ENOBUFS") fail(`${label} exceeds the output ceiling`);
+  if (result.error?.code === "ETIMEDOUT") fail(`${label} exceeds the time ceiling`);
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? `${label} failed`;
+    fail(`${label} failed: ${detail.slice(0, 500)}`);
+  }
+  const oids = result.stdout.toString("utf8").split("\n").filter(Boolean);
+  if (oids.length === 0 || oids.length > MAX_OBJECTS || oids.some((oid) => !OID_PATTERN.test(oid))) {
+    fail(`${label} returned a malformed or oversized object set`);
+  }
+  return new Set(oids);
+}
+
+async function validateChangedEntries(gitdir, commits, availableObjects) {
+  if (commits.length === 0) fail("changed-entry validation has no commits");
+  const result = spawnSync(
+    "/usr/bin/git",
+    [
+      "--git-dir", gitdir,
+      "diff-tree", "--stdin", "-r", "--raw", "-z", "--root", "-m", "--no-commit-id", "--no-renames",
+    ],
+    {
+      input: `${commits.join("\n")}\n`,
+      env: { PATH: "/usr/bin:/bin", HOME: gitdir, GIT_CONFIG_NOSYSTEM: "1" },
+      maxBuffer: MAX_TREE_LIST_BYTES,
+      timeout: TREE_LIST_TIMEOUT_MS,
+    },
+  );
+  if (result.error?.code === "ENOBUFS") fail("changed-entry validation exceeds the output ceiling");
+  if (result.error?.code === "ETIMEDOUT") fail("changed-entry validation exceeds the time ceiling");
+  if (result.status !== 0) {
+    const detail = result.stderr?.toString().trim().split("\n").at(-1) ?? "native changed-entry validation failed";
+    fail(`native changed-entry validation failed: ${detail.slice(0, 500)}`);
+  }
+  let output;
+  try {
+    output = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+  } catch {
+    fail("native changed-entry validation returned a malformed path");
+  }
+  if (output.length > 0 && !output.endsWith("\0")) {
+    fail("native changed-entry validation returned a malformed entry");
+  }
+  const records = output.slice(0, -1).split("\0").filter(Boolean);
+  if (records.length % 2 !== 0 || records.length / 2 > MAX_OBJECTS) {
+    fail("native changed-entry validation returned a malformed or oversized entry set");
+  }
+  for (let index = 0; index < records.length; index += 2) {
+    const header = records[index];
+    const entryPath = records[index + 1];
+    const match = /^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z][0-9]*)$/.exec(header);
+    if (!match || !entryPath) fail("native changed-entry validation returned a malformed entry");
+    const [, , mode, , oid] = match;
+    if (mode === "000000" && oid === ZERO_OID) continue;
+    if (!ACCEPTED_BLOB_MODES.has(mode) || !availableObjects.has(oid)) {
       fail("tree contains an unsupported object type or mode");
     }
-    if (entry.type === "blob" && entry.mode === "120000") {
-      const { blob } = await git.readBlob({ fs, gitdir, oid: entry.oid });
+    if (mode === "120000") {
+      const { blob } = await git.readBlob({ fs, gitdir, oid });
       validateSymlinkTarget(blob, entryPath);
-      inventory.symlinks.add(entry.oid);
-    } else if (entry.type === "blob") {
-      inventory.blobs.add(entry.oid);
-    }
-    if (entry.type === "tree") {
-      await collectTreeInventory(
-        gitdir,
-        entry.oid,
-        inventory,
-        entryPath,
-        visitedTreeContexts,
-      );
-    }
-    if (
-      inventory.trees.size + inventory.symlinks.size + inventory.blobs.size > MAX_OBJECTS
-    ) {
-      fail("commit closure exceeds the object-count ceiling");
     }
   }
 }
@@ -253,55 +282,93 @@ async function collectCommitClosure(gitdir, commitOid, baseOid = "") {
   const { commits, boundaries } = runRevisionWalk(gitdir, commitOid, baseOid);
   const commitSet = new Set(commits);
   const boundarySet = new Set(boundaries);
-  const objects = new Set(boundaries);
+  const commitTrees = [];
   for (const oid of commits) {
     const { commit } = await git.readCommit({ fs, gitdir, oid });
-    objects.add(oid);
+    commitTrees.push(commit.tree);
     for (const parent of commit.parent) {
       if (!commitSet.has(parent) && !boundarySet.has(parent)) {
         fail("base-aware revision walk does not close over the new commit graph");
       }
     }
-    const inventory = { trees: new Set(), symlinks: new Set(), blobs: new Set() };
-    await collectTreeInventory(gitdir, commit.tree, inventory);
-    for (const objectOid of [...inventory.trees, ...inventory.symlinks, ...inventory.blobs]) {
-      objects.add(objectOid);
-    }
-    if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
   }
   if (boundaries.length === 0) {
     fail("published base boundary is unavailable; refusing an unbounded history walk");
   }
-  for (const boundary of boundaries) await git.readCommit({ fs, gitdir, oid: boundary });
+  const boundaryTrees = [];
+  for (const boundary of boundaries) {
+    const { commit } = await git.readCommit({ fs, gitdir, oid: boundary });
+    boundaryTrees.push(commit.tree);
+  }
+  const newObjects = runNativeObjectInventory(
+    gitdir,
+    [commitOid, ...boundaries.map((oid) => `^${oid}`)],
+    "new-object inventory",
+  );
+  if (commits.some((oid) => !newObjects.has(oid)) || boundaries.some((oid) => newObjects.has(oid))) {
+    fail("new-object inventory disagrees with the bounded commit graph");
+  }
+  const objects = runNativeObjectInventory(
+    gitdir,
+    [...commitTrees, ...boundaryTrees],
+    "snapshot-object inventory",
+  );
+  for (const oid of [...commits, ...boundaries]) objects.add(oid);
+  if (objects.size > MAX_OBJECTS || [...newObjects].some((oid) => !objects.has(oid))) {
+    fail("snapshot-object inventory does not contain the bounded new objects");
+  }
+  await validateChangedEntries(gitdir, commits, objects);
   return [...objects].sort();
 }
 
 async function collectImportedCommitClosure(gitdir, commitOid, indexedOids) {
-  const objects = new Set();
+  const commits = [];
   const boundaries = new Set();
+  const commitTrees = [];
+  const boundaryTrees = [];
+  const seen = new Set();
   const pending = [commitOid];
   while (pending.length > 0) {
     const oid = pending.pop();
-    if (objects.has(oid)) continue;
+    if (seen.has(oid)) continue;
     if (!OID_PATTERN.test(oid) || !indexedOids.has(oid)) {
       fail("commit closure contains a missing or malformed object id");
     }
-    objects.add(oid);
-    if (objects.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
+    seen.add(oid);
+    if (seen.size > MAX_OBJECTS) fail("commit closure exceeds the object-count ceiling");
     const { commit } = await git.readCommit({ fs, gitdir, oid });
     const reachesUnpackedParent = commit.parent.length === 0
       || commit.parent.some((parent) => !indexedOids.has(parent));
-    if (oid !== commitOid && (!indexedOids.has(commit.tree) || reachesUnpackedParent)) {
+    if (oid !== commitOid && reachesUnpackedParent) {
       boundaries.add(oid);
+      boundaryTrees.push(commit.tree);
       continue;
     }
-    const inventory = { trees: new Set(), symlinks: new Set(), blobs: new Set() };
-    await collectTreeInventory(gitdir, commit.tree, inventory);
-    for (const objectOid of [...inventory.trees, ...inventory.symlinks, ...inventory.blobs]) {
-      objects.add(objectOid);
-    }
+    if (!indexedOids.has(commit.tree)) fail("commit closure contains a missing tree root");
+    commits.push(oid);
+    commitTrees.push(commit.tree);
     for (const parent of commit.parent) pending.push(parent);
   }
+  if (boundaries.size === 0) fail("published base boundary is unavailable; refusing an unbounded history walk");
+  const newObjects = runNativeObjectInventory(
+    gitdir,
+    [commitOid, ...[...boundaries].map((oid) => `^${oid}`)],
+    "imported new-object inventory",
+  );
+  const objects = runNativeObjectInventory(
+    gitdir,
+    [...commitTrees, ...boundaryTrees],
+    "imported snapshot-object inventory",
+  );
+  for (const oid of [...commits, ...boundaries]) objects.add(oid);
+  if (
+    objects.size !== indexedOids.size
+    || [...objects].some((oid) => !indexedOids.has(oid))
+    || [...newObjects].some((oid) => !objects.has(oid))
+  ) {
+    fail("imported object inventory does not match the declared pack");
+  }
+  await validateChangedEntries(gitdir, commits, objects);
   return { objects: [...objects].sort(), boundaries: [...boundaries].sort() };
 }
 

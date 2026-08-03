@@ -153,6 +153,32 @@ test("client bounds a deep history at the direct remote-base parent", async () =
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("client inventories a wide snapshot within the execution-tool ceiling", { timeout: 30_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-wide-snapshot-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  const wide = path.join(repo, "wide");
+  fs.mkdirSync(wide);
+  for (let index = 0; index < 5_000; index += 1) {
+    fs.writeFileSync(path.join(wide, `entry-${String(index).padStart(5, "0")}.txt`), `entry ${index}\n`);
+  }
+  git(repo, "add", "wide");
+  git(repo, "commit", "-m", "wide published base");
+  markRemoteBase(repo);
+  fs.writeFileSync(path.join(repo, "proof.txt"), "bounded wide snapshot\n");
+  git(repo, "add", "proof.txt");
+  git(repo, "commit", "-m", "bounded wide delta");
+
+  const startedAt = Date.now();
+  const manifest = await runClientAgainstBroker(repo, root);
+  assert.ok(Date.now() - startedAt < 10_000, "wide snapshot must fit the execution-tool wall ceiling");
+  assert.ok(manifest.objectCount > 5_000, "complete snapshot inventory must be retained");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("client includes every commit in a local stack above the published base", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-stacked-history-"));
   const repo = path.join(root, "repo");
@@ -474,6 +500,7 @@ test("worker imports a complete closure into a native bare repository", async ()
     head,
     parent,
     git(repo, "rev-parse", "HEAD^{tree}"),
+    git(repo, "rev-parse", `${parent}^{tree}`),
     git(repo, "rev-parse", "HEAD:base.txt"),
     git(repo, "rev-parse", "HEAD:nested"),
     git(repo, "rev-parse", "HEAD:nested/proof.txt"),
@@ -525,6 +552,7 @@ test("worker accepts a contained committed symlink closure", async () => {
     head,
     parent,
     git(repo, "rev-parse", "HEAD^{tree}"),
+    git(repo, "rev-parse", `${parent}^{tree}`),
     git(repo, "rev-parse", "HEAD:link.txt"),
     git(repo, "rev-parse", "HEAD:target.txt"),
   ].sort();
