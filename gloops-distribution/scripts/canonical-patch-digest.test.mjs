@@ -24,7 +24,15 @@ function runWithAbbrev(abbrev) {
     return execFileSync(
       "node",
       [script, "--base", base, "--head", head, "--repo", repo],
-      { encoding: "utf8", env: { ...env, TEST_ABBREV: String(abbrev) } },
+      {
+        encoding: "utf8",
+        env: {
+          ...env,
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "core.abbrev",
+          GIT_CONFIG_VALUE_0: String(abbrev),
+        },
+      },
     ).trim();
   }
   return execFileSync(
@@ -44,8 +52,8 @@ function directDigest(abbrev) {
   const diff = execFileSync(
     "git",
     [...extra, "diff", "--no-color", "--full-index", `${base}..${head}`],
-    { encoding: "utf8", env, cwd: repo },
-  ).trim();
+    { env, cwd: repo },
+  );
   return createHash("sha256").update(diff).digest("hex");
 }
 
@@ -62,6 +70,10 @@ describe("canonical-patch-digest", () => {
     assert.equal(defaultDigest, tenDigest);
     assert.equal(defaultDigest, directDigest(8));
     assert.equal(defaultDigest, directDigest(10));
+    assert.equal(
+      defaultDigest,
+      "19accf754864df9ee621642e33b108a3fc802926d0362011bf2bf7ba6a69567c",
+    );
   });
 
   it("rejects abbreviated base and head SHAs", () => {

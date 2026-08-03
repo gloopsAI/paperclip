@@ -9,6 +9,10 @@ const manifestPath = new URL(
   "../gloops-distribution/manifest.json",
   import.meta.url,
 );
+const canonicalPatchDigestTestPath = new URL(
+  "../gloops-distribution/scripts/canonical-patch-digest.test.mjs",
+  import.meta.url,
+);
 const dockerfilePath = new URL("../Dockerfile", import.meta.url);
 const workflowPath = new URL(
   "../.github/workflows/gloops-distribution.yml",
@@ -399,6 +403,14 @@ try {
   fail(`Paperclip host-writer lock tests failed: ${error instanceof Error ? error.message : error}`);
 }
 try {
+  execFileSync("node", ["--test", canonicalPatchDigestTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Canonical patch digest tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
   execFileSync("python3", [hermesRouteReceiptApplicatorTestPath.pathname], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -546,7 +558,6 @@ function gitCanonicalDiff(range) {
     "git",
     ["diff", "--no-color", "--full-index", range],
     {
-      encoding: "utf8",
       env: {
         ...process.env,
         GIT_CONFIG_GLOBAL: "/dev/null",
@@ -555,7 +566,7 @@ function gitCanonicalDiff(range) {
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 64 * 1024 * 1024,
     },
-  ).trim();
+  );
 }
 
 function sha256File(path) {
@@ -563,6 +574,14 @@ function sha256File(path) {
 }
 
 const sha256Hex = /^[0-9a-f]{64}$/u;
+const canonicalPatchDigestAlgorithm =
+  "git-diff-no-color-full-index-sha256-v1";
+const legacyPatchDigests = new Map([
+  [
+    "real-plugin-host-version",
+    "8c475e0aa67fa1cbbfc27dea407402cb0783f5b0f5bcc3a6c92427274451cb22",
+  ],
+]);
 const expectedHermesRouteReceiptFiles = [
   "agent/conversation_loop.py",
   "agent/usage_pricing.py",
@@ -2466,22 +2485,40 @@ for (const patch of manifest.patches ?? []) {
   if (!/^[0-9a-f]{64}$/.test(patch.patchDiffSha256 ?? "")) {
     fail(`${patch.id}: patchDiffSha256 must be a SHA-256 digest`);
   }
-  try {
-    const canonicalDiff = gitCanonicalDiff(
-      `${patch.sourceBase}..${patch.sourceHead}`,
-    );
-    const canonicalDigest = createHash("sha256")
-      .update(canonicalDiff)
-      .digest("hex");
-    if (canonicalDigest !== patch.patchDiffSha256) {
+  if (patch.patchDiffAlgorithm === canonicalPatchDigestAlgorithm) {
+    try {
+      const canonicalDiff = gitCanonicalDiff(
+        `${patch.sourceBase}..${patch.sourceHead}`,
+      );
+      const canonicalDigest = createHash("sha256")
+        .update(canonicalDiff)
+        .digest("hex");
+      if (canonicalDigest !== patch.patchDiffSha256) {
+        fail(
+          `${patch.id}: patchDiffSha256 does not match canonical full-index digest (expected ${canonicalDigest})`,
+        );
+      }
+    } catch (error) {
       fail(
-        `${patch.id}: patchDiffSha256 does not match canonical full-index digest (expected ${canonicalDigest})`,
+        `${patch.id}: cannot compute canonical patch digest: ${error instanceof Error ? error.message : error}`,
       );
     }
-  } catch (error) {
-    fail(
-      `${patch.id}: cannot compute canonical patch digest: ${error instanceof Error ? error.message : error}`,
-    );
+  } else if (patch.patchDiffAlgorithm === "git-diff-default-sha256-v0") {
+    const expectedLegacyDigest = legacyPatchDigests.get(patch.id);
+    if (patch.patchDiffSha256 !== expectedLegacyDigest) {
+      fail(`${patch.id}: legacy patch digest is not on the explicit allowlist`);
+    }
+    try {
+      git("cat-file", "-e", `${patch.sourceBase}^{commit}`);
+      git("cat-file", "-e", `${patch.sourceHead}^{commit}`);
+      fail(
+        `${patch.id}: legacy patch revisions are reachable and must be migrated to the canonical digest`,
+      );
+    } catch {
+      // The legacy exception remains valid only while at least one revision is absent.
+    }
+  } else {
+    fail(`${patch.id}: patchDiffAlgorithm is missing or unsupported`);
   }
   if (!patch.owner || !patch.retirementCondition) {
     fail(`${patch.id}: owner and retirementCondition are required`);

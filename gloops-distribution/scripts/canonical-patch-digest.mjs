@@ -47,12 +47,12 @@ const diff = execFileSync(
   "git",
   ["diff", "--no-color", "--full-index", `${base}..${head}`],
   {
-    encoding: "utf8",
     env,
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 64 * 1024 * 1024,
   },
-).trim();
+);
 
 const digest = createHash("sha256").update(diff).digest("hex");
 console.log(digest);
