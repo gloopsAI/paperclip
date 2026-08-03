@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "gloops.pws-catalog.v1",
+  "notes": [
+    "Standing project workspace catalog for hermes.",
+    "refreshPolicy.timerMinutes drives systemd timer / cron cadence.",
+    "Never use branch name as expected head for implement packets — always full 40-char SHA.",
+    "paperclip@pin uses controlled-swarm pin when known; otherwise tracks defaultBranch SHA."
+  ],
+  "entries": [
+    {
+      "id": "gloops-ui-main",
+      "name": "gloops-ui@main",
+      "repo": "gloopsAI/gloops-ui",
+      "repoUrl": "https://github.com/gloopsAI/gloops-ui.git",
+      "defaultBranch": "main",
+      "cwdTemplate": "/opt/data/workspace/gloops-ui-main",
+      "refreshPolicy": {
+        "mode": "track-branch-sha",
+        "timerMinutes": 30,
+        "description": "Resolve latest main SHA and materialize; packets pin that full SHA"
+      },
+      "pinSha": null,
+      "notes": "Product UI work. Refresh before admit. Exact head must be 40-char of intended base."
+    },
+    {
+      "id": "paperclip-pin",
+      "name": "paperclip@pin",
+      "repo": "gloopsAI/paperclip",
+      "repoUrl": "https://github.com/gloopsAI/paperclip.git",
+      "defaultBranch": "gloops/stable",
+      "cwdTemplate": "/opt/data/workspace/paperclip-pin",
+      "refreshPolicy": {
+        "mode": "pin-or-branch",
+        "timerMinutes": 60,
+        "description": "Prefer pinSha (controlled-swarm exclusive-writer pin) when set; else defaultBranch tip"
+      },
+      "pinSha": null,
+      "notes": "Set pinSha to controlled-swarm pin when campaign is COMMISSIONED. Do not auto-float during exclusive-writer windows without hostctl reconcile."
+    },
+    {
+      "id": "paperclip-gym",
+      "name": "paperclip-gym",
+      "repo": "gloopsAI/paperclip-gym",
+      "repoUrl": "https://github.com/gloopsAI/paperclip-gym.git",
+      "defaultBranch": "main",
+      "cwdTemplate": "/opt/data/workspace/paperclip-gym",
+      "refreshPolicy": {
+        "mode": "track-branch-sha",
+        "timerMinutes": 120,
+        "description": "Gym substrate; never inherit this PWS for gloops-ui product issues"
+      },
+      "pinSha": null,
+      "notes": "W1 hazard: do not copy projectWorkspaceId from gym parents onto gloops-ui implement issues."
+    }
+  ]
+}

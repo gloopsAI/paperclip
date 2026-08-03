@@ -1930,6 +1930,28 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/issues/{id}/workspace-admit",
+  tags: ["issues"],
+  summary: "Evaluate workspace admit preflight (read-only, never mutates)",
+  request: {
+    params: z.object({ id: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/{issueId}/workspace-admit",
+  tags: ["issues"],
+  summary: "Evaluate workspace admit preflight (company-scoped, read-only)",
+  request: {
+    params: z.object({ companyId: z.string(), issueId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/release",
   tags: ["issues"],
   summary: "Release an issue",

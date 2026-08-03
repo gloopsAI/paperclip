@@ -112,6 +112,14 @@ import {
   evaluateIssuePacketReadiness,
 } from "./issue-packet-readiness.js";
 import {
+  formatWorkspaceAdmitFailureComment,
+  getWorkspaceAdmitMode,
+  issueRequiresWorkspaceAdmit,
+  primaryWorkspaceAdmitErrorCode,
+  runWorkspaceAdmitPreflight,
+  type WorkspaceAdmitPreflightResult,
+} from "./workspace-admit-preflight.js";
+import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -12426,6 +12434,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
           return null;
         }
+
+        // C1 workspace admit: deny claim before execution admission / Hermes work-prep.
+        const workspaceAdmitMode = getWorkspaceAdmitMode();
+        const workspaceAdmitPacketInput = {
+          title: claimIssueContext.title,
+          description: claimIssueContext.description,
+          workMode: claimIssueContext.workMode,
+          status: claimIssueContext.status,
+          assigneeRole: agent.role ?? null,
+          assigneeName: agent.name ?? null,
+          repositoryBacked: Boolean(
+            claimIssueContext.projectWorkspaceId || claimIssueContext.executionWorkspaceId,
+          ),
+        };
+        if (
+          workspaceAdmitMode !== "off" &&
+          issueRequiresWorkspaceAdmit(workspaceAdmitPacketInput)
+        ) {
+          const workspaceAdmit = await runWorkspaceAdmitPreflight(db, {
+            companyId: run.companyId,
+            issue: {
+              id: claimIssueContext.id,
+              title: claimIssueContext.title,
+              description: claimIssueContext.description,
+              workMode: claimIssueContext.workMode,
+              status: claimIssueContext.status,
+              projectWorkspaceId: claimIssueContext.projectWorkspaceId,
+              executionWorkspaceId: claimIssueContext.executionWorkspaceId,
+              projectId: claimIssueContext.projectId,
+              parentId: claimIssueContext.parentId,
+            },
+            assignee: {
+              role: agent.role ?? null,
+              name: agent.name ?? null,
+            },
+          });
+          if (!workspaceAdmit.admitted) {
+            logger.info(
+              {
+                runId: run.id,
+                issueId,
+                mode: workspaceAdmitMode,
+                reasonCodes: workspaceAdmit.reasonCodes,
+                expectedHeadSha: workspaceAdmit.expectedHeadSha,
+                observedHeadSha: workspaceAdmit.observedHeadSha,
+                projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+                cwd: workspaceAdmit.cwd,
+              },
+              "claimQueuedRun: workspace admit preflight gap",
+            );
+          }
+          if (workspaceAdmitMode === "enforce" && !workspaceAdmit.admitted) {
+            await cancelQueuedRunForWorkspaceAdmitNotReady(run, issueId, workspaceAdmit);
+            logger.info(
+              {
+                runId: run.id,
+                issueId,
+                errorCode: primaryWorkspaceAdmitErrorCode(workspaceAdmit),
+                reasonCodes: workspaceAdmit.reasonCodes,
+              },
+              "claimQueuedRun: cancelled workspace admit not ready",
+            );
+            return null;
+          }
+        }
       }
     }
 
@@ -12934,6 +13007,118 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mode: packetReadiness.mode,
       },
     });
+
+    return cancelled;
+  }
+
+  async function cancelQueuedRunForWorkspaceAdmitNotReady(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    workspaceAdmit: WorkspaceAdmitPreflightResult,
+  ) {
+    const now = new Date();
+    const errorCode = primaryWorkspaceAdmitErrorCode(workspaceAdmit);
+    const reason =
+      workspaceAdmit.details ||
+      "Cancelled because workspace admit preflight failed (wrong/stale/dirty lease or missing workspace)";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: errorCode,
+        workspaceAdmit: {
+          admitted: workspaceAdmit.admitted,
+          reasonCodes: workspaceAdmit.reasonCodes,
+          expectedHeadSha: workspaceAdmit.expectedHeadSha,
+          observedHeadSha: workspaceAdmit.observedHeadSha,
+          projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+          cwd: workspaceAdmit.cwd,
+          repoUrl: workspaceAdmit.repoUrl,
+          details: workspaceAdmit.details,
+          checks: workspaceAdmit.checks,
+        },
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "workspace_admit_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, run.id),
+        ),
+      );
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: {
+        errorCode,
+        issueId,
+        reasonCodes: workspaceAdmit.reasonCodes,
+        expectedHeadSha: workspaceAdmit.expectedHeadSha,
+        observedHeadSha: workspaceAdmit.observedHeadSha,
+        projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+        cwd: workspaceAdmit.cwd,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "heartbeat.workspace_admit_not_ready",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: {
+        issueId,
+        errorCode,
+        reasonCodes: workspaceAdmit.reasonCodes,
+        expectedHeadSha: workspaceAdmit.expectedHeadSha,
+        observedHeadSha: workspaceAdmit.observedHeadSha,
+        projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+        cwd: workspaceAdmit.cwd,
+      },
+    });
+
+    // C4: system comment mirrors run.errorCode so board operators see the gate.
+    const commentBody = formatWorkspaceAdmitFailureComment(workspaceAdmit);
+    try {
+      await issuesSvc.addComment(
+        issueId,
+        commentBody,
+        { runId: run.id },
+        { authorType: "system" },
+      );
+    } catch (err) {
+      logger.warn(
+        { err, runId: run.id, issueId, errorCode },
+        "failed to write workspace admit failure system comment",
+      );
+    }
 
     return cancelled;
   }
@@ -17039,9 +17224,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
   }) {
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    const errorCode =
+      readNonEmptyString(input.latestRun?.errorCode)?.trim() ?? WORKSPACE_VALIDATION_FAILURE_CODE;
     return (
       "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
       `This prevents git-sensitive adapters from running in an unrelated fallback cwd.${failureSummary ?? ""} ` +
+      `errorCode: \`${errorCode}\`. ` +
       "Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming."
     );
   }

@@ -160,6 +160,7 @@ export { createStorageServiceFromConfig, getStorageService } from "../storage/in
 export * from "./agent-capacity.js";
 export * from "./execution-role-admission.js";
 export * from "./issue-packet-readiness.js";
+export * from "./workspace-admit-preflight.js";
 export * from "./review-path-slo.js";
 export * from "./continuation-packet.js";
 export * from "./continuation-packet-live.js";
