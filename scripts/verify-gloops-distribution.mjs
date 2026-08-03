@@ -581,66 +581,6 @@ const legacyPatchDigests = new Map([
     "real-plugin-host-version",
     "8c475e0aa67fa1cbbfc27dea407402cb0783f5b0f5bcc3a6c92427274451cb22",
   ],
-  [
-    "maintenance-runtime-and-plugin-cleanup-safety",
-    "690f4bea8da5c324d6fd87cdc9620af5e56e2c7972a68c2dc99383083688b616",
-  ],
-  [
-    "unified-task-execution-admission",
-    "59fca9b1a401948029666eaa1a8aabe7f5472b66e9c492e61862c2e40f37930c",
-  ],
-  [
-    "zero-retry-initial-admission-correction",
-    "463803cac0107ae65842aae1f306d40d3f4ca9fd51f6475a8ab359d02402d284",
-  ],
-  [
-    "bounded-hermes-stage-comment-and-turn-accounting",
-    "f6eb1e7aeb686c9024c3d54c00b9ed6738a3274b466e6b04ade92a68685025e6",
-  ],
-  [
-    "exact-host-commissioning-sigkill-recovery-proof",
-    "4f61e44fe23244b7c7ce5bc7c3adeb60d69af2e789b03eba5813469aaee0f813",
-  ],
-  [
-    "bounded-recovery-restart-limit-reconciliation",
-    "1cecd1d0c216877d2bed2dc10b5b2e688e4ffdee803335af4dd4d6aa2452ad92",
-  ],
-  [
-    "healthy-unit-reset-failed-recovery-tolerance",
-    "87f99ede9b2fcdea174d503b9030eb5a43a6b04d40fc94f6d635f06a55488236",
-  ],
-  [
-    "locked-commissioning-transition-journal",
-    "dcd2c2c39d800fb0308403387b4c086447571b29b5f2907a1003cf6d28ed9dcb",
-  ],
-  [
-    "authoritative-hermes-route-and-usage-receipts",
-    "7a45a62bd6f29e9eda2e635f98a3026e6764e6264569e3d9bc03d19c0500b31a",
-  ],
-  [
-    "prepared-provider-request-evidence",
-    "d9ee7fe1e3b546143f089529a5f6f64188e05bedbbf5da1775656988374355a8",
-  ],
-  [
-    "terminal-provider-evidence-reconciliation",
-    "03a568d452c38ae10f96241c50acb505c370a5cbea62421f67cea8801db393c1",
-  ],
-  [
-    "atomic-hermes-run-settlement",
-    "7a71e1df05d7c3d501f3db5861a96c0208332abf0aa63d9f77123df027858712",
-  ],
-  [
-    "one-run-root-owned-github-push-broker",
-    "f1124101b8775c0a764e8cae5c1cfa412644550c5d2613515d6c1b8831ed1875",
-  ],
-  [
-    "zero-work-github-broker-topology-proof",
-    "6379826051f82bf035dc5d32126734a022c0d41a3dc6f5ad5720d86c10087d19",
-  ],
-  [
-    "broker-credential-lifecycle-reconciliation",
-    "6b60d8ddea3cfdff4ec791136d24b42d4f7242689a3318f20041fffb764c1747",
-  ],
 ]);
 const expectedHermesRouteReceiptFiles = [
   "agent/conversation_loop.py",
@@ -2567,6 +2507,15 @@ for (const patch of manifest.patches ?? []) {
     const expectedLegacyDigest = legacyPatchDigests.get(patch.id);
     if (patch.patchDiffSha256 !== expectedLegacyDigest) {
       fail(`${patch.id}: legacy patch digest is not on the explicit allowlist`);
+    }
+    try {
+      git("cat-file", "-e", `${patch.sourceBase}^{commit}`);
+      git("cat-file", "-e", `${patch.sourceHead}^{commit}`);
+      fail(
+        `${patch.id}: legacy patch revisions are reachable and must be migrated to the canonical digest`,
+      );
+    } catch {
+      // The legacy exception remains valid only while at least one revision is absent.
     }
   } else {
     fail(`${patch.id}: patchDiffAlgorithm is missing or unsupported`);
