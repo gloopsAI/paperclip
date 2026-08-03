@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "distribution": {
     "name": "GLoops Paperclip",
-    "version": "2026.802.0-gloops.34",
+    "version": "2026.803.0-gloops.35",
     "stableBranch": "gloops/stable",
     "upstreamMirrorBranch": "master",
     "image": "ghcr.io/gloopsai/paperclip-gloops",
-    "digest": "sha256:fb63ebfd959890457a5b80728a35a71da267cb18ff4e4f524768c62c9d1ba53d"
+    "digest": "sha256:09bf3feac584c2d3a7a33b6d3df6cd3b425a5b27c4b72724c35af492d68615b3"
   },
   "upstream": {
     "repository": "https://github.com/paperclipai/paperclip.git",
@@ -17,7 +17,7 @@
     "baseImage": "node:lts-trixie-slim@sha256:366fdef91728b1b7fa18c84fba63b6e79ed77b7e10cc206878e9705da4d7b169",
     "runtimeTarget": "gloops-production",
     "bundledAgentClis": [],
-    "vex": "gloops-distribution/security/vex-2026.802.0-gloops.34.json"
+    "vex": "gloops-distribution/security/vex-2026.803.0-gloops.35.json"
   },
   "patches": [
     {
@@ -473,6 +473,17 @@
       "integratedCommits": ["63ef21ad2bc962559a2bcb79ecb52f177149aa84"],
       "owner": "GLoops Platform",
       "retirementCondition": "Retain until upstream provides an equivalent provider-free, claim-time company backlog freeze with fail-closed UUID configuration, exact issue readmission bound to explicit normalized resource budgets, deterministic cancellation, and budget-exempt denials."
+    },
+    {
+      "id": "host-exclusive-writer-lock",
+      "sourceKind": "downstream",
+      "upstreamPullRequest": null,
+      "sourceBase": "88bdc05c05c01943a21c04fdf90bcb76211c87a6",
+      "sourceHead": "48f609d89645182ab618f707988b1ac9df139d22",
+      "patchDiffSha256": "01b1eb35d953119c4829223e6045511f4b28f654ac839e6553cc6c2d3fa0f197",
+      "integratedCommits": ["b3233636a20790097f6c082b64fc34bbd2065a33"],
+      "owner": "GLoops Platform",
+      "retirementCondition": "Retain until upstream provides an equivalent host-wide exclusive mutation controller with named writer identity, durable pre/post journal, SIGTERM-safe receipts, fail-closed drift refusal, and terminal restore evidence for Paperclip host writes."
     }
   ],
   "releasePolicy": {

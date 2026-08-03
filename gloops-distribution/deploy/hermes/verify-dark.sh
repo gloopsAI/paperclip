@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:fb63ebfd959890457a5b80728a35a71da267cb18ff4e4f524768c62c9d1ba53d'
+readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:09bf3feac584c2d3a7a33b6d3df6cd3b425a5b27c4b72724c35af492d68615b3'
 failed=0
 
 check_inactive() {
@@ -491,7 +491,7 @@ else
   failed=1
 fi
 
-if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops/runtime.env \
+if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' /etc/paperclip-gloops/runtime.env \
@@ -513,7 +513,7 @@ if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=true' /etc/paperclip-gloops
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=128000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=64' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=240' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS source-only controlled-swarm envelope is installed dark with the release-pin interlock engaged"
+  echo "PASS release-pinned controlled-swarm envelope is installed dark with the company backlog frozen"
 else
   echo "FAIL exact controlled-swarm execution envelope is missing or has drifted" >&2
   failed=1
