@@ -8003,7 +8003,9 @@ export function issueRoutes(
           });
           if (actorIsDispatch) {
             const cooldownSec = getThrashCooldownSec(process.env);
-            const since = new Date(Date.now() - cooldownSec * 1000);
+            // Bind as ISO string: drizzle sql`` cannot serialize raw Date params
+            // (ERR_INVALID_ARG_TYPE / 500 on every Dispatch assign PATCH).
+            const sinceIso = new Date(Date.now() - cooldownSec * 1000).toISOString();
             const thrashRuns = await db
               .select({
                 errorCode: heartbeatRuns.errorCode,
@@ -8017,7 +8019,7 @@ export function issueRoutes(
                   eq(heartbeatRuns.companyId, existing.companyId),
                   eq(heartbeatRuns.status, "failed"),
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${existing.id}`,
-                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since}`,
+                  sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${sinceIso}::timestamptz`,
                 ),
               )
               .orderBy(desc(heartbeatRuns.createdAt))
