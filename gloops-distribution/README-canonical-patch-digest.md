@@ -37,13 +37,18 @@ which on this repository historically produced 8-character abbreviated index
 lines. Those old digests are not silently reinterpreted: when a patch entry is
 migrated to the full-index convention its `patchDiffSha256` value is recomputed
 with the canonical helper and the manifest change is committed explicitly.
-Entries whose base/head revisions are no longer reachable in the local clone
-cannot be recomputed and are left unchanged until the revisions are restored.
+Entries whose base/head revisions are not available from the repository's
+durable remote history cannot be verified by CI and remain on the legacy
+algorithm until those revisions are published under permanent refs. A local
+clone may still contain the objects as unreachable worktree history; that is
+not sufficient evidence that another verifier can reproduce the digest.
 Those entries declare `patchDiffAlgorithm=git-diff-default-sha256-v0` and are
 accepted only through a code-owned identifier/digest allowlist. The verifier
-fails once both revisions become reachable, forcing migration instead of
-silently retaining the legacy value. All migrated and new entries declare
+never derives a replacement digest from local-only objects. Removing an entry
+from the allowlist and migrating it is an explicit source change after both
+revisions are durably published. All migrated and new entries declare
 `patchDiffAlgorithm=git-diff-no-color-full-index-sha256-v1`.
 
-At this migration, the sole legacy exception is `real-plugin-host-version`
-with digest `8c475e0aa67fa1cbbfc27dea407402cb0783f5b0f5bcc3a6c92427274451cb22`.
+The exact legacy exceptions and their historical digests live in
+`scripts/verify-gloops-distribution.mjs`; CI rejects every legacy manifest
+entry not present in that code-owned allowlist.
