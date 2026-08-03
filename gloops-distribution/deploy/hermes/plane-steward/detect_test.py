@@ -89,6 +89,25 @@ class DetectTest(unittest.TestCase):
         rc = detect.main([])
         self.assertEqual(rc, 2)
 
+    def test_campaign_deadline_imminent(self) -> None:
+        matches = detect.detect_in_text("CRITICAL campaign.deadline_lt_6h hours_remaining=3.2")
+        self.assertTrue(any(m["recipeId"] == "campaign-deadline-alert" for m in matches))
+        self.assertTrue(any(m["signal"] == "campaign_deadline_imminent" for m in matches))
+
+    def test_induct_lease_stale(self) -> None:
+        matches = detect.detect_events(
+            [{"errorCode": "lease.dirty_or_missing", "detail": "verify-induct-lease failed"}]
+        )
+        self.assertTrue(any(m["recipeId"] == "induct-lease-refresh" for m in matches))
+        self.assertTrue(any(m["signal"] == "induct_lease_stale" for m in matches))
+
+    def test_recipes_include_sdlc_ids(self) -> None:
+        pack = detect.load_recipes()
+        ids = {r["id"] for r in pack["recipes"]}
+        self.assertIn("induct-lease-refresh", ids)
+        self.assertIn("sdlc-preflight-check", ids)
+        self.assertIn("campaign-deadline-alert", ids)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,14 @@
+[Unit]
+Description=Paperclip Induct lease refresh (only-if-stale)
+After=network-online.target paperclip-gloops.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/paperclip-gloops/runtime.env
+EnvironmentFile=-/etc/paperclip-gloops/github-read.env
+# Only run when controlled swarm is commissioned (file or runtime env).
+ExecCondition=/bin/bash -c 'set -euo pipefail; if [[ -f /etc/paperclip-gloops/runtime.env ]]; then set -a; source /etc/paperclip-gloops/runtime.env; set +a; fi; [[ "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-false}" == "true" ]] || [[ -f /var/lib/paperclip-gloops/controlled-swarm/commissioned ]]'
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/bin/refresh-induct-lease.py --apply --only-if-stale
+Nice=10

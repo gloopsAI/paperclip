@@ -125,6 +125,43 @@ SIGNAL_TO_RECIPE: list[tuple[str, str, re.Pattern[str] | None]] = [
             re.I | re.S,
         ),
     ),
+    (
+        "campaign_deadline_imminent",
+        "campaign-deadline-alert",
+        re.compile(
+            r"campaign\.deadline(?:_lt_\d+h)?|deadline_lt_\d+h|campaign_deadline_imminent|"
+            r"hours_remaining.{0,20}[0-5](?:\.\d+)?|campaign epoch.{0,40}expir",
+            re.I,
+        ),
+    ),
+    (
+        "campaign_deadline_block",
+        "sdlc-preflight-block",
+        re.compile(
+            r"campaign\.missing_epoch|sdlc\.plane_not_ok|sdlc-preflight-block|"
+            r"induct_sdlc_preflight|PREFLIGHT_JSON.{\"ok\":false",
+            re.I,
+        ),
+    ),
+    (
+        "induct_lease_stale",
+        "induct-lease-refresh",
+        re.compile(
+            r"induct_lease_stale|lease\.dirty_or_missing|lease\.dirty|lease\.stale|"
+            r"sdlc\.lease_dirty|sdlc\.lease_stale|verify-induct-lease|"
+            r"DIRTY_TREE|VERIFY_INDUCT_LEASE",
+            re.I,
+        ),
+    ),
+    (
+        "sdlc_preflight",
+        "sdlc-preflight-check",
+        re.compile(
+            r"sdlc-preflight|verify-induct-sdlc-preflight|plane-status|"
+            r"scheduler\.true|commissioned\.false|pin\.mismatch|induct_app\.not_ok",
+            re.I,
+        ),
+    ),
 ]
 
 
@@ -295,6 +332,17 @@ def detect_in_text(text: str, obj: dict[str, Any] | None = None) -> list[dict[st
                 add("null_issueId", "null-issueId-wake-reject", error_code, "high")
             if code.startswith("workspace_admit."):
                 add("workspace_admit", "wrong-head-rebase", error_code, "high")
+            if "lease" in code or "dirty_or_missing" in code:
+                add("induct_lease_stale", "induct-lease-refresh", error_code, "high")
+            if "deadline" in code or code.startswith("campaign."):
+                add("campaign_deadline_imminent", "campaign-deadline-alert", error_code, "high")
+            if code.startswith("sdlc.") or code in (
+                "scheduler.true",
+                "commissioned.false",
+                "pin.mismatch",
+                "induct_app.not_ok",
+            ):
+                add("sdlc_preflight", "sdlc-preflight-check", error_code, "high")
 
     return matches
 

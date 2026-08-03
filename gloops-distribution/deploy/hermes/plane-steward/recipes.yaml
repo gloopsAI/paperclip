@@ -180,3 +180,52 @@ recipes:
     failClosed:
       - naked wake without issueId
       - treating null-issueId as company_frozen requiring unfreeze
+
+  - id: induct-lease-refresh
+    title: Refresh InductAI/induct host lease to main tip SHA
+    signals:
+      - sdlc.lease_dirty
+      - sdlc.lease_stale
+      - induct_lease_stale
+      - lease.dirty_or_missing
+      - workspace_admit.head_mismatch
+      - workspace_admit.dirty_tree
+    dryRunDefault: true
+    command: python3 /usr/local/lib/paperclip-gloops/bin/refresh-induct-lease.py
+    applyCommand: python3 /usr/local/lib/paperclip-gloops/bin/refresh-induct-lease.py --apply --only-if-stale
+    notes: Default auto-apply off; SDLC_STEWARD_AUTO_APPLY_LEASE=1 enables poller apply.
+
+  - id: sdlc-preflight-check
+    title: Run Induct SDLC host preflight (dry-run probe)
+    signals:
+      - sdlc_preflight
+      - scheduler.true
+      - commissioned.false
+      - pin.mismatch
+      - induct_app.not_ok
+      - paperclip.unhealthy
+      - hermes.unhealthy
+    dryRunDefault: true
+    command: /usr/local/lib/paperclip-gloops/bin/verify-induct-sdlc-preflight.sh
+    notes: Probe only — never opens campaigns or enables HEARTBEAT_SCHEDULER.
+
+  - id: sdlc-preflight-block
+    title: Record SDLC preflight block (notify / no mutate)
+    signals:
+      - sdlc.plane_not_ok
+      - campaign.missing_epoch
+      - induct_sdlc_preflight
+    dryRunDefault: true
+    command: /usr/local/lib/paperclip-gloops/bin/verify-induct-sdlc-preflight.sh
+
+  - id: campaign-deadline-alert
+    title: Alert when campaign epoch is inside T-4h window
+    signals:
+      - campaign_deadline_imminent
+      - campaign.deadline_lt_6h
+      - campaign.deadline_lt_12h
+      - campaign.deadline
+    dryRunDefault: true
+    command: python3 /usr/local/lib/paperclip-gloops/bin/campaign-deadline-alert.py
+    applyCommand: python3 /usr/local/lib/paperclip-gloops/bin/campaign-deadline-alert.py --apply
+    notes: Once-per-epoch. Never renews or opens a campaign.

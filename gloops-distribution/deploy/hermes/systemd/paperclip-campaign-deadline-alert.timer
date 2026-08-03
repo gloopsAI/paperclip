@@ -1,0 +1,11 @@
+[Unit]
+Description=Every 15m: campaign deadline T-4h alert probe
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=paperclip-campaign-deadline-alert.service
+
+[Install]
+WantedBy=timers.target

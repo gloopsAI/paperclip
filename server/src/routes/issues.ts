@@ -195,6 +195,11 @@ import {
   isDispatchActor,
   resolveThrashCooldownFromRuns,
 } from "../services/dispatch-assignment-policy.js";
+import {
+  evaluateInductSdlcGate,
+  recommendedRecipesForAdmitCodes,
+  SDLC_PREFLIGHT_REASON,
+} from "../services/sdlc-preflight.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -7079,6 +7084,43 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // S2 — Induct SDLC create gate (fail-closed for Induct implement targets).
+    {
+      let createAssigneeRole: string | null = null;
+      if (createBody.assigneeAgentId) {
+        const createAssignee = await agentsSvc.getById(createBody.assigneeAgentId);
+        createAssigneeRole = createAssignee?.role ?? null;
+      }
+      const sdlcGate = evaluateInductSdlcGate({
+        projectWorkspaceId: (createBody.projectWorkspaceId as string | null | undefined) ?? null,
+        title: (createBody.title as string | null | undefined) ?? null,
+        description: (createBody.description as string | null | undefined) ?? null,
+        workMode: (createBody.workMode as string | null | undefined) ?? null,
+        assigneeRole: createAssigneeRole,
+      });
+      if (sdlcGate.required && sdlcGate.reasonCodes.length > 0) {
+        logger.info(
+          {
+            companyId,
+            mode: sdlcGate.mode,
+            reasonCodes: sdlcGate.reasonCodes,
+            planeCritical: sdlcGate.plane.criticalCodes,
+          },
+          "induct sdlc create gate",
+        );
+      }
+      if (!sdlcGate.allowed) {
+        throw unprocessable(sdlcGate.details || "Induct SDLC preflight denied", {
+          code: sdlcGate.reasonCodes[0] ?? SDLC_PREFLIGHT_REASON.PLANE_NOT_OK,
+          reasonCodes: sdlcGate.reasonCodes,
+          details: sdlcGate.details,
+          mode: sdlcGate.mode,
+          gate: "induct_sdlc_preflight",
+        });
+      }
+    }
+
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
@@ -7249,6 +7291,36 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, parent.companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // S2 — Induct SDLC create gate for children.
+    {
+      let createAssigneeRole: string | null = null;
+      if (createBody.assigneeAgentId) {
+        const createAssignee = await agentsSvc.getById(createBody.assigneeAgentId);
+        createAssigneeRole = createAssignee?.role ?? null;
+      }
+      const childPws =
+        (createBody.projectWorkspaceId as string | null | undefined) ??
+        parent.projectWorkspaceId ??
+        null;
+      const sdlcGate = evaluateInductSdlcGate({
+        projectWorkspaceId: childPws,
+        title: (createBody.title as string | null | undefined) ?? null,
+        description: (createBody.description as string | null | undefined) ?? null,
+        workMode: (createBody.workMode as string | null | undefined) ?? null,
+        assigneeRole: createAssigneeRole,
+      });
+      if (!sdlcGate.allowed) {
+        throw unprocessable(sdlcGate.details || "Induct SDLC preflight denied", {
+          code: sdlcGate.reasonCodes[0] ?? SDLC_PREFLIGHT_REASON.PLANE_NOT_OK,
+          reasonCodes: sdlcGate.reasonCodes,
+          details: sdlcGate.details,
+          mode: sdlcGate.mode,
+          gate: "induct_sdlc_preflight",
+        });
+      }
+    }
+
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
@@ -8063,6 +8135,73 @@ export function issueRoutes(
               details: decision.details,
               mode: decision.mode,
             });
+          }
+
+          // S2 — Induct SDLC assign gate for implement-shaped induct targets
+          // (runs for Dispatch actors after thrash; also covers engineer assignee path).
+          const sdlcGate = evaluateInductSdlcGate({
+            projectWorkspaceId: pwsId,
+            title,
+            description,
+            workMode: existing.workMode,
+            assigneeRole: assigneeAgent?.role ?? null,
+            workspaceRepoRef,
+          });
+          if (sdlcGate.required && sdlcGate.reasonCodes.length > 0) {
+            logger.info(
+              {
+                issueId: existing.id,
+                actorAgentId: req.actor.agentId,
+                assigneeAgentId: nextAssigneeAgentId,
+                mode: sdlcGate.mode,
+                reasonCodes: sdlcGate.reasonCodes,
+              },
+              "induct sdlc assign gate",
+            );
+          }
+          if (!sdlcGate.allowed) {
+            throw unprocessable(sdlcGate.details || "Induct SDLC preflight denied", {
+              code: sdlcGate.reasonCodes[0] ?? SDLC_PREFLIGHT_REASON.PLANE_NOT_OK,
+              reasonCodes: sdlcGate.reasonCodes,
+              details: sdlcGate.details,
+              mode: sdlcGate.mode,
+              gate: "induct_sdlc_preflight",
+            });
+          }
+        } else if (nextAssigneeAgentId) {
+          // Non-Dispatch assignee change: still gate Induct implement issues.
+          const assigneeAgent = await agentsSvc.getById(nextAssigneeAgentId);
+          const pwsId =
+            updateFields.projectWorkspaceId !== undefined
+              ? (updateFields.projectWorkspaceId as string | null)
+              : existing.projectWorkspaceId;
+          const title =
+            typeof updateFields.title === "string" ? updateFields.title : existing.title;
+          const description =
+            typeof updateFields.description === "string"
+              ? updateFields.description
+              : existing.description;
+          const role = (assigneeAgent?.role ?? "").toLowerCase();
+          const implementShaped =
+            role === "engineer" ||
+            ["wren", "mason"].includes((assigneeAgent?.name ?? "").trim().toLowerCase());
+          if (implementShaped) {
+            const sdlcGate = evaluateInductSdlcGate({
+              projectWorkspaceId: pwsId,
+              title,
+              description,
+              workMode: existing.workMode,
+              assigneeRole: assigneeAgent?.role ?? null,
+            });
+            if (!sdlcGate.allowed) {
+              throw unprocessable(sdlcGate.details || "Induct SDLC preflight denied", {
+                code: sdlcGate.reasonCodes[0] ?? SDLC_PREFLIGHT_REASON.PLANE_NOT_OK,
+                reasonCodes: sdlcGate.reasonCodes,
+                details: sdlcGate.details,
+                mode: sdlcGate.mode,
+                gate: "induct_sdlc_preflight",
+              });
+            }
           }
         }
         await assertCanAssignTasks(req, existing.companyId, {
@@ -9120,6 +9259,7 @@ export function issueRoutes(
         },
       });
       if (!workspaceAdmit.admitted) {
+        const recommendedRecipes = recommendedRecipesForAdmitCodes(workspaceAdmit.reasonCodes);
         logger.info(
           {
             issueId: issue.id,
@@ -9129,6 +9269,7 @@ export function issueRoutes(
             observedHeadSha: workspaceAdmit.observedHeadSha,
             projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
             cwd: workspaceAdmit.cwd,
+            recommendedRecipes,
           },
           "workspace admit preflight: not admitted on checkout",
         );
