@@ -33,17 +33,24 @@
         "workspace_validation_failed:dirty",
         "dirty_tree"
       ],
-      "authority": ["local.git.reset_clean"],
+      "authority": [
+        "local.git.reset_clean"
+      ],
       "requires": {
         "exclusiveWriter": true,
         "allowlistedPath": true,
         "cwdIsGit": true
       },
       "params": {
-        "cwd": {"type": "path", "required": true},
+        "cwd": {
+          "type": "path",
+          "required": true
+        },
         "mode": {
           "type": "enum",
-          "values": ["reset-hard-clean-fdx"],
+          "values": [
+            "reset-hard-clean-fdx"
+          ],
           "default": "reset-hard-clean-fdx"
         }
       },
@@ -69,7 +76,9 @@
         "exact_head_mismatch",
         "head_mismatch"
       ],
-      "authority": ["local.git.checkout_detach"],
+      "authority": [
+        "local.git.checkout_detach"
+      ],
       "requires": {
         "exclusiveWriter": true,
         "allowlistedPath": true,
@@ -77,8 +86,14 @@
         "expectedShaFull40": true
       },
       "params": {
-        "cwd": {"type": "path", "required": true},
-        "expectedSha": {"type": "sha40", "required": true}
+        "cwd": {
+          "type": "path",
+          "required": true
+        },
+        "expectedSha": {
+          "type": "sha40",
+          "required": true
+        }
       },
       "steps": [
         "reject if expectedSha is not full 40-char lowercase hex",
@@ -101,15 +116,26 @@
         "acl_denied",
         "EACCES"
       ],
-      "authority": ["local.fs.acl"],
+      "authority": [
+        "local.fs.acl"
+      ],
       "requires": {
         "exclusiveWriter": true,
         "allowlistedPath": true
       },
       "params": {
-        "cwd": {"type": "path", "required": true},
-        "uid": {"type": "int", "default": 995},
-        "gid": {"type": "int", "default": 995}
+        "cwd": {
+          "type": "path",
+          "required": true
+        },
+        "uid": {
+          "type": "int",
+          "default": 995
+        },
+        "gid": {
+          "type": "int",
+          "default": 995
+        }
       },
       "steps": [
         "verify path under allowlist roots",
@@ -142,8 +168,14 @@
         "singleUuidReadmit": true
       },
       "params": {
-        "issueId": {"type": "uuid", "required": true},
-        "agentId": {"type": "string", "required": true},
+        "issueId": {
+          "type": "uuid",
+          "required": true
+        },
+        "agentId": {
+          "type": "string",
+          "required": true
+        },
         "resourceBudget": {
           "type": "object",
           "required": false,
@@ -155,7 +187,11 @@
         "hostctlIdentity": {
           "type": "object",
           "required": true,
-          "fields": ["agentSlug", "sessionId", "missionId"]
+          "fields": [
+            "agentSlug",
+            "sessionId",
+            "missionId"
+          ]
         }
       },
       "steps": [
@@ -180,7 +216,9 @@
         "HEARTBEAT_SCHEDULER_ENABLED=true",
         "controlled_swarm_envelope"
       ],
-      "authority": ["hostctl.apply.read_only_guard"],
+      "authority": [
+        "hostctl.apply.read_only_guard"
+      ],
       "requires": {
         "controlledSwarmContext": true
       },
@@ -203,13 +241,21 @@
         "execution_admission.issue_unbound",
         "wakeup_missing_issueId"
       ],
-      "authority": ["agent.wakeup.issue_bound"],
+      "authority": [
+        "agent.wakeup.issue_bound"
+      ],
       "requires": {
         "issueIdUuid": true
       },
       "params": {
-        "issueId": {"type": "uuid", "required": true},
-        "agentId": {"type": "string", "required": true}
+        "issueId": {
+          "type": "uuid",
+          "required": true
+        },
+        "agentId": {
+          "type": "string",
+          "required": true
+        }
       },
       "steps": [
         "detect wake/invoke with null/missing payload.issueId",
@@ -221,6 +267,20 @@
         "naked wake without issueId",
         "treating null-issueId as company_frozen requiring unfreeze"
       ]
+    },
+    {
+      "id": "induct-lease-refresh",
+      "title": "Refresh InductAI/induct host lease to main tip SHA",
+      "authority": "host root gh + board token; not paperclip write App",
+      "dryRunDefault": true,
+      "command": "python3 /usr/local/lib/paperclip-gloops/bin/refresh-induct-lease.py",
+      "applyCommand": "python3 /usr/local/lib/paperclip-gloops/bin/refresh-induct-lease.py --apply --only-if-stale",
+      "when": [
+        "before Induct implement mint",
+        "workspace_admit.head_mismatch on induct PWS",
+        "workspace_admit.dirty_tree on induct PWS"
+      ],
+      "notes": "Does not expand github-app-credentials frozen gloopsAI allowlist."
     }
   ]
 }

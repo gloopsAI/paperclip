@@ -40,6 +40,8 @@ ALLOWED_REPOSITORIES = frozenset(
         "gloopsAI/gloops-ui",
         "gloopsAI/paperclip",
         "gloopsAI/paperclip-gym",
+        "InductAI/induct",
+        "InductAI/induct-knowledge",
     }
 )
 
