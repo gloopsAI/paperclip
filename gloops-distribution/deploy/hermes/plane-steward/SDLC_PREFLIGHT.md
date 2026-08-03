@@ -55,7 +55,9 @@ After arming a campaign epoch, operators may export the deadline for server gate
 sudo /usr/local/lib/paperclip-gloops/bin/export-campaign-deadline-to-runtime.sh
 ```
 
-There is no agent-callable open-campaign path; operators open windows via deadman / controlled-swarm activation.
+Campaign reopen is **Harbor-only** via standing auth + `harbor-campaign-reopen.sh`
+(wraps host `open-campaign-24h.sh`). Agents/Sentinel never open campaigns.
+See `SENTINEL_HARBOR_PLANE_LOOPS.md`.
 
 ## Critical codes (fail-closed)
 

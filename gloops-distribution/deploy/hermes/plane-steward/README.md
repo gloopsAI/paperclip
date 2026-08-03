@@ -1,8 +1,10 @@
 # Plane Steward recipe pack (C5)
 
 Allowlisted, fail-closed repairs for workspace-plane failures on hermes.
-Humans and **Sentinel** (today advisory) use this pack so product agents stop
-dying on dirty trees, wrong heads, ACLs, null-issueId wakes, and READMIT thrash.
+Humans, **Sentinel** (LIVE host plane loop), and **Harbor** (standing campaign
+reopen) use this pack so product agents stop dying on dirty trees, wrong heads,
+ACLs, null-issueId wakes, READMIT thrash, and expired campaign epochs.
+See [`SENTINEL_HARBOR_PLANE_LOOPS.md`](./SENTINEL_HARBOR_PLANE_LOOPS.md).
 
 ## Authority bounds
 
@@ -37,6 +39,10 @@ Hard rules:
 | `readmit-budget-bound-wake` | budget / bankruptcy / cancel&lt;5s | attach budget → hostctl READMIT one UUID → bound wake |
 | `never-enable-global-heartbeat-scheduler` | scheduler true / death spiral | force **false** only; refuse enable |
 | `null-issueId-wake-reject` | null issueId / false company_frozen | re-issue bound wake; **no** company unfreeze |
+| `induct-lease-refresh` | lease dirty / head mismatch on induct | refresh host lease (Sentinel auto-apply allowlisted) |
+| `harbor-campaign-reopen` | campaign deadline / missing epoch | Harbor standing reopen via open-campaign-24h |
+| `sdlc-preflight-check` | plane degraded | host S0 probe only |
+| `campaign-deadline-alert` | T−4h window | once-per-epoch notify (no reopen) |
 
 Machine catalog: [`recipes.json`](./recipes.json) (canonical). Human twin: [`recipes.yaml`](./recipes.yaml).
 
@@ -96,20 +102,20 @@ Hostctl binary: `../paperclip-hostctl.py` (override `PLANE_STEWARD_HOSTCTL`).
 Runtime env for READMIT lists: `/etc/paperclip-gloops/runtime.env`
 (`PLANE_STEWARD_RUNTIME_ENV` override).
 
-## Sentinel wiring (advisory → closed loop)
+## Sentinel + Harbor plane loops (LIVE)
 
-Today Sentinel is **advisory** (`heartbeat.enabled: false` until A1 authority).
-Promotion path is documented in [`sentinel-plane-steward.md`](./sentinel-plane-steward.md).
+Host timers (not HEARTBEAT_SCHEDULER):
 
-Summary:
+1. **Sentinel** `paperclip-sentinel-plane-loop.timer` → preflight → optional lease
+   auto-apply → residual GLO `[Sentinel/Plane]` (deduped).
+2. **Harbor** `paperclip-harbor-plane-loop.timer` → if hours &lt; 6 and standing
+   auth → `harbor-campaign-reopen.sh --execute --confirm-execute`.
 
-1. Sentinel heartbeat (or cron) runs `detect.py --from-api` / log tail.
-2. For each `recommendedRecipes` entry, Sentinel proposes **one** recipe with
-   params filled from the matched issue/run (never bulk).
-3. Gate: human or allowlisted auto-apply policy calls  
-   `apply_recipe.py --apply --recipe …` **only** for catalog ids.
-4. Receipt: stdout JSON + hostctl journal + board comments.
-5. Sentinel must **not** call Induct, unfreeze whole company, or enable scheduler.
+Details: [`SENTINEL_HARBOR_PLANE_LOOPS.md`](./SENTINEL_HARBOR_PLANE_LOOPS.md),
+[`sentinel-plane-steward.md`](./sentinel-plane-steward.md).
+
+Workspace-admit detect/apply path is unchanged (dry-run default). Sentinel must
+**not** open campaigns, unfreeze whole company, or enable scheduler.
 
 ## Related
 
@@ -122,5 +128,5 @@ Summary:
 ## Tests
 
 ```bash
-python3 -m unittest detect_test.py apply_recipe_test.py -v
+python3 -m unittest detect_test.py apply_recipe_test.py sentinel_plane_loop_test.py -v
 ```

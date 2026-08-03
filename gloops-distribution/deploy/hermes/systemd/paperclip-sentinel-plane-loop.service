@@ -1,0 +1,20 @@
+[Unit]
+Description=Paperclip Sentinel plane loop (preflight + residual GLO)
+After=network-online.target paperclip-gloops.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/paperclip-gloops/runtime.env
+EnvironmentFile=-/etc/paperclip-gloops/communications.env
+Environment=PAPERCLIP_API=http://127.0.0.1:3100
+Environment=PAPERCLIP_BOARD_TOKEN_FILE=/etc/paperclip-gloops/operator-board-token
+Environment=PAPERCLIP_COMPANY_ID=89ed0964-d918-4fcc-b830-5be49d2d4089
+Environment=PAPERCLIP_SENTINEL_AGENT_ID=32de720b-4231-45f3-9322-aa5da3d9f44d
+Environment=PAPERCLIP_HARBOR_AGENT_ID=a3a1cb4c-390a-4d40-9a88-8609183ed012
+Environment=PAPERCLIP_PLANE_PROJECT_ID=cfca4683-e256-40e0-91b3-f2e513170ec0
+# Default 1: auto-apply induct-lease-refresh only when lease/head codes present.
+Environment=SENTINEL_AUTO_APPLY_LEASE=1
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/plane-steward/sentinel-plane-loop.py
+Nice=10

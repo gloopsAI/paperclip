@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "gloops.harbor-reopen-standing-auth.v1",
+  "authorized": true,
+  "phrase": "OPEN CAMPAIGN 24H",
+  "authorizedAt": "1970-01-01T00:00:00Z",
+  "authorizedBy": "zach-standing-delegation",
+  "maxAutoReopensPerDay": 2,
+  "notes": [
+    "One-time Zach standing delegation so Harbor can reopen campaigns without per-event phrase typing.",
+    "Install live file with: bin/install-harbor-standing-reopen-auth.sh --confirm-standing-delegation",
+    "Live path: /var/lib/paperclip-gloops/campaign-deadman/standing/harbor-reopen-authorized.json",
+    "Harbor-only. Sentinel must never open campaigns."
+  ]
+}
