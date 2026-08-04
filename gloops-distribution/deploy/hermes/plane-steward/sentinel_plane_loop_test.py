@@ -108,7 +108,7 @@ class RecipesAndDescriptionTest(unittest.TestCase):
         title = spl.build_residual_title(["campaign.deadline_lt_6h"], 2.0)
         self.assertTrue(title.startswith(spl.TITLE_PREFIX))
 
-    def test_description_has_bounds(self) -> None:
+    def test_description_ops_format_not_implement_packet(self) -> None:
         desc = spl.build_residual_description(
             critical=["lease.dirty_or_missing"],
             warning=[],
@@ -117,8 +117,21 @@ class RecipesAndDescriptionTest(unittest.TestCase):
             recipes=["induct-lease-refresh"],
             fingerprint="abc",
         )
+        self.assertIn("## Plane residual (ops — not product code work)", desc)
+        self.assertIn("## Codes", desc)
+        self.assertIn("## Recommended recipes", desc)
+        self.assertIn("## Bounds", desc)
+        self.assertIn("## Decision/Outcome", desc)
         self.assertIn("Do **not** page Zach", desc)
         self.assertIn("HEARTBEAT_SCHEDULER", desc)
+        self.assertIn("induct-lease-refresh", desc)
+        self.assertIn('"fingerprint": "abc"', desc)
+        # Packet DoR implement sections must not appear as headings.
+        self.assertNotRegex(desc, r"(?m)^##\s*Objective\s*$")
+        self.assertNotRegex(desc, r"(?m)^##\s*Scope\s*$")
+        self.assertNotRegex(desc, r"(?m)^##\s*Acceptance\s*$")
+        # Avoid bare "implement" so looksImplementPacket stays false.
+        self.assertNotRegex(desc, r"(?i)\bimplement\b")
 
 
 if __name__ == "__main__":

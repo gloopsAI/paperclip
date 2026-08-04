@@ -309,10 +309,59 @@ describe("issueRequiresWorkspaceAdmit", () => {
       }),
     ).toBe(false);
   });
+
+  it("skips Sentinel/Harbor ops plane residuals", () => {
+    expect(
+      issueRequiresWorkspaceAdmit({
+        title: "[Sentinel/Plane] induct lease dirty",
+        description: [
+          "## Plane residual (ops — not product code work)",
+          "Host plane babysitting residual.",
+          "## Decision/Outcome",
+          "Plane preflight green with empty criticalCodes.",
+        ].join("\n"),
+        assigneeName: "Sentinel",
+        assigneeRole: "engineer",
+      }),
+    ).toBe(false);
+    expect(
+      issueRequiresWorkspaceAdmit({
+        title: "[Sentinel/Plane] campaign deadline / epoch",
+        description: [
+          "## Plane residual (ops — not product code work)",
+          "Harbor reopens campaigns via standing auth.",
+          "## Decision/Outcome",
+          "Campaign hours remaining ≥ 12.",
+        ].join("\n"),
+        assigneeName: "Harbor",
+        assigneeRole: "devops",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("evaluateWorkspaceAdmitCreateRequirements (C2)", () => {
   const enforceEnv = { PAPERCLIP_WORKSPACE_ADMIT_CREATE: "enforce" };
+
+  it("does not require workspace for ops plane residual create", () => {
+    const result = evaluateWorkspaceAdmitCreateRequirements({
+      title: "[Sentinel/Plane] induct lease dirty",
+      description: [
+        "## Plane residual (ops — not product code work)",
+        "Restore plane preflight without paging Zach.",
+        "## Decision/Outcome",
+        "Plane preflight green with empty criticalCodes.",
+      ].join("\n"),
+      assigneeName: "Sentinel",
+      assigneeRole: "engineer",
+      explicitProjectWorkspaceId: false,
+      explicitExecutionWorkspaceId: false,
+      env: enforceEnv,
+    });
+    expect(result.required).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(result.reasonCodes).toEqual([]);
+  });
 
   it("requires explicit workspace + full sha for implement", () => {
     const result = evaluateWorkspaceAdmitCreateRequirements({

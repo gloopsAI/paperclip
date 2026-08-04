@@ -173,6 +173,12 @@ def build_residual_description(
     recipes: list[str],
     fingerprint: str,
 ) -> str:
+    """Build an ops residual description (not a product implement packet).
+
+    Intentionally omits ``## Objective`` / ``## Scope`` / ``## Acceptance`` so
+    workspace-admit create (C2) does not treat this as standard_implement and
+    demand an explicit projectWorkspaceId + Exact head SHA.
+    """
     codes_payload = {
         "criticalCodes": critical,
         "warningCodes": warning,
@@ -183,30 +189,29 @@ def build_residual_description(
         "schedulerEnabled": preflight.get("schedulerEnabled"),
     }
     return (
-        "## Objective\n"
-        "Restore Induct SDLC plane preflight to green without paging Zach.\n\n"
-        "## Scope\n"
-        "- Host plane probes (campaign epoch, lease, pin, commission, health)\n"
-        "- Residual is owned by Harbor for campaign.* / pin / commission;\n"
-        "  Sentinel for other critical plane codes\n"
-        "- Sentinel may auto-apply **only** induct-lease-refresh when allowlisted\n"
-        "- Harbor reopens campaigns via standing auth (never per-event Zach phrase)\n\n"
-        "## Acceptance\n"
-        "- `verify-induct-sdlc-preflight.sh` exits 0 with empty criticalCodes\n"
-        "- Campaign hours remaining ≥ 12 (or residual cancelled as plane-green)\n"
-        "- Receipt written under plane-steward state dir\n\n"
-        "## Exact codes\n"
+        "## Plane residual (ops — not product code work)\n"
+        "Restore Induct SDLC plane preflight to green without paging Zach.\n"
+        "Host plane babysitting residual owned by Harbor (campaign/pin/commission)\n"
+        "or Sentinel (lease and other critical plane codes).\n"
+        "Sentinel may auto-apply **only** induct-lease-refresh when allowlisted.\n"
+        "Harbor reopens campaigns via standing auth (never per-event Zach phrase).\n\n"
+        "## Codes\n"
         "```json\n"
         f"{json.dumps(codes_payload, indent=2, sort_keys=True)}\n"
         "```\n\n"
         "## Recommended recipes\n"
         + "".join(f"- `{r}`\n" for r in recipes)
         + "\n"
-        "## Hard bounds\n"
+        "## Bounds\n"
         "- Do **not** page Zach for happy-path plane babysitting\n"
         "- Do **not** enable HEARTBEAT_SCHEDULER\n"
         "- Do **not** multi-UUID READMIT\n"
-        "- Do **not** open campaigns from Sentinel (Harbor only)\n"
+        "- Do **not** open campaigns from Sentinel (Harbor only)\n\n"
+        # Coordination packet DoR accepts Decision/Outcome (not Scope/Acceptance).
+        "## Decision/Outcome\n"
+        "Plane preflight green: `verify-induct-sdlc-preflight.sh` exits 0 with empty\n"
+        "criticalCodes, campaign hours remaining ≥ 12 (or residual cancelled as\n"
+        "plane-green), and a receipt under the plane-steward state dir.\n"
     )
 
 
