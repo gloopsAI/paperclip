@@ -240,7 +240,7 @@ if jq -e '
     "maxTurns": 320,
     "authority": "outer-safety-ceiling-only",
     "taskBudgetAuthority": "paperclip-execution-admission",
-    "explicitTaskEnvelopeMustNotExceed": 90
+    "explicitTaskEnvelopeMustNotExceed": 320
   } and
   .runtime.gitSafeDirectories == {
     "source": "pinned-image-plus-environment-no-credential-config",
