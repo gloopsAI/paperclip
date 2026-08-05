@@ -88,3 +88,8 @@ commit and checksum, then applies the runtime subset only when every touched
 file matches its locked upstream preimage. This certifies the overlay's source
 boundary without claiming whole-image source provenance for the pre-existing
 Hermes base image.
+
+## v0.20.0 / v2026.8.3 lock
+
+Current lock targets upstream commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`
+(tag `v2026.8.3`) with patch `hermes-agent-3c27eb6-route-receipt.patch`.
