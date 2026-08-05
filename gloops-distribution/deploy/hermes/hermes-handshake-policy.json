@@ -2,12 +2,46 @@
   "schemaVersion": "gloops.hermes-provider-handshake.v1",
   "profile": "paperclip-provider-handshake",
   "purpose": "one-turn provider transport proof without tools or repository authority",
-  "allowedProviders": ["ollama-cloud"],
-  "allowedRuntimeEnvironment": ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"],
-  "allowedCredentialEnvironment": ["API_SERVER_KEY", "OLLAMA_API_KEY"],
-  "allowedCredentialFiles": ["/opt/handshake-profile/auth.json", "/opt/data/auth.json"],
-  "forbiddenProviders": ["anthropic", "openai-codex", "openrouter", "xai", "xai-oauth", "grok"],
-  "forbiddenCapabilities": ["tools", "mcp", "kanban", "cron", "sessions", "repository", "workspace", "github"],
+  "allowedProviders": [
+    "ollama-cloud"
+  ],
+  "allowedRuntimeEnvironment": [
+    "API_SERVER_ENABLED",
+    "API_SERVER_HOST",
+    "API_SERVER_KEY",
+    "API_SERVER_PORT",
+    "OLLAMA_API_KEY",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy"
+  ],
+  "allowedCredentialEnvironment": [
+    "API_SERVER_KEY",
+    "OLLAMA_API_KEY"
+  ],
+  "allowedCredentialFiles": [
+    "/opt/handshake-profile/auth.json",
+    "/opt/data/auth.json"
+  ],
+  "forbiddenProviders": [
+    "anthropic",
+    "openai-codex",
+    "openrouter",
+    "xai",
+    "xai-oauth",
+    "grok"
+  ],
+  "forbiddenCapabilities": [
+    "tools",
+    "mcp",
+    "kanban",
+    "cron",
+    "sessions",
+    "repository",
+    "workspace",
+    "github"
+  ],
   "network": {
     "name": "paperclip-handshake",
     "internal": true,
@@ -24,7 +58,7 @@
     "proxyMaxConnections": 4
   },
   "runtime": {
-    "image": "sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
+    "image": "sha256:0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106",
     "persistentPaths": [],
     "repositoryMounts": [],
     "githubCredentials": false,
