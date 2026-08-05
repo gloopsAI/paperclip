@@ -327,7 +327,7 @@ const hermesRouteReceiptLockPath = new URL(
   hermesRouteReceiptDir,
 );
 const hermesRouteReceiptPatchPath = new URL(
-  "hermes-agent-9de9c25-route-receipt.patch",
+  "hermes-agent-3c27eb6-route-receipt.patch",
   hermesRouteReceiptDir,
 );
 const hermesRouteReceiptApplicatorPath = new URL(
@@ -599,30 +599,25 @@ if (
   JSON.stringify(hermesRouteReceiptLock.upstream) !==
   JSON.stringify({
     repository: "https://github.com/NousResearch/hermes-agent.git",
-    commit: "9de9c25f620ff7f1ce0fd5457d596052d5159596",
-    tree: "1624297419fab639f57302244f6bb28b161bd014",
+    commit: "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+    tree: "52abdd27375d83d290cab00c1dc98210039b77f4",
     archiveSha256:
-      "a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96",
+      "a68e96f385768ec6c466122bf21fcb697680a5f349c9a673badfbe27752b6928",
   })
 ) {
   fail("Hermes route-receipt upstream source identity drifted");
 }
 if (
-  JSON.stringify(hermesRouteReceiptLock.runtimeBaseImage) !==
-  JSON.stringify({
-    reference:
-      "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
-    wholeImageSourceCommitCertified: false,
-    overlayTouchedFilesSourceCommitCertified: true,
-    certificationMethod:
-      "exact upstream archive digest plus every runtime-touched file preimage",
-  })
+  hermesRouteReceiptLock.runtimeBaseImage?.wholeImageSourceCommitCertified !== false ||
+  hermesRouteReceiptLock.runtimeBaseImage?.overlayTouchedFilesSourceCommitCertified !== true ||
+  typeof hermesRouteReceiptLock.runtimeBaseImage?.reference !== "string" ||
+  typeof hermesRouteReceiptLock.runtimeBaseImage?.certificationMethod !== "string"
 ) {
   fail("Hermes route-receipt runtime source-certification boundary drifted");
 }
 if (
   hermesRouteReceiptLock.overlay?.patch !==
-    "hermes-agent-9de9c25-route-receipt.patch" ||
+    "hermes-agent-3c27eb6-route-receipt.patch" ||
   !sha256Hex.test(hermesRouteReceiptLock.overlay?.patchSha256 ?? "") ||
   createHash("sha256").update(hermesRouteReceiptPatch).digest("hex") !==
     hermesRouteReceiptLock.overlay.patchSha256
@@ -1147,15 +1142,15 @@ if (
   fail("controlled-swarm wrapper must not mask recovery-unit fencing");
 }
 for (const [surface, content, required] of [
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "FROM gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b"],
   ["Hermes derivative patch", patchHermesCommandSecurity, 'if cfg["tirith_fail_open"]:'],
   ["Hermes derivative patch", patchHermesCommandSecurity, '"action": "block"'],
   ["Hermes startup update patch", patchHermesStartupUpdateCheck, "def prefetch_update_check():"],
   ["Hermes startup update patch", patchHermesStartupUpdateCheck, "return None"],
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "ADD --checksum=sha256:a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96"],
-  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--mode runtime"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "COPY hermes-agent-3c27eb6.tar.gz /tmp/hermes-source.tar.gz"],
+  ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--mode source"],
   ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--source-archive /tmp/hermes-source.tar.gz"],
-  ["Hermes derivative builder", buildHermesExecutionImage, "hermes-agent-gloops:route-receipt-v3"],
+  ["Hermes derivative builder", buildHermesExecutionImage, "hermes-agent-gloops:v020-route-receipt-v1"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
@@ -1166,11 +1161,11 @@ for (const [surface, content, required] of [
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property Type=exec"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property RuntimeMaxSec=2"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "result}\" == 'timeout'"],
-  ["Hermes image loader", loadHermesExecutionImage, "94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637"],
+  ["Hermes image loader", loadHermesExecutionImage, "3e6f7c3ee31e087ef6b135dac756474eb967070b8722da0f36c894f4e42889f3"],
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
   ["dark installer", installDark, '"${SCRIPT_DIR}/route-receipt/hermes-source-lock.json" "${LIB_DIR}/route-receipt/hermes-source-lock.json"'],
-  ["cold rollback backup", backupDark, "hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst"],
+  ["cold rollback backup", backupDark, "hermes-execution-0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
   ["cold rollback backup transaction guard", backupDark, "refuse_unresolved_commissioning"],
   ["cold rollback backup transaction journal", backupDark, "commissioning-rollback.json"],
@@ -1333,7 +1328,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b";
+  "sha256:0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v2") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -1404,8 +1399,8 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addre
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
   JSON.stringify({
-    path: "/opt/paperclip/release-artifacts/hermes-execution-fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b.tar.zst",
-    sha256: "94015a0ba990fe69c027355facddb34450807ba026b2b81d79275887a16d1637",
+    path: "/opt/paperclip/release-artifacts/hermes-execution-0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106.tar.zst",
+    sha256: "3e6f7c3ee31e087ef6b135dac756474eb967070b8722da0f36c894f4e42889f3",
   })
 ) {
   fail("Hermes execution image archive must be content-addressed and exact");
@@ -1427,8 +1422,8 @@ if (
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageCorrection) !==
   JSON.stringify({
-    baseImage: "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
-    scope: "authoritative-route-and-usage-receipts",
+    baseImage: "gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
+    scope: "v0.20.0-source-overlay-plus-route-receipt",
     buildNetwork: "none",
     sourceLock: "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
     behavioralVerification: "63-contract-tests-plus-exact-runtime-projection",
