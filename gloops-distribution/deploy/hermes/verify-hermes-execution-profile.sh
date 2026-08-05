@@ -53,7 +53,7 @@ fi
 [[ -f "${RUNTIME_ENV}" ]] || fail 'dedicated credential environment is missing'
 if [[ -f "${RUNTIME_ENV}" ]]; then
   mapfile -t env_keys < <(sed -nE 's/^([A-Z][A-Z0-9_]*)=.*/\1/p' "${RUNTIME_ENV}" | sort -u)
-  if [[ "${env_keys[*]}" == 'API_SERVER_ENABLED API_SERVER_HOST API_SERVER_KEY API_SERVER_PORT OLLAMA_API_KEY PAPERCLIP_AGENT_ID PAPERCLIP_API_URL PAPERCLIP_BRIDGE_API_KEY PAPERCLIP_COMPANY_ID' ]]; then
+  if [[ "${env_keys[*]}" == 'API_SERVER_ENABLED API_SERVER_HOST API_SERVER_KEY API_SERVER_PORT HERMES_OUTBOUND_WEBHOOK_SECRET OLLAMA_API_KEY PAPERCLIP_AGENT_ID PAPERCLIP_API_URL PAPERCLIP_BRIDGE_API_KEY PAPERCLIP_COMPANY_ID' ]]; then
     pass 'dedicated environment contains only the API boundary, Ollama credential, and scoped Paperclip task bridge'
   else
     fail "unexpected dedicated environment keys: ${env_keys[*]:-none}"
@@ -169,7 +169,7 @@ fi
 if jq -e '
   .schemaVersion == "gloops.hermes-execution-profile.v2" and
   .allowedProviders == ["ollama-cloud"] and
-  .allowedRuntimeEnvironment == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"] and
+  .allowedRuntimeEnvironment == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_OUTBOUND_WEBHOOK_SECRET", "OLLAMA_API_KEY"] and
   .allowedCredentialEnvironment == ["API_SERVER_KEY", "OLLAMA_API_KEY"] and
   .allowedCredentialFiles == ["/opt/data/auth.json"] and
   .github == {
