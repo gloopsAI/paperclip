@@ -3,47 +3,49 @@
   "schemaVersion": 1,
   "upstream": {
     "repository": "https://github.com/NousResearch/hermes-agent.git",
-    "commit": "9de9c25f620ff7f1ce0fd5457d596052d5159596",
-    "tree": "1624297419fab639f57302244f6bb28b161bd014",
-    "archiveSha256": "a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96"
+    "commit": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+    "tree": "52abdd27375d83d290cab00c1dc98210039b77f4",
+    "archiveSha256": "a68e96f385768ec6c466122bf21fcb697680a5f349c9a673badfbe27752b6928"
   },
   "runtimeBaseImage": {
-    "reference": "hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d",
+    "reference": "gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
     "wholeImageSourceCommitCertified": false,
     "overlayTouchedFilesSourceCommitCertified": true,
-    "certificationMethod": "exact upstream archive digest plus every runtime-touched file preimage"
+    "certificationMethod": "v0.20.0 source tree rsync onto prior execution image plus rebased route-receipt overlay",
+    "priorExecutionImage": "sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
+    "upstreamTag": "v2026.8.3"
   },
   "overlay": {
-    "patch": "hermes-agent-9de9c25-route-receipt.patch",
-    "patchSha256": "81e72ed229210c9beed9f582fdf07d39321017b22c41b829038884cd60d0c38c",
+    "patch": "hermes-agent-3c27eb6-route-receipt.patch",
+    "patchSha256": "f1488e097381f793681b3de7c9e2ee5be17274331c560fbb3a337e58cad106d5",
     "owner": "GLoops Platform",
     "distributionRepositoryVisibility": "public",
     "retirementCondition": "Remove only after the selected upstream Hermes release provides an equivalent fail-closed /v1/runs terminal route receipt with exact received-request byte evidence, actual executed provider/model/fallback facts, explicit usage presence, domain-separated semantic digest equality across SSE and final status, and the GLoops offline negative matrix passes against that upstream implementation."
   },
   "files": {
     "agent/conversation_loop.py": {
-      "preimageSha256": "9b8d8b98e65a67e6a489b69479fb96614d57f3a28cf7ef427de1a66130aeab50",
-      "postimageSha256": "a305ea441952001c13b3cf773c548a64344ea501dcc963edcf68840eb7b3d919"
+      "preimageSha256": "eca90bba22034fd2ca3314d994de63a642439ff1c31c7a1319a3ecbecc64a9a9",
+      "postimageSha256": "89fd1b58a157b0acf62e41f78fdf438bd3a8da3eec1028b616baece66aacd025"
     },
     "agent/usage_pricing.py": {
-      "preimageSha256": "84dbc9fa3d220c2378fcfc045ae1a34901ab1336316a6dd0adac2d95937db3e0",
-      "postimageSha256": "43f31d7bfd989041b7c5031e3b3c2dd8e712ead8991229d34936613d63bfacfc"
+      "preimageSha256": "59599f38cf942e5890977a43b163b50bc202028d02f53bccb83b803c5b1fdca2",
+      "postimageSha256": "e807234c406d3eb08ea2d0217ac0b8f04db312b308d8ec136b3a604c44a0d5b5"
     },
     "gateway/platforms/api_server.py": {
-      "preimageSha256": "d819f04f4f3a7d2c7f2d3b5befb13aa50dc0df7ca8416909f65f6d214e8c7b66",
-      "postimageSha256": "c967b20dff682ce69aa81ca76af8a68dd2700156d1e88b09cf4614fda41cddc4"
+      "preimageSha256": "4c12f84662711cc14b6d52ba8d89156d1ad8a1ed22af100104a67d1520333ff6",
+      "postimageSha256": "abfd67d68f4f69667408dd805d601a7c0cc1dc89713601fb6ec9550bb621ed36"
     },
     "gateway/run_evidence.py": {
       "preimage": "absent",
       "postimageSha256": "4f6a7b6f7518e6948f5f5248340f5a6880e4334de0e1066b7f9e81897cda5a21"
     },
     "tests/agent/test_usage_pricing.py": {
-      "preimageSha256": "62795f7927b065742b10987632b99b50cba03feb84a7886a4d9f3bde640328de",
-      "postimageSha256": "027b6631b6a1063bbe6f458939d41b4c01ac60a589c9382870bd3d7da99b462d"
+      "preimageSha256": "a17e75a5d5c47003ae7746fd0a4bfe390129c7d1997c0d619f00c33979fe4e02",
+      "postimageSha256": "b38d278f14ae52b105f34506678171436002a750fd53489d3b79aca987863a95"
     },
     "tests/gateway/test_api_server_runs.py": {
-      "preimageSha256": "10585e4ad6adde0e09cd58a788e384dad82e9736fd3c74ac03c64b4c304547ae",
-      "postimageSha256": "043d3798ad3852247813b362ccd94282749438af84a649db3df82b53e55e7c95"
+      "preimageSha256": "2640c35f2f5a1019ff5e078f82dc838e984b4b48a4062a35f339c712f470f10c",
+      "postimageSha256": "5d3cc410cc48cbc1f68fdd0985ba8b9f142ac538a41c1d8e15ce794bfaf3f280"
     },
     "tests/gateway/test_run_evidence.py": {
       "preimage": "absent",

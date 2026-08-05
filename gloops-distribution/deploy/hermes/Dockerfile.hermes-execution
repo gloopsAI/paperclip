@@ -1,18 +1,41 @@
-FROM hermes-agent-gloops:bounded-runtime-v2@sha256:3fa158ecc7635512e6c0b33d68084de1eae33593ca009225cd2f7fbd7af2902d
+# Hermes execution image: prior accepted runtime + Hermes Agent v0.20.0 source + route-receipt.
+FROM gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b
 
-ARG SOURCE_DATE_EPOCH
+USER root
+WORKDIR /opt/hermes
+
 COPY route-receipt /tmp/route-receipt
-ADD --checksum=sha256:a499b9ea663d2aeabe70c19e1ff3ac3b248922097a5f85566a1aa58238742d96 \
-  https://github.com/NousResearch/hermes-agent/archive/9de9c25f620ff7f1ce0fd5457d596052d5159596.tar.gz \
-  /tmp/hermes-source.tar.gz
-RUN python /tmp/route-receipt/apply-hermes-route-receipt.py \
-    --root /opt/hermes \
-    --mode runtime \
-    --source-archive /tmp/hermes-source.tar.gz \
-  && rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz \
-  && rm -f /opt/hermes/hermes_cli/__pycache__/banner*.pyc \
-  && rm -f /opt/hermes/tools/__pycache__/tirith_security*.pyc
+COPY hermes-agent-3c27eb6.tar.gz /tmp/hermes-source.tar.gz
 
-# Native Hermes skills are the runtime source of truth. Paperclip's
-# hermes_gateway adapter does not currently synchronize company skills.
+# Replace source tree while preserving runtime .venv / node_modules / playwright.
+# Include tests/ so source-mode lock inventory can apply; stripped after apply.
+RUN set -eux; \
+  echo 'a68e96f385768ec6c466122bf21fcb697680a5f349c9a673badfbe27752b6928  /tmp/hermes-source.tar.gz' | sha256sum -c -; \
+  mkdir -p /tmp/hermes-extract; \
+  tar -xzf /tmp/hermes-source.tar.gz -C /tmp/hermes-extract --strip-components=1; \
+  for path in \
+    agent gateway hermes_cli tools cron acp_adapter apps locales tests \
+    batch_runner.py cli.py hermes hermes_bootstrap.py hermes_constants.py \
+    hermes_logging.py hermes_state.py hermes_time.py mcp_serve.py \
+    mini_swe_runner.py model_tools.py pyproject.toml README.md LICENSE \
+    MANIFEST.in constraints-termux.txt cli-config.yaml.example \
+    docker docker-compose.yml docker-compose.override.yml docker-compose.windows.yml \
+    Dockerfile; do \
+      if [ -e "/tmp/hermes-extract/$path" ]; then \
+        rm -rf "/opt/hermes/$path"; \
+        cp -a "/tmp/hermes-extract/$path" "/opt/hermes/$path"; \
+      fi; \
+    done; \
+  python3 /tmp/route-receipt/apply-hermes-route-receipt.py \
+    --root /opt/hermes \
+    --mode source \
+    --source-archive /tmp/hermes-source.tar.gz; \
+  if [ -d /opt/hermes/hermes_agent.egg-info ]; then \
+    sed -i 's/^Version: .*/Version: 0.20.0/' /opt/hermes/hermes_agent.egg-info/PKG-INFO || true; \
+  fi; \
+  rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz /tmp/hermes-extract /opt/hermes/tests; \
+  /opt/hermes/.venv/bin/hermes --version; \
+  test -f /opt/hermes/gateway/run_evidence.py; \
+  /opt/hermes/.venv/bin/python -c "from gateway.run_evidence import RunEvidenceAccumulator; print('run_evidence_ok')"
+
 COPY gloops-skills/ /opt/hermes/skills/

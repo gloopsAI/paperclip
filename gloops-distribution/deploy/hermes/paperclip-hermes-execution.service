@@ -12,7 +12,7 @@ StartLimitBurst=2
 
 [Service]
 Type=simple
-Environment=HERMES_EXECUTION_IMAGE=sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b
+Environment=HERMES_EXECUTION_IMAGE=sha256:e816faba30dfb38f06371ae3db9d1f30d5c9bf38bae41ff6230d746665fdfa18
 ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source
 ExecStartPre=/usr/local/lib/paperclip-gloops/verify-focused-test-runtime.sh
