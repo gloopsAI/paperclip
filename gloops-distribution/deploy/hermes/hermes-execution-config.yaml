@@ -62,9 +62,10 @@ platforms:
           model: ollama-build
           provider: moa
 agent:
-  # Match the upstream Hermes completion envelope. Paperclip remains the
+  # OUTER host safety ceiling only (Herald default is 500). Paperclip remains
   # per-task authority and may issue a smaller task-specific turn budget.
-  max_turns: 90
+  # Governed 320: room for long implement without unbounded loops.
+  max_turns: 320
   verify_on_stop: true
 security:
   redact_secrets: true
@@ -72,3 +73,13 @@ security:
   tirith_path: /opt/data/bin/tirith
   tirith_fail_open: false
 _config_version: 37
+
+# Lifecycle notify only (Hermes → receipt sink). HMAC secret from env.
+# Sink is notify/receipt — no authority decisions.
+hooks:
+  outbound:
+    - url: http://hermes-lifecycle-sink:8765/hermes-events
+      events: [on_session_end, subagent_stop]
+      secret_env: HERMES_OUTBOUND_WEBHOOK_SECRET
+      timeout: 5
+      name: gloops-lifecycle-receipt

@@ -1,3 +1,10 @@
+
+### Post-v0.20.0 loop endurance and lifecycle notify
+
+- Outer Hermes `agent.max_turns` is a **governed host ceiling (320)**; Paperclip task admission remains the budget authority.
+- `verify-hermes-self-heal-canary.sh` proves the pinned image carries self-heal / route-evidence surfaces (no LLM).
+- Signed **outbound** lifecycle webhooks (`hooks.outbound`) POST to `hermes-lifecycle-sink` on `paperclip-execution`; see `HERMES-LIFECYCLE-SINK.md`.
+
 # Hermes dark deployment envelope
 
 This directory installs the GLoops-owned Paperclip image on Hermes without activating it. The installer is deliberately fail-closed: it installs one immutable digest, removes the activation marker, disables legacy Paperclip/Hermes services, and masks the production service.

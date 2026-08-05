@@ -1,0 +1,31 @@
+[Unit]
+Description=Paperclip Hermes lifecycle receipt sink (HMAC outbound webhooks)
+Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/paperclip-gloops/hermes-execution.env
+Environment=HERMES_LIFECYCLE_RECEIPT_DIR=/receipts
+ExecStartPre=/usr/bin/mkdir -p /var/lib/paperclip-gloops/hermes-lifecycle-receipts
+ExecStartPre=/usr/bin/chmod 700 /var/lib/paperclip-gloops/hermes-lifecycle-receipts
+ExecStartPre=-/usr/bin/docker rm -f paperclip-hermes-lifecycle-sink
+ExecStart=/usr/bin/docker run --rm --name paperclip-hermes-lifecycle-sink \
+  --network paperclip-execution \
+  --network-alias hermes-lifecycle-sink \
+  --env HERMES_OUTBOUND_WEBHOOK_SECRET \
+  --env HERMES_LIFECYCLE_RECEIPT_DIR=/receipts \
+  --mount type=bind,src=/var/lib/paperclip-gloops/hermes-lifecycle-receipts,dst=/receipts \
+  --mount type=bind,src=/usr/local/lib/paperclip-gloops/hermes-lifecycle-receipt-sink.py,dst=/app/sink.py,readonly \
+  --memory 128m --memory-swap 128m --cpus 0.25 --pids-limit 64 \
+  --security-opt no-new-privileges:true \
+  python:3.13-slim \
+  python /app/sink.py
+ExecStop=-/usr/bin/docker rm -f paperclip-hermes-lifecycle-sink
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
