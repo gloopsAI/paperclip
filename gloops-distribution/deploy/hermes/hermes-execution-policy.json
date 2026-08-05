@@ -71,11 +71,11 @@
     "internetEgress": "unrestricted-transport-with-credential-capability-allowlist"
   },
   "runtime": {
-    "image": "sha256:0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106",
+    "image": "sha256:cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec",
     "imageAcquisition": "root-only-content-addressed-archive",
     "imageArchive": {
-      "path": "/opt/paperclip/release-artifacts/hermes-execution-0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106.tar.zst",
-      "sha256": "3e6f7c3ee31e087ef6b135dac756474eb967070b8722da0f36c894f4e42889f3"
+      "path": "/opt/paperclip/release-artifacts/hermes-execution-cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec.tar.zst",
+      "sha256": "24bd9079c4594463703fb5a90c0b6b19caec07f8ebd73326fe1828231fec19ef"
     },
     "broadHomeMounted": false,
     "broadEnvironmentSourcedAtRuntime": false,
@@ -98,7 +98,7 @@
     },
     "imageCorrection": {
       "baseImage": "gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
-      "scope": "v0.20.0-source-overlay-plus-route-receipt",
+      "scope": "v0.20.0-source-overlay-route-receipt-tirith-fail-closed-no-update-check",
       "buildNetwork": "none",
       "sourceLock": "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
       "behavioralVerification": "63-contract-tests-plus-exact-runtime-projection"

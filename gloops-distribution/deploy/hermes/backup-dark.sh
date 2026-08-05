@@ -5,7 +5,7 @@ readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly DATABASE_DIR="${STATE_DIR}/instances/default/db"
 readonly BACKUP_ROOT='/opt/paperclip/backups'
 readonly SERVICE_FILE='/etc/systemd/system/paperclip.service'
-readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-0049638c8554593bfc4dfa767408e04ff2c0caa1b6b94208034a538842f45106.tar.zst'
+readonly HERMES_IMAGE_ARCHIVE='/opt/paperclip/release-artifacts/hermes-execution-cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec.tar.zst'
 readonly COMMISSIONING_ROLLBACK_JOURNAL='/var/lib/paperclip-gloops/controlled-swarm/commissioning-rollback.json'
 
 # WG-PLAT-018: sourceable pre-install snapshot/restore for BOTH read-lane files.

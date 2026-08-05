@@ -6,6 +6,7 @@ WORKDIR /opt/hermes
 
 COPY route-receipt /tmp/route-receipt
 COPY hermes-agent-3c27eb6.tar.gz /tmp/hermes-source.tar.gz
+COPY patch-hermes-command-security.py patch-hermes-startup-update-check.py /tmp/
 
 # Replace source tree while preserving runtime .venv / node_modules / .playwright.
 RUN set -eux; \
@@ -37,10 +38,14 @@ RUN set -eux; \
     --root /opt/hermes \
     --mode source \
     --source-archive /tmp/hermes-source.tar.gz; \
+  # Full source overlay reintroduces upstream fail-open tirith circuit + update check.
+  SOURCE_DATE_EPOCH=1754400000 python3 /tmp/patch-hermes-command-security.py; \
+  SOURCE_DATE_EPOCH=1754400000 python3 /tmp/patch-hermes-startup-update-check.py; \
   if [ -d /opt/hermes/hermes_agent.egg-info ]; then \
     sed -i 's/^Version: .*/Version: 0.20.0/' /opt/hermes/hermes_agent.egg-info/PKG-INFO || true; \
   fi; \
-  rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz /tmp/hermes-extract /opt/hermes/tests; \
+  rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz /tmp/hermes-extract /opt/hermes/tests \
+    /tmp/patch-hermes-command-security.py /tmp/patch-hermes-startup-update-check.py; \
   test -f /opt/hermes/hermes_state_common.py; \
   /opt/hermes/.venv/bin/python -c "import hermes_state_common; from gateway.run_evidence import RunEvidenceAccumulator; print('imports_ok')"; \
   /opt/hermes/.venv/bin/hermes --version
