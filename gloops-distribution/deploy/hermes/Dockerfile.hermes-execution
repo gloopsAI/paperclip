@@ -7,25 +7,32 @@ WORKDIR /opt/hermes
 COPY route-receipt /tmp/route-receipt
 COPY hermes-agent-3c27eb6.tar.gz /tmp/hermes-source.tar.gz
 
-# Replace source tree while preserving runtime .venv / node_modules / playwright.
-# Include tests/ so source-mode lock inventory can apply; stripped after apply.
+# Replace source tree while preserving runtime .venv / node_modules / .playwright.
 RUN set -eux; \
   echo 'a68e96f385768ec6c466122bf21fcb697680a5f349c9a673badfbe27752b6928  /tmp/hermes-source.tar.gz' | sha256sum -c -; \
   mkdir -p /tmp/hermes-extract; \
   tar -xzf /tmp/hermes-source.tar.gz -C /tmp/hermes-extract --strip-components=1; \
-  for path in \
-    agent gateway hermes_cli tools cron acp_adapter apps locales tests \
-    batch_runner.py cli.py hermes hermes_bootstrap.py hermes_constants.py \
-    hermes_logging.py hermes_state.py hermes_time.py mcp_serve.py \
-    mini_swe_runner.py model_tools.py pyproject.toml README.md LICENSE \
-    MANIFEST.in constraints-termux.txt cli-config.yaml.example \
-    docker docker-compose.yml docker-compose.override.yml docker-compose.windows.yml \
-    Dockerfile; do \
-      if [ -e "/tmp/hermes-extract/$path" ]; then \
-        rm -rf "/opt/hermes/$path"; \
-        cp -a "/tmp/hermes-extract/$path" "/opt/hermes/$path"; \
-      fi; \
-    done; \
+  # Preserve runtime-only trees, then overlay full source package.
+  for keep in .venv node_modules .playwright hermes_agent.egg-info; do \
+    if [ -e "/opt/hermes/$keep" ]; then \
+      mv "/opt/hermes/$keep" "/tmp/keep-$keep"; \
+    fi; \
+  done; \
+  # Clear non-keep content carefully
+  find /opt/hermes -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} + 2>/dev/null || true; \
+  # Copy source (exclude huge non-runtime trees)
+  tar -C /tmp/hermes-extract \
+    --exclude='.git' --exclude='docs' --exclude='website' --exclude='ui-tui' \
+    --exclude='tests-js' --exclude='.github' --exclude='.plans' --exclude='nix' \
+    --exclude='mcp-research-data' --exclude='optional-mcps' --exclude='optional-skills' \
+    --exclude='node_modules' --exclude='package-lock.json' \
+    -cf - . | tar -C /opt/hermes -xf -; \
+  for keep in .venv node_modules .playwright hermes_agent.egg-info; do \
+    if [ -e "/tmp/keep-$keep" ]; then \
+      rm -rf "/opt/hermes/$keep"; \
+      mv "/tmp/keep-$keep" "/opt/hermes/$keep"; \
+    fi; \
+  done; \
   python3 /tmp/route-receipt/apply-hermes-route-receipt.py \
     --root /opt/hermes \
     --mode source \
@@ -34,8 +41,8 @@ RUN set -eux; \
     sed -i 's/^Version: .*/Version: 0.20.0/' /opt/hermes/hermes_agent.egg-info/PKG-INFO || true; \
   fi; \
   rm -rf /tmp/route-receipt /tmp/hermes-source.tar.gz /tmp/hermes-extract /opt/hermes/tests; \
-  /opt/hermes/.venv/bin/hermes --version; \
-  test -f /opt/hermes/gateway/run_evidence.py; \
-  /opt/hermes/.venv/bin/python -c "from gateway.run_evidence import RunEvidenceAccumulator; print('run_evidence_ok')"
+  test -f /opt/hermes/hermes_state_common.py; \
+  /opt/hermes/.venv/bin/python -c "import hermes_state_common; from gateway.run_evidence import RunEvidenceAccumulator; print('imports_ok')"; \
+  /opt/hermes/.venv/bin/hermes --version
 
 COPY gloops-skills/ /opt/hermes/skills/
