@@ -1340,7 +1340,7 @@ if (
 }
 if (
   JSON.stringify(hermesExecutionPolicy.allowedRuntimeEnvironment) !==
-  JSON.stringify(["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "OLLAMA_API_KEY"])
+  JSON.stringify(["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_OUTBOUND_WEBHOOK_SECRET", "OLLAMA_API_KEY"])
 ) {
   fail("Hermes execution runtime environment allowlist is not exact");
 }
