@@ -151,7 +151,7 @@ assert d["moa"] == {
         },
     },
 }
-assert d["agent"]["max_turns"] == 90 and d["agent"]["verify_on_stop"] is True
+assert d["agent"]["max_turns"] == 320 and d["agent"]["verify_on_stop"] is True
 assert d["security"] == {
     "redact_secrets": True,
     "tirith_enabled": True,
@@ -237,7 +237,7 @@ if jq -e '
     "maxWallMs": 3600000
   } and
   .runtime.agentHostTurnCeiling == {
-    "maxTurns": 90,
+    "maxTurns": 320,
     "authority": "outer-safety-ceiling-only",
     "taskBudgetAuthority": "paperclip-execution-admission",
     "explicitTaskEnvelopeMustNotExceed": 90

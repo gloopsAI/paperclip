@@ -1465,7 +1465,7 @@ for (const required of [
   "default_preset: ollama-build",
   "provider: moa",
   "model: ollama-build",
-  "max_turns: 90",
+  "max_turns: 320",
 ]) {
   if (!hermesExecutionConfig.includes(required)) {
     fail(`Hermes execution configuration is missing ${required}`);

@@ -121,6 +121,9 @@ install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-rollback-dark.sh" "${LIB_D
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-execution-profile.sh" "${LIB_DIR}/prepare-hermes-execution-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/prepare-hermes-handshake-profile.sh" "${LIB_DIR}/prepare-hermes-handshake-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-execution-profile.sh" "${LIB_DIR}/verify-hermes-execution-profile.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-self-heal-canary.sh" "${LIB_DIR}/verify-hermes-self-heal-canary.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-outbound-webhook-canary.sh" "${LIB_DIR}/verify-hermes-outbound-webhook-canary.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/hermes-lifecycle-receipt-sink.py" "${LIB_DIR}/hermes-lifecycle-receipt-sink.py"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/verify-hermes-handshake-profile.sh" "${LIB_DIR}/verify-hermes-handshake-profile.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/install-hermes-handshake-egress.sh" "${LIB_DIR}/install-hermes-handshake-egress.sh"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/remove-hermes-handshake-egress.sh" "${LIB_DIR}/remove-hermes-handshake-egress.sh"
@@ -180,6 +183,7 @@ fi
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-handshake.service" /usr/local/lib/systemd/system/paperclip-gloops-handshake.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-execution.service" /usr/local/lib/systemd/system/paperclip-hermes-execution.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-lifecycle-sink.service" /usr/local/lib/systemd/system/paperclip-hermes-lifecycle-sink.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-push-broker.service" /usr/local/lib/systemd/system/paperclip-github-push-broker.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-read-broker.service" /usr/local/lib/systemd/system/paperclip-github-read-broker.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-platform-ops-broker.service" /usr/local/lib/systemd/system/paperclip-platform-ops-broker.service
