@@ -23,6 +23,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  settleOwningRunsForIssueDone: vi.fn(async () => []),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
@@ -274,6 +275,42 @@ describe("issue update comment wakeups", () => {
           source: "issue.update",
         }),
       }),
+    );
+  });
+
+  it("A-E: does not wake assignee when patching in_review→done with a comment", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_review",
+    });
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "done",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-done",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "merged via validate-merge",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        comment: "merged via validate-merge",
+      });
+
+    expect(res.status).toBe(200);
+    // Pre-fix bug: isClosed used existing.status (in_review) and fired issue_commented.
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.settleOwningRunsForIssueDone).toHaveBeenCalledWith(
+      existing.id,
+      existing.companyId,
     );
   });
 

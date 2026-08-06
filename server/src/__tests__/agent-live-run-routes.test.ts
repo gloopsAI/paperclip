@@ -506,6 +506,7 @@ describe("agent live run routes", () => {
       id: `run-live-${index}`,
       companyId: "company-1",
       status: "running",
+      errorCode: null,
       invocationSource: "on_demand",
       triggerDetail: "manual",
       startedAt: new Date("2026-04-10T09:30:00.000Z"),
@@ -531,6 +532,7 @@ describe("agent live run routes", () => {
       id: `run-recent-${index}`,
       companyId: "company-1",
       status: "succeeded",
+      errorCode: null,
       invocationSource: "on_demand",
       triggerDetail: "manual",
       startedAt: new Date("2026-04-09T09:30:00.000Z"),
@@ -581,6 +583,120 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toHaveLength(4);
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("A-E: pad prefers multi-min succeeded over sub-2s admission cancels", async () => {
+    const liveRows: never[] = [];
+    const recentRows = [
+      {
+        id: "run-noise-1",
+        companyId: "company-1",
+        status: "cancelled",
+        errorCode: "execution_admission.run_limit_exhausted",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        startedAt: null,
+        finishedAt: new Date("2026-04-10T10:00:01.200Z"),
+        createdAt: new Date("2026-04-10T10:00:01.000Z"),
+        agentId: "agent-1",
+        agentName: "Scout",
+        adapterType: "hermes_gateway",
+        logBytes: 0,
+        livenessState: null,
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-done",
+      },
+      {
+        id: "run-good-1",
+        companyId: "company-1",
+        status: "succeeded",
+        errorCode: null,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: new Date("2026-04-10T09:50:00.000Z"),
+        finishedAt: new Date("2026-04-10T09:55:00.000Z"),
+        createdAt: new Date("2026-04-10T09:50:00.000Z"),
+        agentId: "agent-1",
+        agentName: "Scout",
+        adapterType: "hermes_gateway",
+        logBytes: 0,
+        livenessState: null,
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-done",
+      },
+      {
+        id: "run-noise-2",
+        companyId: "company-1",
+        status: "cancelled",
+        errorCode: "issue_terminal_status",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        startedAt: null,
+        finishedAt: new Date("2026-04-10T10:00:00.100Z"),
+        createdAt: new Date("2026-04-10T10:00:00.000Z"),
+        agentId: "agent-2",
+        agentName: "Argus",
+        adapterType: "hermes_gateway",
+        logBytes: 0,
+        livenessState: null,
+        livenessReason: null,
+        continuationAttempt: 0,
+        lastUsefulActionAt: null,
+        nextAction: null,
+        lastOutputAt: null,
+        lastOutputSeq: null,
+        lastOutputStream: null,
+        lastOutputBytes: 0,
+        processStartedAt: null,
+        issueId: "issue-done-2",
+      },
+    ];
+
+    let selectCallCount = 0;
+    const db = {
+      select: vi.fn().mockImplementation(() => {
+        selectCallCount += 1;
+        const rows = selectCallCount === 1 ? liveRows : recentRows;
+        const limitFn = vi.fn(async () => rows);
+        const orderedQuery = {
+          limit: limitFn,
+          then: (resolve: (value: typeof rows) => unknown) =>
+            Promise.resolve(rows).then(resolve),
+        };
+        return {
+          from: vi.fn().mockReturnThis(),
+          innerJoin: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(orderedQuery),
+        };
+      }),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/live-runs?minCount=2"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe("run-good-1");
+    expect(res.body[0].status).toBe("succeeded");
   });
 
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {

@@ -737,6 +737,18 @@ function runDurationLabel(run: {
       if (stopReason === "paused") {
         return durationText ? `Paused by board after ${durationText}` : "Paused by board";
       }
+      // A–E: short admission/terminal refuses should read as refuses, not "work cancelled".
+      if (
+        durationText
+        && (
+          run.errorCode === "issue_terminal_status"
+          || run.errorCode === "issue_cancelled"
+          || (typeof run.errorCode === "string" && run.errorCode.startsWith("execution_admission."))
+          || (typeof run.errorCode === "string" && run.errorCode.startsWith("admission."))
+        )
+      ) {
+        return `Refused after ${durationText}`;
+      }
       return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
     case "queued":
       return "Queued";

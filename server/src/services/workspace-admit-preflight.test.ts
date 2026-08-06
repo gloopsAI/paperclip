@@ -14,6 +14,7 @@ import {
   issueRequiresWorkspaceAdmit,
   primaryWorkspaceAdmitErrorCode,
   resolveExpectedHeadFromIssueAndWorkspace,
+  resolveStartOnlyAdmitRequirements,
   shouldInheritProjectWorkspace,
   type WorkspaceAdmitPreflightResult,
 } from "./workspace-admit-preflight.js";
@@ -182,6 +183,128 @@ describe("evaluateWorkspaceAdmitFilesystem", () => {
     expect(
       result.checks.some((c) => c.reasonCode === WORKSPACE_ADMIT_REASON.EXPECTED_HEAD_NOT_FULL_SHA),
     ).toBe(true);
+  });
+});
+
+describe("resolveStartOnlyAdmitRequirements (START_ONLY_ADMIT_V1)", () => {
+  it("requires clean tree + expected head before the issue has started", () => {
+    expect(
+      resolveStartOnlyAdmitRequirements({
+        status: "todo",
+        executionWorkspaceId: null,
+        checkoutRunId: null,
+      }),
+    ).toEqual({ requireCleanTree: true, requireExpectedHead: true });
+  });
+
+  it("skips clean-tree and expected-head once the issue is in_progress", () => {
+    expect(
+      resolveStartOnlyAdmitRequirements({
+        status: "in_progress",
+        executionWorkspaceId: null,
+        checkoutRunId: null,
+      }),
+    ).toEqual({ requireCleanTree: false, requireExpectedHead: false });
+  });
+
+  it("skips both once an execution workspace has been realized", () => {
+    expect(
+      resolveStartOnlyAdmitRequirements({
+        status: "todo",
+        executionWorkspaceId: "ews-1",
+        checkoutRunId: null,
+      }),
+    ).toEqual({ requireCleanTree: false, requireExpectedHead: false });
+  });
+
+  it("in_review skips only expected-head (clean-tree still required)", () => {
+    expect(
+      resolveStartOnlyAdmitRequirements({
+        status: "in_review",
+        executionWorkspaceId: null,
+        checkoutRunId: null,
+      }),
+    ).toEqual({ requireCleanTree: true, requireExpectedHead: false });
+  });
+
+  it("a bound checkout run skips only expected-head (clean-tree still required)", () => {
+    expect(
+      resolveStartOnlyAdmitRequirements({
+        status: "todo",
+        executionWorkspaceId: null,
+        checkoutRunId: "run-1",
+      }),
+    ).toEqual({ requireCleanTree: true, requireExpectedHead: false });
+  });
+
+  it("still honors caller-supplied allowDirty / requireExpectedHead overrides regardless of start state", () => {
+    expect(
+      resolveStartOnlyAdmitRequirements({ status: "todo" }, { allowDirty: true }),
+    ).toEqual({ requireCleanTree: false, requireExpectedHead: true });
+    expect(
+      resolveStartOnlyAdmitRequirements({ status: "todo" }, { requireExpectedHead: false }),
+    ).toEqual({ requireCleanTree: true, requireExpectedHead: false });
+  });
+});
+
+describe("START_ONLY_ADMIT_V1 end-to-end filesystem behavior", () => {
+  it("admits a worktree whose HEAD legitimately advanced by the agent's own commit once the issue has started", () => {
+    const { cwd, head: preStartHead } = makeTempGitRepo();
+    // Simulate the agent's own first commit landing on the isolated worktree
+    // after checkout — HEAD now legitimately diverges from the pre-start base.
+    writeFileSync(
+      path.join(cwd, "src", "index.ts"),
+      "export const ok = true;\nexport const shipped = true;\n",
+    );
+    spawnSync("git", ["-C", cwd, "add", "."]);
+    spawnSync("git", ["-C", cwd, "commit", "-m", "agent: implement change"]);
+
+    const requirements = resolveStartOnlyAdmitRequirements(
+      { status: "in_progress", executionWorkspaceId: null, checkoutRunId: null },
+      {},
+    );
+    const result = evaluateWorkspaceAdmitFilesystem({
+      cwd,
+      // Still the pre-start base SHA the issue was originally admitted against.
+      expectedHeadSha: preStartHead,
+      requireCleanTree: requirements.requireCleanTree,
+      requireExpectedHead: requirements.requireExpectedHead,
+    });
+    expect(result.checks.every((c) => c.ok)).toBe(true);
+  });
+
+  it("still rejects a dirty tree before the issue has started (guard not weakened)", () => {
+    const { cwd, head } = makeTempGitRepo({ dirty: true });
+    const requirements = resolveStartOnlyAdmitRequirements(
+      { status: "todo", executionWorkspaceId: null, checkoutRunId: null },
+      {},
+    );
+    const result = evaluateWorkspaceAdmitFilesystem({
+      cwd,
+      expectedHeadSha: head,
+      requireCleanTree: requirements.requireCleanTree,
+      requireExpectedHead: requirements.requireExpectedHead,
+    });
+    const dirty = result.checks.find((c) => c.id === "clean_tree");
+    expect(dirty?.ok).toBe(false);
+    expect(dirty?.reasonCode).toBe(WORKSPACE_ADMIT_REASON.DIRTY_TREE);
+  });
+
+  it("still rejects a wrong-base HEAD before the issue has started (guard not weakened)", () => {
+    const { cwd } = makeTempGitRepo();
+    const requirements = resolveStartOnlyAdmitRequirements(
+      { status: "todo", executionWorkspaceId: null, checkoutRunId: null },
+      {},
+    );
+    const result = evaluateWorkspaceAdmitFilesystem({
+      cwd,
+      expectedHeadSha: OTHER_SHA,
+      requireCleanTree: requirements.requireCleanTree,
+      requireExpectedHead: requirements.requireExpectedHead,
+    });
+    const expectedHead = result.checks.find((c) => c.id === "expected_head");
+    expect(expectedHead?.ok).toBe(false);
+    expect(expectedHead?.reasonCode).toBe(WORKSPACE_ADMIT_REASON.HEAD_MISMATCH);
   });
 });
 

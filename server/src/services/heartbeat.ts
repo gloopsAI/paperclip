@@ -393,6 +393,9 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// See the doc comment on reapOrphanedRuns' `noPidStaleThresholdMs` option
+// for the full reasoning behind this default.
+const DEFAULT_NO_PID_ORPHAN_STALE_THRESHOLD_MS = 15 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -2403,6 +2406,102 @@ export function runLifecycleContextCoordinates(contextSnapshot: unknown): {
   return {
     issueId: readNonEmptyString(context.issueId),
     executionWorkspaceId: readNonEmptyString(context.executionWorkspaceId),
+  };
+}
+
+/**
+ * WG-PLAT-005 pattern: pure task-budget accounting used by execution
+ * admission (evaluateExecutionAdmission / preflight retry checks). Extracted
+ * to module scope so the terminal-without-usage accounting fix (a run that
+ * reached a terminal state without ever writing usageJson must not be
+ * charged the full reservation) is directly unit-testable without exercising
+ * the full heartbeat run-execution pipeline.
+ */
+export function priorExecutionRun(
+  row: {
+    retryOfRunId: string | null;
+    usageJson: unknown;
+    resultJson: unknown;
+    contextSnapshot: unknown;
+    errorCode: string | null;
+    startedAt: Date | null;
+    finishedAt: Date | null;
+  },
+  now: Date,
+): PriorExecutionRun {
+  const persistedUsage = parseObject(row.usageJson);
+  const resultJson = parseObject(row.resultJson);
+  const providerInvocation = parseObject(resultJson.provider_invocation);
+  const providerInvocationAttempted = typeof persistedUsage.providerInvocationAttempted === "boolean"
+    ? persistedUsage.providerInvocationAttempted
+    : typeof providerInvocation.attempted === "boolean"
+      ? providerInvocation.attempted
+      : null;
+  const countsTowardTaskBudget = !isBudgetExemptPreflightFailure({
+    providerInvocationAttempted,
+    errorCode: row.errorCode,
+  });
+  const priorContext = parseObject(row.contextSnapshot);
+  const priorEnvelope = readExecutionAdmissionEnvelope(
+    priorContext[EXECUTION_ADMISSION_CONTEXT_KEY],
+  );
+  const reservation = executionInvocationBudgetFromEnvelope(priorEnvelope);
+  const countsAsRetry = Boolean(row.retryOfRunId) || Boolean(
+    priorEnvelope &&
+    priorEnvelope.observed.runCount > 0 &&
+    isExecutionAdmissionRetryWake({
+      wakeReason: priorContext.wakeReason,
+      retryReason: priorContext.retryReason,
+    }),
+  );
+  // A run only holds its full reservation while it is genuinely still in
+  // flight (finishedAt === null). Any run that reached a terminal state
+  // without ever persisting usageJson — a cancel, a lost process, or an
+  // issue-done settlement path — must fall through to the elapsed-wall-time
+  // branch below instead of being charged the entire remaining task wall
+  // budget. Do NOT gate this on process-liveness (e.g. isProcessLive): in
+  // this deployment processPid is null on some genuinely in-flight runs, and
+  // a PID probe would incorrectly drop the reservation hold on those runs.
+  const useReservation = row.finishedAt === null && (row.usageJson === null || row.usageJson === undefined);
+  // Task budgets use the normalized per-run usage that also feeds Paperclip's
+  // cost ledger. Raw fields can be session-cumulative and would double-count
+  // resumed work. Fall back to raw only for legacy rows without normalized data.
+  const usage = {
+    inputTokens: Math.max(0, Math.floor(asNumber(
+      persistedUsage.inputTokens,
+      asNumber(persistedUsage.rawInputTokens, 0),
+    ))),
+    cachedInputTokens: Math.max(0, Math.floor(asNumber(
+      persistedUsage.cachedInputTokens,
+      asNumber(persistedUsage.rawCachedInputTokens, 0),
+    ))),
+    outputTokens: Math.max(0, Math.floor(asNumber(
+      persistedUsage.outputTokens,
+      asNumber(persistedUsage.rawOutputTokens, 0),
+    ))),
+  };
+  return {
+    retryOfRunId: row.retryOfRunId,
+    countsAsRetry,
+    countsTowardTaskBudget,
+    inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
+    wallMs: useReservation && reservation
+      ? reservation.maxWallMs
+      : row.startedAt
+      ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
+      : 0,
+    fixedOverheadInputTokens: useReservation && reservation
+      ? reservation.fixedOverheadInputTokens
+      : typeof persistedUsage.fixedOverheadInputTokens === "number"
+        ? persistedUsage.fixedOverheadInputTokens
+        : undefined,
+    discretionaryInputTokens: useReservation && reservation
+      ? reservation.discretionaryInputTokens
+      : typeof persistedUsage.discretionaryInputTokens === "number"
+        ? persistedUsage.discretionaryInputTokens
+        : undefined,
   };
 }
 
@@ -8215,6 +8314,85 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
+  /**
+   * Shared CAS-guarded terminal-status write: persists resultJson.
+   * provider_invocation = { attempted: false } so the settlement is
+   * budget-exempt outright — see isBudgetExemptPreflightFailure
+   * (execution-admission.ts) and the useReservation predicate in
+   * priorExecutionRun above. Used by both `cancelRunStatusUpdate` (a
+   * pre-adapter cancel — queued/claimed, never reached the adapter — should
+   * never consume task token/wall budget) and `reapOrphanedRuns` (an orphan
+   * that never reached the adapter before the control plane lost it). Takes
+   * an explicit `status` so both terminal outcomes ("cancelled", "failed")
+   * share one write path instead of duplicating the guard.
+   *
+   * Guarded with a compare-and-set fence (`hasPersistedProviderInvocationAttempt`
+   * / `coalesce(... 'attempted', 'false') <> 'true'`): if the adapter
+   * concurrently persisted a genuine `attempted: true` (the single usageJson
+   * write site) between our read and this write, the guard fails and we
+   * fall back to a plain status update that leaves the existing
+   * provider_invocation untouched, never clobbering it.
+   */
+  async function applyBudgetExemptTerminalStatusUpdate(
+    runId: string,
+    status: string,
+    patch: {
+      finishedAt: Date;
+      error: string;
+      errorCode: string;
+      resultJson?: Record<string, unknown>;
+    },
+    exemptBaseResultJson: Record<string, unknown>,
+  ) {
+    const exemptResultJson = { ...exemptBaseResultJson, provider_invocation: { attempted: false } };
+    const guarded = await db
+      .update(heartbeatRuns)
+      .set({
+        status,
+        finishedAt: patch.finishedAt,
+        error: patch.error,
+        errorCode: patch.errorCode,
+        resultJson: exemptResultJson,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          sql`coalesce(${heartbeatRuns.resultJson} -> 'provider_invocation' ->> 'attempted', 'false') <> 'true'`,
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (guarded) {
+      publishRunStatusUpdate(guarded);
+      return guarded;
+    }
+
+    // The guard was lost to a concurrently-persisted genuine provider
+    // invocation. Still apply the status transition, but without forcing
+    // the budget-exempt marker.
+    return setRunStatus(runId, status, patch);
+  }
+
+  /**
+   * Cancels a run via the shared budget-exempt CAS write above, fixed at
+   * status "cancelled". See applyBudgetExemptTerminalStatusUpdate for the
+   * guard rationale.
+   */
+  async function cancelRunStatusUpdate(
+    runId: string,
+    patch: {
+      finishedAt: Date;
+      error: string;
+      errorCode: string;
+      resultJson?: Record<string, unknown>;
+    },
+    exemptBaseResultJson: Record<string, unknown>,
+  ) {
+    return applyBudgetExemptTerminalStatusUpdate(runId, "cancelled", patch, exemptBaseResultJson);
+  }
+
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
@@ -11171,86 +11349,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     | { kind: "lost_race" };
 
-  function priorExecutionRun(
-    row: {
-      retryOfRunId: string | null;
-      usageJson: unknown;
-      resultJson: unknown;
-      contextSnapshot: unknown;
-      errorCode: string | null;
-      startedAt: Date | null;
-      finishedAt: Date | null;
-    },
-    now: Date,
-  ): PriorExecutionRun {
-    const persistedUsage = parseObject(row.usageJson);
-    const resultJson = parseObject(row.resultJson);
-    const providerInvocation = parseObject(resultJson.provider_invocation);
-    const providerInvocationAttempted = typeof persistedUsage.providerInvocationAttempted === "boolean"
-      ? persistedUsage.providerInvocationAttempted
-      : typeof providerInvocation.attempted === "boolean"
-        ? providerInvocation.attempted
-        : null;
-    const countsTowardTaskBudget = !isBudgetExemptPreflightFailure({
-      providerInvocationAttempted,
-      errorCode: row.errorCode,
-    });
-    const priorContext = parseObject(row.contextSnapshot);
-    const priorEnvelope = readExecutionAdmissionEnvelope(
-      priorContext[EXECUTION_ADMISSION_CONTEXT_KEY],
-    );
-    const reservation = executionInvocationBudgetFromEnvelope(priorEnvelope);
-    const countsAsRetry = Boolean(row.retryOfRunId) || Boolean(
-      priorEnvelope &&
-      priorEnvelope.observed.runCount > 0 &&
-      isExecutionAdmissionRetryWake({
-        wakeReason: priorContext.wakeReason,
-        retryReason: priorContext.retryReason,
-      }),
-    );
-    const useReservation = row.finishedAt === null || row.usageJson === null || row.usageJson === undefined;
-    // Task budgets use the normalized per-run usage that also feeds Paperclip's
-    // cost ledger. Raw fields can be session-cumulative and would double-count
-    // resumed work. Fall back to raw only for legacy rows without normalized data.
-    const usage = {
-      inputTokens: Math.max(0, Math.floor(asNumber(
-        persistedUsage.inputTokens,
-        asNumber(persistedUsage.rawInputTokens, 0),
-      ))),
-      cachedInputTokens: Math.max(0, Math.floor(asNumber(
-        persistedUsage.cachedInputTokens,
-        asNumber(persistedUsage.rawCachedInputTokens, 0),
-      ))),
-      outputTokens: Math.max(0, Math.floor(asNumber(
-        persistedUsage.outputTokens,
-        asNumber(persistedUsage.rawOutputTokens, 0),
-      ))),
-    };
-    return {
-      retryOfRunId: row.retryOfRunId,
-      countsAsRetry,
-      countsTowardTaskBudget,
-      inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
-      cachedInputTokens: usage.cachedInputTokens,
-      outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
-      wallMs: useReservation && reservation
-        ? reservation.maxWallMs
-        : row.startedAt
-        ? Math.max(0, (row.finishedAt ?? now).getTime() - row.startedAt.getTime())
-        : 0,
-      fixedOverheadInputTokens: useReservation && reservation
-        ? reservation.fixedOverheadInputTokens
-        : typeof persistedUsage.fixedOverheadInputTokens === "number"
-          ? persistedUsage.fixedOverheadInputTokens
-          : undefined,
-      discretionaryInputTokens: useReservation && reservation
-        ? reservation.discretionaryInputTokens
-        : typeof persistedUsage.discretionaryInputTokens === "number"
-          ? persistedUsage.discretionaryInputTokens
-          : undefined,
-    };
-  }
-
   async function isAuthorizedIndependentExecutionStage(input: {
     tx: Pick<Db, "select">;
     run: typeof heartbeatRuns.$inferSelect;
@@ -13405,8 +13503,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: {
+    staleThresholdMs?: number;
+    noPidStaleThresholdMs?: number;
+    /**
+     * Phase 1.3: when true, settle orphan rows (terminal status + budget
+     * accounting) but skip every side effect that could create or advance
+     * work — retry scheduling, issue-execution-lock release/promotion,
+     * agent-status finalization, and draining the company's queued-run
+     * backlog. Used by the explicitly-invoked operator route so it can run
+     * safely even though heartbeatSchedulerEnabled /
+     * executionRecoveryDriverEnabled are both false in production. See
+     * paperclipai/paperclip#9552: automatic boot recovery re-spawned 16
+     * parallel processes in 3 seconds for a maxConcurrentRuns:1 paused
+     * agent — the boot/periodic scheduler paths intentionally keep the
+     * full (non-settle-only) behavior below, since that self-healing
+     * behavior is what they exist for.
+     */
+    settleOnly?: boolean;
+  }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    // Runs whose adapter never records a processPid (e.g. `hermes_gateway`,
+    // a remote/webhook-driven adapter with no local child process for this
+    // control plane to track) cannot be liveness-checked via
+    // `process.kill(pid, 0)`: a PID probe against a null pid is meaningless.
+    // For those rows this function falls back to observed-activity
+    // staleness (see below) instead. That fallback has no secondary "is it
+    // really dead" signal the way the PID probe does — a live PID that
+    // fails the probe is proof of death, but silence on lastOutputAt/
+    // updatedAt is only ever a *probabilistic* signal. It therefore needs a
+    // much larger, independently configurable floor than `staleThresholdMs`
+    // above, which callers sometimes pass as 0 (relying on the PID probe to
+    // reject false positives for locally-tracked adapters). 15 minutes of
+    // total silence on both streamed output and any row touch is a
+    // conservative default: normal invocations flush output well inside
+    // that window, and the cost of a late detection (a held reservation)
+    // grows linearly with delay rather than catastrophically, so erring
+    // toward "wait longer" here is the safe direction.
+    const noPidStaleThresholdMs = opts?.noPidStaleThresholdMs ?? DEFAULT_NO_PID_ORPHAN_STALE_THRESHOLD_MS;
+    const settleOnly = opts?.settleOnly ?? false;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -13425,15 +13560,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      const updatedAtMs = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
-      }
+      if (staleThresholdMs > 0 && now.getTime() - updatedAtMs < staleThresholdMs) continue;
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
-      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      // A PID probe is only meaningful when the adapter both tracks a local
+      // child process AND actually recorded a pid for this run (the two
+      // columns are always written together in persistRunProcessMetadata,
+      // so a tracked-local-adapter run with a null processPid means the
+      // process never got far enough to be recorded, not that it lost a
+      // previously-known pid).
+      const hasTrackedPid = tracksLocalChild && typeof run.processPid === "number" && run.processPid > 0;
+
+      if (!hasTrackedPid) {
+        // Fall back to observed activity: only treat the run as an orphan
+        // once BOTH `lastOutputAt` (bumped on every streamed-output flush)
+        // and `updatedAt` have been silent for at least
+        // `noPidStaleThresholdMs`. See the doc comment on that option above
+        // for why this floor is independent from — and larger than —
+        // `staleThresholdMs`.
+        const lastOutputAtMs = run.lastOutputAt ? new Date(run.lastOutputAt).getTime() : 0;
+        const lastActivityAt = Math.max(lastOutputAtMs, updatedAtMs);
+        if (now.getTime() - lastActivityAt < noPidStaleThresholdMs) continue;
+      }
+
+      const processPidAlive = hasTrackedPid && isProcessAlive(run.processPid);
+      const processGroupAlive = hasTrackedPid && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -13465,8 +13619,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      // settleOnly never retries, so it never earns the "; retrying once"
+      // suffix on the persisted error message either.
+      const shouldRetry = !settleOnly && tracksLocalChild
+        && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const reapErrorMessage = shouldRetry ? `${baseMessage}; retrying once` : baseMessage;
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -13478,32 +13636,77 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         : null;
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-        errorCode: "process_lost",
-        finishedAt: now,
-        resultJson: (() => {
-          const result = mergeRunStopMetadataForAgent(
-            { adapterType, adapterConfig },
-            "failed",
-            {
-              resultJson: parseObject(run.resultJson),
-              errorCode: "process_lost",
-              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-            },
-          );
-          return unmanagedBackgroundTaskEvidence
-            ? {
-              ...result,
-              stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-              unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
-            }
-            : result;
-        })(),
-      });
+      const settlementResultJson = (() => {
+        const result = mergeRunStopMetadataForAgent(
+          { adapterType, adapterConfig },
+          "failed",
+          {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "process_lost",
+            errorMessage: reapErrorMessage,
+          },
+        );
+        return unmanagedBackgroundTaskEvidence
+          ? {
+            ...result,
+            stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+            unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+          }
+          : result;
+      })();
+
+      // Task-budget accounting for the settled orphan (Phase 1.3): without
+      // intervention this row falls straight into priorExecutionRun's
+      // `useReservation` branch (finishedAt is about to become non-null with
+      // usageJson still null) and is charged the *entire* remaining task
+      // wall-time reservation, forever, for work that may never have
+      // consumed it. Determine from persisted evidence — the same signal
+      // priorExecutionRun itself reads — which of the two possible cases
+      // applies and settle accordingly:
+      //   - never reached the adapter: budget-exempt outright, via the same
+      //     provider_invocation: { attempted: false } CAS-guarded write
+      //     cancelRunStatusUpdate uses for pre-adapter cancels (shared via
+      //     applyBudgetExemptTerminalStatusUpdate, not duplicated).
+      //   - did invoke the adapter: not exempt (real provider work may have
+      //     happened), but must not hold the full reservation either —
+      //     persist a usageJson carrying the measured elapsed wall time so
+      //     priorExecutionRun's elapsed-wall-time branch is used instead
+      //     (any non-null usageJson flips useReservation to false). Token
+      //     counts are honestly left at zero: a lost run never reported
+      //     real usage, and there is no reservation-fallback estimate to
+      //     fall back on here the way there is for wallMs.
+      let finalizedRun: typeof heartbeatRuns.$inferSelect | null;
+      if (hasPersistedProviderInvocationAttempt(run)) {
+        const measuredWallMs = run.startedAt
+          ? Math.max(0, now.getTime() - new Date(run.startedAt).getTime())
+          : 0;
+        finalizedRun = await setRunStatus(run.id, "failed", {
+          error: reapErrorMessage,
+          errorCode: "process_lost",
+          finishedAt: now,
+          usageJson: {
+            providerInvocationAttempted: true,
+            wallMs: measuredWallMs,
+            usageSource: "orphan_reap_settlement",
+          },
+          resultJson: settlementResultJson,
+        });
+      } else {
+        finalizedRun = await applyBudgetExemptTerminalStatusUpdate(
+          run.id,
+          "failed",
+          {
+            finishedAt: now,
+            error: reapErrorMessage,
+            errorCode: "process_lost",
+            resultJson: settlementResultJson,
+          },
+          settlementResultJson,
+        );
+      }
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: reapErrorMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -13516,19 +13719,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: finalizedRun.error ?? undefined,
       });
 
+      // Everything below this point can create or advance work (queue a
+      // retry, release an issue's execution lock and promote follow-on
+      // work, or drain the company's queued-run backlog). `settleOnly`
+      // (the operator route) settles the row above and stops here — see the
+      // doc comment on the `settleOnly` option for why.
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
-      const retryAgent = await getAgent(run.agentId);
-      if (shouldRetry) {
-        if (retryAgent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+      if (!settleOnly) {
+        const retryAgent = await getAgent(run.agentId);
+        if (shouldRetry) {
+          if (retryAgent) {
+            retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+          }
+        } else if (retryAgent) {
+          const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
+          retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
         }
-      } else if (retryAgent) {
-        const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);
-        retriedRun = scheduled?.outcome === "scheduled" ? scheduled.run : null;
-      }
 
-      if (!retriedRun) {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        if (!retriedRun) {
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        }
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -13543,17 +13753,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(settleOnly ? { settleOnly: true } : {}),
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed", baseMessage);
-      await startNextQueuedRunsForCompany(run.companyId);
+      if (!settleOnly) {
+        await finalizeAgentStatus(run.agentId, "failed", baseMessage);
+        await startNextQueuedRunsForCompany(run.companyId);
+      }
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
 
     if (reaped.length > 0) {
-      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
+      logger.warn({ reapedCount: reaped.length, runIds: reaped, settleOnly }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
   }
@@ -19787,12 +20000,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt,
-      error: reason,
-      errorCode,
-      ...(resultJson ? { resultJson } : {}),
-    });
+    const cancelled = await cancelRunStatusUpdate(
+      run.id,
+      {
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson ? { resultJson } : {}),
+      },
+      resultJson ?? parseObject(run.resultJson),
+    );
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
@@ -19838,18 +20055,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-        errorCode,
-        ...(agent ? {
-          resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+      const resultJson = agent
+        ? mergeRunStopMetadataForAgent(agent, "cancelled", {
             resultJson: parseObject(run.resultJson),
             errorCode,
             errorMessage: reason,
-          }),
-        } : {}),
-      });
+          })
+        : undefined;
+      await cancelRunStatusUpdate(
+        run.id,
+        {
+          finishedAt: new Date(),
+          error: reason,
+          errorCode,
+          ...(resultJson ? { resultJson } : {}),
+        },
+        resultJson ?? parseObject(run.resultJson),
+      );
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),
@@ -20338,6 +20560,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    /**
+     * A–E: when an issue is marked done, settle owning live runs so the dashboard
+     * does not show multi-minute productive work as "Cancelled after …" and so
+     * host zombie_on_done does not race-cancel them as noise.
+     *
+     * - running + startedAt → succeeded (board delivery already landed)
+     * - queued / scheduled_retry / running without start → cancelled issue_terminal_status
+     */
+    settleOwningRunsForIssueDone: async (issueId: string, companyId: string) => {
+      const now = new Date();
+      const active = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+
+      const settled: Array<{ id: string; status: string }> = [];
+      for (const run of active) {
+        if (run.status === "running" && run.startedAt) {
+          const priorResult = parseObject(run.resultJson);
+          const updated = await setRunStatusIfRunning(run.id, "succeeded", {
+            finishedAt: now,
+            error: null,
+            errorCode: null,
+            resultJson: {
+              ...priorResult,
+              stopReason: "issue_completed",
+              completedByIssueDone: true,
+            },
+          });
+          if (updated.updated && updated.run) {
+            publishRunLifecyclePluginEvent(updated.run);
+            await releaseIssueExecutionAndPromote(updated.run, {
+              suppressImmediateRecovery: true,
+            }).catch((err) => {
+              logger.warn(
+                { err, runId: run.id, issueId },
+                "settleOwningRunsForIssueDone: release after succeeded failed",
+              );
+            });
+            settled.push({ id: run.id, status: "succeeded" });
+          }
+          continue;
+        }
+
+        const cancelled = await cancelRunInternal(
+          run.id,
+          `Cancelled because issue ${issueId} reached done before this run could start productive work`,
+          {
+            errorCode: "issue_terminal_status",
+            suppressImmediateRecovery: true,
+            eventMessage: "run cancelled because issue is done",
+            eventPayload: { issueId, source: "issue_status_done" },
+          },
+        );
+        if (cancelled) settled.push({ id: cancelled.id, status: "cancelled" });
+      }
+      return settled;
+    },
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the

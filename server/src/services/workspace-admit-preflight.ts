@@ -16,6 +16,13 @@
  *
  * Mode: PAPERCLIP_WORKSPACE_ADMIT=enforce|observe|off (default enforce).
  * Create mode: PAPERCLIP_WORKSPACE_ADMIT_CREATE (defaults to WORKSPACE_ADMIT).
+ *
+ * START_ONLY_ADMIT_V1 (in runWorkspaceAdmitPreflight): once an issue has
+ * legitimately started — in_progress/in_review status, a realized execution
+ * workspace, or a bound checkout run — the clean-tree and expected-head
+ * checks are skipped, since the agent's own first commit legitimately moves
+ * HEAD off the pre-start expected base. See the START_ONLY_ADMIT_V1 markers
+ * below for the exact bypass conditions.
  */
 
 import { existsSync, accessSync, constants as fsConstants } from "node:fs";
@@ -88,6 +95,8 @@ export type WorkspaceAdmitIssueFields = {
   executionWorkspaceId?: string | null;
   projectId?: string | null;
   parentId?: string | null;
+  /** START_ONLY_ADMIT_V1: bound checkout run id, when the caller has one. */
+  checkoutRunId?: string | null;
 };
 
 export type WorkspaceAdmitAssigneeFields = {
@@ -353,6 +362,48 @@ export function evaluateWorkspaceAdmitFilesystem(input: {
   return { checks, observedHeadSha };
 }
 
+/**
+ * START_ONLY_ADMIT_V1: once an issue has legitimately moved past "not yet
+ * started" — status is in_progress/in_review, an execution workspace has
+ * been realized, or a checkout run is bound — the worktree HEAD legitimately
+ * diverges from the pre-start expected base (the agent's own first commit
+ * moves it), and the tree legitimately carries that commit's changes before
+ * the next wake observes it as clean. Without this, re-admit after that
+ * commit spuriously fails with workspace_admit.head_mismatch / dirty_tree.
+ *
+ * Skips only the clean-tree and expected-head checks in that case; every
+ * other check (cwd, git, scope paths, packet DoR) still applies
+ * unconditionally, and a genuinely dirty or wrong-base tree at the
+ * *pre-start* state (status not yet in_progress/in_review, no realized
+ * workspace, no checkout run) is still rejected — this only widens *when*
+ * the checks run, never *what* they accept.
+ *
+ * Pure by design so it is unit-testable without a DB (mirrors
+ * evaluateWorkspaceAdmitFilesystem / shouldInheritProjectWorkspace above).
+ */
+export function resolveStartOnlyAdmitRequirements(
+  issue: Pick<WorkspaceAdmitIssueFields, "status" | "executionWorkspaceId" | "checkoutRunId">,
+  base: {
+    /** When true, skip dirty-tree check (observe-only repair). Default enforce clean. */
+    allowDirty?: boolean;
+    /** When false, skip HEAD==expected (not recommended). Default true for implement. */
+    requireExpectedHead?: boolean;
+  } = {},
+): { requireCleanTree: boolean; requireExpectedHead: boolean } {
+  const status = String(issue.status || "").toLowerCase();
+  const workspaceRealized = Boolean(issue.executionWorkspaceId);
+  const inProgress = status === "in_progress";
+  const inReview = status === "in_review";
+  const hasCheckoutRun = Boolean(issue.checkoutRunId);
+
+  return {
+    requireCleanTree: !base.allowDirty && !(inProgress || workspaceRealized),
+    requireExpectedHead:
+      base.requireExpectedHead !== false &&
+      !(inProgress || inReview || workspaceRealized || hasCheckoutRun),
+  };
+}
+
 export function resolveExpectedHeadFromIssueAndWorkspace(input: {
   description?: string | null;
   workspaceRepoRef?: string | null;
@@ -494,13 +545,18 @@ export async function runWorkspaceAdmitPreflight(
     workspaceDefaultRef,
   });
 
+  const startOnlyAdmit = resolveStartOnlyAdmitRequirements(input.issue, {
+    allowDirty: input.allowDirty,
+    requireExpectedHead: input.requireExpectedHead,
+  });
+
   const fsResult = requiresWorkspace
     ? evaluateWorkspaceAdmitFilesystem({
         cwd,
         expectedHeadSha,
         scopePathHints: extractScopePathHints(input.issue.description),
-        requireCleanTree: !input.allowDirty,
-        requireExpectedHead: input.requireExpectedHead !== false,
+        requireCleanTree: startOnlyAdmit.requireCleanTree,
+        requireExpectedHead: startOnlyAdmit.requireExpectedHead,
       })
     : { checks: [] as WorkspaceAdmitCheck[], observedHeadSha: null as string | null };
 

@@ -137,6 +137,95 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+/** Sub-2s admission/terminal refuses that should not own the dashboard pad. */
+const LIVE_RUNS_PAD_NOISE_ERROR_PREFIXES = [
+  "execution_admission.",
+  "admission.",
+] as const;
+
+const LIVE_RUNS_PAD_NOISE_ERROR_CODES = new Set([
+  "issue_terminal_status",
+  "issue_cancelled",
+  "issue_not_found",
+  "issue_reassigned",
+  "issue_not_in_progress",
+  "issue_dependencies_blocked",
+  "execution_issue_required",
+]);
+
+const LIVE_RUNS_PAD_NOISE_WALL_MS = 2000;
+
+function liveRunWallMs(run: {
+  startedAt?: Date | string | null;
+  finishedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+}): number {
+  const endRaw = run.finishedAt ?? null;
+  if (!endRaw) return 0;
+  const startRaw = run.startedAt ?? run.createdAt ?? null;
+  if (!startRaw) return 0;
+  const end = new Date(endRaw).getTime();
+  const start = new Date(startRaw).getTime();
+  if (!Number.isFinite(end) || !Number.isFinite(start)) return 0;
+  return Math.max(0, end - start);
+}
+
+function isNoiseTerminalLiveRunPad(run: {
+  status: string;
+  errorCode?: string | null;
+  startedAt?: Date | string | null;
+  finishedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+}): boolean {
+  if (run.status === "queued" || run.status === "running") return false;
+  const wallMs = liveRunWallMs(run);
+  if (wallMs >= LIVE_RUNS_PAD_NOISE_WALL_MS) return false;
+  const code = typeof run.errorCode === "string" ? run.errorCode : "";
+  if (LIVE_RUNS_PAD_NOISE_ERROR_CODES.has(code)) return true;
+  if (LIVE_RUNS_PAD_NOISE_ERROR_PREFIXES.some((p) => code.startsWith(p))) return true;
+  // Never-started short cancel with no code still thrash-fills the pad.
+  if (!run.startedAt && run.status === "cancelled" && wallMs < LIVE_RUNS_PAD_NOISE_WALL_MS) {
+    return true;
+  }
+  return false;
+}
+
+function meaningfulLiveRunPadScore(run: {
+  status: string;
+  startedAt?: Date | string | null;
+  finishedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+}): number {
+  const wallMs = liveRunWallMs(run);
+  // Prefer real work duration first; status is a secondary boost so multi-min
+  // cancelled delivery still beats short failed preflight.
+  if (run.status === "succeeded") return 2_000_000_000 + wallMs;
+  if (wallMs >= 30_000) return 1_000_000_000 + wallMs;
+  if (run.status === "failed" || run.status === "timed_out") return 100_000_000 + wallMs;
+  return wallMs;
+}
+
+function rankMeaningfulRecentRuns<T extends {
+  status: string;
+  errorCode?: string | null;
+  startedAt?: Date | string | null;
+  finishedAt?: Date | string | null;
+  createdAt?: Date | string | null;
+}>(runs: T[], limit: number): T[] {
+  if (limit <= 0) return [];
+  const filtered = runs.filter((run) => !isNoiseTerminalLiveRunPad(run));
+  const pool = filtered.length > 0 ? filtered : runs;
+  return [...pool]
+    .sort((a, b) => {
+      const scoreDiff = meaningfulLiveRunPadScore(b) - meaningfulLiveRunPadScore(a);
+      if (scoreDiff !== 0) return scoreDiff;
+      const aCreated = new Date(a.createdAt ?? 0).getTime();
+      const bCreated = new Date(b.createdAt ?? 0).getTime();
+      return bCreated - aCreated;
+    })
+    .slice(0, limit);
+}
+
 function decodeHeartbeatRunCursor(value: unknown): { createdAt: Date; id: string } | null {
   if (value === undefined) return null;
   if (typeof value !== "string" || value.length === 0 || value.length > 512) {
@@ -3788,6 +3877,7 @@ export function agentRoutes(
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
       status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode,
       invocationSource: heartbeatRuns.invocationSource,
       triggerDetail: heartbeatRuns.triggerDetail,
       contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
@@ -3829,6 +3919,9 @@ export function agentRoutes(
 
     if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
       const activeIds = liveRuns.map((r) => r.id);
+      // Over-fetch terminal runs then rank/filter so short admission thrash
+      // does not own the dashboard pad (A–E live-runs meaningful pad).
+      const padFetch = Math.min(200, Math.max((targetRunCount - liveRuns.length) * 12, 40));
       const recentRuns = await db
         .select(columns)
         .from(heartbeatRuns)
@@ -3841,9 +3934,10 @@ export function agentRoutes(
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(targetRunCount - liveRuns.length);
+        .limit(padFetch);
 
-      const rows = [...liveRuns, ...recentRuns];
+      const meaningful = rankMeaningfulRecentRuns(recentRuns, targetRunCount - liveRuns.length);
+      const rows = [...liveRuns, ...meaningful];
       res.json(await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
         outputSilence: await heartbeat.buildRunOutputSilence(run),

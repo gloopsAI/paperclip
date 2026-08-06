@@ -8824,6 +8824,8 @@ export function issueRoutes(
         assigneeChanged &&
         issue.assigneeAgentId &&
         issue.status !== "backlog" &&
+        // A–E: never assignment-wake terminal issues.
+        !isClosedIssueStatus(issue.status) &&
         // WG-PLAT-016: a `blocked` issue must never be auto-admitted merely
         // because the assignee (or executionPolicy / workspace settings)
         // changed on it. Leaving `blocked` requires an explicit resume.
@@ -8888,7 +8890,10 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // A–E / #3433: use POST-update status. Pre-update `isClosed` (existing.status)
+        // incorrectly wakes on in_review→done + comment, minting 1s run_limit/terminal cancels.
+        const skipAssigneeCommentWake =
+          selfComment || isClosedIssueStatus(issue.status);
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -8949,6 +8954,15 @@ export function issueRoutes(
 
       const becameDone = existing.status !== "done" && issue.status === "done";
       if (becameDone) {
+        // A–E: settle productive owning runs as succeeded so dashboard shows
+        // "Worked for …" instead of later zombie cancel ("Cancelled after …").
+        try {
+          if (typeof heartbeat.settleOwningRunsForIssueDone === "function") {
+            await heartbeat.settleOwningRunsForIssueDone(issue.id, issue.companyId);
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to settle owning runs on issue done");
+        }
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           await addDependencyResolvedWakeup({
