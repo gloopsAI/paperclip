@@ -1006,6 +1006,7 @@ function createLiveRunMessage(args: {
   const { run, transcript } = args;
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
+  const isActuallyRunning = run.status === "running";
   const waitingText =
     run.status === "queued"
       ? "Queued..."
@@ -1020,7 +1021,15 @@ function createLiveRunMessage(args: {
     role: "assistant",
     createdAt: toDate(run.startedAt ?? run.createdAt),
     content,
-    status: { type: "running" },
+    // MessageStatus (from @assistant-ui/react) models generic chat-turn
+    // state (running / requires-action / complete / incomplete) and has no
+    // "queued" variant, so it cannot literally say "queued". Only claim
+    // "running" once the run has actually started; a queued run has
+    // produced no content and isn't streaming, so "incomplete"/"other" is
+    // the closest honest fit — it must not read as "running" to isRunning
+    // consumers (badges, fold state). `runStatus` below carries the real,
+    // authoritative queued/running value for anything that needs it.
+    status: isActuallyRunning ? { type: "running" } : { type: "incomplete", reason: "other" },
     metadata: createAssistantMetadata({
       kind: "live-run",
       runId: run.id,

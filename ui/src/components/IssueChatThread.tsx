@@ -1670,12 +1670,17 @@ function IssueChatAssistantMessage({
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
+  // Queued and running share one "still live" concept for fold purposes: a
+  // queued run isn't actively producing tokens (isRunning is false, per its
+  // status.type), but it must not fold away either — its "Queued..." body
+  // needs to stay visible, not collapse into a foldable header row.
+  const isLiveRun = runStatus === "queued" || runStatus === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
   const deleted = Boolean(custom.deletedAt);
-  const isFoldable = !isRunning && !!chainOfThoughtLabel;
+  const isFoldable = !isLiveRun && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);

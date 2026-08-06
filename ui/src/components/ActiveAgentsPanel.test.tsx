@@ -92,6 +92,14 @@ function createIssueRun(index: number, issueId: string) {
   };
 }
 
+function createQueuedRun(index: number) {
+  return {
+    ...createRun(index),
+    status: "queued",
+    startedAt: null,
+  };
+}
+
 function createIssue(id: string, identifier: string, title: string) {
   return {
     id,
@@ -227,6 +235,32 @@ describe("ActiveAgentsPanel", () => {
       expect(issueLink?.textContent).toBe("PAP-3562 - Phase 4B: Implement LLM Wiki distillation UI");
       expect(issueLink?.getAttribute("href")).toBe("/issues/PAP-3562");
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the live pulsing 'Live now' affordance for a queued (not-yet-started) run", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([createQueuedRun(1)]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).not.toContain("Live now");
+    expect(container.querySelector(".animate-ping")).toBeNull();
 
     await act(async () => {
       root.unmount();

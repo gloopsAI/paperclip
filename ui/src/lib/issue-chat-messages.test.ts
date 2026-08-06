@@ -618,6 +618,47 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("does not report a queued run as running (UI honesty: no live/running badge while queued)", () => {
+    const liveRuns: LiveRunForIssue[] = [
+      {
+        id: "run-queued-1",
+        status: "queued",
+        invocationSource: "manual",
+        triggerDetail: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: "2026-04-06T12:04:00.000Z",
+        agentId: "agent-1",
+        agentName: "CodexCoder",
+        adapterType: "codex_local",
+      },
+    ];
+
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns,
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      // MessageStatus has no "queued" variant; the fix must at minimum stop
+      // claiming "running" for a run that hasn't started (that's the bug).
+      status: { type: "incomplete", reason: "other" },
+      metadata: {
+        custom: {
+          kind: "live-run",
+          runStatus: "queued",
+          waitingText: "Queued...",
+        },
+      },
+    });
+    expect(messages[0]?.status?.type).not.toBe("running");
+  });
+
   it("merges thread interactions into the same chronological feed as comments and runs", () => {
     const messages = buildIssueChatMessages({
       comments: [

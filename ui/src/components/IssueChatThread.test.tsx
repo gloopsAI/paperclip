@@ -3753,6 +3753,48 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders a queued run as Queued, not as a Running badge (UI honesty)", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "queued",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: null,
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+            }]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // The "Queued..." shimmer text must stay visible — the message must not
+    // fold away behind a collapsed header while it's still live.
+    expect(container.textContent).toContain("Queued...");
+    // The blue "Running" badge is reserved for runs that have actually
+    // started; a queued run must not display it.
+    expect(container.textContent).not.toContain("Running");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders ephemeral active-run status below the working indicator", () => {
     const root = createRoot(container);
 

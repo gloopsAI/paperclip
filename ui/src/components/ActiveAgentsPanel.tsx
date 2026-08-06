@@ -48,8 +48,13 @@ const DASHBOARD_LOG_READ_LIMIT_BYTES = 64_000;
 const DASHBOARD_MAX_CHUNKS_PER_RUN = 40;
 const EMPTY_TRANSCRIPT: TranscriptEntry[] = [];
 
+// "Active" here means genuinely executing right now — it drives the pulsing
+// live dot and "Live now" label. A queued run has not started yet, so it
+// must not read as active/live (queued still renders via the embedded
+// RunChatSurface, which treats queued+running as "not yet historical" for a
+// different, unrelated purpose — see RunChatSurface.isRunActive).
 function isRunActive(run: LiveRunForIssue): boolean {
-  return run.status === "queued" || run.status === "running";
+  return run.status === "running";
 }
 
 interface ActiveAgentsPanelProps {
@@ -203,7 +208,15 @@ const AgentRunCard = memo(function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-(length:--text-micro)" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>
+                {isActive
+                  ? "Live now"
+                  : run.status === "queued"
+                    ? "Queued"
+                    : run.finishedAt
+                      ? `Finished ${relativeTime(run.finishedAt)}`
+                      : `Started ${relativeTime(run.createdAt)}`}
+              </span>
             </div>
           </div>
 

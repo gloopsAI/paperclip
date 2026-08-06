@@ -29,7 +29,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-CONFIG = Path("/etc/paperclip-gloops/github-app.json")
+CONFIG = Path(
+    os.environ.get("GLOOPS_GITHUB_APP_CONFIG_PATH", "/etc/paperclip-gloops/github-app.json")
+)
 LEGACY_RUNTIME = Path("/run/paperclip-gloops")
 RUNTIME = Path("/var/lib/paperclip-gloops/credential-runtime")
 HERMES_TOKEN = RUNTIME / "hermes-github-token"
@@ -59,7 +61,9 @@ BROKER_TRANSITION_DISTRIBUTIONS = {
 # it is not environment-configurable, and a config naming any repository
 # outside this set fails closed exactly like the previous single-repo pin.
 ALLOWED_REPOSITORIES = frozenset({
+    "gloopsAI/gloops-autonomy-gym",
     "gloopsAI/gloops-paperclip-plugin",
+    "gloopsAI/paperclip",
     "gloopsAI/paperclip-gym",
 })
 
