@@ -2,7 +2,34 @@
 set -euo pipefail
 
 readonly IMAGE='ghcr.io/gloopsai/paperclip-gloops@sha256:09bf3feac584c2d3a7a33b6d3df6cd3b425a5b27c4b72724c35af492d68615b3'
+readonly INSTALLED_BROKER='/usr/local/lib/paperclip-gloops/campaign-deadman.py'
 failed=0
+
+# The campaign epoch length is a bounded operator choice, not a fixed literal.
+# The sanctioned range is declared once, in the installed broker; re-deriving it
+# here keeps this gate enforcing the same interval the broker enforces instead of
+# a copied number that drifts out from under it.
+campaign_duration_bound() {
+  local name="$1" line expression
+  line="$(grep -m1 -E "^${name} = [0-9]+([ ]+\*[ ]+[0-9]+)*([ ]+#.*)?$" "${INSTALLED_BROKER}")" \
+    || return 1
+  expression="${line#* = }"
+  expression="${expression%%#*}"
+  printf '%s\n' "$((expression))"
+}
+
+# Succeed only when the env file declares exactly one numeric campaign duration
+# and that duration is inside the broker's sanctioned range.
+campaign_duration_in_range() {
+  local source="$1" declarations value minimum maximum
+  declarations="$(grep -cE '^PAPERCLIP_CAMPAIGN_DURATION_SECONDS=' "${source}" 2>/dev/null || true)"
+  value="$(grep -m1 -E '^PAPERCLIP_CAMPAIGN_DURATION_SECONDS=[0-9]+$' "${source}" 2>/dev/null || true)"
+  value="${value#*=}"
+  [[ "${declarations}" == '1' && -n "${value}" ]] || return 1
+  minimum="$(campaign_duration_bound MIN_CAMPAIGN_DURATION_SECONDS)" || return 1
+  maximum="$(campaign_duration_bound MAX_CAMPAIGN_DURATION_SECONDS)" || return 1
+  ((10#${value} >= minimum && 10#${value} <= maximum))
+}
 
 check_inactive() {
   local unit="$1"
@@ -494,7 +521,7 @@ fi
 if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' /etc/paperclip-gloops/runtime.env \
+  && campaign_duration_in_range /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089' /etc/paperclip-gloops/runtime.env \

@@ -9,6 +9,38 @@ readonly GITHUB_BROKER_UNIT='paperclip-github-push-broker.service'
 readonly DEADMAN_UNIT='paperclip-campaign-deadman.service'
 readonly OBSERVE_SECONDS="${PAPERCLIP_ZERO_WORK_OBSERVE_SECONDS:-60}"
 
+# The campaign epoch length is a bounded operator choice. Re-derive the sanctioned
+# range from the installed broker -- the one place it is declared -- so this
+# rehearsal refuses an out-of-range epoch without pinning a literal that drifts.
+campaign_duration_bound() {
+  local name="$1" line expression
+  line="$(grep -m1 -E "^${name} = [0-9]+([ ]+\*[ ]+[0-9]+)*([ ]+#.*)?$" \
+    "${LIB_DIR}/campaign-deadman.py")" || {
+    echo "installed campaign deadman does not declare ${name}" >&2
+    return 1
+  }
+  expression="${line#* = }"
+  expression="${expression%%#*}"
+  printf '%s\n' "$((expression))"
+}
+
+require_campaign_duration_in_range() {
+  local source="$1" declarations value minimum maximum
+  declarations="$(grep -cE '^PAPERCLIP_CAMPAIGN_DURATION_SECONDS=' "${source}" || true)"
+  value="$(grep -m1 -E '^PAPERCLIP_CAMPAIGN_DURATION_SECONDS=[0-9]+$' "${source}" || true)"
+  value="${value#*=}"
+  [[ "${declarations}" == '1' && -n "${value}" ]] || {
+    echo "refusing rehearsal because ${source} lacks exactly one numeric PAPERCLIP_CAMPAIGN_DURATION_SECONDS" >&2
+    return 1
+  }
+  minimum="$(campaign_duration_bound MIN_CAMPAIGN_DURATION_SECONDS)"
+  maximum="$(campaign_duration_bound MAX_CAMPAIGN_DURATION_SECONDS)"
+  ((10#${value} >= minimum && 10#${value} <= maximum)) || {
+    echo "refusing rehearsal because campaign duration ${value} is outside the sanctioned ${minimum}..${maximum} second range" >&2
+    return 1
+  }
+}
+
 [[ "${EUID}" -eq 0 ]] || {
   echo "run with sudo" >&2
   exit 1
@@ -45,7 +77,7 @@ grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' "${CONFIG_DIR}/runtime.env"
-grep -Fxq 'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' "${CONFIG_DIR}/runtime.env"
+require_campaign_duration_in_range "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 "${LIB_DIR}/github-push-broker.py" assert-quiescent

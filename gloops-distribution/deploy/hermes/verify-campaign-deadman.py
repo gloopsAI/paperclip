@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import pathlib
 import socket
@@ -14,10 +15,52 @@ from collections.abc import Callable
 
 
 SCHEMA_VERSION = "gloops.campaign-deadman.v1"
+BROKER_SOURCE = pathlib.Path(__file__).resolve().with_name("campaign-deadman.py")
 
 
 class DeadmanVerificationError(RuntimeError):
     pass
+
+
+def campaign_duration_bounds(
+    source: pathlib.Path = BROKER_SOURCE,
+) -> tuple[int, int]:
+    """Read the sanctioned campaign-duration range from the broker being verified.
+
+    The range is an invariant of the broker, so it is read from the broker rather
+    than re-typed here: a verifier carrying its own copy of the numbers is exactly
+    how this gate came to be pinned to a stale 86400.
+
+    `campaign-deadman.py` is hyphenated and therefore not importable by name, so it
+    is loaded from the path it is installed beside. That is the mechanism
+    `rehearse-campaign-deadman.py` already uses against the installed broker, and
+    executing it is inert: the module defines only constants, functions, and
+    classes at import time, with `main()` behind an `if __name__` guard.
+    """
+    spec = importlib.util.spec_from_file_location("installed_campaign_deadman", source)
+    if spec is None or spec.loader is None:
+        raise DeadmanVerificationError(f"campaign deadman broker is unreadable at {source}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        minimum = module.MIN_CAMPAIGN_DURATION_SECONDS
+        maximum = module.MAX_CAMPAIGN_DURATION_SECONDS
+    except (OSError, SyntaxError, AttributeError) as error:
+        raise DeadmanVerificationError(
+            f"campaign deadman broker does not declare a duration range: {error}",
+        ) from error
+    if not isinstance(minimum, int) or not isinstance(maximum, int) or not 0 < minimum <= maximum:
+        raise DeadmanVerificationError("campaign deadman duration range is not a bounded interval")
+    return minimum, maximum
+
+
+def duration_is_sanctioned(value: object, minimum: int, maximum: int) -> bool:
+    """Accept any whole-second duration the broker itself would accept, and no other."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and minimum <= value <= maximum
+    )
 
 
 def request(socket_path: pathlib.Path, campaign_id: str) -> dict[str, object]:
@@ -83,6 +126,10 @@ def main() -> int:
     if not 0 <= args.wait_seconds <= 30:
         raise SystemExit("--wait-seconds must be between 0 and 30")
     try:
+        # Deliberately not overridable from the CLI: a gate that lets its caller
+        # supply the bounds it enforces is not a gate. The broker is resolved as
+        # this verifier's installed sibling and nothing else.
+        minimum, maximum = campaign_duration_bounds()
         status = wait_for_status(
             lambda: load_status(args.socket, args.campaign_id),
             wait_seconds=args.wait_seconds,
@@ -92,7 +139,7 @@ def main() -> int:
     if (
         status.get("schemaVersion") != SCHEMA_VERSION
         or status.get("campaignId") != args.campaign_id
-        or status.get("durationSeconds") != 86_400
+        or not duration_is_sanctioned(status.get("durationSeconds"), minimum, maximum)
         or status.get("status") not in {"unarmed", "active"}
         or status.get("allowed") is not True
     ):
