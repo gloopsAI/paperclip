@@ -1425,7 +1425,7 @@ if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageCorrection) !==
   JSON.stringify({
     baseImage: "gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
-    scope: "v0.20.0-source-overlay-plus-route-receipt",
+    scope: "v0.20.0-source-overlay-route-receipt-tirith-fail-closed-no-update-check",
     buildNetwork: "none",
     sourceLock: "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
     behavioralVerification: "63-contract-tests-plus-exact-runtime-projection",
