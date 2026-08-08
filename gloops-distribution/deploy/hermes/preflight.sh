@@ -7,6 +7,7 @@ readonly EXECUTION_MARKER='/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED'
 readonly HANDSHAKE_ACTIVE='/run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE'
 readonly PAPERCLIP_HANDSHAKE_ACTIVE='/run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE'
 readonly CAMPAIGN_DEADMAN_SOCKET='/run/paperclip-campaign/deadman.sock'
+readonly CAMPAIGN_DEADMAN_BROKER='/usr/local/lib/paperclip-gloops/campaign-deadman.py'
 readonly STATE_DIR='/home/paperclip/.paperclip'
 readonly PLUGIN_DIR='/opt/paperclip/plugins'
 readonly MTE_PLUGIN_DIR='/home/paperclip/mte-shadow-package'
@@ -43,7 +44,6 @@ readonly EXPECTED_IMAGE="$(tr -d '\r\n' < "${APPROVED_IMAGE_FILE}")"
 readonly -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_CAMPAIGN_ID]='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
   [PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
-  [PAPERCLIP_CAMPAIGN_DURATION_SECONDS]='86400'
   [PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
   [HEARTBEAT_SCHEDULER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='false'
@@ -67,6 +67,29 @@ for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
     exit 1
   }
 done
+# The campaign epoch length is the one envelope entry that is an operator choice
+# within a sanctioned range rather than a fixed accepted literal, so it is
+# range-checked instead of exact-matched. The range is read from the installed
+# broker, which is the only place it is declared and the thing that enforces it.
+campaign_duration_bound() {
+  local name="$1" line expression
+  line="$(grep -m1 -E "^${name} = [0-9]+([ ]+\*[ ]+[0-9]+)*([ ]+#.*)?$" \
+    "${CAMPAIGN_DEADMAN_BROKER}")" || {
+    echo "installed campaign deadman does not declare ${name}" >&2
+    return 1
+  }
+  expression="${line#* = }"
+  expression="${expression%%#*}"
+  printf '%s\n' "$((expression))"
+}
+campaign_duration_minimum="$(campaign_duration_bound MIN_CAMPAIGN_DURATION_SECONDS)"
+campaign_duration_maximum="$(campaign_duration_bound MAX_CAMPAIGN_DURATION_SECONDS)"
+if ! [[ "${PAPERCLIP_CAMPAIGN_DURATION_SECONDS:-}" =~ ^[0-9]+$ ]] \
+  || ((10#${PAPERCLIP_CAMPAIGN_DURATION_SECONDS} < campaign_duration_minimum \
+    || 10#${PAPERCLIP_CAMPAIGN_DURATION_SECONDS} > campaign_duration_maximum)); then
+  echo "PAPERCLIP_CAMPAIGN_DURATION_SECONDS is outside the sanctioned ${campaign_duration_minimum}..${campaign_duration_maximum} second campaign range" >&2
+  exit 1
+fi
 [[ -v PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS \
   && -z "${PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS}" ]] || {
   echo "backlog-bankruptcy readmission must remain explicitly empty" >&2

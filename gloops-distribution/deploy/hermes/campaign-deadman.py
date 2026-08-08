@@ -22,6 +22,20 @@ SCHEMA_VERSION = "gloops.campaign-deadman.v1"
 MAX_REQUEST_BYTES = 16 * 1024
 UTC = dt.timezone.utc
 
+# The campaign duration is how long the control plane is permitted to run
+# unsupervised: `paperclip-gloops` and `paperclip-hermes-execution` are BindsTo
+# this unit, so the plane stops when the epoch lapses. The duration is therefore
+# an enforced invariant, not a tuning knob, and it stays bounded on both ends.
+#
+# The floor keeps an epoch long enough to be an execution window rather than a
+# restart loop. The ceiling is the load-bearing half: it is what guarantees a
+# human must re-authorize the plane periodically. An unbounded (or absent)
+# maximum would let the dead-man be configured so that it never fires, which is
+# the same as having no dead-man at all.
+MIN_CAMPAIGN_DURATION_SECONDS = 1 * 60 * 60  # 1 hour
+MAX_CAMPAIGN_DURATION_SECONDS = 30 * 24 * 60 * 60  # 30 days
+DEFAULT_CAMPAIGN_DURATION_SECONDS = 24 * 60 * 60  # 24 hours
+
 
 def utc_iso(value: dt.datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -42,6 +56,21 @@ class DeadmanError(RuntimeError):
     pass
 
 
+def validate_duration_seconds(value: object) -> int:
+    """Return the campaign duration, or refuse anything outside the bounded range."""
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not MIN_CAMPAIGN_DURATION_SECONDS <= value <= MAX_CAMPAIGN_DURATION_SECONDS
+    ):
+        raise DeadmanError(
+            "campaign duration must be a whole number of seconds between "
+            f"{MIN_CAMPAIGN_DURATION_SECONDS} and {MAX_CAMPAIGN_DURATION_SECONDS} "
+            f"inclusive, received {value!r}",
+        )
+    return value
+
+
 class CampaignEpochStore:
     def __init__(
         self,
@@ -52,8 +81,7 @@ class CampaignEpochStore:
         require_immutable: bool,
         now: Callable[[], dt.datetime] = lambda: dt.datetime.now(UTC),
     ) -> None:
-        if duration_seconds != 86_400:
-            raise DeadmanError("campaign duration must be exactly 86400 seconds")
+        duration_seconds = validate_duration_seconds(duration_seconds)
         self.state_dir = state_dir
         self.campaign_id = campaign_id
         self.duration_seconds = duration_seconds
@@ -340,13 +368,29 @@ class DeadmanServer:
         self.stopping.set()
 
 
+def duration_seconds_argument(raw: str) -> int:
+    """argparse adapter so the CLI refuses exactly what CampaignEpochStore refuses."""
+    try:
+        parsed = int(raw, 10)
+    except ValueError:
+        parsed = raw  # type: ignore[assignment]  # reported verbatim below
+    try:
+        return validate_duration_seconds(parsed)
+    except DeadmanError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", type=pathlib.Path, required=True)
     parser.add_argument("--socket", type=pathlib.Path, required=True)
     parser.add_argument("--socket-gid", type=int, required=True)
     parser.add_argument("--campaign-id", required=True)
-    parser.add_argument("--duration-seconds", type=int, default=86_400)
+    parser.add_argument(
+        "--duration-seconds",
+        type=duration_seconds_argument,
+        default=DEFAULT_CAMPAIGN_DURATION_SECONDS,
+    )
     parser.add_argument("--stop-command", required=True)
     parser.add_argument("--allow-non-immutable-for-test", action="store_true")
     args = parser.parse_args()

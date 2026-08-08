@@ -1011,7 +1011,9 @@ for (const [surface, content, required] of [
   ["deadman verifier", verifyCampaignDeadman, "DeadmanVerificationError"],
   ["zero-work rehearsal", rehearseZeroWorkExecutable, "--require-status unarmed"],
   ["live preflight", preflight, "--wait-seconds 15"],
-  ["deadman rehearsal", rehearseCampaignDeadman, "duration_seconds=86_400"],
+  ["deadman rehearsal", rehearseCampaignDeadman, "--logical-duration-seconds"],
+  ["deadman rehearsal", rehearseCampaignDeadman, "module.validate_duration_seconds("],
+  ["deadman rehearsal", rehearseCampaignDeadman, "duration is not sanctioned"],
   ["deadman rehearsal", rehearseCampaignDeadman, "productionEpochCreated"],
   ["deadman rehearsal", rehearseCampaignDeadman, "providersInvoked"],
   ["controlled-swarm activation", activateControlledSwarm, "CONTROLLED_SWARM_ACTIVATION_APPROVED"],
@@ -1423,7 +1425,7 @@ if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageCorrection) !==
   JSON.stringify({
     baseImage: "gloops/hermes-execution:moa-receipt-v2@sha256:fd1f8f68f600f8da0c42a38361d7333a8487015ed04ec5e6bcbed8b4bb9cb00b",
-    scope: "v0.20.0-source-overlay-plus-route-receipt",
+    scope: "v0.20.0-source-overlay-route-receipt-tirith-fail-closed-no-update-check",
     buildNetwork: "none",
     sourceLock: "/usr/local/lib/paperclip-gloops/route-receipt/hermes-source-lock.json",
     behavioralVerification: "63-contract-tests-plus-exact-runtime-projection",

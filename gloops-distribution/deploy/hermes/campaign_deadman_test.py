@@ -1,3 +1,4 @@
+import argparse
 import datetime as dt
 import json
 import os
@@ -24,6 +25,71 @@ class MutableClock:
 
     def now(self) -> dt.datetime:
         return self.value
+
+
+class CampaignDurationBoundTest(unittest.TestCase):
+    """The duration is a bounded invariant: 1h..30d, defaulting to 24h."""
+
+    def _store(self, directory: str, duration_seconds: object):
+        return MODULE.CampaignEpochStore(
+            state_dir=pathlib.Path(directory),
+            campaign_id="controlled-swarm-test",
+            duration_seconds=duration_seconds,
+            require_immutable=False,
+            now=MutableClock(dt.datetime(2026, 7, 17, 7, tzinfo=UTC)).now,
+        )
+
+    def test_named_bounds_frame_the_default(self) -> None:
+        self.assertEqual(MODULE.MIN_CAMPAIGN_DURATION_SECONDS, 3_600)
+        self.assertEqual(MODULE.MAX_CAMPAIGN_DURATION_SECONDS, 2_592_000)
+        self.assertEqual(MODULE.DEFAULT_CAMPAIGN_DURATION_SECONDS, 86_400)
+
+    def test_durations_inside_the_range_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for duration in (3_600, 86_400, 2_592_000):
+                with self.subTest(duration=duration):
+                    self.assertEqual(
+                        self._store(directory, duration).duration_seconds,
+                        duration,
+                    )
+
+    def test_durations_outside_the_range_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for duration in (3_599, 2_592_001, 0, -1, 86_400.0, "86400", None):
+                with self.subTest(duration=duration):
+                    with self.assertRaises(MODULE.DeadmanError) as caught:
+                        self._store(directory, duration)
+                    message = str(caught.exception)
+                    self.assertIn(repr(duration), message)
+                    self.assertIn("3600", message)
+                    self.assertIn("2592000", message)
+
+    def test_a_thirty_day_epoch_writes_a_thirty_day_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory, 2_592_000)
+            armed = store.admit(company_id="company-1", run_id="run-1")
+            self.assertEqual(armed["durationSeconds"], 2_592_000)
+            self.assertEqual(
+                MODULE.parse_utc(armed["deadlineAt"])
+                - MODULE.parse_utc(armed["firstAdmittedAt"]),
+                dt.timedelta(days=30),
+            )
+            self.assertEqual(
+                self._store(directory, 2_592_000).status()["status"],
+                "active",
+            )
+
+    def test_the_cli_refuses_the_same_range_as_the_store(self) -> None:
+        for accepted in ("3600", "86400", "2592000"):
+            with self.subTest(accepted=accepted):
+                self.assertEqual(
+                    MODULE.duration_seconds_argument(accepted),
+                    int(accepted),
+                )
+        for refused in ("3599", "2592001", "0", "-1", "86400.0", "nope"):
+            with self.subTest(refused=refused):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    MODULE.duration_seconds_argument(refused)
 
 
 class CampaignDeadmanTest(unittest.TestCase):
