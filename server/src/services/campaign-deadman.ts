@@ -38,6 +38,29 @@ const CAMPAIGN_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const MAX_RESPONSE_BYTES = 16 * 1024;
 
+// The campaign duration is how long the control plane is permitted to run
+// unsupervised: the broker's epoch is non-renewing, so the plane stops when the
+// epoch lapses. The duration is therefore an enforced invariant with a bounded
+// range, not an open tuning knob.
+//
+// The floor keeps an epoch long enough to be an execution window rather than a
+// restart loop. The ceiling is the load-bearing half: it is what guarantees a
+// human must re-authorize the plane periodically. An unbounded (or absent)
+// maximum would let the dead-man be configured so that it never fires, which is
+// the same as having no dead-man at all.
+//
+// CO-AUTHORITY: gloops-distribution/deploy/hermes/campaign-deadman.py declares
+// the same three constants and the same validate_duration_seconds() check. That
+// process owns the epoch; this one only asks to be admitted against it. THE TWO
+// RANGES MUST MOVE TOGETHER. If they disagree, the server accepts a duration the
+// broker refuses (the broker never arms, and every run is denied at admission
+// instead of at configuration) or refuses one the broker would have honoured.
+// A hard-pinned bound on one side and not the other is precisely the class of
+// bug this bounded range was introduced to remove.
+export const MIN_CAMPAIGN_DURATION_SECONDS = 1 * 60 * 60; // 1 hour
+export const MAX_CAMPAIGN_DURATION_SECONDS = 30 * 24 * 60 * 60; // 30 days
+export const DEFAULT_CAMPAIGN_DURATION_SECONDS = 24 * 60 * 60; // 24 hours
+
 function readPositiveInteger(
   raw: string | undefined,
   name: string,
@@ -54,6 +77,51 @@ function readPositiveInteger(
     throw new Error(`${name} must be between ${minimum} and ${maximum}`);
   }
   return parsed;
+}
+
+/**
+ * Return the campaign duration, or refuse anything outside the bounded range.
+ *
+ * Mirror of `validate_duration_seconds()` in
+ * gloops-distribution/deploy/hermes/campaign-deadman.py — same bounds, same
+ * refusals, same message shape. Change one and you must change the other.
+ */
+export function validateDurationSeconds(
+  value: unknown,
+  name = "campaign duration",
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < MIN_CAMPAIGN_DURATION_SECONDS ||
+    value > MAX_CAMPAIGN_DURATION_SECONDS
+  ) {
+    // Echo the offending value the way Python's `!r` does: quoted if it came
+    // through as text, bare if it was already a number.
+    const received = typeof value === "string" ? JSON.stringify(value) : String(value);
+    throw new Error(
+      `${name} must be a whole number of seconds between ` +
+        `${MIN_CAMPAIGN_DURATION_SECONDS} and ${MAX_CAMPAIGN_DURATION_SECONDS} ` +
+        `inclusive, received ${received}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Env adapter so the server refuses exactly what the broker refuses — the
+ * counterpart of `duration_seconds_argument()` on the Python side. An unset or
+ * empty variable keeps the historical 24h epoch.
+ */
+function readCampaignDurationSeconds(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_CAMPAIGN_DURATION_SECONDS;
+  }
+  const trimmed = raw.trim();
+  // Anything that is not a plain base-10 integer is handed to the validator
+  // verbatim so it is reported the way it was written, as Python does.
+  const parsed: unknown = /^-?[0-9]+$/.test(trimmed) ? Number(trimmed) : trimmed;
+  return validateDurationSeconds(parsed, "PAPERCLIP_CAMPAIGN_DURATION_SECONDS");
 }
 
 export function parseCampaignDeadmanPolicy(
@@ -73,12 +141,8 @@ export function parseCampaignDeadmanPolicy(
   if (!socketPath.startsWith("/") || socketPath.includes("\0")) {
     throw new Error("PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET must be an absolute Unix socket path");
   }
-  const durationSeconds = readPositiveInteger(
+  const durationSeconds = readCampaignDurationSeconds(
     env.PAPERCLIP_CAMPAIGN_DURATION_SECONDS,
-    "PAPERCLIP_CAMPAIGN_DURATION_SECONDS",
-    24 * 60 * 60,
-    24 * 60 * 60,
-    24 * 60 * 60,
   );
   const timeoutMs = readPositiveInteger(
     env.PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS,
@@ -166,6 +230,14 @@ export async function admitCampaignRun(
       : "campaign admission was denied";
     throw new Error(`campaign deadman denied admission: ${reason}`);
   }
+  // Everything below compares the broker's receipt against the policy this
+  // process holds. These stay EXACT even though the duration is now
+  // configurable: they are not bounds checks, they are the agreement check that
+  // both halves are running the same epoch. A receipt whose duration or
+  // deadline span differs from the policy means the broker was started with a
+  // different --duration-seconds than this server was configured with, which is
+  // exactly the drift the bounded range exists to surface. Widening these into
+  // a range would hide it.
   if (
     response.schemaVersion !== CAMPAIGN_DEADMAN_SCHEMA_VERSION ||
     response.status !== "armed" && response.status !== "active" ||
