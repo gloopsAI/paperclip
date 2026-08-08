@@ -3,6 +3,43 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${repo_root}"
+
+# The sanctioned campaign-duration range is declared once, in campaign-deadman.py.
+# Every gate re-derives it from there instead of carrying its own literal, because
+# a copied literal is precisely how this envelope came to be pinned to 86400.
+campaign_duration_bound() {
+  local name="$1" source="$2" line expression
+  line="$(grep -m1 -E "^${name} = [0-9]+([ ]+\*[ ]+[0-9]+)*([ ]+#.*)?$" "${source}")" || {
+    echo "campaign deadman does not declare ${name} in ${source}" >&2
+    return 1
+  }
+  expression="${line#* = }"
+  expression="${expression%%#*}"
+  printf '%s\n' "$((expression))"
+}
+
+# Print the single PAPERCLIP_CAMPAIGN_DURATION_SECONDS value declared by an env
+# file, refusing an absent, duplicated, or non-numeric declaration. A later
+# duplicate would silently win at runtime, so more than one is a refusal.
+campaign_duration_from_env() {
+  local source="$1" declarations value
+  declarations="$(grep -cE '^PAPERCLIP_CAMPAIGN_DURATION_SECONDS=' "${source}" || true)"
+  value="$(grep -m1 -E '^PAPERCLIP_CAMPAIGN_DURATION_SECONDS=[0-9]+$' "${source}" || true)"
+  value="${value#*=}"
+  [[ "${declarations}" == '1' && -n "${value}" ]] || {
+    echo "expected exactly one numeric PAPERCLIP_CAMPAIGN_DURATION_SECONDS in ${source}" >&2
+    return 1
+  }
+  printf '%s\n' "${value}"
+}
+
+campaign_duration_min="$(campaign_duration_bound \
+  MIN_CAMPAIGN_DURATION_SECONDS \
+  "${repo_root}/gloops-distribution/deploy/hermes/campaign-deadman.py")"
+campaign_duration_max="$(campaign_duration_bound \
+  MAX_CAMPAIGN_DURATION_SECONDS \
+  "${repo_root}/gloops-distribution/deploy/hermes/campaign-deadman.py")"
+
 runtime_env="${repo_root}/gloops-distribution/deploy/hermes/runtime.env"
 for expected_runtime_line in \
   'PAPERCLIP_MTE_ENABLED=false' \
@@ -11,7 +48,6 @@ for expected_runtime_line in \
   'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' \
   'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' \
-  'PAPERCLIP_CAMPAIGN_DURATION_SECONDS=86400' \
   'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' \
   'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' \
   'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' \
@@ -27,7 +63,28 @@ done
 deadman_unit="${repo_root}/gloops-distribution/deploy/hermes/paperclip-campaign-deadman.service"
 successor_campaign_id='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
 predecessor_campaign_id='controlled-swarm-20260717'
-grep -Fq -- '--campaign-id controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139 --duration-seconds 86400' "${deadman_unit}"
+
+# The campaign identity stays exactly pinned; only the epoch length is a bounded
+# operator choice. Assert the identity literally and the duration by range, and
+# require the broker's own argument to agree with the value the control plane
+# reads from runtime.env -- a plane and a dead-man that disagree about the epoch
+# length is the failure this range would otherwise make possible.
+grep -Fq -- "--campaign-id ${successor_campaign_id} --duration-seconds " "${deadman_unit}"
+unit_duration_seconds="$(
+  grep -m1 -oE -- '--duration-seconds [0-9]+' "${deadman_unit}" | awk '{print $2}'
+)"
+runtime_duration_seconds="$(campaign_duration_from_env "${runtime_env}")"
+for observed in "${unit_duration_seconds}" "${runtime_duration_seconds}"; do
+  if ! [[ "${observed}" =~ ^[0-9]+$ ]] \
+    || ((10#${observed} < campaign_duration_min || 10#${observed} > campaign_duration_max)); then
+    echo "Refusing source canaries because the campaign duration ${observed:-unset} is outside the sanctioned ${campaign_duration_min}..${campaign_duration_max} second range" >&2
+    exit 1
+  fi
+done
+[[ "${unit_duration_seconds}" == "${runtime_duration_seconds}" ]] || {
+  echo "Refusing source canaries because the deadman unit (${unit_duration_seconds}) and runtime env (${runtime_duration_seconds}) declare different campaign durations" >&2
+  exit 1
+}
 grep -Fq 'ExecStartPre=/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py' "${deadman_unit}"
 for successor_bound_file in \
   "${repo_root}/gloops-distribution/deploy/hermes/runtime.env" \

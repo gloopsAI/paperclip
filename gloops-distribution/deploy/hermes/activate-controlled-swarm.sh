@@ -6,6 +6,7 @@ readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly STATE_DIR='/var/lib/paperclip-gloops/controlled-swarm'
 readonly APPROVAL="${CONFIG_DIR}/CONTROLLED_SWARM_ACTIVATION_APPROVED"
 readonly CAMPAIGN_ID='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
+readonly DEADMAN_UNIT_FILE='/usr/local/lib/systemd/system/paperclip-campaign-deadman.service'
 readonly EPOCH="/var/lib/paperclip-gloops/campaign-deadman/${CAMPAIGN_ID}/epoch.json"
 readonly LOCK='/run/lock/paperclip-controlled-swarm.lock'
 readonly DEADMAN='paperclip-campaign-deadman.service'
@@ -52,18 +53,45 @@ grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime
 "${LIB_DIR}/verify-dark.sh"
 rehearsal_receipt="$(
   python3 - "${LIB_DIR}/campaign-deadman.py" "${LIB_DIR}/campaign-deadman-rehearsal-stop.sh" \
-    "${CONFIG_DIR}/approved-image" /var/lib/paperclip-gloops/rehearsals <<'PY'
+    "${CONFIG_DIR}/approved-image" /var/lib/paperclip-gloops/rehearsals \
+    "${DEADMAN_UNIT_FILE}" <<'PY'
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import pathlib
+import re
 import stat
 import sys
 
-broker, actuator, image_path, receipts = map(pathlib.Path, sys.argv[1:])
+broker, actuator, image_path, receipts, deadman_unit = map(pathlib.Path, sys.argv[1:])
 expected_broker = f"sha256:{hashlib.sha256(broker.read_bytes()).hexdigest()}"
 expected_actuator = f"sha256:{hashlib.sha256(actuator.read_bytes()).hexdigest()}"
 expected_image = image_path.read_text(encoding="utf-8").strip()
+
+# The epoch length is now a bounded operator choice rather than a fixed 86400, so
+# an in-range rehearsal is not sufficient: a one-hour rehearsal must not be able
+# to authorize a thirty-day campaign. Require the rehearsal to have certified the
+# exact epoch length this host's deadman unit is configured to enforce, and take
+# the sanctioned range from the installed broker instead of a literal here.
+spec = importlib.util.spec_from_file_location("installed_campaign_deadman", broker)
+if spec is None or spec.loader is None:
+    raise SystemExit("installed campaign deadman broker is unreadable")
+deadman = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deadman)
+declared = re.findall(
+    r"--duration-seconds ([0-9]+)(?:\s|$)",
+    deadman_unit.read_text(encoding="utf-8"),
+)
+if len(declared) != 1:
+    raise SystemExit(
+        "installed campaign deadman unit does not declare exactly one campaign duration",
+    )
+try:
+    expected_duration = deadman.validate_duration_seconds(int(declared[0]))
+except deadman.DeadmanError as error:
+    raise SystemExit(f"installed campaign deadman unit is misconfigured: {error}") from error
+
 candidates = sorted(receipts.glob("campaign-deadman-*.json"), reverse=True)
 for path in candidates:
     file_stat = path.stat()
@@ -80,7 +108,7 @@ for path in candidates:
         dt.timedelta(0) <= age <= dt.timedelta(hours=24)
         and value.get("schemaVersion") == "gloops.campaign-deadman-rehearsal.v1"
         and value.get("outcome") == "passed"
-        and value.get("logicalDurationSeconds") == 86_400
+        and value.get("logicalDurationSeconds") == expected_duration
         and value.get("installedBrokerSha256") == expected_broker
         and value.get("installedStopActuatorSha256") == expected_actuator
         and value.get("approvedImage") == expected_image
@@ -98,7 +126,10 @@ for path in candidates:
         print(path)
         break
 else:
-    raise SystemExit("no recent exact-artifact deadman rehearsal receipt exists")
+    raise SystemExit(
+        "no recent exact-artifact deadman rehearsal receipt exists for a "
+        f"{expected_duration}-second campaign epoch",
+    )
 PY
 )"
 python3 - "${approval_in_progress}" "${rehearsal_receipt}" "${CONFIG_DIR}/approved-image" <<'PY'

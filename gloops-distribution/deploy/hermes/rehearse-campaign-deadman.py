@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Time-accelerated host proof for the exact installed 24-hour deadman."""
+"""Time-accelerated host proof for the exact installed campaign deadman.
+
+The logical epoch length is a parameter, not a constant. The proof runs against a
+`MutableClock`, so a thirty-day epoch costs exactly as much wall time as a
+one-hour epoch; pinning the rehearsal to 86400 while the broker accepts a bounded
+range would mean certifying an epoch length the operator is not going to run.
+The default remains `DEFAULT_CAMPAIGN_DURATION_SECONDS` from the installed
+broker, so an unadorned `rehearse-campaign-deadman.py` certifies exactly what it
+certified before.
+"""
 
 from __future__ import annotations
 
@@ -139,6 +148,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--allow-source-path", type=pathlib.Path)
     parser.add_argument("--allow-predecessor-verifier-path", type=pathlib.Path)
+    parser.add_argument(
+        "--logical-duration-seconds",
+        type=int,
+        default=None,
+        help=(
+            "epoch length to certify; defaults to the installed broker's default. "
+            "Must be inside the broker's sanctioned range, which the broker itself "
+            "enforces -- this rehearsal does not carry its own copy of the bounds."
+        ),
+    )
     args = parser.parse_args()
     global PREDECESSOR_VERIFIER, SOURCE
     if args.allow_source_path is not None:
@@ -156,6 +175,19 @@ def main() -> int:
     socket_path = RUN_DIR / "deadman.sock"
     clock = MutableClock(dt.datetime.now(UTC))
     module = load_module()
+    requested_duration = (
+        module.DEFAULT_CAMPAIGN_DURATION_SECONDS
+        if args.logical_duration_seconds is None
+        else args.logical_duration_seconds
+    )
+    try:
+        duration_seconds = module.validate_duration_seconds(requested_duration)
+    except module.DeadmanError as error:
+        raise SystemExit(f"rehearsal duration is not sanctioned: {error}") from error
+    # Split the epoch so the restart proof lands mid-epoch and the expiry proof
+    # lands exactly one second past the deadline, whatever the epoch length is.
+    first_advance = duration_seconds // 2
+    second_advance = duration_seconds - first_advance + 1
     server = None
     thread = None
     epoch_path = state_root / CAMPAIGN_ID / "epoch.json"
@@ -175,7 +207,7 @@ def main() -> int:
         store = module.CampaignEpochStore(
             state_dir=state_root,
             campaign_id=CAMPAIGN_ID,
-            duration_seconds=86_400,
+            duration_seconds=duration_seconds,
             require_immutable=True,
             now=clock.now,
         )
@@ -259,7 +291,7 @@ def main() -> int:
 
         original_deadline = armed["deadlineAt"]
         original_first_run = armed["firstRunId"]
-        clock.value += dt.timedelta(hours=12)
+        clock.value += dt.timedelta(seconds=first_advance)
         stop_server()
         store = start_server()
         active = request(
@@ -275,7 +307,7 @@ def main() -> int:
         ):
             raise RuntimeError("restart renewed or replaced the fixed epoch")
 
-        clock.value += dt.timedelta(hours=12, seconds=1)
+        clock.value += dt.timedelta(seconds=second_advance)
         server._invoke_stop_if_expired()
         wait_for(
             lambda: run(
@@ -299,7 +331,7 @@ def main() -> int:
         restarted = module.CampaignEpochStore(
             state_dir=state_root,
             campaign_id=CAMPAIGN_ID,
-            duration_seconds=86_400,
+            duration_seconds=duration_seconds,
             require_immutable=True,
             now=clock.now,
         )
@@ -313,7 +345,7 @@ def main() -> int:
             "schemaVersion": "gloops.campaign-deadman-rehearsal.v1",
             "runId": run_id,
             "campaignId": CAMPAIGN_ID,
-            "logicalDurationSeconds": 86_400,
+            "logicalDurationSeconds": duration_seconds,
             "installedBroker": str(SOURCE),
             "installedBrokerSha256": file_sha256(SOURCE),
             "installedStopActuatorSha256": file_sha256(STOP_ACTUATOR),

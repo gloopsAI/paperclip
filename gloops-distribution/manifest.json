@@ -247,7 +247,7 @@
       "patchDiffAlgorithm": "git-diff-no-color-full-index-sha256-v1",
       "integratedCommits": ["0568a4c0d1a196c8bc57c316e50a6aaf6add6a5b"],
       "owner": "GLoops Platform",
-      "retirementCondition": "Retain until the selected runtime and host provide an equivalent root-owned, write-once 24-hour campaign epoch; fail-closed claim-time admission; restart-stable non-renewal; expiry shutdown; immutable evidence; and rollback verification that cannot certify a surviving broker or socket."
+      "retirementCondition": "Retain until the selected runtime and host provide an equivalent root-owned, write-once campaign epoch whose duration is fixed at first claim and bounded on both ends (at least 1 hour, at most 30 days, so re-authorization cannot be deferred indefinitely); fail-closed claim-time admission; restart-stable non-renewal; expiry shutdown; immutable evidence; and rollback verification that cannot certify a surviving broker or socket."
     },
     {
       "id": "controlled-swarm-activation-and-operational-proof-controls",
