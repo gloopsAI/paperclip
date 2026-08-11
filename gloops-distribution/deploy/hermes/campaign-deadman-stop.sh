@@ -13,14 +13,13 @@ readonly RECEIPT="${STATE_DIR}/last-stop.json"
 
 install -d -m 0700 -o root -g root "${STATE_DIR}"
 rm -f \
-  "${CONFIG_DIR}/ACTIVATION_APPROVED" \
-  "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
   "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"
 
+# A campaign expiry ends only the campaign-bound handshake/recovery plane.
+# General Paperclip execution and the registered brokers are product services:
+# their lifecycle is intentionally independent of a gym campaign timer.
 systemctl stop --no-block \
-  paperclip-gloops.service \
   paperclip-gloops-handshake.service \
-  paperclip-hermes-execution.service \
   paperclip-hermes-handshake.service \
   paperclip-hermes-handshake-egress.service \
   paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
@@ -29,9 +28,7 @@ deadline=$((SECONDS + 120))
 while ((SECONDS < deadline)); do
   active=0
   for unit in \
-    paperclip-gloops.service \
     paperclip-gloops-handshake.service \
-    paperclip-hermes-execution.service \
     paperclip-hermes-handshake.service \
     paperclip-hermes-handshake-egress.service \
     paperclip-controlled-swarm-commissioning-recovery.service; do
@@ -42,17 +39,13 @@ while ((SECONDS < deadline)); do
 done
 
 for container in \
-  paperclip-gloops \
   paperclip-gloops-handshake \
-  paperclip-hermes-execution \
   paperclip-hermes-handshake; do
   docker rm -f "${container}" >/dev/null 2>&1 || true
 done
 
 for unit in \
-  paperclip-gloops.service \
   paperclip-gloops-handshake.service \
-  paperclip-hermes-execution.service \
   paperclip-hermes-handshake.service \
   paperclip-hermes-handshake-egress.service \
   paperclip-controlled-swarm-commissioning-recovery.service; do

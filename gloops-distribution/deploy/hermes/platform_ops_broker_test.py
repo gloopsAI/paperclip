@@ -18,6 +18,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -772,20 +774,32 @@ class PlatformOpsDeploymentWiringTests(unittest.TestCase):
         )
         self.assertIn("paperclip-platform-ops-broker.service", installer)
 
-    def test_hermes_unit_binds_broker_lifecycle_and_socket(self):
+    def test_hermes_unit_binds_registered_brokers_not_campaign_lifecycle(self):
         unit = MODULE_PATH.with_name("paperclip-hermes-execution.service").read_text()
         self.assertIn(
-            "Requires=docker.service paperclip-campaign-deadman.service "
-            "paperclip-github-push-broker.service "
+            "Requires=docker.service paperclip-github-push-broker.service "
             "paperclip-github-read-broker.service "
             "paperclip-platform-ops-broker.service",
             unit,
         )
+        self.assertNotIn("paperclip-campaign-deadman.service", unit)
         self.assertIn(
             "--mount type=bind,src=/run/paperclip-platform-ops-broker,"
             "dst=/run/paperclip-platform-ops-broker",
             unit,
         )
+
+    def test_product_service_graph_is_campaign_independent_offline(self):
+        verifier = MODULE_PATH.with_name("verify-product-service-lifecycle.py")
+        repo_root = MODULE_PATH.parents[3]
+        result = subprocess.run(
+            [sys.executable, str(verifier), "--repo-root", str(repo_root)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("campaign-lifecycle independent", result.stdout)
 
     def test_paperclip_units_source_the_install_bound_release_pin(self):
         installer = MODULE_PATH.with_name("install-dark.sh").read_text()

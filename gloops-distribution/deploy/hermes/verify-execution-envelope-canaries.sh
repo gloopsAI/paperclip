@@ -114,18 +114,19 @@ grep -Fq 'af8260a4c30f92c79a1c138e2951cbb40041ed58da40b86273a27881b2d07b0b' "${p
 grep -Fq 'parser.add_argument("--campaign-id", required=True)' \
   "${repo_root}/gloops-distribution/deploy/hermes/verify-campaign-deadman.py"
 grep -Fq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_LINUX_IMMUTABLE' "${deadman_unit}"
-for bound_unit in \
-  "${repo_root}/gloops-distribution/deploy/hermes/paperclip-gloops.service" \
-  "${repo_root}/gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service" \
-  "${repo_root}/gloops-distribution/deploy/hermes/paperclip-hermes-execution.service"; do
-  grep -Fq 'BindsTo=paperclip-campaign-deadman.service' "${bound_unit}"
-done
+# Campaign expiry must still stop the isolated handshake path, but must not own
+# the product control plane, execution sidecar, or registered brokers.
+grep -Fq 'BindsTo=paperclip-campaign-deadman.service' \
+  "${repo_root}/gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service"
+python3 "${repo_root}/gloops-distribution/deploy/hermes/verify-product-service-lifecycle.py" \
+  --repo-root "${repo_root}"
 rollback_script="${repo_root}/gloops-distribution/deploy/hermes/rollback.sh"
 backup_script="${repo_root}/gloops-distribution/deploy/hermes/backup-dark.sh"
-grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'paperclip-hermes-handshake-egress.service paperclip-campaign-deadman.service' "${backup_script}"
+rollback_units='paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service'
+grep -Fq "${rollback_units}" "${rollback_script}"
+grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq "${rollback_units}" "${backup_script}"
 if grep -Fq 'rm -rf /var/lib/paperclip-gloops/campaign-deadman' "${rollback_script}"; then
   echo "Refusing canaries because rollback deletes durable campaign epoch evidence" >&2
   exit 1
@@ -196,6 +197,7 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/campaign-deadman-stop.sh \
     gloops-distribution/deploy/hermes/campaign-deadman-rehearsal-stop.sh \
     gloops-distribution/deploy/hermes/verify-campaign-deadman.py \
+    gloops-distribution/deploy/hermes/verify-product-service-lifecycle.py \
     gloops-distribution/deploy/hermes/rehearse-campaign-deadman.py \
     gloops-distribution/deploy/hermes/activate-controlled-swarm.sh \
     gloops-distribution/deploy/hermes/commission-controlled-swarm.sh \
