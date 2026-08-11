@@ -8,7 +8,10 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
-import { readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  mergeExecutionWorkspaceConfig,
+  readExecutionWorkspaceConfig,
+} from "../services/execution-workspaces.js";
 
 const execFileAsync = promisify(execFile);
 const tempRepos: string[] = [];
@@ -35,6 +38,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
@@ -43,6 +47,10 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
+  assertCanManageExecutionWorkspaceRuntimeServices: mockAssertCanManageExecutionWorkspaceRuntimeServices,
 }));
 
 function createApp(actor: Record<string, unknown> = {
@@ -96,18 +104,47 @@ function localOnlyRuntimeConfig() {
   return { metadata, config: readExecutionWorkspaceConfig(metadata) };
 }
 
-function createProjectWorkspaceDb(repoRoot: string) {
+function createReviewWorkspaceDb(input: {
+  workspaceId: string;
+  sourceIssueId: string;
+  repoRoot?: string;
+}) {
+  const parentIssueId = "11111111-1111-4111-8111-111111111111";
+  const sourceRunId = "22222222-2222-4222-8222-222222222222";
   return {
-    select: () => ({
+    select: (selection: Record<string, unknown>) => ({
       from: () => ({
-        where: () => Promise.resolve([{
-          id: "project-workspace-1",
-          cwd: repoRoot,
-          repoUrl: null,
-          repoRef: "main",
-          defaultRef: "main",
-          metadata: null,
-        }]),
+        where: () => Promise.resolve(
+          "executionWorkspaceSettings" in selection
+            ? [{
+                id: input.sourceIssueId,
+                parentId: parentIssueId,
+                executionWorkspaceId: input.workspaceId,
+                executionWorkspaceSettings: {
+                  reviewProvenance: {
+                    kind: "implementation_exact_head",
+                    parentIssueId,
+                    sourceRunId,
+                  },
+                },
+              }]
+            : "cwd" in selection
+              ? [{
+                  id: "project-workspace-1",
+                  cwd: input.repoRoot,
+                  repoUrl: null,
+                  repoRef: "main",
+                  defaultRef: "main",
+                  metadata: {
+                    runtimeConfig: {
+                      workspaceRuntime: {
+                        services: [{ name: "web", command: "node -e \"process.exit(0)\"" }],
+                      },
+                    },
+                  },
+                }]
+              : [{ id: parentIssueId }],
+        ),
       }),
     }),
   };
@@ -146,12 +183,13 @@ describe.sequential("execution workspace routes", () => {
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue(undefined);
     mockWorkspaceOperationService.createRecorder.mockReturnValue({
       recordOperation: vi.fn(async (input: { run: () => Promise<unknown> }) => await input.run()),
     });
   });
 
-  it("keeps an existing persisted worktree unchanged when route start cannot resolve its local-only object", async () => {
+  it("preserves review local-only against an agent config downgrade before route start", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "review-route-expected";
     const actualBranch = "review-route-actual";
@@ -161,12 +199,14 @@ describe.sequential("execution workspace routes", () => {
     await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
     const missingHead = "d".repeat(40);
     const persisted = localOnlyRuntimeConfig();
-    mockExecutionWorkspaceService.getById.mockResolvedValue({
-      id: "workspace-route-existing",
+    const workspaceId = "33333333-3333-4333-8333-333333333333";
+    const sourceIssueId = "44444444-4444-4444-8444-444444444444";
+    let persistedWorkspace = {
+      id: workspaceId,
       companyId: "company-1",
       projectId: null,
       projectWorkspaceId: null,
-      sourceIssueId: "issue-review-route-existing",
+      sourceIssueId,
       mode: "isolated_workspace",
       strategyType: "git_worktree",
       name: "Existing exact-head review",
@@ -178,6 +218,17 @@ describe.sequential("execution workspace routes", () => {
       metadata: persisted.metadata,
       config: persisted.config,
       runtimeServices: [],
+    };
+    mockExecutionWorkspaceService.getById.mockImplementation(async () => persistedWorkspace);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => {
+      const metadata = patch.metadata as Record<string, unknown> | null;
+      persistedWorkspace = {
+        ...persistedWorkspace,
+        ...patch,
+        metadata,
+        config: readExecutionWorkspaceConfig(metadata),
+      };
+      return persistedWorkspace;
     });
     const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
     const branchRefsBefore = await readGit(repoRoot, [
@@ -188,8 +239,35 @@ describe.sequential("execution workspace routes", () => {
     const branchBefore = await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]);
     const headBefore = await readGit(worktreePath, ["rev-parse", "HEAD"]);
 
-    const res = await request(createApp())
-      .post("/api/execution-workspaces/workspace-route-existing/runtime-services/start")
+    const actor = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    };
+    const db = createReviewWorkspaceDb({ workspaceId, sourceIssueId });
+    const app = createApp(actor, db);
+    const patchRes = await request(app)
+      .patch(`/api/execution-workspaces/${workspaceId}`)
+      .send({ config: { remoteRefreshPolicy: "allowed" } });
+    expect(patchRes.status).toBe(200);
+    expect(persistedWorkspace.config?.remoteRefreshPolicy).toBe("local_only");
+    // Defense in depth: command execution must derive the authority invariant
+    // even if an older/corrupt row somehow contains a downgraded value.
+    persistedWorkspace = {
+      ...persistedWorkspace,
+      metadata: mergeExecutionWorkspaceConfig(persistedWorkspace.metadata, {
+        remoteRefreshPolicy: "allowed",
+      }),
+      config: {
+        ...persistedWorkspace.config!,
+        remoteRefreshPolicy: "allowed",
+      },
+    };
+
+    const res = await request(app)
+      .post(`/api/execution-workspaces/${workspaceId}/runtime-services/start`)
       .send({});
 
     expect(res.status).toBe(500);
@@ -205,7 +283,7 @@ describe.sequential("execution workspace routes", () => {
     expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(headBefore);
   });
 
-  it("keeps missing persisted worktree state unchanged when route restart cannot resolve its local-only object", async () => {
+  it("preserves review local-only across an agent metadata replacement before route restart", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "review-route-missing";
     const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
@@ -215,12 +293,14 @@ describe.sequential("execution workspace routes", () => {
     await fs.rm(worktreePath, { recursive: true, force: true });
     const missingHead = "c".repeat(40);
     const persisted = localOnlyRuntimeConfig();
-    mockExecutionWorkspaceService.getById.mockResolvedValue({
-      id: "workspace-route-missing",
+    const workspaceId = "55555555-5555-4555-8555-555555555555";
+    const sourceIssueId = "66666666-6666-4666-8666-666666666666";
+    let persistedWorkspace = {
+      id: workspaceId,
       companyId: "company-1",
       projectId: null,
       projectWorkspaceId: "project-workspace-1",
-      sourceIssueId: "issue-review-route-missing",
+      sourceIssueId,
       mode: "isolated_workspace",
       strategyType: "git_worktree",
       name: "Missing exact-head review",
@@ -232,12 +312,49 @@ describe.sequential("execution workspace routes", () => {
       metadata: persisted.metadata,
       config: persisted.config,
       runtimeServices: [],
+    };
+    mockExecutionWorkspaceService.getById.mockImplementation(async () => persistedWorkspace);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => {
+      const metadata = patch.metadata as Record<string, unknown> | null;
+      persistedWorkspace = {
+        ...persistedWorkspace,
+        ...patch,
+        metadata,
+        config: readExecutionWorkspaceConfig(metadata),
+      };
+      return persistedWorkspace;
     });
     const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
     const branchHeadBefore = await readGit(repoRoot, ["rev-parse", branchName]);
 
-    const res = await request(createApp(undefined, createProjectWorkspaceDb(repoRoot)))
-      .post("/api/execution-workspaces/workspace-route-missing/runtime-services/restart")
+    const actor = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    };
+    const db = createReviewWorkspaceDb({ workspaceId, sourceIssueId, repoRoot });
+    const app = createApp(actor, db);
+    const patchRes = await request(app)
+      .patch(`/api/execution-workspaces/${workspaceId}`)
+      .send({ metadata: { replacement: true } });
+    expect(patchRes.status).toBe(200);
+    expect(persistedWorkspace.metadata).toMatchObject({
+      replacement: true,
+      config: { remoteRefreshPolicy: "local_only" },
+    });
+    expect(persistedWorkspace.config?.remoteRefreshPolicy).toBe("local_only");
+    // Simulate a legacy row that lost the config block entirely; restart must
+    // still resolve the authentic review source and enforce local-only.
+    persistedWorkspace = {
+      ...persistedWorkspace,
+      metadata: { replacement: true },
+      config: null,
+    };
+
+    const res = await request(app)
+      .post(`/api/execution-workspaces/${workspaceId}/runtime-services/restart`)
       .send({});
 
     expect(res.status).toBe(500);

@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -15,6 +15,7 @@ import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
+import { parseImplementationReviewProvenance } from "../services/implementation-review-handoff.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -37,6 +38,55 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+
+async function isProvenanceBoundImplementationReviewWorkspace(
+  db: Db,
+  workspace: {
+    id: string;
+    companyId: string;
+    sourceIssueId?: string | null;
+  },
+): Promise<boolean> {
+  if (!workspace.sourceIssueId) return false;
+  const sourceIssue = await db
+    .select({
+      id: issues.id,
+      parentId: issues.parentId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+      executionWorkspaceSettings: issues.executionWorkspaceSettings,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.id, workspace.sourceIssueId),
+      eq(issues.companyId, workspace.companyId),
+      eq(issues.executionWorkspaceId, workspace.id),
+    ))
+    .then((rows) => rows[0] ?? null);
+  const provenance = sourceIssue
+    ? parseImplementationReviewProvenance(sourceIssue.executionWorkspaceSettings)
+    : null;
+  if (!sourceIssue?.parentId || provenance?.parentIssueId !== sourceIssue.parentId) return false;
+  const [parentIssue, sourceRun] = await Promise.all([
+    db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(
+        eq(issues.id, sourceIssue.parentId),
+        eq(issues.companyId, workspace.companyId),
+      ))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, provenance.sourceRunId),
+        eq(heartbeatRuns.companyId, workspace.companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sourceIssue.parentId}`,
+      ))
+      .then((rows) => rows[0] ?? null),
+  ]);
+  return Boolean(parentIssue && sourceRun);
+}
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
@@ -170,6 +220,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       executionWorkspaceId: existing.id,
       sourceIssueId: existing.sourceIssueId,
     });
+    const enforceReviewLocalOnly = action === "stop"
+      ? false
+      : await isProvenanceBoundImplementationReviewWorkspace(db, existing);
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
@@ -310,7 +363,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
-                remoteRefreshPolicy: existing.config?.remoteRefreshPolicy ?? null,
+                remoteRefreshPolicy: enforceReviewLocalOnly
+                  ? "local_only"
+                  : existing.config?.remoteRefreshPolicy ?? null,
                 provisionCommand:
                   existing.config?.provisionCommand
                   ?? projectPolicy?.workspaceStrategy?.provisionCommand
@@ -606,6 +661,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         metadata: req.body.metadata,
       }),
     );
+    const enforceReviewLocalOnly = await isProvenanceBoundImplementationReviewWorkspace(db, existing);
     const patch: Record<string, unknown> = {
       ...(req.body.name === undefined ? {} : { name: req.body.name }),
       ...(req.body.cwd === undefined ? {} : { cwd: req.body.cwd }),
@@ -626,6 +682,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       patch.metadata = req.body.config === undefined
         ? requestedMetadata
         : mergeExecutionWorkspaceConfig(requestedMetadata, req.body.config ?? null);
+      if (enforceReviewLocalOnly) {
+        patch.metadata = mergeExecutionWorkspaceConfig(
+          patch.metadata as Record<string, unknown> | null,
+          { remoteRefreshPolicy: "local_only" },
+        );
+      }
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
