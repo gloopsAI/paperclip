@@ -23,27 +23,69 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             controlled = root / "controlled"
             bin_dir = root / "bin"
             log = root / "commands.log"
-            mode = root / "service-mode"
+            service_state = root / "service-state.json"
             for directory in (config, state, controlled, bin_dir):
                 directory.mkdir(parents=True)
-            for marker in (
-                "ACTIVATION_APPROVED",
-                "HERMES_EXECUTION_APPROVED",
-                "HERMES_HANDSHAKE_APPROVED",
-                "CONTROLLED_SWARM_COMMISSIONING_APPROVED",
-                "CONTROLLED_SWARM_RUNTIME_APPROVED",
-            ):
-                (config / marker).write_text("approved\n", encoding="utf-8")
             commissioning = controlled / "commissioning.json"
-            commissioning.write_text("{}\n", encoding="utf-8")
+            units = {
+                "paperclip-gloops.service",
+                "paperclip-controlled-swarm.service",
+                "paperclip-hermes-execution.service",
+                "paperclip-github-push-broker.service",
+                "paperclip-github-read-broker.service",
+                "paperclip-platform-ops-broker.service",
+                "paperclip-campaign-deadman.service",
+                "paperclip-controlled-swarm-commissioning-recovery.service",
+                "paperclip-gloops-handshake.service",
+                "paperclip-hermes-handshake.service",
+                "paperclip-hermes-handshake-egress.service",
+            }
+            service_state.write_text(
+                json.dumps({
+                    "active": [],
+                    "masked": sorted(units),
+                    "portOwner": None,
+                    "generalStartFailuresRemaining": 2,
+                }),
+                encoding="utf-8",
+            )
 
             systemctl = bin_dir / "systemctl"
             systemctl.write_text(
-                "#!/bin/sh\n"
-                f"printf '%s\\n' \"$*\" >> {log}\n"
-                f"[ \"$1\" = is-active ] && [ \"$(cat {mode})\" = active ] && exit 0\n"
-                "[ \"$1\" = is-active ] && exit 3\n"
-                "exit 0\n",
+                "#!/usr/bin/env python3\n"
+                "import json, pathlib, sys\n"
+                f"state_path = pathlib.Path({str(service_state)!r})\n"
+                f"log_path = pathlib.Path({str(log)!r})\n"
+                "args = sys.argv[1:]\n"
+                "with log_path.open('a', encoding='utf-8') as fh: fh.write(' '.join(args) + '\\n')\n"
+                "state = json.loads(state_path.read_text(encoding='utf-8'))\n"
+                "active, masked = set(state['active']), set(state['masked'])\n"
+                "command = args[0]\n"
+                "targets = [value for value in args[1:] if not value.startswith('-')]\n"
+                "if command == 'unmask': masked.difference_update(targets)\n"
+                "elif command == 'mask':\n"
+                "    masked.update(targets); active.difference_update(targets)\n"
+                "elif command == 'start':\n"
+                "    for unit in targets:\n"
+                "        if unit in masked: sys.exit(1)\n"
+                "        if unit == 'paperclip-controlled-swarm.service':\n"
+                "            active.discard('paperclip-gloops.service'); state['portOwner'] = unit\n"
+                "        elif unit == 'paperclip-gloops.service':\n"
+                "            if 'paperclip-controlled-swarm.service' in active: sys.exit(1)\n"
+                "            if state.get('generalStartFailuresRemaining', 0) > 0:\n"
+                "                state['generalStartFailuresRemaining'] -= 1\n"
+                "                state['active'], state['masked'] = sorted(active), sorted(masked)\n"
+                "                state_path.write_text(json.dumps(state), encoding='utf-8')\n"
+                "                sys.exit(1)\n"
+                "            state['portOwner'] = unit\n"
+                "        active.add(unit)\n"
+                "elif command == 'stop':\n"
+                "    active.difference_update(targets)\n"
+                "    if state.get('portOwner') in targets: state['portOwner'] = None\n"
+                "elif command == 'is-active':\n"
+                "    raise SystemExit(0 if targets[-1] in active else 3)\n"
+                "state['active'], state['masked'] = sorted(active), sorted(masked)\n"
+                "state_path.write_text(json.dumps(state), encoding='utf-8')\n",
                 encoding="utf-8",
             )
             docker = bin_dir / "docker"
@@ -65,8 +107,6 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 curl,
             ):
                 command.chmod(0o755)
-            mode.write_text("active\n", encoding="utf-8")
-
             env = {
                 **os.environ,
                 "PAPERCLIP_CAMPAIGN_TEST_MODE": "network-free",
@@ -103,8 +143,12 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "paperclip-platform-ops-broker.service",
             ):
                 self.assertIn(f"start {broker}", activation_commands)
-
-            mode.write_text("inactive\n", encoding="utf-8")
+            active_after_activation = json.loads(service_state.read_text(encoding="utf-8"))
+            self.assertEqual(
+                active_after_activation["portOwner"],
+                "paperclip-controlled-swarm.service",
+            )
+            self.assertNotIn("paperclip-gloops.service", active_after_activation["active"])
             result = subprocess.run(
                 [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
                 env=env,
@@ -119,6 +163,12 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             self.assertFalse((config / "HERMES_HANDSHAKE_APPROVED").exists())
             self.assertFalse((config / "CONTROLLED_SWARM_RUNTIME_APPROVED").exists())
             self.assertFalse(commissioning.exists())
+            final_state = json.loads(service_state.read_text(encoding="utf-8"))
+            self.assertEqual(final_state["portOwner"], "paperclip-gloops.service")
+            self.assertIn("paperclip-gloops.service", final_state["active"])
+            self.assertNotIn("paperclip-controlled-swarm.service", final_state["active"])
+            self.assertNotIn("paperclip-gloops.service", final_state["masked"])
+            self.assertEqual(final_state["generalStartFailuresRemaining"], 0)
             commands = log.read_text(encoding="utf-8")
             stop_commands = "\n".join(
                 line for line in commands.splitlines() if line.startswith("stop ")
@@ -141,7 +191,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 self.assertIn(campaign_only, commands)
             receipt = json.loads((state / "last-stop.json").read_text(encoding="utf-8"))
             self.assertEqual(receipt["reason"], "campaign_epoch_expired")
-            self.assertEqual(receipt["outcome"], "dark")
+            self.assertEqual(receipt["outcome"], "product_restored")
 
 
 if __name__ == "__main__":

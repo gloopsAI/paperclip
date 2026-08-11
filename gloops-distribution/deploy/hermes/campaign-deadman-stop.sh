@@ -10,6 +10,8 @@ readonly DOCKER="${PAPERCLIP_CAMPAIGN_DOCKER:-docker}"
 readonly COMMISSIONING_MARKER="${PAPERCLIP_CAMPAIGN_COMMISSIONING_MARKER:-/etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED}"
 readonly COMMISSIONING_RECEIPT="${PAPERCLIP_CAMPAIGN_COMMISSIONING_RECEIPT:-/var/lib/paperclip-gloops/controlled-swarm/commissioning.json}"
 readonly SET_COMMISSIONING="${PAPERCLIP_CAMPAIGN_SET_COMMISSIONING:-/usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py}"
+restore_general=0
+[[ -e "${CONFIG_DIR}/CONTROLLED_SWARM_RUNTIME_APPROVED" ]] && restore_general=1
 
 [[ "${EUID}" -eq 0 || "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" == 'network-free' ]] || {
   echo "campaign stop actuator must run as root" >&2
@@ -96,9 +98,43 @@ rm -f \
   "${COMMISSIONING_RECEIPT}"
 "${SET_COMMISSIONING}" false
 
+outcome='campaign_stopped'
+restore_failed=0
+if ((restore_general == 1)); then
+  # The campaign and general control planes deliberately share one port and
+  # container name. Fence and mask the campaign unit first, then restore the
+  # pre-authorized campaign-free service with bounded retries. Hermes and the
+  # registered brokers remain active throughout the handoff.
+  "${SYSTEMCTL}" mask paperclip-controlled-swarm.service
+  if [[ ! -e "${CONFIG_DIR}/ACTIVATION_APPROVED" ]]; then
+    echo 'campaign expiry cannot restore general Paperclip without its activation marker' >&2
+    outcome='product_restore_failed'
+    restore_failed=1
+  else
+    "${SYSTEMCTL}" unmask paperclip-gloops.service
+    "${SYSTEMCTL}" reset-failed paperclip-gloops.service 2>/dev/null || true
+    restored=0
+    for attempt in 1 2 3; do
+      if "${SYSTEMCTL}" start paperclip-gloops.service \
+        && "${SYSTEMCTL}" is-active --quiet paperclip-gloops.service; then
+        restored=1
+        break
+      fi
+      ((attempt < 3)) && sleep 1
+    done
+    if ((restored == 1)); then
+      outcome='product_restored'
+    else
+      echo 'campaign expiry failed to restore general Paperclip after three attempts' >&2
+      outcome='product_restore_failed'
+      restore_failed=1
+    fi
+  fi
+fi
+
 tmp="$(mktemp "${STATE_DIR}/last-stop.XXXXXX")"
 trap 'rm -f "${tmp}"' EXIT
-python3 - "${tmp}" "${REASON}" <<'PY'
+python3 - "${tmp}" "${REASON}" "${outcome}" <<'PY'
 import datetime as dt
 import json
 import pathlib
@@ -109,7 +145,7 @@ receipt = {
     "schemaVersion": "gloops.campaign-deadman-stop.v1",
     "reason": sys.argv[2],
     "completedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-    "outcome": "dark",
+    "outcome": sys.argv[3],
 }
 path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
@@ -119,3 +155,4 @@ if [[ "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" != 'network-free' ]]; then
 fi
 mv -f "${tmp}" "${RECEIPT}"
 trap - EXIT
+((restore_failed == 0))

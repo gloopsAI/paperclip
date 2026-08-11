@@ -37,7 +37,20 @@ do
   systemctl reset-failed "${unit}" 2>/dev/null || true
 done
 "${LIB_DIR}/set-controlled-swarm-commissioning.py" false
-"${LIB_DIR}/verify-dark.sh"
+systemctl is-active --quiet paperclip-gloops.service
+for surviving_unit in \
+  paperclip-hermes-execution.service \
+  paperclip-github-push-broker.service \
+  paperclip-github-read-broker.service \
+  paperclip-platform-ops-broker.service; do
+  systemctl is-active --quiet "${surviving_unit}"
+done
+for stopped_unit in \
+  paperclip-controlled-swarm.service \
+  paperclip-campaign-deadman.service \
+  paperclip-controlled-swarm-commissioning-recovery.service; do
+  ! systemctl is-active --quiet "${stopped_unit}"
+done
 
 install -d -m 0700 -o root -g root "${STATE_DIR}"
 tmp="$(mktemp "${STATE_DIR}/manual-stop.XXXXXX")"
@@ -56,7 +69,7 @@ path.write_text(
                 timespec="milliseconds",
             ).replace("+00:00", "Z"),
             "reason": "operator_requested_stop",
-            "outcome": "dark",
+            "outcome": "product_continues",
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -67,4 +80,4 @@ PY
 chmod 0600 "${tmp}"
 chown root:root "${tmp}"
 mv -f "${tmp}" "${STATE_DIR}/last-manual-stop.json"
-echo "PASS controlled swarm returned to verified dark state"
+echo "PASS controlled swarm stopped and campaign-free product execution resumed"

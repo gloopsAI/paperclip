@@ -56,8 +56,13 @@ fi
 if [[ "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" == 'network-free' ]]; then
   : >"${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
   chmod 0600 "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
+  : >"${CONFIG_DIR}/ACTIVATION_APPROVED"
+  chmod 0600 "${CONFIG_DIR}/ACTIVATION_APPROVED"
 else
   install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
+  # This marker authorizes the campaign-free product control plane to resume
+  # after the mutually exclusive campaign control plane is fenced at expiry.
+  install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
 fi
 "${SYSTEMCTL}" start "${GITHUB_BROKER}"
 "${SYSTEMCTL}" start "${GITHUB_READ_BROKER}"

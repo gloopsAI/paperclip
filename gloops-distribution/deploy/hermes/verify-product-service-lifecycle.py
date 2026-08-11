@@ -111,13 +111,21 @@ def validate(repo_root: pathlib.Path) -> list[str]:
             failures.append("controlled-swarm activation helper does not start the campaign service")
         if '"${SYSTEMCTL}" start paperclip-gloops.service' in activation_helper:
             failures.append("controlled-swarm activation helper starts the general Paperclip service")
+        if '"${CONFIG_DIR}/ACTIVATION_APPROVED"' not in activation_helper:
+            failures.append("controlled-swarm activation does not authorize general product resumption")
 
     actuator = (hermes / "campaign-deadman-stop.sh").read_text(encoding="utf-8")
+    stop_section = actuator.split('"${SYSTEMCTL}" stop --no-block', 1)[-1].split(
+        "2>/dev/null", 1
+    )[0]
     for target in GENERAL_STOP_TARGETS:
-        if target in actuator:
+        if target in stop_section:
             failures.append(f"campaign expiry actuator still stops {target}")
+    removal_section = actuator.split("rm -f", 1)[-1].split(
+        '"${SYSTEMCTL}" stop --no-block', 1
+    )[0]
     for marker in ("ACTIVATION_APPROVED", "HERMES_EXECUTION_APPROVED"):
-        if marker in actuator:
+        if marker in removal_section:
             failures.append(f"campaign expiry actuator still clears {marker}")
     if "HERMES_HANDSHAKE_APPROVED" not in actuator:
         failures.append("campaign expiry actuator no longer clears the handshake-only marker")
@@ -125,6 +133,11 @@ def validate(repo_root: pathlib.Path) -> list[str]:
         failures.append("campaign expiry actuator does not stop campaign execution")
     if "CONTROLLED_SWARM_RUNTIME_APPROVED" not in actuator:
         failures.append("campaign expiry actuator does not clear campaign execution authority")
+    restore_command = '"${SYSTEMCTL}" start paperclip-gloops.service'
+    if restore_command not in actuator:
+        failures.append("campaign expiry actuator does not restore the general product control plane")
+    elif actuator.find("paperclip-controlled-swarm.service") > actuator.find(restore_command):
+        failures.append("campaign expiry restores general Paperclip before fencing campaign execution")
 
     runtime = (hermes / "runtime.env").read_text(encoding="utf-8").splitlines()
     if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general" not in runtime:
@@ -179,6 +192,7 @@ def main() -> int:
             "campaign expiry actuator still clears HERMES_EXECUTION_APPROVED",
             "campaign expiry actuator does not stop campaign execution",
             "campaign expiry actuator does not clear campaign execution authority",
+            "campaign expiry actuator does not restore the general product control plane",
             "general runtime has no explicit general campaign scope",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_ID",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",
