@@ -6,6 +6,10 @@ import {
 
 export const CAMPAIGN_EPOCH_CONTEXT_KEY = "paperclipCampaignEpoch";
 export const CAMPAIGN_DEADMAN_SCHEMA_VERSION = "gloops.campaign-deadman.v1";
+export const CAMPAIGN_BINDING_CONTEXT_KEY = "paperclipCampaignBinding";
+export const CAMPAIGN_BINDING_SCHEMA_VERSION = "gloops.campaign-binding.v1";
+export const CAMPAIGN_TERMINAL_RECEIPT_KEY = "campaignBindingTerminal";
+export const CAMPAIGN_BOUND_RUN_ERROR_CODE = "campaign_deadman.bound_run_scope_unavailable";
 
 export type CampaignDeadmanPolicy = {
   campaignId: string;
@@ -27,6 +31,12 @@ export type CampaignEpochReceipt = {
   deadlineAt: string;
   durationSeconds: number;
   epochSha256: string;
+};
+
+export type CampaignRunBinding = {
+  schemaVersion: typeof CAMPAIGN_BINDING_SCHEMA_VERSION;
+  scope: "campaign-bound";
+  campaignId: string;
 };
 
 type CampaignAdmissionRequest = {
@@ -208,6 +218,98 @@ export function readCampaignEpochReceipt(value: unknown): CampaignEpochReceipt |
     typeof candidate.epochSha256 !== "string"
   ) return null;
   return candidate as CampaignEpochReceipt;
+}
+
+function readRecordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** Read durable campaign provenance, including legacy rows that only have an epoch receipt. */
+export function readCampaignRunBinding(contextSnapshot: unknown): CampaignRunBinding | null {
+  const context = readRecordOrNull(contextSnapshot);
+  if (!context) return null;
+  const candidate = readRecordOrNull(context[CAMPAIGN_BINDING_CONTEXT_KEY]);
+  if (
+    candidate?.schemaVersion === CAMPAIGN_BINDING_SCHEMA_VERSION &&
+    candidate.scope === "campaign-bound" &&
+    typeof candidate.campaignId === "string" &&
+    CAMPAIGN_ID_PATTERN.test(candidate.campaignId)
+  ) {
+    return candidate as CampaignRunBinding;
+  }
+  const legacyEpoch = readCampaignEpochReceipt(context[CAMPAIGN_EPOCH_CONTEXT_KEY]);
+  return legacyEpoch
+    ? {
+        schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+        scope: "campaign-bound",
+        campaignId: legacyEpoch.campaignId,
+      }
+    : null;
+}
+
+/** Stamp new campaign work while preserving any older durable binding on continuations. */
+export function bindExecutionCampaignContext(
+  contextSnapshot: Record<string, unknown>,
+  policy: ExecutionCampaignPolicy,
+): Record<string, unknown> {
+  const existing = readCampaignRunBinding(contextSnapshot);
+  if (existing) {
+    return contextSnapshot[CAMPAIGN_BINDING_CONTEXT_KEY]
+      ? contextSnapshot
+      : { ...contextSnapshot, [CAMPAIGN_BINDING_CONTEXT_KEY]: existing };
+  }
+  if (policy.scope === "general") return contextSnapshot;
+  return {
+    ...contextSnapshot,
+    [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+      schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+      scope: "campaign-bound",
+      campaignId: policy.deadman.campaignId,
+    } satisfies CampaignRunBinding,
+  };
+}
+
+/** Copy only campaign authority when a recovery path intentionally builds a fresh context. */
+export function inheritCampaignRunBinding(
+  sourceContext: unknown,
+  targetContext: Record<string, unknown>,
+): Record<string, unknown> {
+  const binding = readCampaignRunBinding(sourceContext);
+  if (!binding) return targetContext;
+  const source = readRecordOrNull(sourceContext);
+  const epoch = source ? readCampaignEpochReceipt(source[CAMPAIGN_EPOCH_CONTEXT_KEY]) : null;
+  return {
+    ...targetContext,
+    [CAMPAIGN_BINDING_CONTEXT_KEY]: binding,
+    ...(epoch ? { [CAMPAIGN_EPOCH_CONTEXT_KEY]: epoch } : {}),
+  };
+}
+
+export function resolveRunExecutionCampaignPolicy(
+  processPolicy: ExecutionCampaignPolicy,
+  contextSnapshot: unknown,
+):
+  | { admitted: true; policy: ExecutionCampaignPolicy; binding: CampaignRunBinding | null }
+  | { admitted: false; binding: CampaignRunBinding; reason: string } {
+  const binding = readCampaignRunBinding(contextSnapshot);
+  if (!binding) return { admitted: true, policy: processPolicy, binding: null };
+  if (processPolicy.scope === "general") {
+    return {
+      admitted: false,
+      binding,
+      reason: `Campaign-bound run for ${binding.campaignId} cannot be claimed by the general execution plane`,
+    };
+  }
+  if (processPolicy.deadman.campaignId !== binding.campaignId) {
+    return {
+      admitted: false,
+      binding,
+      reason: `Campaign-bound run for ${binding.campaignId} cannot be claimed by campaign ${processPolicy.deadman.campaignId}`,
+    };
+  }
+  return { admitted: true, policy: processPolicy, binding };
 }
 
 /**

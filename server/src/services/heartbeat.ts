@@ -306,9 +306,16 @@ import { withCompanyQueuePumpLock } from "./company-queue-pump-lock.js";
 import {
   admitCampaignRun,
   admitExecutionCampaign,
+  bindExecutionCampaignContext,
+  CAMPAIGN_BOUND_RUN_ERROR_CODE,
+  CAMPAIGN_TERMINAL_RECEIPT_KEY,
   CAMPAIGN_EPOCH_CONTEXT_KEY,
   enforceCampaignExecutionDeadline,
+  inheritCampaignRunBinding,
   parseExecutionCampaignPolicy,
+  readCampaignRunBinding,
+  resolveRunExecutionCampaignPolicy,
+  type ExecutionCampaignPolicy,
 } from "./campaign-deadman.js";
 import {
   evaluateAgentInvokability,
@@ -8315,6 +8322,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
+  async function terminalizeCampaignBoundRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    reason: string,
+  ) {
+    const binding = readCampaignRunBinding(run.contextSnapshot);
+    if (!binding) return null;
+    const finishedAt = new Date();
+    const terminalReceipt = {
+      schemaVersion: "gloops.campaign-binding-terminal.v1",
+      campaignId: binding.campaignId,
+      disposition: "cancelled",
+      reason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+      terminalizedAt: finishedAt.toISOString(),
+    } as const;
+    const cancelled = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt,
+        updatedAt: finishedAt,
+        error: reason,
+        errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+          timeoutFired: false,
+          providerInvocationAttempted: false,
+          [CAMPAIGN_TERMINAL_RECEIPT_KEY]: terminalReceipt,
+        },
+      })
+      .where(and(
+        eq(heartbeatRuns.id, run.id),
+        inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!cancelled) return getRun(run.id);
+
+    publishRunStatusUpdate(cancelled);
+    await setWakeupStatus(cancelled.wakeupRequestId, "cancelled", {
+      finishedAt,
+      error: reason,
+    });
+    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: terminalReceipt,
+    });
+    return cancelled;
+  }
+
   async function addContinuationExhaustedCommentOnce(input: {
     run: typeof heartbeatRuns.$inferSelect;
     issueId: string;
@@ -9903,10 +9964,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome: "gate_suppressed";
         run: typeof heartbeatRuns.$inferSelect;
         reason: string;
-        errorCode: BlockedScheduledRetryGate["errorCode"];
+        errorCode: BlockedScheduledRetryGate["errorCode"] | typeof CAMPAIGN_BOUND_RUN_ERROR_CODE;
       }
     | { outcome: "not_promoted"; run: typeof heartbeatRuns.$inferSelect | null }
   > {
+    const campaignAdmission = resolveRunExecutionCampaignPolicy(
+      executionCampaignPolicy,
+      dueRun.contextSnapshot,
+    );
+    if (!campaignAdmission.admitted) {
+      const cancelled = await terminalizeCampaignBoundRun(dueRun, campaignAdmission.reason);
+      return cancelled
+        ? {
+            outcome: "gate_suppressed",
+            run: cancelled,
+            reason: campaignAdmission.reason,
+            errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+          }
+        : { outcome: "not_promoted", run: null };
+    }
     const agent = await getAgent(dueRun.agentId);
     if (!agent) {
       const gate = {
@@ -11602,11 +11678,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function claimQueuedRunWithExecutionAdmission(input: {
     run: typeof heartbeatRuns.$inferSelect;
     context: Record<string, unknown>;
+    campaignPolicy: ExecutionCampaignPolicy;
     issueId: string | null;
     responsibleUserId: string | null;
     claimedAt: Date;
   }): Promise<ExecutionAdmissionClaim> {
-    const { run, context, issueId, responsibleUserId, claimedAt } = input;
+    const { run, context, campaignPolicy, issueId, responsibleUserId, claimedAt } = input;
     const bankruptcyCompanyFrozen = backlogBankruptcyAdmissionPolicy.frozenCompanyIds.has(
       run.companyId.toLowerCase(),
     );
@@ -11677,22 +11754,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
         if (
-          executionCampaignPolicy.scope === "campaign-bound" &&
+          campaignPolicy.scope === "campaign-bound" &&
           !controlledSwarmAdmissionPolicy.commissioned
         ) {
           throw new Error("controlled swarm is not commissioned for execution");
         }
         const campaignEpoch = await admitExecutionCampaign(
-          executionCampaignPolicy,
+          campaignPolicy,
           { companyId: run.companyId, runId: run.id },
           campaignDeadmanAdmission,
         );
+        const boundContext = bindExecutionCampaignContext(context, campaignPolicy);
         const nextContext = campaignEpoch
           ? {
-              ...context,
+              ...boundContext,
               [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
             }
-          : context;
+          : boundContext;
         const issueRunnableAdmission = await enforceIssueRunnableAdmissionAtClaim({
           tx,
           run,
@@ -12004,22 +12082,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (
-        executionCampaignPolicy.scope === "campaign-bound" &&
+        campaignPolicy.scope === "campaign-bound" &&
         !controlledSwarmAdmissionPolicy.commissioned
       ) {
         throw new Error("controlled swarm is not commissioned for execution");
       }
       const campaignEpoch = await admitExecutionCampaign(
-        executionCampaignPolicy,
+        campaignPolicy,
         { companyId: run.companyId, runId: run.id },
         campaignDeadmanAdmission,
       );
+      const boundContext = bindExecutionCampaignContext(nextContext, campaignPolicy);
       const claimContext = campaignEpoch
         ? {
-            ...nextContext,
+            ...boundContext,
             [CAMPAIGN_EPOCH_CONTEXT_KEY]: campaignEpoch,
           }
-        : nextContext;
+        : boundContext;
       const issueRunnableAdmission = await enforceIssueRunnableAdmissionAtClaim({
         tx,
         run,
@@ -12262,6 +12341,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
     const context = parseObject(run.contextSnapshot);
+    const runCampaignAdmission = resolveRunExecutionCampaignPolicy(
+      executionCampaignPolicy,
+      context,
+    );
+    if (!runCampaignAdmission.admitted) {
+      await terminalizeCampaignBoundRun(run, runCampaignAdmission.reason);
+      return null;
+    }
     const restoredRecoveryActionId = readNonEmptyString(context.recoveryActionId);
     const restoredRecoveryIssueId = readNonEmptyString(context.issueId);
     const verifiedWorkspaceValidationRestore =
@@ -12582,13 +12669,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: run.agentId,
       });
     }
-    const admissionClaim = await claimQueuedRunWithExecutionAdmission({
-      run,
-      context,
-      issueId,
-      responsibleUserId,
-      claimedAt,
-    });
+    let admissionClaim: ExecutionAdmissionClaim;
+    try {
+      admissionClaim = await claimQueuedRunWithExecutionAdmission({
+        run,
+        context,
+        campaignPolicy: runCampaignAdmission.policy,
+        issueId,
+        responsibleUserId,
+        claimedAt,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        runCampaignAdmission.binding &&
+        (message.includes("campaign deadman") || message.includes("campaign-bound execution"))
+      ) {
+        await terminalizeCampaignBoundRun(run, `Campaign-bound claim refused: ${message}`);
+        return null;
+      }
+      throw error;
+    }
     if (admissionClaim.kind === "lost_race") return null;
     if (admissionClaim.kind === "company_wip_deferred") {
       logger.info(
@@ -14030,6 +14131,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       run = claimed;
     }
+
+    const runCampaignAdmission = resolveRunExecutionCampaignPolicy(
+      executionCampaignPolicy,
+      run.contextSnapshot,
+    );
+    if (!runCampaignAdmission.admitted) {
+      await terminalizeCampaignBoundRun(run, runCampaignAdmission.reason);
+      return;
+    }
+    const runExecutionCampaignPolicy = runCampaignAdmission.policy;
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
@@ -15944,9 +16055,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? "reconciled"
             : "unsupported"
         : null;
-      if (executionCampaignPolicy.scope === "campaign-bound" && executionBudgetMode === "strict") {
+      if (runExecutionCampaignPolicy.scope === "campaign-bound" && executionBudgetMode === "strict") {
         invocationBudget = enforceCampaignExecutionDeadline({
-          policy: executionCampaignPolicy,
+          policy: runExecutionCampaignPolicy,
           receipt: context[CAMPAIGN_EPOCH_CONTEXT_KEY],
           budget: invocationBudget,
         });
@@ -16033,7 +16144,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
       if (
-        executionCampaignPolicy.scope === "campaign-bound" &&
+        runExecutionCampaignPolicy.scope === "campaign-bound" &&
         executionBudgetMode !== "strict"
       ) {
         adapterResult = {
@@ -18111,18 +18222,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail: "system",
             status: "queued",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: withRecoveryModelProfileHint({
-              issueId: issue.id,
-              taskId: issue.id,
-              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
-              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              source: "issue.execution_review_recovery",
-              retryOfRunId: run.id,
-              currentStageId: executionState?.currentStageId ?? null,
-              currentStageType: executionState?.currentStageType ?? null,
-              reviewRecoveryInstruction:
-                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
-            }, "normal_model"),
+            contextSnapshot: inheritCampaignRunBinding(
+              run.contextSnapshot,
+              withRecoveryModelProfileHint({
+                issueId: issue.id,
+                taskId: issue.id,
+                wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+                retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+                source: "issue.execution_review_recovery",
+                retryOfRunId: run.id,
+                currentStageId: executionState?.currentStageId ?? null,
+                currentStageType: executionState?.currentStageType ?? null,
+                reviewRecoveryInstruction:
+                  "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+              }, "normal_model"),
+            ),
             sessionIdBefore: recoverySessionBefore,
             retryOfRunId: run.id,
             updatedAt: now,
@@ -18226,14 +18340,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recoverySource =
         issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
       const now = new Date();
-      const recoveryContextSnapshot = withRecoveryModelProfileHint({
-        issueId: issue.id,
-        taskId: issue.id,
-        wakeReason: recoveryReason,
-        retryReason,
-        source: recoverySource,
-        retryOfRunId: run.id,
-      }, "normal_model");
+      const recoveryContextSnapshot = inheritCampaignRunBinding(
+        run.contextSnapshot,
+        withRecoveryModelProfileHint({
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: recoveryReason,
+          retryReason,
+          source: recoverySource,
+          retryOfRunId: run.id,
+        }, "normal_model"),
+      );
       const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
         companyId: issue.companyId,
         contextSnapshot: recoveryContextSnapshot,
@@ -18384,7 +18501,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
     const {
-      contextSnapshot: enrichedContextSnapshot,
+      contextSnapshot: rawEnrichedContextSnapshot,
       issueIdFromPayload,
       taskKey,
       wakeCommentId,
@@ -18395,6 +18512,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       triggerDetail,
       payload,
     });
+    const enrichedContextSnapshot = bindExecutionCampaignContext(
+      rawEnrichedContextSnapshot,
+      executionCampaignPolicy,
+    );
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
     const agent = await getAgent(agentId);
@@ -19594,14 +19715,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])))
       .orderBy(desc(heartbeatRuns.createdAt));
 
+    const newRunCampaignId = readCampaignRunBinding(enrichedContextSnapshot)?.campaignId ?? null;
+    const isSameCampaignScope = (candidate: typeof heartbeatRuns.$inferSelect) =>
+      (readCampaignRunBinding(candidate.contextSnapshot)?.campaignId ?? null) === newRunCampaignId;
+
     const sameScopeQueuedRun = activeRuns.find(
-      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "queued" &&
+        isSameTaskScope(runTaskKey(candidate), taskKey) &&
+        isSameCampaignScope(candidate),
     );
     const sameScopeScheduledRetryRun = activeRuns.find(
-      (candidate) => candidate.status === "scheduled_retry" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "scheduled_retry" &&
+        isSameTaskScope(runTaskKey(candidate), taskKey) &&
+        isSameCampaignScope(candidate),
     );
     const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "running" &&
+        isSameTaskScope(runTaskKey(candidate), taskKey) &&
+        isSameCampaignScope(candidate),
     );
     const shouldQueueFollowupForRunningWake =
       Boolean(sameScopeRunningRun) &&

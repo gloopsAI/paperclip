@@ -13,8 +13,12 @@ import {
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
+  CAMPAIGN_BINDING_CONTEXT_KEY,
+  CAMPAIGN_BINDING_SCHEMA_VERSION,
+  CAMPAIGN_BOUND_RUN_ERROR_CODE,
   CAMPAIGN_DEADMAN_SCHEMA_VERSION,
   CAMPAIGN_EPOCH_CONTEXT_KEY,
+  CAMPAIGN_TERMINAL_RECEIPT_KEY,
 } from "../services/campaign-deadman.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -893,6 +897,217 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
       contextSnapshot: {},
     });
     expect(campaignDeadmanAdmission).toHaveBeenCalledTimes(1);
+    expect(adapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("durably binds campaign-created queues and terminalizes them idempotently on both general claim branches", async () => {
+    adapterExecute.mockClear();
+    for (const admissionEnv of [{}, executionAdmissionEnv]) {
+      const { companyId, agentIds: [agentId] } = await seedCompany(1);
+      const campaignId = `handoff-${companyId.slice(0, 8)}`;
+      const blockerRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: blockerRunId,
+        companyId,
+        agentId: agentId!,
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        responsibleUserId: "operator",
+        contextSnapshot: {},
+        startedAt: new Date(),
+      });
+      const campaign = heartbeatService(db, {
+        runtimeEnv: {
+          ...admissionEnv,
+          PAPERCLIP_CAMPAIGN_ID: campaignId,
+          PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+        },
+        campaignDeadmanAdmission: vi.fn(),
+      });
+      const boundRun = await campaign.invoke(
+        agentId!,
+        "on_demand",
+        {},
+        "system",
+        { actorType: "user", actorId: "operator" },
+      );
+      expect(boundRun?.status).toBe("queued");
+      expect(boundRun?.contextSnapshot).toMatchObject({
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+          schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+          scope: "campaign-bound",
+          campaignId,
+        },
+      });
+
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, blockerRunId));
+
+      const general = heartbeatService(db, { runtimeEnv: admissionEnv });
+      await general.resumeQueuedRuns();
+      const cancelled = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, boundRun!.id))
+        .then((rows) => rows[0]);
+      expect(cancelled).toMatchObject({
+        status: "cancelled",
+        errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+        resultJson: {
+          stopReason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+          providerInvocationAttempted: false,
+          [CAMPAIGN_TERMINAL_RECEIPT_KEY]: {
+            campaignId,
+            disposition: "cancelled",
+          },
+        },
+      });
+      const firstReceipt = (cancelled.resultJson as Record<string, unknown>)[CAMPAIGN_TERMINAL_RECEIPT_KEY];
+      await general.resumeQueuedRuns();
+      const replayed = await db
+        .select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, boundRun!.id))
+        .then((rows) => rows[0]);
+      expect((replayed.resultJson as Record<string, unknown>)[CAMPAIGN_TERMINAL_RECEIPT_KEY])
+        .toEqual(firstReceipt);
+
+      const generalRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: generalRunId,
+        companyId,
+        agentId: agentId!,
+        status: "queued",
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        responsibleUserId: "operator",
+        contextSnapshot: {},
+      });
+      await general.resumeQueuedRuns();
+      await waitForTerminalRuns(db, [generalRunId]);
+      await general.waitForRunExecutionDrain(generalRunId);
+      expect(await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, generalRunId))
+        .then((rows) => rows[0]?.status)).toBe("succeeded");
+      expect(adapterExecute.mock.calls.filter(([input]) => input.agent.id === agentId))
+        .toHaveLength(1);
+    }
+  }, 30_000);
+
+  it("terminalizes a due campaign-bound scheduled retry in the general plane without promotion", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const sourceRunId = randomUUID();
+    const campaignId = "expired-scheduled-campaign";
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId: agentId!,
+      status: "failed",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      responsibleUserId: "operator",
+      finishedAt: new Date("2026-01-01T00:00:00.000Z"),
+      contextSnapshot: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+          schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+          scope: "campaign-bound",
+          campaignId,
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    const dueAt = new Date("2026-01-02T00:00:00.000Z");
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now: dueAt,
+      delayMs: 0,
+      maxAttempts: 1,
+    });
+    expect(scheduled).toMatchObject({
+      outcome: "scheduled",
+      run: {
+        status: "scheduled_retry",
+        retryOfRunId: sourceRunId,
+        contextSnapshot: {
+          [CAMPAIGN_BINDING_CONTEXT_KEY]: { campaignId },
+        },
+      },
+    });
+    if (scheduled.outcome !== "scheduled") throw new Error("expected bounded retry to be scheduled");
+    const runId = scheduled.run.id;
+    expect(await heartbeat.promoteDueScheduledRetries(dueAt))
+      .toEqual({ promoted: 0, runIds: [] });
+    const persisted = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(persisted).toMatchObject({
+      status: "cancelled",
+      errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+      resultJson: {
+        [CAMPAIGN_TERMINAL_RECEIPT_KEY]: { campaignId },
+      },
+    });
+    expect(adapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy campaign epoch provenance on orphan recovery and terminalizes the retry in general mode", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const runId = randomUUID();
+    const campaignId = "legacy-orphan-campaign";
+    await db
+      .update(agents)
+      .set({ adapterType: "codex_local" })
+      .where(eq(agents.id, agentId!));
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: agentId!,
+      status: "running",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      responsibleUserId: "operator",
+      processPid: 99_999_999,
+      processLossRetryCount: 0,
+      startedAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      contextSnapshot: {
+        [CAMPAIGN_EPOCH_CONTEXT_KEY]: {
+          schemaVersion: CAMPAIGN_DEADMAN_SCHEMA_VERSION,
+          campaignId,
+          companyId,
+          firstRunId: runId,
+          firstAdmittedAt: "2026-01-01T00:00:00.000Z",
+          deadlineAt: "2026-01-02T00:00:00.000Z",
+          durationSeconds: 86_400,
+          epochSha256: `sha256:${"e".repeat(64)}`,
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+    const retry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retry).toMatchObject({
+      status: "cancelled",
+      errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+      contextSnapshot: {
+        [CAMPAIGN_EPOCH_CONTEXT_KEY]: { campaignId },
+      },
+      resultJson: {
+        [CAMPAIGN_TERMINAL_RECEIPT_KEY]: { campaignId },
+      },
+    });
     expect(adapterExecute).not.toHaveBeenCalled();
   });
 });
