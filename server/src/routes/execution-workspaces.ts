@@ -296,7 +296,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               projectId: existing.projectId,
               workspaceId: existing.projectWorkspaceId,
               repoUrl: projectWorkspace?.repoUrl ?? existing.repoUrl,
-              repoRef: existing.baseRef,
+              repoRef: projectWorkspace?.repoRef ?? projectWorkspace?.defaultRef ?? existing.baseRef,
             },
             workspace: {
               id: existing.id,

@@ -214,7 +214,7 @@ describe("execution workspace policy helpers", () => {
         defaultMode: "isolated_workspace",
         workspaceStrategy: {
           type: "git_worktree",
-          branchTemplate: "review/{{issue.identifier}}/{{slug}}",
+          branchTemplate: "review/{{workspace.repoRef}}/{{issue.identifier}}/{{slug}}",
           worktreeParentDir: ".paperclip/custom-review-worktrees",
         },
       },
@@ -234,7 +234,7 @@ describe("execution workspace policy helpers", () => {
       type: "git_worktree",
       baseRef: "a".repeat(40),
       remoteRefreshPolicy: "local_only",
-      branchTemplate: "review/{{issue.identifier}}/{{slug}}",
+      branchTemplate: "review/{{workspace.repoRef}}/{{issue.identifier}}/{{slug}}",
       worktreeParentDir: ".paperclip/custom-review-worktrees",
     });
   });

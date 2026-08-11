@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { agents, executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   describeSupportedWorkspaceBranchTemplateVariables,
   findUnsupportedWorkspaceBranchTemplateVariables,
@@ -141,6 +141,9 @@ function canonicalizePotentialWorkspacePath(value: string): string {
 export type ProvenanceBoundImplementationReviewAuthority = {
   exactBaseRef: string;
   issue: ExecutionWorkspaceIssueRef;
+  agent: ExecutionWorkspaceAgentRef | null;
+  projectId: string | null;
+  workspaceRepoRef: string | null;
   workspaceStrategy: NonNullable<
     NonNullable<ReturnType<typeof parseIssueExecutionWorkspaceSettings>>["workspaceStrategy"]
   >;
@@ -162,6 +165,8 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
       title: issues.title,
       workMode: issues.workMode,
       projectId: issues.projectId,
+      projectWorkspaceId: issues.projectWorkspaceId,
+      assigneeAgentId: issues.assigneeAgentId,
       parentId: issues.parentId,
       executionWorkspaceId: issues.executionWorkspaceId,
       executionWorkspaceSettings: issues.executionWorkspaceSettings,
@@ -190,7 +195,7 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
   ) {
     return null;
   }
-  const [parentIssue, sourceRun, projectPolicyRow] = await Promise.all([
+  const [parentIssue, sourceRun, projectPolicyRow, sourceAgent, sourceProjectWorkspace] = await Promise.all([
     db
       .select({ id: issues.id })
       .from(issues)
@@ -218,6 +223,26 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
           ))
           .then((rows) => rows[0] ?? null)
       : Promise.resolve(null),
+    sourceIssue.assigneeAgentId
+      ? db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(and(
+            eq(agents.id, sourceIssue.assigneeAgentId),
+            eq(agents.companyId, workspace.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    sourceIssue.projectWorkspaceId
+      ? db
+          .select({ repoRef: projectWorkspaces.repoRef, defaultRef: projectWorkspaces.defaultRef })
+          .from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.id, sourceIssue.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, workspace.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
   ]);
   const workspaceStrategy = resolveEffectiveExecutionWorkspaceStrategy({
     projectPolicy: parseProjectExecutionWorkspacePolicy(projectPolicyRow?.executionWorkspacePolicy),
@@ -233,6 +258,11 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
           title: sourceIssue.title,
           workMode: sourceIssue.workMode,
         },
+        agent: sourceAgent
+          ? { id: sourceAgent.id, name: sourceAgent.name, companyId: workspace.companyId }
+          : null,
+        projectId: sourceIssue.projectId,
+        workspaceRepoRef: sourceProjectWorkspace?.repoRef ?? sourceProjectWorkspace?.defaultRef ?? null,
         workspaceStrategy,
       }
     : null;
@@ -3324,9 +3354,12 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     );
     const expectedBranchName = sanitizeBranchName(renderWorkspaceTemplate(branchTemplate, {
       issue: reviewAuthority.issue,
-      agent: input.agent,
-      projectId: input.base.projectId,
-      repoRef: reviewAuthority.exactBaseRef,
+      agent: reviewAuthority.agent ?? input.agent,
+      projectId: reviewAuthority.projectId ?? input.base.projectId,
+      // Match fresh realization exactly: template variables describe the
+      // project/input workspace, while baseRef authority remains the exact
+      // implementation SHA below.
+      repoRef: reviewAuthority.workspaceRepoRef ?? input.base.repoRef,
     }));
     const configuredParentDir = asString(reviewAuthority.workspaceStrategy.worktreeParentDir, "");
     const expectedWorktreeParentDir = configuredParentDir
@@ -3393,7 +3426,19 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     });
   }
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
-  if (await directoryExists(cwd)) {
+  const persistedCwdExists = await directoryExists(cwd);
+  if (persistedCwdExists && remoteRefreshPolicy === "local_only") {
+    // HEAD verification is read-only and must precede branch coherence.
+    // Coherence may checkout, detach, or quarantine a stale worktree.
+    await assertLocalOnlyWorktreeHead({
+      remoteRefreshPolicy,
+      worktreePath: realized.worktreePath ?? cwd,
+      expectedHeadSha: localOnlyDeclaredBaseRefSha,
+      repoRoot,
+      baseRef: declaredBaseRef,
+    });
+  }
+  if (persistedCwdExists) {
     const reuseBaseRef = declaredBaseRef;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
     const repairWarnings: string[] = [];

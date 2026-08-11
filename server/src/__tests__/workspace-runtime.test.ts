@@ -3021,12 +3021,97 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations).toEqual([]);
   });
 
+  it("rejects a stale exact-review HEAD before existing-worktree coherence can mutate it", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "7ccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const sourceIssueId = "7ddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const expectedBranch = "review-stale-head";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, exactHead]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, expectedBranch]);
+    const actualBranch = "review-stale-attacker";
+    await runGit(worktreePath, ["checkout", "-b", actualBranch]);
+    await fs.writeFile(path.join(worktreePath, "stale.txt"), "wrong review head\n", "utf8");
+    await runGit(worktreePath, ["add", "stale.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Advance stale review head"]);
+    const staleHead = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const statusBefore = await readGit(worktreePath, ["status", "--porcelain=v1"]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-stale",
+        title: "head",
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: exactHead,
+        branchName: expectedBranch,
+        config: { remoteRefreshPolicy: "allowed" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-stale", title: "head" },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+      heartbeatRunId: "7eeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_head_mismatch",
+          expectedHeadSha: exactHead,
+          actualHeadSha: staleHead,
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]))
+      .toBe(actualBranch);
+    expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(staleHead);
+    expect(await readGit(worktreePath, ["status", "--porcelain=v1"])).toBe(statusBefore);
+    expect(operations).toEqual([]);
+  });
+
   it("accepts a valid review worktree using the effective custom project branch template and parent", async () => {
     const repoRoot = await createTempRepo();
     const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
     const workspaceId = "79999999-9999-4999-8999-999999999999";
     const sourceIssueId = "7aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    const expectedBranch = "review/review-custom/custom-parent";
+    const expectedBranch = "review/main/review-custom/custom-parent";
     const expectedPath = path.join(
       repoRoot,
       ".paperclip",
@@ -3049,7 +3134,7 @@ describe("realizeExecutionWorkspace", () => {
           defaultMode: "isolated_workspace",
           workspaceStrategy: {
             type: "git_worktree",
-            branchTemplate: "review/{{issue.identifier}}/{{slug}}",
+            branchTemplate: "review/{{workspace.repoRef}}/{{issue.identifier}}/{{slug}}",
             worktreeParentDir: ".paperclip/custom-review-worktrees",
           },
         },
