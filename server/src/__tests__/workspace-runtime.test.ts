@@ -139,6 +139,11 @@ function createAuthenticReviewWorkspaceDb(input: {
   identifier: string;
   title: string;
   projectPolicy?: Record<string, unknown> | null;
+  sourceAgent?: {
+    id: string;
+    name: string;
+    workspaceStrategy: Record<string, unknown>;
+  } | null;
 }) {
   const parentIssueId = "71111111-1111-4111-8111-111111111111";
   const sourceRunId = "72222222-2222-4222-8222-222222222222";
@@ -153,6 +158,7 @@ function createAuthenticReviewWorkspaceDb(input: {
                 title: input.title,
                 workMode: "review",
                 projectId: input.projectPolicy ? "project-1" : null,
+                assigneeAgentId: input.sourceAgent?.id ?? null,
                 parentId: parentIssueId,
                 executionWorkspaceId: input.workspaceId,
                 executionWorkspaceSettings: {
@@ -171,6 +177,14 @@ function createAuthenticReviewWorkspaceDb(input: {
               }]
             : "executionWorkspacePolicy" in selection
               ? [{ executionWorkspacePolicy: input.projectPolicy }]
+              : "adapterConfig" in selection
+                ? input.sourceAgent
+                  ? [{
+                      id: input.sourceAgent.id,
+                      name: input.sourceAgent.name,
+                      adapterConfig: { workspaceStrategy: input.sourceAgent.workspaceStrategy },
+                    }]
+                  : []
               : [{ id: parentIssueId }],
         ),
       }),
@@ -2792,6 +2806,89 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations).toEqual([]);
   });
 
+  it("rejects a stale canonical review branch before restoring its missing worktree path", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "7f111111-1111-4111-8111-111111111111";
+    const sourceIssueId = "7f222222-2222-4222-8222-222222222222";
+    const branchName = "review-missing-stale-branch";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", branchName, exactHead]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    await fs.rm(worktreePath, { recursive: true, force: true });
+
+    await fs.writeFile(path.join(repoRoot, "stale-branch.txt"), "wrong review ref\n", "utf8");
+    await runGit(repoRoot, ["add", "stale-branch.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Advance stale canonical review ref"]);
+    const staleHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    await runGit(repoRoot, ["update-ref", `refs/heads/${branchName}`, staleHead]);
+
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const parentEntriesBefore = await fs.readdir(path.dirname(worktreePath));
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-missing-stale",
+        title: "branch",
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: exactHead,
+        branchName,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-missing-stale", title: "branch" },
+      agent: { id: "heartbeat-caller", name: "Heartbeat Caller", companyId: "company-1" },
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_head_mismatch",
+          expectedHeadSha: exactHead,
+          actualHeadSha: staleHead,
+          branchName,
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(await fs.readdir(path.dirname(worktreePath))).toEqual(parentEntriesBefore);
+    await expect(fs.access(worktreePath)).rejects.toThrow();
+    expect(operations).toEqual([]);
+  });
+
   it("rejects a missing local-only object before mutating an existing persisted worktree", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-451-local-review-expected";
@@ -3164,6 +3261,71 @@ describe("realizeExecutionWorkspace", () => {
       issue: { id: sourceIssueId, identifier: "review-custom", title: "custom parent" },
       agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
       heartbeatRunId: "7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+
+    expect(restored?.branchName).toBe(expectedBranch);
+    await expect(fs.realpath(restored?.cwd ?? "")).resolves.toBe(await fs.realpath(expectedPath));
+    expect(await readGit(expectedPath, ["rev-parse", "HEAD"])).toBe(exactHead);
+  });
+
+  it("accepts a valid review worktree using the source agent branch template and parent", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "7f333333-3333-4333-8333-333333333333";
+    const sourceIssueId = "7f444444-4444-4444-8444-444444444444";
+    const sourceAgent = {
+      id: "7f555555-5555-4555-8555-555555555555",
+      name: "Source Review Agent",
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "agent/{{agent.name}}/{{issue.identifier}}/{{slug}}",
+        worktreeParentDir: ".paperclip/agent-review-worktrees",
+      },
+    };
+    const expectedBranch = "agent/Source-Review-Agent/review-agent/agent-parent";
+    const expectedPath = path.join(
+      repoRoot,
+      ".paperclip",
+      "agent-review-worktrees",
+      expectedBranch,
+    );
+    await fs.mkdir(path.dirname(expectedPath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, exactHead]);
+    await runGit(repoRoot, ["worktree", "add", expectedPath, expectedBranch]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-agent",
+        title: "agent parent",
+        sourceAgent,
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: expectedPath,
+        providerRef: expectedPath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: exactHead,
+        branchName: expectedBranch,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-agent", title: "agent parent" },
+      agent: { id: "heartbeat-caller", name: "Heartbeat Caller", companyId: "company-1" },
     });
 
     expect(restored?.branchName).toBe(expectedBranch);

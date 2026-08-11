@@ -225,7 +225,7 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
       : Promise.resolve(null),
     sourceIssue.assigneeAgentId
       ? db
-          .select({ id: agents.id, name: agents.name })
+          .select({ id: agents.id, name: agents.name, adapterConfig: agents.adapterConfig })
           .from(agents)
           .where(and(
             eq(agents.id, sourceIssue.assigneeAgentId),
@@ -245,6 +245,7 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
       : Promise.resolve(null),
   ]);
   const workspaceStrategy = resolveEffectiveExecutionWorkspaceStrategy({
+    agentConfig: parseObject(sourceAgent?.adapterConfig),
     projectPolicy: parseProjectExecutionWorkspacePolicy(projectPolicyRow?.executionWorkspacePolicy),
     issueSettings: issueWorkspaceSettings,
   });
@@ -3551,8 +3552,6 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     ? localOnlyDeclaredBaseRefSha
     : null;
 
-  await fs.mkdir(path.dirname(worktreePath), { recursive: true });
-  await runGit(["worktree", "prune"], repoRoot).catch(() => {});
   if (remoteRefreshPolicy !== "local_only") {
     restoreRefreshWarnings = restoreBaseRef
       ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef, remoteRefreshPolicy)
@@ -3560,7 +3559,32 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     restoreCurrentBaseRefSha = restoreBaseRef
       ? await resolveBaseRefSha(repoRoot, restoreBaseRef)
       : null;
+  } else {
+    // A missing checkout can leave its canonical branch registered at a
+    // different commit. Resolve and validate that ref before mkdir/prune/add:
+    // each of those operations mutates filesystem or Git worktree state.
+    const restoreBranchHeadSha = await resolveBaseRefSha(repoRoot, branchName);
+    if (restoreBranchHeadSha !== restoreCurrentBaseRefSha) {
+      throw new WorkspacePreparationFailure(
+        `Local-only execution workspace branch "${branchName}" is not pinned to declared head ${restoreCurrentBaseRefSha}; found ${restoreBranchHeadSha ?? "no readable branch ref"}.`,
+        {
+          reason: "local_review_head_mismatch",
+          owner: "platform_workspace",
+          action: "discard_stale_review_workspace_and_retry",
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef: restoreBaseRef,
+          expectedHeadSha: restoreCurrentBaseRefSha,
+          actualHeadSha: restoreBranchHeadSha,
+          remoteRefreshPolicy,
+        },
+      );
+    }
   }
+
+  await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+  await runGit(["worktree", "prune"], repoRoot).catch(() => {});
 
   let created = false;
   try {
