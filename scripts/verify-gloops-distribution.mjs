@@ -274,6 +274,10 @@ const githubPushToolTestPath = new URL(
   "../gloops-distribution/deploy/hermes/github-push-tool.test.mjs",
   import.meta.url,
 );
+const registeredPublishPathTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/registered_publish_path_test.py",
+  import.meta.url,
+);
 const githubPushBrokerServicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-github-push-broker.service",
   import.meta.url,
@@ -451,6 +455,9 @@ try {
     stdio: "inherit",
   });
   execFileSync("node", ["--test", githubPushToolTestPath.pathname], {
+    stdio: "inherit",
+  });
+  execFileSync("python3", [registeredPublishPathTestPath.pathname], {
     stdio: "inherit",
   });
 } catch {
