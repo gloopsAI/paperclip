@@ -12,6 +12,7 @@ import {
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.js";
+import { resolveProvenanceBoundImplementationReviewAuthority } from "../services/workspace-runtime.js";
 
 const execFileAsync = promisify(execFile);
 const tempRepos: string[] = [];
@@ -108,6 +109,8 @@ function createReviewWorkspaceDb(input: {
   workspaceId: string;
   sourceIssueId: string;
   exactBaseRef: string;
+  sourceIssueIdentifier: string;
+  sourceIssueTitle: string;
   repoRoot?: string;
 }) {
   const parentIssueId = "11111111-1111-4111-8111-111111111111";
@@ -119,6 +122,9 @@ function createReviewWorkspaceDb(input: {
           "executionWorkspaceSettings" in selection
             ? [{
                 id: input.sourceIssueId,
+                identifier: input.sourceIssueIdentifier,
+                title: input.sourceIssueTitle,
+                workMode: "review",
                 parentId: parentIssueId,
                 executionWorkspaceId: input.workspaceId,
                 executionWorkspaceSettings: {
@@ -254,7 +260,18 @@ describe.sequential("execution workspace routes", () => {
       source: "agent_key",
       runId: "run-1",
     };
-    const db = createReviewWorkspaceDb({ workspaceId, sourceIssueId, exactBaseRef: missingHead });
+    const db = createReviewWorkspaceDb({
+      workspaceId,
+      sourceIssueId,
+      exactBaseRef: missingHead,
+      sourceIssueIdentifier: "review-route",
+      sourceIssueTitle: "expected",
+    });
+    await expect(resolveProvenanceBoundImplementationReviewAuthority(db as any, {
+      id: workspaceId,
+      companyId: "company-1",
+      sourceIssueId,
+    })).resolves.toMatchObject({ exactBaseRef: missingHead });
     const app = createApp(actor, db);
     const patchRes = await request(app)
       .patch(`/api/execution-workspaces/${workspaceId}`)
@@ -362,8 +379,15 @@ describe.sequential("execution workspace routes", () => {
       workspaceId,
       sourceIssueId,
       exactBaseRef: missingHead,
+      sourceIssueIdentifier: "review-route",
+      sourceIssueTitle: "missing",
       repoRoot,
     });
+    await expect(resolveProvenanceBoundImplementationReviewAuthority(db as any, {
+      id: workspaceId,
+      companyId: "company-1",
+      sourceIssueId,
+    })).resolves.toMatchObject({ exactBaseRef: missingHead });
     const app = createApp(actor, db);
     const patchRes = await request(app)
       .patch(`/api/execution-workspaces/${workspaceId}`)

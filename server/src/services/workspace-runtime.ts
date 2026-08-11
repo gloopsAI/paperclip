@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRuns, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   describeSupportedWorkspaceBranchTemplateVariables,
   findUnsupportedWorkspaceBranchTemplateVariables,
@@ -20,7 +20,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -39,6 +39,11 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { parseIssueExecutionWorkspaceSettings } from "./execution-workspace-policy.js";
+import {
+  isExactHeadSha,
+  parseImplementationReviewProvenance,
+} from "./implementation-review-handoff.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -112,6 +117,105 @@ export class WorkspacePreparationFailure extends Error {
       workspacePreparation: { ...workspacePreparation, message },
     };
   }
+}
+
+function canonicalizePotentialWorkspacePath(value: string): string {
+  let existingAncestor = path.resolve(value);
+  const missingSegments: string[] = [];
+  while (!existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) break;
+    missingSegments.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  const canonicalAncestor = existsSync(existingAncestor)
+    ? realpathSync(existingAncestor)
+    : existingAncestor;
+  return path.resolve(canonicalAncestor, ...missingSegments);
+}
+
+export type ProvenanceBoundImplementationReviewAuthority = {
+  exactBaseRef: string;
+  issue: ExecutionWorkspaceIssueRef;
+  workspaceStrategy: NonNullable<
+    NonNullable<ReturnType<typeof parseIssueExecutionWorkspaceSettings>>["workspaceStrategy"]
+  >;
+};
+
+export async function resolveProvenanceBoundImplementationReviewAuthority(
+  db: Db,
+  workspace: {
+    id: string;
+    companyId: string;
+    sourceIssueId?: string | null;
+  },
+): Promise<ProvenanceBoundImplementationReviewAuthority | null> {
+  if (!workspace.sourceIssueId) return null;
+  const sourceIssue = await db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      workMode: issues.workMode,
+      parentId: issues.parentId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+      executionWorkspaceSettings: issues.executionWorkspaceSettings,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.id, workspace.sourceIssueId),
+      eq(issues.companyId, workspace.companyId),
+      eq(issues.executionWorkspaceId, workspace.id),
+    ))
+    .then((rows) => rows[0] ?? null);
+  const provenance = sourceIssue
+    ? parseImplementationReviewProvenance(sourceIssue.executionWorkspaceSettings)
+    : null;
+  const issueWorkspaceSettings = sourceIssue
+    ? parseIssueExecutionWorkspaceSettings(sourceIssue.executionWorkspaceSettings)
+    : null;
+  const workspaceStrategy = issueWorkspaceSettings?.workspaceStrategy;
+  const exactBaseRef = workspaceStrategy?.baseRef;
+  if (
+    !sourceIssue?.parentId
+    || provenance?.parentIssueId !== sourceIssue.parentId
+    || workspaceStrategy?.type !== "git_worktree"
+    || workspaceStrategy.remoteRefreshPolicy !== "local_only"
+    || !isExactHeadSha(exactBaseRef)
+  ) {
+    return null;
+  }
+  const [parentIssue, sourceRun] = await Promise.all([
+    db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(
+        eq(issues.id, sourceIssue.parentId),
+        eq(issues.companyId, workspace.companyId),
+      ))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, provenance.sourceRunId),
+        eq(heartbeatRuns.companyId, workspace.companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sourceIssue.parentId}`,
+      ))
+      .then((rows) => rows[0] ?? null),
+  ]);
+  return parentIssue && sourceRun
+    ? {
+        exactBaseRef: exactBaseRef.trim().toLowerCase(),
+        issue: {
+          id: sourceIssue.id,
+          identifier: sourceIssue.identifier,
+          title: sourceIssue.title,
+          workMode: sourceIssue.workMode,
+        },
+        workspaceStrategy,
+      }
+    : null;
 }
 
 export interface RuntimeServiceRef {
@@ -3129,6 +3233,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   base: ExecutionWorkspaceInput;
   workspace: {
     id?: string | null;
+    sourceIssueId?: string | null;
     mode: string | null | undefined;
     strategyType: string | null | undefined;
     cwd: string | null | undefined;
@@ -3151,8 +3256,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace | null> {
-  const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
-  if (!cwd) return null;
+  let cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
 
   const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
   const realized: RealizedExecutionWorkspace = {
@@ -3171,16 +3275,82 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRefSha: readRecordedBaseRefSha(input.workspace.metadata),
   };
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
-  const remoteRefreshPolicy = readRemoteRefreshPolicy(input.workspace.config?.remoteRefreshPolicy);
+  let remoteRefreshPolicy = readRemoteRefreshPolicy(input.workspace.config?.remoteRefreshPolicy);
 
   if (strategy !== "git_worktree") {
+    if (!cwd) return null;
     if (!await directoryExists(cwd)) {
       return null;
     }
     return realized;
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
-  const declaredBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  const reviewAuthority = input.db && input.workspace.id
+    ? await resolveProvenanceBoundImplementationReviewAuthority(input.db, {
+        id: input.workspace.id,
+        companyId: input.agent.companyId,
+        sourceIssueId: input.workspace.sourceIssueId ?? input.issue?.id ?? null,
+      })
+    : null;
+  let declaredBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  if (reviewAuthority) {
+    const branchTemplate = asString(
+      reviewAuthority.workspaceStrategy.branchTemplate,
+      "{{issue.identifier}}-{{slug}}",
+    );
+    const expectedBranchName = sanitizeBranchName(renderWorkspaceTemplate(branchTemplate, {
+      issue: reviewAuthority.issue,
+      agent: input.agent,
+      projectId: input.base.projectId,
+      repoRef: reviewAuthority.exactBaseRef,
+    }));
+    const configuredParentDir = asString(reviewAuthority.workspaceStrategy.worktreeParentDir, "");
+    const expectedWorktreeParentDir = configuredParentDir
+      ? resolveConfiguredPath(configuredParentDir, repoRoot)
+      : path.join(repoRoot, ".paperclip", "worktrees");
+    const expectedWorktreePath = path.join(expectedWorktreeParentDir, expectedBranchName);
+    const actualProviderRef = asString(input.workspace.providerRef, "").trim();
+    const identityMismatches = [
+      (input.workspace.baseRef ?? "").trim().toLowerCase() === reviewAuthority.exactBaseRef
+        ? null
+        : "baseRef",
+      input.workspace.branchName === expectedBranchName ? null : "branchName",
+      cwd && canonicalizePotentialWorkspacePath(cwd) === canonicalizePotentialWorkspacePath(expectedWorktreePath)
+        ? null
+        : "cwd",
+      !actualProviderRef
+        || canonicalizePotentialWorkspacePath(actualProviderRef) === canonicalizePotentialWorkspacePath(expectedWorktreePath)
+        ? null
+        : "providerRef",
+      (input.workspace.repoUrl ?? null) === (input.base.repoUrl ?? null) ? null : "repoUrl",
+    ].filter((field): field is string => field !== null);
+    if (identityMismatches.length > 0) {
+      throw new WorkspacePreparationFailure(
+        `Persisted implementation-review workspace identity does not match its canonical source issue (${identityMismatches.join(", ")}).`,
+        {
+          reason: "review_workspace_identity_mismatch",
+          owner: "platform_workspace",
+          action: "restore_canonical_review_workspace_identity_and_retry",
+          executionWorkspaceId: input.workspace.id,
+          sourceIssueId: input.workspace.sourceIssueId ?? input.issue?.id ?? null,
+          mismatchedFields: identityMismatches,
+          expectedBaseRef: reviewAuthority.exactBaseRef,
+          expectedBranchName,
+          expectedWorktreePath,
+          expectedRepoUrl: input.base.repoUrl ?? null,
+        },
+      );
+    }
+    cwd = expectedWorktreePath;
+    realized.cwd = expectedWorktreePath;
+    realized.worktreePath = expectedWorktreePath;
+    realized.branchName = expectedBranchName;
+    realized.repoUrl = input.base.repoUrl;
+    realized.repoRef = reviewAuthority.exactBaseRef;
+    declaredBaseRef = reviewAuthority.exactBaseRef;
+    remoteRefreshPolicy = "local_only";
+  }
+  if (!cwd) return null;
   let localOnlyDeclaredBaseRefSha: string | null = null;
   if (remoteRefreshPolicy === "local_only") {
     localOnlyDeclaredBaseRefSha = declaredBaseRef

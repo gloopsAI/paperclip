@@ -1,7 +1,7 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -14,20 +14,14 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
-import {
-  parseIssueExecutionWorkspaceSettings,
-  parseProjectExecutionWorkspacePolicy,
-} from "../services/execution-workspace-policy.js";
-import {
-  isExactHeadSha,
-  parseImplementationReviewProvenance,
-} from "../services/implementation-review-handoff.js";
+import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
+  resolveProvenanceBoundImplementationReviewAuthority,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -44,68 +38,6 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
-
-async function resolveProvenanceBoundImplementationReviewAuthority(
-  db: Db,
-  workspace: {
-    id: string;
-    companyId: string;
-    sourceIssueId?: string | null;
-  },
-): Promise<{ exactBaseRef: string } | null> {
-  if (!workspace.sourceIssueId) return null;
-  const sourceIssue = await db
-    .select({
-      id: issues.id,
-      parentId: issues.parentId,
-      executionWorkspaceId: issues.executionWorkspaceId,
-      executionWorkspaceSettings: issues.executionWorkspaceSettings,
-    })
-    .from(issues)
-    .where(and(
-      eq(issues.id, workspace.sourceIssueId),
-      eq(issues.companyId, workspace.companyId),
-      eq(issues.executionWorkspaceId, workspace.id),
-    ))
-    .then((rows) => rows[0] ?? null);
-  const provenance = sourceIssue
-    ? parseImplementationReviewProvenance(sourceIssue.executionWorkspaceSettings)
-    : null;
-  const issueWorkspaceSettings = sourceIssue
-    ? parseIssueExecutionWorkspaceSettings(sourceIssue.executionWorkspaceSettings)
-    : null;
-  const exactBaseRef = issueWorkspaceSettings?.workspaceStrategy?.baseRef;
-  if (
-    !sourceIssue?.parentId
-    || provenance?.parentIssueId !== sourceIssue.parentId
-    || issueWorkspaceSettings?.workspaceStrategy?.remoteRefreshPolicy !== "local_only"
-    || !isExactHeadSha(exactBaseRef)
-  ) {
-    return null;
-  }
-  const [parentIssue, sourceRun] = await Promise.all([
-    db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(and(
-        eq(issues.id, sourceIssue.parentId),
-        eq(issues.companyId, workspace.companyId),
-      ))
-      .then((rows) => rows[0] ?? null),
-    db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.id, provenance.sourceRunId),
-        eq(heartbeatRuns.companyId, workspace.companyId),
-        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sourceIssue.parentId}`,
-      ))
-      .then((rows) => rows[0] ?? null),
-  ]);
-  return parentIssue && sourceRun
-    ? { exactBaseRef: exactBaseRef.trim().toLowerCase() }
-    : null;
-}
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
@@ -239,10 +171,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       executionWorkspaceId: existing.id,
       sourceIssueId: existing.sourceIssueId,
     });
-    const reviewAuthority = action === "stop"
-      ? null
-      : await resolveProvenanceBoundImplementationReviewAuthority(db, existing);
-
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
       res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can run workspace commands" });
@@ -361,15 +289,18 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       run: async () => {
         const ensureWorkspaceAvailable = async () =>
           await ensurePersistedExecutionWorkspaceAvailable({
+            db,
             base: {
               baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
               projectId: existing.projectId,
               workspaceId: existing.projectWorkspaceId,
-              repoUrl: existing.repoUrl,
-              repoRef: reviewAuthority?.exactBaseRef ?? existing.baseRef,
+              repoUrl: projectWorkspace?.repoUrl ?? existing.repoUrl,
+              repoRef: existing.baseRef,
             },
             workspace: {
+              id: existing.id,
+              sourceIssueId: existing.sourceIssueId,
               mode: existing.mode,
               strategyType: existing.strategyType,
               cwd: existing.cwd,
@@ -377,14 +308,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               projectId: existing.projectId,
               projectWorkspaceId: existing.projectWorkspaceId,
               repoUrl: existing.repoUrl,
-              baseRef: reviewAuthority?.exactBaseRef ?? existing.baseRef,
+              baseRef: existing.baseRef,
               branchName: existing.branchName,
               metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
-                remoteRefreshPolicy: reviewAuthority
-                  ? "local_only"
-                  : existing.config?.remoteRefreshPolicy ?? null,
+                remoteRefreshPolicy: existing.config?.remoteRefreshPolicy ?? null,
                 provisionCommand:
                   existing.config?.provisionCommand
                   ?? projectPolicy?.workspaceStrategy?.provisionCommand

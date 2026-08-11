@@ -132,6 +132,48 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
+function createAuthenticReviewWorkspaceDb(input: {
+  workspaceId: string;
+  sourceIssueId: string;
+  exactBaseRef: string;
+  identifier: string;
+  title: string;
+}) {
+  const parentIssueId = "71111111-1111-4111-8111-111111111111";
+  const sourceRunId = "72222222-2222-4222-8222-222222222222";
+  return {
+    select: (selection: Record<string, unknown>) => ({
+      from: () => ({
+        where: () => Promise.resolve(
+          "executionWorkspaceSettings" in selection
+            ? [{
+                id: input.sourceIssueId,
+                identifier: input.identifier,
+                title: input.title,
+                workMode: "review",
+                parentId: parentIssueId,
+                executionWorkspaceId: input.workspaceId,
+                executionWorkspaceSettings: {
+                  mode: "isolated_workspace",
+                  workspaceStrategy: {
+                    type: "git_worktree",
+                    baseRef: input.exactBaseRef,
+                    remoteRefreshPolicy: "local_only",
+                  },
+                  reviewProvenance: {
+                    kind: "implementation_exact_head",
+                    parentIssueId,
+                    sourceRunId,
+                  },
+                },
+              }]
+            : [{ id: parentIssueId }],
+        ),
+      }),
+    }),
+  };
+}
+
 async function expectPersistedBranchMismatchRejected(input: {
   repoRoot: string;
   worktreePath: string;
@@ -2818,6 +2860,160 @@ describe("realizeExecutionWorkspace", () => {
       .toBe(checkedOutBranchBefore);
     expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(headBefore);
     expect(await readGit(worktreePath, ["status", "--porcelain=v1"])).toBe(statusBefore);
+    expect(operations).toEqual([]);
+  });
+
+  it("rejects heartbeat reuse with a corrupt local SHA and existing worktree path before mutation", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "73333333-3333-4333-8333-333333333333";
+    const sourceIssueId = "74444444-4444-4444-8444-444444444444";
+    const expectedBranch = "review-heartbeat-reuse";
+    const expectedPath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(expectedPath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, exactHead]);
+    await runGit(repoRoot, ["worktree", "add", expectedPath, expectedBranch]);
+    await fs.writeFile(path.join(repoRoot, "attacker.txt"), "wrong head\n", "utf8");
+    await runGit(repoRoot, ["add", "attacker.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Advance wrong local head"]);
+    const attackerHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const attackerBranch = "review-heartbeat-attacker";
+    const attackerPath = path.join(repoRoot, ".paperclip", "worktrees", attackerBranch);
+    await runGit(repoRoot, ["worktree", "add", "-b", attackerBranch, attackerPath, attackerHead]);
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-heartbeat",
+        title: "reuse",
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: attackerPath,
+        providerRef: attackerPath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: attackerHead,
+        branchName: attackerBranch,
+        config: { remoteRefreshPolicy: "allowed" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-heartbeat", title: "reuse" },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+      heartbeatRunId: "75555555-5555-4555-8555-555555555555",
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "review_workspace_identity_mismatch",
+          expectedBaseRef: exactHead,
+          expectedBranchName: expectedBranch,
+          expectedWorktreePath: expect.stringContaining(`/.paperclip/worktrees/${expectedBranch}`),
+          mismatchedFields: expect.arrayContaining(["baseRef", "branchName", "cwd", "providerRef"]),
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(operations).toEqual([]);
+  });
+
+  it("rejects heartbeat reuse with corrupt identity before adding a missing canonical worktree", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    await fs.writeFile(path.join(repoRoot, "attacker.txt"), "wrong head\n", "utf8");
+    await runGit(repoRoot, ["add", "attacker.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Advance wrong local head"]);
+    const attackerHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "76666666-6666-4666-8666-666666666666";
+    const sourceIssueId = "77777777-7777-4777-8777-777777777777";
+    const expectedBranch = "review-heartbeat-missing";
+    const expectedPath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-heartbeat",
+        title: "missing",
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: expectedPath,
+        providerRef: expectedPath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: attackerHead,
+        branchName: "attacker-branch",
+        config: { remoteRefreshPolicy: "allowed" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-heartbeat", title: "missing" },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+      heartbeatRunId: "78888888-8888-4888-8888-888888888888",
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "review_workspace_identity_mismatch",
+          mismatchedFields: expect.arrayContaining(["baseRef", "branchName"]),
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    await expect(fs.access(expectedPath)).rejects.toThrow();
     expect(operations).toEqual([]);
   });
 

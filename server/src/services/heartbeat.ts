@@ -14817,6 +14817,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               base: executionWorkspaceBase,
               workspace: {
                 id: reusableExistingExecutionWorkspace.id,
+                sourceIssueId: reusableExistingExecutionWorkspace.sourceIssueId,
                 mode: reusableExistingExecutionWorkspace.mode,
                 strategyType: reusableExistingExecutionWorkspace.strategyType,
                 cwd: reusableExistingExecutionWorkspace.cwd,
