@@ -308,6 +308,7 @@ import {
   admitExecutionCampaign,
   bindExecutionCampaignContext,
   CAMPAIGN_BOUND_RUN_ERROR_CODE,
+  CAMPAIGN_TERMINAL_CLEANUP_KEY,
   CAMPAIGN_TERMINAL_RECEIPT_KEY,
   CAMPAIGN_EPOCH_CONTEXT_KEY,
   enforceCampaignExecutionDeadline,
@@ -401,6 +402,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const CAMPAIGN_TERMINAL_EVENT_KIND = "campaign_bound_scope_unavailable";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
@@ -4470,6 +4472,11 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+function isSameCampaignRunScope(left: unknown, right: unknown) {
+  return (readCampaignRunBinding(left)?.campaignId ?? null) ===
+    (readCampaignRunBinding(right)?.campaignId ?? null);
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -5423,6 +5430,10 @@ export interface HeartbeatServiceOptions {
       issueId: string;
       agentId: string;
     }) => Promise<void>;
+  };
+  campaignBoundRunTerminalizationHooks?: {
+    /** Test/coordination seam after the terminal run receipt is durable and before cleanup. */
+    afterRunStatusPersisted?: (input: { runId: string }) => Promise<void>;
   };
 }
 
@@ -8325,55 +8336,133 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function terminalizeCampaignBoundRun(
     run: typeof heartbeatRuns.$inferSelect,
     reason: string,
+    cleanupOptions: { deferQueuePump?: boolean } = {},
   ) {
     const binding = readCampaignRunBinding(run.contextSnapshot);
     if (!binding) return null;
-    const finishedAt = new Date();
-    const terminalReceipt = {
-      schemaVersion: "gloops.campaign-binding-terminal.v1",
-      campaignId: binding.campaignId,
-      disposition: "cancelled",
-      reason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
-      terminalizedAt: finishedAt.toISOString(),
-    } as const;
-    const cancelled = await db
+    const existingResult = parseObject(run.resultJson);
+    const existingReceipt = parseObject(existingResult[CAMPAIGN_TERMINAL_RECEIPT_KEY]);
+    const terminalReceipt =
+      existingReceipt.schemaVersion === "gloops.campaign-binding-terminal.v1" &&
+      existingReceipt.campaignId === binding.campaignId &&
+      existingReceipt.disposition === "cancelled" &&
+      existingReceipt.reason === CAMPAIGN_BOUND_RUN_ERROR_CODE &&
+      typeof existingReceipt.terminalizedAt === "string"
+        ? existingReceipt
+        : {
+            schemaVersion: "gloops.campaign-binding-terminal.v1",
+            campaignId: binding.campaignId,
+            disposition: "cancelled",
+            reason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+            terminalizedAt: new Date().toISOString(),
+          };
+    const finishedAt = run.finishedAt ? new Date(run.finishedAt) : new Date(terminalReceipt.terminalizedAt as string);
+    let terminalRun = run;
+    let statusPersisted = false;
+
+    if (["queued", "scheduled_retry", "running"].includes(run.status)) {
+      const cancelled = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt,
+          updatedAt: finishedAt,
+          error: reason,
+          errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+          resultJson: {
+            ...existingResult,
+            stopReason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+            timeoutFired: false,
+            providerInvocationAttempted: false,
+            [CAMPAIGN_TERMINAL_RECEIPT_KEY]: terminalReceipt,
+          },
+        })
+        .where(and(
+          eq(heartbeatRuns.id, run.id),
+          inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      terminalRun = cancelled ?? await getRun(run.id) ?? run;
+      statusPersisted = Boolean(cancelled);
+    }
+
+    if (
+      terminalRun.status !== "cancelled" ||
+      terminalRun.errorCode !== CAMPAIGN_BOUND_RUN_ERROR_CODE
+    ) return terminalRun;
+
+    if (statusPersisted) {
+      publishRunStatusUpdate(terminalRun);
+      await options.campaignBoundRunTerminalizationHooks?.afterRunStatusPersisted?.({
+        runId: terminalRun.id,
+      });
+    }
+
+    const replayReason = terminalRun.error ?? reason;
+    await setWakeupStatus(terminalRun.wakeupRequestId, "cancelled", {
+      finishedAt,
+      error: replayReason,
+    });
+    await releaseIssueExecutionAndPromote(terminalRun, {
+      suppressImmediateRecovery: true,
+      deferQueuePump: cleanupOptions.deferQueuePump,
+    });
+
+    const existingTerminalEvent = await db
+      .select({ id: heartbeatRunEvents.id })
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.runId, terminalRun.id),
+        eq(heartbeatRunEvents.eventType, "lifecycle"),
+        sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = ${CAMPAIGN_TERMINAL_EVENT_KIND}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingTerminalEvent) {
+      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: replayReason,
+        payload: {
+          ...terminalReceipt,
+          terminalizationKind: CAMPAIGN_TERMINAL_EVENT_KIND,
+        },
+      });
+    }
+
+    const cleanedAt = new Date().toISOString();
+    return db
       .update(heartbeatRuns)
       .set({
-        status: "cancelled",
-        finishedAt,
-        updatedAt: finishedAt,
-        error: reason,
-        errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
         resultJson: {
-          ...parseObject(run.resultJson),
-          stopReason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
-          timeoutFired: false,
-          providerInvocationAttempted: false,
-          [CAMPAIGN_TERMINAL_RECEIPT_KEY]: terminalReceipt,
+          ...parseObject(terminalRun.resultJson),
+          [CAMPAIGN_TERMINAL_CLEANUP_KEY]: cleanedAt,
         },
+        updatedAt: new Date(cleanedAt),
       })
-      .where(and(
-        eq(heartbeatRuns.id, run.id),
-        inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
-      ))
+      .where(eq(heartbeatRuns.id, terminalRun.id))
       .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!cancelled) return getRun(run.id);
+      .then((rows) => rows[0] ?? terminalRun);
+  }
 
-    publishRunStatusUpdate(cancelled);
-    await setWakeupStatus(cancelled.wakeupRequestId, "cancelled", {
-      finishedAt,
-      error: reason,
-    });
-    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
-    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: reason,
-      payload: terminalReceipt,
-    });
-    return cancelled;
+  async function reconcileCampaignBoundTerminalizations() {
+    const pending = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.status, "cancelled"),
+        eq(heartbeatRuns.errorCode, CAMPAIGN_BOUND_RUN_ERROR_CODE),
+        sql`${heartbeatRuns.resultJson} -> ${CAMPAIGN_TERMINAL_RECEIPT_KEY} is not null`,
+        sql`${heartbeatRuns.resultJson} ->> ${CAMPAIGN_TERMINAL_CLEANUP_KEY} is null`,
+      ));
+    for (const run of pending) {
+      await terminalizeCampaignBoundRun(
+        run,
+        run.error ?? "Campaign-bound run cleanup resumed after an interrupted terminalization",
+      );
+    }
   }
 
   async function addContinuationExhaustedCommentOnce(input: {
@@ -12346,7 +12435,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context,
     );
     if (!runCampaignAdmission.admitted) {
-      await terminalizeCampaignBoundRun(run, runCampaignAdmission.reason);
+      await terminalizeCampaignBoundRun(run, runCampaignAdmission.reason, { deferQueuePump: true });
       return null;
     }
     const restoredRecoveryActionId = readNonEmptyString(context.recoveryActionId);
@@ -12685,7 +12774,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runCampaignAdmission.binding &&
         (message.includes("campaign deadman") || message.includes("campaign-bound execution"))
       ) {
-        await terminalizeCampaignBoundRun(run, `Campaign-bound claim refused: ${message}`);
+        await terminalizeCampaignBoundRun(
+          run,
+          `Campaign-bound claim refused: ${message}`,
+          { deferQueuePump: true },
+        );
         return null;
       }
       throw error;
@@ -13755,6 +13848,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
+    await reconcileCampaignBoundTerminalizations();
     const worktreeRunCutoff = controlledSwarmAdmissionPolicy.issueCreatedAtGte
       ? null
       : await getWorktreeExecutionCutoff();
@@ -17645,7 +17739,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; deferQueuePump?: boolean } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -18491,6 +18585,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    if (options.deferQueuePump) return;
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
@@ -19389,9 +19484,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const availableActiveExecutionRun = isSameExecutionAgent
             ? filterZombieCoalesceTarget(activeExecutionRun, liveRunExecutions)
             : activeExecutionRun;
+          const sameCampaignScope = isSameCampaignRunScope(
+            activeExecutionRun.contextSnapshot,
+            enrichedContextSnapshot,
+          );
 
           if (
             isSameExecutionAgent
+            && sameCampaignScope
             && !shouldDeferFollowupWake
             && !shouldQueueFollowupForRunningWake
             && availableActiveExecutionRun
@@ -19448,8 +19548,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ),
               )
               .orderBy(asc(agentWakeupRequests.requestedAt))
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
+              .then((rows) => rows.find((candidate) => {
+                const candidatePayload = parseObject(candidate.payload);
+                return isSameCampaignRunScope(
+                  candidatePayload[DEFERRED_WAKE_CONTEXT_KEY],
+                  enrichedContextSnapshot,
+                );
+              }) ?? null);
 
             if (existingDeferred) {
               const existingDeferredPayload = parseObject(existingDeferred.payload);
@@ -19715,9 +19820,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])))
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    const newRunCampaignId = readCampaignRunBinding(enrichedContextSnapshot)?.campaignId ?? null;
     const isSameCampaignScope = (candidate: typeof heartbeatRuns.$inferSelect) =>
-      (readCampaignRunBinding(candidate.contextSnapshot)?.campaignId ?? null) === newRunCampaignId;
+      isSameCampaignRunScope(candidate.contextSnapshot, enrichedContextSnapshot);
 
     const sameScopeQueuedRun = activeRuns.find(
       (candidate) => candidate.status === "queued" &&

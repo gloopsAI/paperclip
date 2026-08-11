@@ -9,6 +9,7 @@ export const CAMPAIGN_DEADMAN_SCHEMA_VERSION = "gloops.campaign-deadman.v1";
 export const CAMPAIGN_BINDING_CONTEXT_KEY = "paperclipCampaignBinding";
 export const CAMPAIGN_BINDING_SCHEMA_VERSION = "gloops.campaign-binding.v1";
 export const CAMPAIGN_TERMINAL_RECEIPT_KEY = "campaignBindingTerminal";
+export const CAMPAIGN_TERMINAL_CLEANUP_KEY = "campaignBindingTerminalCleanupCompletedAt";
 export const CAMPAIGN_BOUND_RUN_ERROR_CODE = "campaign_deadman.bound_run_scope_unavailable";
 
 export type CampaignDeadmanPolicy = {

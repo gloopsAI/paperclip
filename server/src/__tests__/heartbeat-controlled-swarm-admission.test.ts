@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -8,6 +8,7 @@ import {
   companies,
   costEvents,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
@@ -18,6 +19,7 @@ import {
   CAMPAIGN_BOUND_RUN_ERROR_CODE,
   CAMPAIGN_DEADMAN_SCHEMA_VERSION,
   CAMPAIGN_EPOCH_CONTEXT_KEY,
+  CAMPAIGN_TERMINAL_CLEANUP_KEY,
   CAMPAIGN_TERMINAL_RECEIPT_KEY,
 } from "../services/campaign-deadman.js";
 import {
@@ -998,6 +1000,270 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
         .toHaveLength(1);
     }
   }, 30_000);
+
+  it("keeps issue-scoped campaign A immutable when campaign B arrives behind its execution lock", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const issueId = randomUUID();
+    const blockerRunId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: `SCOPE-${companyId.slice(0, 6)}`,
+      title: "Preserve issue campaign scope while coalescing",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId!,
+      responsibleUserId: "operator",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: blockerRunId,
+      companyId,
+      agentId: agentId!,
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "system",
+      responsibleUserId: "operator",
+      contextSnapshot: {},
+      startedAt: new Date(),
+    });
+
+    const campaignAId = `campaign-a-${companyId.slice(0, 8)}`;
+    const campaignBId = `campaign-b-${companyId.slice(0, 8)}`;
+    const campaignA = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_CAMPAIGN_ID: campaignAId,
+        PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+      },
+      campaignDeadmanAdmission: vi.fn(),
+    });
+    const campaignB = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_CAMPAIGN_ID: campaignBId,
+        PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+      },
+      campaignDeadmanAdmission: vi.fn(),
+    });
+
+    const runA = await campaignA.invoke(
+      agentId!,
+      "on_demand",
+      { issueId },
+      "system",
+      { actorType: "user", actorId: "operator" },
+    );
+    expect(runA?.status).toBe("queued");
+    expect(await campaignB.invoke(
+      agentId!,
+      "on_demand",
+      { issueId },
+      "system",
+      { actorType: "user", actorId: "operator" },
+    )).toBeNull();
+
+    const persistedA = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runA!.id))
+      .then((rows) => rows[0]);
+    expect(persistedA.contextSnapshot).toMatchObject({
+      [CAMPAIGN_BINDING_CONTEXT_KEY]: { campaignId: campaignAId },
+    });
+    const deferredB = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredB?.payload).toMatchObject({
+      issueId,
+      _paperclipWakeContext: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: { campaignId: campaignBId },
+      },
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, blockerRunId));
+    const general = heartbeatService(db, { runtimeEnv: {} });
+    await general.resumeQueuedRuns();
+    await general.resumeQueuedRuns();
+    const runB = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, deferredB!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runA!.id))
+      .then((rows) => rows[0]?.status)).toBe("cancelled");
+    expect(runB).toMatchObject({
+      status: "cancelled",
+      contextSnapshot: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: { campaignId: campaignBId },
+      },
+    });
+    expect(adapterExecute.mock.calls.filter(([input]) => input.agent.id === agentId)).toHaveLength(0);
+  });
+
+  it("replays interrupted campaign terminal cleanup with the exact receipt and one event", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const issueId = randomUUID();
+    const runAId = randomUUID();
+    const wakeAId = randomUUID();
+    const deferredBId = randomUUID();
+    const campaignAId = `replay-a-${companyId.slice(0, 8)}`;
+    const campaignBId = `replay-b-${companyId.slice(0, 8)}`;
+    const binding = (campaignId: string) => ({
+      [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+        schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+        scope: "campaign-bound",
+        campaignId,
+      },
+    });
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: wakeAId,
+        companyId,
+        agentId: agentId!,
+        source: "on_demand",
+        triggerDetail: "system",
+        reason: "campaign_a",
+        payload: { issueId },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "operator",
+        runId: runAId,
+      },
+      {
+        id: deferredBId,
+        companyId,
+        agentId: agentId!,
+        source: "on_demand",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred",
+        payload: {
+          issueId,
+          _paperclipWakeContext: { issueId, ...binding(campaignBId) },
+        },
+        status: "deferred_issue_execution",
+        requestedByActorType: "user",
+        requestedByActorId: "operator",
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runAId,
+      companyId,
+      agentId: agentId!,
+      status: "queued",
+      invocationSource: "on_demand",
+      triggerDetail: "system",
+      wakeupRequestId: wakeAId,
+      responsibleUserId: "operator",
+      contextSnapshot: { issueId, ...binding(campaignAId) },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: `REPLAY-${companyId.slice(0, 6)}`,
+      title: "Replay interrupted campaign cleanup",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId!,
+      checkoutRunId: runAId,
+      executionRunId: runAId,
+      executionAgentNameKey: "swarmagent0",
+      executionLockedAt: new Date(),
+      responsibleUserId: "operator",
+    });
+
+    let injected = false;
+    const interrupted = heartbeatService(db, {
+      runtimeEnv: {},
+      campaignBoundRunTerminalizationHooks: {
+        afterRunStatusPersisted: async () => {
+          if (!injected) {
+            injected = true;
+            throw new Error("injected campaign terminal cleanup interruption");
+          }
+        },
+      },
+    });
+    await expect(interrupted.resumeQueuedRuns()).rejects.toThrow(
+      "injected campaign terminal cleanup interruption",
+    );
+
+    const partialA = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runAId))
+      .then((rows) => rows[0]);
+    const exactReceipt = (partialA.resultJson as Record<string, unknown>)[CAMPAIGN_TERMINAL_RECEIPT_KEY];
+    expect(partialA).toMatchObject({ status: "cancelled", errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE });
+    expect(partialA.resultJson as Record<string, unknown>).not.toHaveProperty(CAMPAIGN_TERMINAL_CLEANUP_KEY);
+    expect(await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeAId))
+      .then((rows) => rows[0]?.status)).toBe("queued");
+    expect(await db
+      .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0])).toEqual({ executionRunId: runAId, checkoutRunId: runAId });
+
+    const replay = heartbeatService(db, { runtimeEnv: {} });
+    await replay.resumeQueuedRuns();
+    await replay.resumeQueuedRuns();
+
+    const cleanedA = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runAId))
+      .then((rows) => rows[0]);
+    expect((cleanedA.resultJson as Record<string, unknown>)[CAMPAIGN_TERMINAL_RECEIPT_KEY])
+      .toEqual(exactReceipt);
+    expect((cleanedA.resultJson as Record<string, unknown>)[CAMPAIGN_TERMINAL_CLEANUP_KEY])
+      .toEqual(expect.any(String));
+    expect(await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeAId))
+      .then((rows) => rows[0]?.status)).toBe("cancelled");
+    expect(await db
+      .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0])).toEqual({ executionRunId: null, checkoutRunId: null });
+    const promotedB = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, deferredBId))
+      .then((rows) => rows[0] ?? null);
+    expect(promotedB).toMatchObject({
+      status: "cancelled",
+      contextSnapshot: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: { campaignId: campaignBId },
+      },
+    });
+    const terminalEventCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.runId, runAId),
+        sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = 'campaign_bound_scope_unavailable'`,
+      ))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(terminalEventCount).toBe(1);
+    expect(adapterExecute.mock.calls.filter(([input]) => input.agent.id === agentId)).toHaveLength(0);
+  });
 
   it("terminalizes a due campaign-bound scheduled retry in the general plane without promotion", async () => {
     adapterExecute.mockClear();
