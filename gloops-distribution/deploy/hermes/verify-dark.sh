@@ -44,7 +44,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   check_inactive "${unit}"
 done
 
@@ -125,6 +125,13 @@ if [[ "$(systemctl is-enabled paperclip-gloops.service 2>/dev/null || true)" == 
   echo "PASS paperclip-gloops.service is masked"
 else
   echo "FAIL paperclip-gloops.service is not masked" >&2
+  failed=1
+fi
+
+if [[ "$(systemctl is-enabled paperclip-controlled-swarm.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-controlled-swarm.service is masked"
+else
+  echo "FAIL paperclip-controlled-swarm.service is not masked" >&2
   failed=1
 fi
 
@@ -256,6 +263,13 @@ if [[ ! -e /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED ]]; then
   echo "PASS Hermes handshake activation marker is absent"
 else
   echo "FAIL Hermes handshake activation marker exists" >&2
+  failed=1
+fi
+
+if [[ ! -e /etc/paperclip-gloops/CONTROLLED_SWARM_RUNTIME_APPROVED ]]; then
+  echo "PASS controlled-swarm runtime marker is absent"
+else
+  echo "FAIL controlled-swarm runtime marker exists" >&2
   failed=1
 fi
 
@@ -483,6 +497,7 @@ fi
 provider_config=(
   /etc/paperclip-gloops
   /usr/local/lib/systemd/system/paperclip-gloops.service
+  /usr/local/lib/systemd/system/paperclip-controlled-swarm.service
   /etc/gloops-runner.env
   /etc/hermes-agent.env
   /opt/paperclip/hermes-home/.env
@@ -519,10 +534,13 @@ else
 fi
 
 if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/runtime.env \
-  && campaign_duration_in_range /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general' /etc/paperclip-gloops/runtime.env \
+  && ! grep -Eq '^PAPERCLIP_CAMPAIGN_' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=campaign-bound' /etc/paperclip-gloops/campaign-runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' /etc/paperclip-gloops/campaign-runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/campaign-runtime.env \
+  && campaign_duration_in_range /etc/paperclip-gloops/campaign-runtime.env \
+  && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/campaign-runtime.env \
   && grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=' /etc/paperclip-gloops/runtime.env \

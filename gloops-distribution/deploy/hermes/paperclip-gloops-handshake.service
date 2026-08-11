@@ -5,7 +5,7 @@ Requires=docker.service paperclip-hermes-handshake.service paperclip-campaign-de
 BindsTo=paperclip-campaign-deadman.service
 After=docker.service network-online.target paperclip-hermes-handshake.service paperclip-campaign-deadman.service
 Wants=network-online.target
-Conflicts=paperclip-gloops.service
+Conflicts=paperclip-gloops.service paperclip-controlled-swarm.service
 ConditionPathExists=/etc/paperclip-gloops/ACTIVATION_APPROVED
 OnFailure=paperclip-gloops-alert@%n.service
 StartLimitIntervalSec=900
@@ -14,14 +14,15 @@ StartLimitBurst=1
 [Service]
 Type=simple
 EnvironmentFile=/etc/paperclip-gloops/runtime.env
+EnvironmentFile=/etc/paperclip-gloops/campaign-runtime.env
 Environment=PAPERCLIP_CONTAINER=paperclip-gloops-handshake
 ExecStartPre=/usr/bin/test -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/bin/test ! -e /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/bin/systemctl is-active --quiet paperclip-hermes-handshake.service
 ExecStartPre=/usr/bin/mv /etc/paperclip-gloops/ACTIVATION_APPROVED /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
-ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh
+ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh --campaign-bound
 ExecStartPre=-/usr/bin/docker rm -f paperclip-gloops-handshake
-ExecStart=/usr/bin/docker run --rm --name paperclip-gloops-handshake --pull never --user 995:985 --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --cap-drop ALL --security-opt no-new-privileges:true --network paperclip-handshake --ip 172.30.241.4 --network-alias paperclip-gloops --add-host hermes-execution:172.30.241.3 --dns 127.0.0.1 --env-file /etc/paperclip-gloops/runtime.env --env PAPERCLIP_OPERATOR_ONLY_MODE=true --mount type=bind,src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly --mount type=bind,src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip --mount type=bind,src=/opt/paperclip/plugins,dst=/opt/paperclip/plugins,readonly --mount type=bind,src=/home/paperclip/mte-shadow-package,dst=/home/paperclip/mte-shadow-package,readonly --mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly --memory 1536m --memory-swap 1536m --cpus 2.0 --pids-limit 512 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --health-cmd "node -e \"fetch('http://127.0.0.1:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"" --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 45s ${PAPERCLIP_IMAGE}
+ExecStart=/usr/bin/docker run --rm --name paperclip-gloops-handshake --pull never --user 995:985 --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --cap-drop ALL --security-opt no-new-privileges:true --network paperclip-handshake --ip 172.30.241.4 --network-alias paperclip-gloops --add-host hermes-execution:172.30.241.3 --dns 127.0.0.1 --env-file /etc/paperclip-gloops/runtime.env --env-file /etc/paperclip-gloops/campaign-runtime.env --env PAPERCLIP_OPERATOR_ONLY_MODE=true --mount type=bind,src=/usr/local/lib/paperclip-gloops/hermes-handshake-resolv.conf,dst=/etc/resolv.conf,readonly --mount type=bind,src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip --mount type=bind,src=/opt/paperclip/plugins,dst=/opt/paperclip/plugins,readonly --mount type=bind,src=/home/paperclip/mte-shadow-package,dst=/home/paperclip/mte-shadow-package,readonly --mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly --memory 1536m --memory-swap 1536m --cpus 2.0 --pids-limit 512 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --health-cmd "node -e \"fetch('http://127.0.0.1:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"" --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 45s ${PAPERCLIP_IMAGE}
 ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh
 ExecStop=-/usr/bin/docker stop --time 45 paperclip-gloops-handshake
 ExecStopPost=-/usr/bin/docker rm -f paperclip-gloops-handshake

@@ -47,7 +47,7 @@ if [[ -e "${COMMISSIONING_ROLLBACK_JOURNAL}" || -L "${COMMISSIONING_ROLLBACK_JOU
   exit 1
 fi
 
-for unit in paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing rollback while ${unit} is active" >&2
     exit 1
@@ -81,12 +81,12 @@ mv "${restored_state}" /home/paperclip/.paperclip
 chown -R paperclip:paperclip /home/paperclip/.paperclip
 
 install -m 0644 -o root -g root "${backup_dir}/paperclip.service.before" /etc/systemd/system/paperclip.service
-rm -f /etc/paperclip-gloops/ACTIVATION_APPROVED /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED
+rm -f /etc/paperclip-gloops/ACTIVATION_APPROVED /etc/paperclip-gloops/HERMES_EXECUTION_APPROVED /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED /etc/paperclip-gloops/CONTROLLED_SWARM_RUNTIME_APPROVED
 rm -f /etc/paperclip-gloops/github-push-authorization.json /etc/paperclip-gloops/github-push-authorization.sha256 /etc/paperclip-gloops/github-broker-receipt-token
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 systemctl daemon-reload
-systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl disable --now paperclip.service paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 docker rm -f paperclip-gloops-handshake 2>/dev/null || true
 docker rm -f paperclip-hermes-execution 2>/dev/null || true
 docker rm -f paperclip-hermes-handshake 2>/dev/null || true

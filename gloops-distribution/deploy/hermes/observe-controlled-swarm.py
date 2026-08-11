@@ -14,7 +14,7 @@ import subprocess
 UNITS = (
     "paperclip-campaign-deadman.service",
     "paperclip-hermes-execution.service",
-    "paperclip-gloops.service",
+    "paperclip-controlled-swarm.service",
 )
 CAMPAIGN_ID = (
     "controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139"

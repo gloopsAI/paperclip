@@ -13,6 +13,10 @@ import {
 import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
+  bindExecutionCampaignContext,
+  parseExecutionCampaignPolicy,
+} from "./campaign-deadman.js";
+import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
   isNonDispositionalReviewSuccess,
@@ -36,6 +40,20 @@ type GuardedAdmissionResetReceipt = {
   priorReason: "retry_limit_exhausted";
   runId: string;
   createdAt: string;
+  /**
+   * Present only when the exhausted epoch included a workspace-admit failure.
+   * This binds the fresh epoch to a successful validation of a different exact
+   * checkout head, rather than treating the operator reset token as proof that
+   * the broken lease was repaired.
+   */
+  workspaceRecovery?: ValidatedWorkspaceRecovery;
+};
+
+export type ValidatedWorkspaceRecovery = {
+  projectWorkspaceId: string;
+  expectedHeadSha: string;
+  observedHeadSha: string;
+  validatedAt: string;
 };
 
 type ResetInput = {
@@ -44,7 +62,52 @@ type ResetInput = {
   agentId: string;
   resetId: string;
   requestedByUserId: string;
+  workspaceRecovery?: ValidatedWorkspaceRecovery | null;
 };
+
+const FULL_SHA = /^[a-f0-9]{40}$/;
+
+function readValidatedWorkspaceRecovery(value: unknown): ValidatedWorkspaceRecovery | null {
+  const candidate = record(value);
+  const projectWorkspaceId = typeof candidate.projectWorkspaceId === "string"
+    ? candidate.projectWorkspaceId.trim()
+    : "";
+  const expectedHeadSha = typeof candidate.expectedHeadSha === "string"
+    ? candidate.expectedHeadSha.trim().toLowerCase()
+    : "";
+  const observedHeadSha = typeof candidate.observedHeadSha === "string"
+    ? candidate.observedHeadSha.trim().toLowerCase()
+    : "";
+  const validatedAt = typeof candidate.validatedAt === "string" ? candidate.validatedAt : "";
+  if (
+    !projectWorkspaceId ||
+    !FULL_SHA.test(expectedHeadSha) ||
+    expectedHeadSha !== observedHeadSha ||
+    !Number.isFinite(Date.parse(validatedAt))
+  ) {
+    return null;
+  }
+  return { projectWorkspaceId, expectedHeadSha, observedHeadSha, validatedAt };
+}
+
+function priorWorkspaceObservedHead(value: unknown, projectWorkspaceId: string): string | null {
+  const result = record(value);
+  const workspaceAdmit = record(result.workspaceAdmit);
+  const workspaceValidation = record(result.workspaceValidation);
+  const matchesWorkspace = workspaceAdmit.projectWorkspaceId === projectWorkspaceId ||
+    workspaceValidation.issueProjectWorkspaceId === projectWorkspaceId;
+  if (!matchesWorkspace) return null;
+  const observed = typeof workspaceAdmit.observedHeadSha === "string"
+    ? workspaceAdmit.observedHeadSha.trim().toLowerCase()
+    : "";
+  return FULL_SHA.test(observed) ? observed : null;
+}
+
+function isWorkspaceFailureForProject(value: unknown, projectWorkspaceId: string): boolean {
+  const result = record(value);
+  return record(result.workspaceAdmit).projectWorkspaceId === projectWorkspaceId ||
+    record(result.workspaceValidation).issueProjectWorkspaceId === projectWorkspaceId;
+}
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -71,10 +134,17 @@ function readReceipt(value: unknown): GuardedAdmissionResetReceipt | null {
   ) {
     return null;
   }
+  if (
+    Object.prototype.hasOwnProperty.call(candidate, "workspaceRecovery") &&
+    !readValidatedWorkspaceRecovery(candidate.workspaceRecovery)
+  ) {
+    return null;
+  }
   return candidate as GuardedAdmissionResetReceipt;
 }
 
 function requestFingerprint(input: ResetInput, projectWorkspaceId: string) {
+  const workspaceRecovery = readValidatedWorkspaceRecovery(input.workspaceRecovery);
   return `sha256:${createHash("sha256")
     .update(JSON.stringify({
       schemaVersion: RECEIPT_SCHEMA_VERSION,
@@ -84,6 +154,16 @@ function requestFingerprint(input: ResetInput, projectWorkspaceId: string) {
       projectWorkspaceId,
       resetId: input.resetId,
       requestedByUserId: input.requestedByUserId,
+      // Validation time is receipt evidence, not request identity. Re-probing
+      // the same exact repaired head must replay the original run instead of
+      // conflicting solely because the wall clock advanced.
+      workspaceRecovery: workspaceRecovery
+        ? {
+            projectWorkspaceId: workspaceRecovery.projectWorkspaceId,
+            expectedHeadSha: workspaceRecovery.expectedHeadSha,
+            observedHeadSha: workspaceRecovery.observedHeadSha,
+          }
+        : null,
     }))
     .digest("hex")}`;
 }
@@ -92,8 +172,57 @@ function resetIdempotencyKey(issueId: string, resetId: string) {
   return `issue-admission-reset:${issueId}:${resetId}`;
 }
 
-export function guardedAdmissionResetService(db: Db) {
+export function guardedAdmissionResetService(
+  db: Db,
+  options: { runtimeEnv?: Record<string, string | undefined> } = {},
+) {
+  const executionCampaignPolicy = parseExecutionCampaignPolicy(options.runtimeEnv ?? process.env);
+
+  async function getWorkspaceRecoveryRequirement(input: {
+    issueId: string;
+    companyId: string;
+  }): Promise<{
+    required: boolean;
+    projectWorkspaceId: string | null;
+    failedObservedHeadSha: string | null;
+  }> {
+    const issue = await db
+      .select({ projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue?.projectWorkspaceId) {
+      return { required: false, projectWorkspaceId: null, failedObservedHeadSha: null };
+    }
+    const latestWorkspaceFailure = await db
+      .select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        or(
+          sql`${heartbeatRuns.resultJson} -> 'workspaceAdmit' ->> 'projectWorkspaceId' = ${issue.projectWorkspaceId}`,
+          sql`${heartbeatRuns.resultJson} -> 'workspaceValidation' ->> 'issueProjectWorkspaceId' = ${issue.projectWorkspaceId}`,
+        ),
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return {
+      required: isWorkspaceFailureForProject(
+        latestWorkspaceFailure?.resultJson,
+        issue.projectWorkspaceId,
+      ),
+      projectWorkspaceId: issue.projectWorkspaceId,
+      failedObservedHeadSha: priorWorkspaceObservedHead(
+        latestWorkspaceFailure?.resultJson,
+        issue.projectWorkspaceId,
+      ),
+    };
+  }
+
   return {
+    getWorkspaceRecoveryRequirement,
     resetExhaustedAdmissionAndCheckout: async (input: ResetInput) => {
       if (!input.requestedByUserId.trim()) {
         throw new HttpError(403, "A concrete board user is required");
@@ -324,6 +453,54 @@ export function guardedAdmissionResetService(db: Db) {
           });
         }
 
+        // A workspace-admit failure is deliberately budget-exempt, but it can
+        // precede an exhausted epoch and poison its recovery path. Do not let a
+        // human reset token silently turn that stale failure into a fresh
+        // attempt: require a successful current exact-head validation and prove
+        // that it differs from the failed checkout head.
+        const latestWorkspaceFailure = await tx
+          .select({ resultJson: heartbeatRuns.resultJson })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, issue.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            or(
+              sql`${heartbeatRuns.resultJson} -> 'workspaceAdmit' ->> 'projectWorkspaceId' = ${issue.projectWorkspaceId}`,
+              sql`${heartbeatRuns.resultJson} -> 'workspaceValidation' ->> 'issueProjectWorkspaceId' = ${issue.projectWorkspaceId}`,
+            ),
+          ))
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const failedWorkspaceHead = priorWorkspaceObservedHead(
+          latestWorkspaceFailure?.resultJson,
+          issue.projectWorkspaceId,
+        );
+        const workspaceRecovery = readValidatedWorkspaceRecovery(input.workspaceRecovery);
+        const workspaceFailureRequiresRevalidation = isWorkspaceFailureForProject(
+          latestWorkspaceFailure?.resultJson,
+          issue.projectWorkspaceId,
+        );
+        if (workspaceFailureRequiresRevalidation) {
+          if (
+            !workspaceRecovery ||
+            workspaceRecovery.projectWorkspaceId !== issue.projectWorkspaceId ||
+            (failedWorkspaceHead && workspaceRecovery.observedHeadSha === failedWorkspaceHead)
+          ) {
+            throw conflict("A changed exact workspace head must be validated before resetting workspace-poisoned admission", {
+              code: "admission_reset_workspace_revalidation_required",
+              issueId: issue.id,
+              projectWorkspaceId: issue.projectWorkspaceId,
+              failedObservedHeadSha: failedWorkspaceHead,
+            });
+          }
+        } else if (workspaceRecovery) {
+          throw conflict("Workspace recovery evidence is not applicable to this admission epoch", {
+            code: "admission_reset_workspace_revalidation_unexpected",
+            issueId: issue.id,
+          });
+        }
+
         const priorResetRun = await tx
           .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
           .from(heartbeatRuns)
@@ -367,7 +544,7 @@ export function guardedAdmissionResetService(db: Db) {
           .returning()
           .then((rows) => rows[0]!);
 
-        const initialContext = {
+        const initialContext = bindExecutionCampaignContext({
           issueId: issue.id,
           taskId: issue.id,
           taskKey: issue.identifier ?? issue.id,
@@ -376,7 +553,7 @@ export function guardedAdmissionResetService(db: Db) {
           source: "issue.execution_admission_reset",
           wakeReason: "issue_execution_admission_reset",
           [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: input.resetId,
-        };
+        }, executionCampaignPolicy);
         const insertedRun = await tx
           .insert(heartbeatRuns)
           .values({
@@ -405,6 +582,7 @@ export function guardedAdmissionResetService(db: Db) {
           priorReason: "retry_limit_exhausted",
           runId: insertedRun.id,
           createdAt: now.toISOString(),
+          ...(workspaceRecovery ? { workspaceRecovery } : {}),
         };
         const run = await tx
           .update(heartbeatRuns)

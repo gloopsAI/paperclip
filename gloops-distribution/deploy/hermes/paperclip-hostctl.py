@@ -52,6 +52,7 @@ ALLOWED_ACTIONS = frozenset(("start", "stop", "restart", "mask", "unmask", "rese
 ALLOWED_UNITS = frozenset(
     (
         "paperclip-gloops.service",
+        "paperclip-controlled-swarm.service",
         "paperclip-hermes-execution.service",
         "paperclip-github-push-broker.service",
         "paperclip-github-read-broker.service",
@@ -270,6 +271,7 @@ def snapshot(exit_status: int) -> dict[str, Any]:
         "pin_digest": approved,
         "unit_state": {
             "paperclip-gloops.service": unit_state("paperclip-gloops.service"),
+            "paperclip-controlled-swarm.service": unit_state("paperclip-controlled-swarm.service"),
             "paperclip-hermes-execution.service": unit_state("paperclip-hermes-execution.service"),
         },
         "runtime_env_sha256": runtime_hash(),

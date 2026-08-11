@@ -26,6 +26,10 @@ const servicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-gloops.service",
   import.meta.url,
 );
+const controlledSwarmServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-controlled-swarm.service",
+  import.meta.url,
+);
 const handshakeServicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service",
   import.meta.url,
@@ -96,6 +100,14 @@ const rehearseCampaignDeadmanPath = new URL(
 );
 const activateControlledSwarmPath = new URL(
   "../gloops-distribution/deploy/hermes/activate-controlled-swarm.sh",
+  import.meta.url,
+);
+const activateControlledSwarmRuntimePath = new URL(
+  "../gloops-distribution/deploy/hermes/activate-controlled-swarm-runtime.sh",
+  import.meta.url,
+);
+const verifyProductServiceLifecyclePath = new URL(
+  "../gloops-distribution/deploy/hermes/verify-product-service-lifecycle.py",
   import.meta.url,
 );
 const commissionControlledSwarmPath = new URL(
@@ -348,6 +360,7 @@ const dockerfile = readFileSync(dockerfilePath, "utf8");
 const workflow = readFileSync(workflowPath, "utf8");
 const runtimeEnv = readFileSync(runtimeEnvPath, "utf8");
 const service = readFileSync(servicePath, "utf8");
+const controlledSwarmService = readFileSync(controlledSwarmServicePath, "utf8");
 const handshakeService = readFileSync(handshakeServicePath, "utf8");
 const installDark = readFileSync(installDarkPath, "utf8");
 const provisionTirith = readFileSync(provisionTirithPath, "utf8");
@@ -365,6 +378,10 @@ const rehearseZeroWork = readFileSync(rehearseZeroWorkPath, "utf8");
 const verifyCampaignDeadman = readFileSync(verifyCampaignDeadmanPath, "utf8");
 const rehearseCampaignDeadman = readFileSync(rehearseCampaignDeadmanPath, "utf8");
 const activateControlledSwarm = readFileSync(activateControlledSwarmPath, "utf8");
+const activateControlledSwarmRuntime = readFileSync(
+  activateControlledSwarmRuntimePath,
+  "utf8",
+);
 const commissionControlledSwarm = readFileSync(commissionControlledSwarmPath, "utf8");
 const controlledSwarmCommissioner = readFileSync(controlledSwarmCommissionerPath, "utf8");
 const rehearseControlledSwarmCommissioningRecovery = readFileSync(
@@ -405,6 +422,18 @@ try {
   });
 } catch (error) {
   fail(`Paperclip host-writer lock tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("python3", [verifyProductServiceLifecyclePath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(
+    `Product/campaign service lifecycle verification failed: ${
+      error instanceof Error ? error.message : error
+    }`,
+  );
 }
 try {
   execFileSync("node", ["--test", canonicalPatchDigestTestPath.pathname], {
@@ -1030,6 +1059,7 @@ for (const [surface, content, required] of [
   ["controlled-swarm activation", activateControlledSwarm, "inert activation unexpectedly armed the campaign epoch"],
   ["controlled-swarm activation", activateControlledSwarm, "inert activation requires the execution-commissioning barrier"],
   ["controlled-swarm activation", activateControlledSwarm, "--require-status unarmed"],
+  ["controlled-swarm activation runtime delegation", activateControlledSwarm, '"${LIB_DIR}/activate-controlled-swarm-runtime.sh"'],
   ["controlled-swarm commissioning wrapper", commissionControlledSwarm, "controlled-swarm-commissioner.py"],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "CONTROLLED_SWARM_COMMISSIONING_APPROVED"],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "commission_twelve_ollama_roles"],
@@ -1048,13 +1078,13 @@ for (const [surface, content, required] of [
   ["controlled-swarm gateway authentication", controlledSwarmCommissioner, '"binding": "per-agent-secret-ref"'],
   ["controlled-swarm gateway route evidence", controlledSwarmCommissioner, "SIDECAR_ROUTE_EVIDENCE"],
   ["controlled-swarm compact charter receipt preflight", preflight, "--verify-receipt"],
-  ["controlled-swarm compact charter live verification", service, "--verify-live-if-commissioned"],
+  ["controlled-swarm compact charter live verification", controlledSwarmService, "--verify-live-if-commissioned"],
   ["controlled-swarm interrupted transaction install guard", installDark, "unresolved commissioning rollback journal"],
   ["controlled-swarm recovery service install", installDark, "paperclip-controlled-swarm-commissioning-recovery.service"],
   ["controlled-swarm recovery rehearsal install", installDark, "rehearse-controlled-swarm-commissioning-recovery.py"],
   ["controlled-swarm interrupted transaction dark guard", verifyDark, "commissioning-rollback.json"],
   ["controlled-swarm recovery service dark mask", verifyDark, "paperclip-controlled-swarm-commissioning-recovery.service is masked"],
-  ["controlled-swarm recovery boot enable", activateControlledSwarm, 'systemctl enable "${COMMISSIONING_RECOVERY}"'],
+  ["controlled-swarm recovery boot enable", activateControlledSwarmRuntime, '"${SYSTEMCTL}" enable "${COMMISSIONING_RECOVERY}"'],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true"],
   ["controlled-swarm commissioning", controlledSwarmCommissioner, "commissioning unexpectedly armed the campaign epoch"],
   ["controlled-swarm commissioning rollback", controlledSwarmCommissioner, "self.platform.set_barrier(False)"],
@@ -1115,12 +1145,16 @@ for (const [surface, content, required] of [
   ["host writer terminal receipt", paperclipHostctl, '"event": "post"'],
   ["host writer out-of-band guard", paperclipHostctl, "runtime.env hash mismatch refuses mutation"],
   ["commissioning host writer delegation", setControlledSwarmCommissioning, "paperclip-hostctl.py"],
-  ["controlled-swarm stop", stopControlledSwarm, "verify-dark.sh"],
-  ["controlled-swarm stop", stopControlledSwarm, "set-controlled-swarm-commissioning.py\" false"],
+  ["controlled-swarm durable stop handoff", stopControlledSwarm, '"${STOP_ACTUATOR}" operator_requested_stop'],
+  ["controlled-swarm stop commissioning barrier", stopControlledSwarm, '"${SET_COMMISSIONING}" false'],
+  ["controlled-swarm stop product health", stopControlledSwarm, "systemctl is-active --quiet paperclip-gloops.service"],
 ]) {
   if (!content.includes(required)) {
     fail(`${surface} is missing ${required}`);
   }
+}
+if (service.includes("--verify-live-if-commissioned")) {
+  fail("general Paperclip service must not own campaign commissioning verification");
 }
 const recoveryUnitSha256 = createHash("sha256")
   .update(controlledSwarmCommissioningRecoveryService)
@@ -1816,8 +1850,8 @@ for (const required of [
   "--env-file /etc/paperclip-gloops/hermes-execution.env",
   "--env PNPM_STORE_DIR=/opt/data/cache/pnpm/store",
   "--env XDG_CACHE_HOME=/opt/data/cache",
-  "Requires=docker.service paperclip-campaign-deadman.service paperclip-github-push-broker.service",
-  "BindsTo=paperclip-campaign-deadman.service paperclip-github-push-broker.service",
+  "Requires=docker.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service",
+  "BindsTo=paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service",
   "src=/run/paperclip-github-broker,dst=/run/paperclip-github-broker",
   "src=/opt/paperclip/hermes-execution-profile/cron-disabled,dst=/opt/data/plugins/disabled,readonly",
   "src=/usr/local/lib/paperclip-gloops/tools,dst=/opt/data/bin,readonly",
@@ -1844,6 +1878,14 @@ for (const forbidden of [
 ]) {
   if (hermesExecutionService.includes(forbidden)) {
     fail(`Hermes execution service retains forbidden legacy GitHub surface ${forbidden}`);
+  }
+}
+for (const forbidden of [
+  "paperclip-campaign-deadman.service",
+  "/run/paperclip-campaign",
+]) {
+  if (hermesExecutionService.includes(forbidden)) {
+    fail(`general Hermes execution service retains campaign lifecycle coupling ${forbidden}`);
   }
 }
 for (const required of [
@@ -1978,6 +2020,8 @@ for (const required of [
   "restore-hermes-workspace-observer.sh",
   "wait-paperclip-control-plane.sh",
   "paperclip-hermes-execution.service",
+  'install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops.service" /usr/local/lib/systemd/system/paperclip-gloops.service',
+  'install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-controlled-swarm.service" /usr/local/lib/systemd/system/paperclip-controlled-swarm.service',
   "paperclip-hermes-handshake.service",
   "paperclip-hermes-handshake-egress.service",
   "paperclip-gloops-handshake.service",
@@ -2010,7 +2054,7 @@ for (const required of [
   "github-app-credentials.py\" revoke-projector",
   "hermes-cron-disabled",
   "github-app.json",
-  "systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service",
+  "systemctl mask paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service",
   "load-hermes-execution-image.sh",
   "refusing installation while a Paperclip or Hermes container exists",
 ]) {

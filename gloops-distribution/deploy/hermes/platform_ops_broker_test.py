@@ -18,6 +18,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -767,25 +769,37 @@ class PlatformOpsDeploymentWiringTests(unittest.TestCase):
         )
         self.assertIn(
             "systemctl mask paperclip-gloops.service "
-            "paperclip-gloops-handshake.service",
+            "paperclip-controlled-swarm.service paperclip-gloops-handshake.service",
             installer,
         )
         self.assertIn("paperclip-platform-ops-broker.service", installer)
 
-    def test_hermes_unit_binds_broker_lifecycle_and_socket(self):
+    def test_hermes_unit_binds_registered_brokers_not_campaign_lifecycle(self):
         unit = MODULE_PATH.with_name("paperclip-hermes-execution.service").read_text()
         self.assertIn(
-            "Requires=docker.service paperclip-campaign-deadman.service "
-            "paperclip-github-push-broker.service "
+            "Requires=docker.service paperclip-github-push-broker.service "
             "paperclip-github-read-broker.service "
             "paperclip-platform-ops-broker.service",
             unit,
         )
+        self.assertNotIn("paperclip-campaign-deadman.service", unit)
         self.assertIn(
             "--mount type=bind,src=/run/paperclip-platform-ops-broker,"
             "dst=/run/paperclip-platform-ops-broker",
             unit,
         )
+
+    def test_product_service_graph_is_campaign_independent_offline(self):
+        verifier = MODULE_PATH.with_name("verify-product-service-lifecycle.py")
+        repo_root = MODULE_PATH.parents[3]
+        result = subprocess.run(
+            [sys.executable, str(verifier), "--repo-root", str(repo_root)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("campaign-lifecycle independent", result.stdout)
 
     def test_paperclip_units_source_the_install_bound_release_pin(self):
         installer = MODULE_PATH.with_name("install-dark.sh").read_text()
@@ -809,20 +823,19 @@ class PlatformOpsDeploymentWiringTests(unittest.TestCase):
             handshake,
         )
 
-    def test_controlled_swarm_activates_and_stops_broker(self):
+    def test_controlled_swarm_activates_broker_but_expiry_preserves_it(self):
         activate = MODULE_PATH.with_name("activate-controlled-swarm.sh").read_text()
+        runtime_activate = MODULE_PATH.with_name(
+            "activate-controlled-swarm-runtime.sh"
+        ).read_text()
         stop = MODULE_PATH.with_name("stop-controlled-swarm.sh").read_text()
         self.assertIn(
             "readonly PLATFORM_OPS_BROKER='paperclip-platform-ops-broker.service'",
             activate,
         )
-        self.assertIn('systemctl start "${PLATFORM_OPS_BROKER}"', activate)
-        self.assertIn('systemctl is-active --quiet "${PLATFORM_OPS_BROKER}"', activate)
-        self.assertIn(
-            "systemctl stop paperclip-platform-ops-broker.service",
-            stop,
-        )
-        self.assertIn("paperclip-platform-ops-broker.service", stop)
+        self.assertIn('"${SYSTEMCTL}" start "${PLATFORM_OPS_BROKER}"', runtime_activate)
+        self.assertIn('"${SYSTEMCTL}" is-active --quiet "${unit}"', runtime_activate)
+        self.assertNotIn("systemctl stop paperclip-platform-ops-broker.service", stop)
 
 
 if __name__ == "__main__":

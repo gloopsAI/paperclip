@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   REVIEW_HANDOFF_MARKER,
+  buildReviewTerminalFailureComment,
   buildImplementationReviewTitle,
   buildReviewExecutionWorkspaceSettings,
+  isImplementationReviewIssue,
   pickCompanyReviewerAgent,
   pickCompanyReviewerAgentDetailed,
   planImplementationReviewHandoff,
@@ -13,6 +15,7 @@ const PARENT = "4743ff82-8936-4a69-8e02-61b520a83da7";
 const WREN = "3298054f-0fc5-4ff9-8c53-b1382b3046d3";
 const ARGUS = "843c62bc-6f32-420e-9b62-7a2d6a34846f";
 const PROJECT = "17a4f7f2-1efa-459a-9fc2-a6359a1ef798";
+const BASE = "7f9b1f95a59a8b61dd61b9873be13c659e259873";
 
 describe("planImplementationReviewHandoff", () => {
   it("creates a review draft for standard work with exact head and Argus", () => {
@@ -23,6 +26,7 @@ describe("planImplementationReviewHandoff", () => {
         projectId: PROJECT,
         workMode: "standard",
       },
+      exactBaseSha: BASE,
       exactHeadSha: HEAD,
       implementerAgentId: WREN,
       reviewerAgentId: ARGUS,
@@ -33,9 +37,11 @@ describe("planImplementationReviewHandoff", () => {
     if (plan.action !== "create") return;
     expect(plan.assigneeAgentId).toBe(ARGUS);
     expect(plan.exactHeadSha).toBe(HEAD);
+    expect(plan.exactBaseSha).toBe(BASE);
     expect(plan.title).toContain(REVIEW_HANDOFF_MARKER);
     expect(plan.title).toContain(HEAD.slice(0, 12));
     expect(plan.description).toContain(HEAD);
+    expect(plan.description).toContain(BASE);
     expect(plan.description).toContain("#199");
     expect(plan.draftPrUrl).toContain("pull/199");
   });
@@ -174,13 +180,14 @@ describe("pickCompanyReviewerAgentDetailed (GLO-2023 reviewer-fallback)", () => 
 });
 
 describe("buildReviewExecutionWorkspaceSettings (C2 / GLO-1940)", () => {
-  it("binds baseRef to exact head SHA (never project pin)", () => {
+  it("binds baseRef to exact head SHA and prohibits remote refresh", () => {
     const settings = buildReviewExecutionWorkspaceSettings(HEAD);
     expect(settings).toEqual({
       mode: "isolated_workspace",
       workspaceStrategy: {
         type: "git_worktree",
         baseRef: HEAD,
+        remoteRefreshPolicy: "local_only",
       },
     });
     expect(settings.workspaceStrategy.baseRef).not.toMatch(/gloops\/stable|origin\//);
@@ -191,5 +198,62 @@ describe("buildReviewExecutionWorkspaceSettings (C2 / GLO-1940)", () => {
       /review_declared_head_missing/,
     );
     expect(() => buildReviewExecutionWorkspaceSettings("abc")).toThrow(/review_declared_head_missing/);
+  });
+});
+
+describe("durable review terminal failure", () => {
+  it("requires canonical provenance bound to the actual parent and authentic source run", () => {
+    const sourceRunId = "11a4012e-6284-4df7-b7fb-106147c2a39a";
+    const executionWorkspaceSettings = {
+      reviewProvenance: {
+        kind: "implementation_exact_head",
+        parentIssueId: PARENT,
+        sourceRunId,
+      },
+    };
+    expect(isImplementationReviewIssue({
+      executionWorkspaceSettings: null,
+      parentId: PARENT,
+      authenticSourceRunId: sourceRunId,
+    })).toBe(false);
+    expect(isImplementationReviewIssue({
+      executionWorkspaceSettings,
+      parentId: PARENT,
+      authenticSourceRunId: sourceRunId,
+    })).toBe(true);
+    expect(isImplementationReviewIssue({
+      executionWorkspaceSettings,
+      parentId: "5743ff82-8936-4a69-8e02-61b520a83da7",
+      authenticSourceRunId: sourceRunId,
+    })).toBe(false);
+    expect(isImplementationReviewIssue({
+      executionWorkspaceSettings,
+      parentId: PARENT,
+      authenticSourceRunId: "21a4012e-6284-4df7-b7fb-106147c2a39a",
+    })).toBe(false);
+    expect(isImplementationReviewIssue({
+      executionWorkspaceSettings: {
+        reviewProvenance: { ...executionWorkspaceSettings.reviewProvenance, sourceRunId: "spoof" },
+      },
+      parentId: PARENT,
+      authenticSourceRunId: "spoof",
+    })).toBe(false);
+  });
+
+  it("records REVIEW_NOT_RUN with a typed platform owner and action", () => {
+    const body = buildReviewTerminalFailureComment({
+      runId: "run-1",
+      errorCode: "workspace_preparation_failed",
+      errorMessage: "base ref refresh was denied",
+      exactBaseSha: BASE,
+      exactHeadSha: HEAD,
+    });
+
+    expect(body).toContain("REVIEW_TERMINAL_V1:");
+    expect(body).toContain('"disposition":"REVIEW_NOT_RUN"');
+    expect(body).toContain('"owner":"platform_workspace"');
+    expect(body).toContain('"action":"materialize_exact_review_objects_and_retry"');
+    expect(body).toContain(BASE);
+    expect(body).toContain(HEAD);
   });
 });

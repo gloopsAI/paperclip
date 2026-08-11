@@ -556,20 +556,20 @@ class HostPlatform:
 
     def restart_paperclip(self) -> None:
         subprocess.run(
-            ["systemctl", "reset-failed", "paperclip-gloops.service"],
+            ["systemctl", "reset-failed", "paperclip-controlled-swarm.service"],
             check=False,
         )
         subprocess.run(
-            ["systemctl", "restart", "paperclip-gloops.service"],
+            ["systemctl", "restart", "paperclip-controlled-swarm.service"],
             check=True,
         )
 
     def stop_paperclip(self) -> None:
         subprocess.run(
-            ["systemctl", "stop", "paperclip-gloops.service"],
+            ["systemctl", "stop", "paperclip-controlled-swarm.service"],
             check=True,
         )
-        if self.is_active("paperclip-gloops.service"):
+        if self.is_active("paperclip-controlled-swarm.service"):
             raise CommissioningError(
                 "Paperclip remained active after the recovery fence",
             )
@@ -1146,7 +1146,7 @@ class Commissioner:
             for unit in (
                 "paperclip-campaign-deadman.service",
                 "paperclip-hermes-execution.service",
-                "paperclip-gloops.service",
+                "paperclip-controlled-swarm.service",
             ):
                 if not self.platform.is_active(unit):
                     raise CommissioningError(
@@ -1203,7 +1203,7 @@ class Commissioner:
             self.platform.restart_paperclip()
             if journal_written:
                 self._advance_rollback_journal("control_plane_restarted")
-            if not self.platform.is_active("paperclip-gloops.service"):
+            if not self.platform.is_active("paperclip-controlled-swarm.service"):
                 raise CommissioningError("Paperclip did not restart active")
             self.platform.health()
             if not self.platform.inspect_commissioned():

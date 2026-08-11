@@ -4,6 +4,7 @@ set -euo pipefail
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly PAPERCLIP_UNIT='paperclip-gloops.service'
+readonly CAMPAIGN_PAPERCLIP_UNIT='paperclip-controlled-swarm.service'
 readonly HERMES_UNIT='paperclip-hermes-execution.service'
 readonly GITHUB_BROKER_UNIT='paperclip-github-push-broker.service'
 readonly DEADMAN_UNIT='paperclip-campaign-deadman.service'
@@ -53,6 +54,7 @@ require_campaign_duration_in_range() {
 
 for unit in \
   "${PAPERCLIP_UNIT}" \
+  "${CAMPAIGN_PAPERCLIP_UNIT}" \
   "${HERMES_UNIT}" \
   "${GITHUB_BROKER_UNIT}" \
   "${DEADMAN_UNIT}"; do
@@ -76,8 +78,11 @@ done
 grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.env"
-grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' "${CONFIG_DIR}/runtime.env"
-require_campaign_duration_in_range "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general' "${CONFIG_DIR}/runtime.env"
+! grep -Eq '^PAPERCLIP_CAMPAIGN_' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=campaign-bound' "${CONFIG_DIR}/campaign-runtime.env"
+grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' "${CONFIG_DIR}/campaign-runtime.env"
+require_campaign_duration_in_range "${CONFIG_DIR}/campaign-runtime.env"
 grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 "${LIB_DIR}/github-push-broker.py" assert-quiescent

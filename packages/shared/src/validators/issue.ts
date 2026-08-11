@@ -132,6 +132,7 @@ const executionWorkspaceStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
+    remoteRefreshPolicy: z.enum(["allowed", "local_only"]).optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
@@ -139,6 +140,14 @@ const executionWorkspaceStrategySchema = z
   })
   .strict()
   .superRefine(validateExecutionWorkspaceBranchTemplate);
+
+export const issueReviewProvenanceSchema = z.object({
+  kind: z.literal("implementation_exact_head"),
+  parentIssueId: z.string().uuid(),
+  sourceRunId: z.string().uuid(),
+}).strict();
+
+export type IssueReviewProvenance = z.infer<typeof issueReviewProvenanceSchema>;
 
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
@@ -490,10 +499,17 @@ const createIssueBaseSchema = z.object({
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
+  /** Board-only, opt-in resolver for a managed Induct implementation lease. */
+  intakeTarget: z.enum(["induct"]).optional(),
   status: createIssueBaseSchema.shape.status.optional(),
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+export const createIssueSchema = withCreateIssueStatusDefault(
+  createIssueBaseSchema.extend({
+    /** Board-only, opt-in resolver for a managed Induct implementation lease. */
+    intakeTarget: z.enum(["induct"]).optional(),
+  }),
+);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -558,7 +574,10 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
-export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
+export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema> & {
+  /** Server-owned evidence; never accepted through ordinary issue create/update schemas. */
+  reviewProvenance?: IssueReviewProvenance;
+};
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),

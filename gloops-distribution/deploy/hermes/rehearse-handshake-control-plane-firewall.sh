@@ -12,7 +12,7 @@ readonly HEALTH_URL='http://172.30.241.4:3100/api/health'
 for command in curl docker iptables; do
   command -v "${command}" >/dev/null || { echo "required command is unavailable: ${command}" >&2; exit 1; }
 done
-for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
+for unit in paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   if systemctl is-active --quiet "${unit}" 2>/dev/null; then
     echo "refusing firewall rehearsal while ${unit} is active" >&2
     exit 1

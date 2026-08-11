@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# General product execution is deliberately independent of the trainer's
+# campaign epoch.  The one-shot provider handshake remains campaign-bound, so
+# callers must opt into that stricter mode instead of inheriting it silently.
+MODE="${1:---general}"
+[[ "$#" -le 1 ]] || {
+  echo "usage: $0 [--general|--campaign-bound]" >&2
+  exit 2
+}
+case "${MODE}" in
+  --general|--campaign-bound) ;;
+  *)
+    echo "usage: $0 [--general|--campaign-bound]" >&2
+    exit 2
+    ;;
+esac
+
 readonly APPROVED_IMAGE_FILE='/etc/paperclip-gloops/approved-image'
 readonly ACTIVATION_MARKER='/etc/paperclip-gloops/ACTIVATION_APPROVED'
 readonly EXECUTION_MARKER='/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED'
@@ -41,10 +57,7 @@ readonly EXPECTED_IMAGE="$(tr -d '\r\n' < "${APPROVED_IMAGE_FILE}")"
   echo "the controlled-swarm runtime has not been bound to an accepted immutable image" >&2
   exit 1
 }
-readonly -A EXPECTED_EXECUTION_ENVELOPE=(
-  [PAPERCLIP_CAMPAIGN_ID]='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
-  [PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
-  [PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
+declare -A EXPECTED_EXECUTION_ENVELOPE=(
   [HEARTBEAT_SCHEDULER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
@@ -61,6 +74,24 @@ readonly -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION]='64'
   [PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION]='240'
 )
+if [[ "${MODE}" == '--campaign-bound' ]]; then
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE]='campaign-bound'
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_ID]='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
+else
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE]='general'
+  for forbidden_campaign_setting in \
+    PAPERCLIP_CAMPAIGN_ID \
+    PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET \
+    PAPERCLIP_CAMPAIGN_DURATION_SECONDS \
+    PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS; do
+    [[ -z "${!forbidden_campaign_setting:-}" ]] || {
+      echo "general execution inherited ${forbidden_campaign_setting}" >&2
+      exit 1
+    }
+  done
+fi
 for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
   [[ "${!execution_setting:-}" == "${EXPECTED_EXECUTION_ENVELOPE[${execution_setting}]}" ]] || {
     echo "${execution_setting} has drifted from the accepted controlled-swarm envelope" >&2
@@ -82,20 +113,24 @@ campaign_duration_bound() {
   expression="${expression%%#*}"
   printf '%s\n' "$((expression))"
 }
-campaign_duration_minimum="$(campaign_duration_bound MIN_CAMPAIGN_DURATION_SECONDS)"
-campaign_duration_maximum="$(campaign_duration_bound MAX_CAMPAIGN_DURATION_SECONDS)"
-if ! [[ "${PAPERCLIP_CAMPAIGN_DURATION_SECONDS:-}" =~ ^[0-9]+$ ]] \
-  || ((10#${PAPERCLIP_CAMPAIGN_DURATION_SECONDS} < campaign_duration_minimum \
-    || 10#${PAPERCLIP_CAMPAIGN_DURATION_SECONDS} > campaign_duration_maximum)); then
-  echo "PAPERCLIP_CAMPAIGN_DURATION_SECONDS is outside the sanctioned ${campaign_duration_minimum}..${campaign_duration_maximum} second campaign range" >&2
-  exit 1
+if [[ "${MODE}" == '--campaign-bound' ]]; then
+  campaign_duration_minimum="$(campaign_duration_bound MIN_CAMPAIGN_DURATION_SECONDS)"
+  campaign_duration_maximum="$(campaign_duration_bound MAX_CAMPAIGN_DURATION_SECONDS)"
+  if ! [[ "${PAPERCLIP_CAMPAIGN_DURATION_SECONDS:-}" =~ ^[0-9]+$ ]] \
+    || ((10#${PAPERCLIP_CAMPAIGN_DURATION_SECONDS} < campaign_duration_minimum \
+      || 10#${PAPERCLIP_CAMPAIGN_DURATION_SECONDS} > campaign_duration_maximum)); then
+    echo "PAPERCLIP_CAMPAIGN_DURATION_SECONDS is outside the sanctioned ${campaign_duration_minimum}..${campaign_duration_maximum} second campaign range" >&2
+    exit 1
+  fi
 fi
 [[ -v PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS \
   && -z "${PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS}" ]] || {
   echo "backlog-bankruptcy readmission must remain explicitly empty" >&2
   exit 1
 }
-"/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py"
+if [[ "${MODE}" == '--campaign-bound' ]]; then
+  "/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py"
+fi
 case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-}" in
   false) ;;
   true)
@@ -113,14 +148,16 @@ case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-}" in
     exit 1
     ;;
 esac
-systemctl is-active --quiet paperclip-campaign-deadman.service || {
-  echo "the root-owned campaign deadman must be active before execution" >&2
-  exit 1
-}
-/usr/local/lib/paperclip-gloops/verify-campaign-deadman.py \
-  --socket "${CAMPAIGN_DEADMAN_SOCKET}" \
-  --campaign-id "${PAPERCLIP_CAMPAIGN_ID}" \
-  --wait-seconds 15
+if [[ "${MODE}" == '--campaign-bound' ]]; then
+  systemctl is-active --quiet paperclip-campaign-deadman.service || {
+    echo "the root-owned campaign deadman must be active before campaign-bound execution" >&2
+    exit 1
+  }
+  /usr/local/lib/paperclip-gloops/verify-campaign-deadman.py \
+    --socket "${CAMPAIGN_DEADMAN_SOCKET}" \
+    --campaign-id "${PAPERCLIP_CAMPAIGN_ID}" \
+    --wait-seconds 15
+fi
 if env | grep -Eq '(^|_)(XAI|GROK)_(API_KEY|BASE_URL)='; then
   echo "Grok/xAI API configuration is forbidden" >&2
   exit 1

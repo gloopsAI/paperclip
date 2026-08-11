@@ -200,6 +200,10 @@ import {
   recommendedRecipesForAdmitCodes,
   SDLC_PREFLIGHT_REASON,
 } from "../services/sdlc-preflight.js";
+import {
+  appendExactHeadToIntakeDescription,
+  evaluateAuthorizedInductWorkItemIntake,
+} from "../services/authorized-induct-work-item-intake.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -2507,10 +2511,14 @@ export function issueRoutes(
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
+  const heartbeatRuntimeEnv = process.env;
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
+    runtimeEnv: heartbeatRuntimeEnv,
   });
-  const guardedAdmissionReset = guardedAdmissionResetService(db);
+  const guardedAdmissionReset = guardedAdmissionResetService(db, {
+    runtimeEnv: heartbeatRuntimeEnv,
+  });
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
@@ -7028,11 +7036,13 @@ export function issueRoutes(
       rawCreateBody.assigneeAgentId as string | null | undefined,
     );
     const actor = getActorInfo(req);
-    const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
+    const runWorkspaceInheritanceSourceIssueId =
+      hasExplicitIssueWorkspaceCreateSelection(rawCreateBody) || rawCreateBody.intakeTarget === "induct"
       ? null
       : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
+    const { intakeTarget, ...rawIssueCreateBody } = rawCreateBody;
     const createBody = {
-      ...rawCreateBody,
+      ...rawIssueCreateBody,
       parentId: effectiveParentId,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
@@ -7062,6 +7072,44 @@ export function issueRoutes(
         }
         : {}),
     };
+    let authorizedIntake: { workspaceId: string; exactHeadSha: string } | null = null;
+    if (intakeTarget === "induct") {
+      assertBoard(req);
+      const candidates = await db
+        .select({
+          id: projectWorkspaces.id,
+          companyId: projectWorkspaces.companyId,
+          projectId: projectWorkspaces.projectId,
+          name: projectWorkspaces.name,
+          cwd: projectWorkspaces.cwd,
+          repoUrl: projectWorkspaces.repoUrl,
+          repoRef: projectWorkspaces.repoRef,
+          defaultRef: projectWorkspaces.defaultRef,
+        })
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.companyId, companyId));
+      const intake = evaluateAuthorizedInductWorkItemIntake({
+        boardAuthorized: req.actor.type === "board",
+        companyId,
+        projectId: createBody.projectId as string | null | undefined,
+        requestedRepoUrl: "InductAI/induct",
+        description: createBody.description as string | null | undefined,
+        workspaceCandidates: candidates,
+      });
+      if (!intake.ok || !intake.workspace || !intake.exactHeadSha) {
+        throw unprocessable(intake.details, {
+          code: intake.reasonCodes[0] ?? "induct_intake.failed",
+          reasonCodes: intake.reasonCodes,
+          gate: "authorized_induct_intake",
+        });
+      }
+      createBody.projectWorkspaceId = intake.workspace.id;
+      createBody.description = appendExactHeadToIntakeDescription(
+        createBody.description as string | null | undefined,
+        intake.exactHeadSha,
+      );
+      authorizedIntake = { workspaceId: intake.workspace.id, exactHeadSha: intake.exactHeadSha };
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
@@ -7170,6 +7218,15 @@ export function issueRoutes(
               watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
               watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
               stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
+            },
+          }
+          : {}),
+        ...(authorizedIntake
+          ? {
+            authorizedIntake: {
+              target: "induct",
+              workspaceId: authorizedIntake.workspaceId,
+              exactHeadSha: authorizedIntake.exactHeadSha,
             },
           }
           : {}),
@@ -9118,12 +9175,65 @@ export function issueRoutes(
         return;
       }
 
+      // A reset that follows workspace-admit failure must bind to a current,
+      // exact-head validation. The service independently verifies that this
+      // evidence repairs a different failed head before it creates the fresh
+      // admission epoch.
+      const workspaceRecoveryRequirement =
+        await guardedAdmissionReset.getWorkspaceRecoveryRequirement({
+          issueId: issue.id,
+          companyId: issue.companyId,
+        });
+      let workspaceRecovery:
+        | {
+            projectWorkspaceId: string;
+            expectedHeadSha: string;
+            observedHeadSha: string;
+            validatedAt: string;
+          }
+        | undefined;
+      if (workspaceRecoveryRequirement.required) {
+        const resetAgent = await agentsSvc.getById(req.body.agentId);
+        const workspaceAdmit = await runWorkspaceAdmitPreflight(db, {
+          companyId: issue.companyId,
+          issue: {
+            id: issue.id,
+            title: issue.title,
+            description: issue.description,
+            workMode: issue.workMode,
+            status: issue.status,
+            projectWorkspaceId: issue.projectWorkspaceId,
+            executionWorkspaceId: issue.executionWorkspaceId,
+            projectId: issue.projectId,
+            parentId: issue.parentId,
+          },
+          assignee: {
+            role: resetAgent?.role ?? null,
+            name: resetAgent?.name ?? null,
+          },
+        });
+        if (
+          workspaceAdmit.admitted &&
+          workspaceAdmit.projectWorkspaceId &&
+          workspaceAdmit.expectedHeadSha &&
+          workspaceAdmit.observedHeadSha
+        ) {
+          workspaceRecovery = {
+            projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+            expectedHeadSha: workspaceAdmit.expectedHeadSha,
+            observedHeadSha: workspaceAdmit.observedHeadSha,
+            validatedAt: new Date().toISOString(),
+          };
+        }
+      }
+
       const result = await guardedAdmissionReset.resetExhaustedAdmissionAndCheckout({
         issueId: issue.id,
         companyId: issue.companyId,
         agentId: req.body.agentId,
         resetId: req.body.resetId,
         requestedByUserId: actor.actorId,
+        workspaceRecovery,
       });
 
       void heartbeat.resumeQueuedRuns().catch((err) =>

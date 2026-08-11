@@ -21,6 +21,7 @@ import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
+  resolveProvenanceBoundImplementationReviewAuthority,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -170,7 +171,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       executionWorkspaceId: existing.id,
       sourceIssueId: existing.sourceIssueId,
     });
-
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
       res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can run workspace commands" });
@@ -289,15 +289,18 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       run: async () => {
         const ensureWorkspaceAvailable = async () =>
           await ensurePersistedExecutionWorkspaceAvailable({
+            db,
             base: {
               baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
               projectId: existing.projectId,
               workspaceId: existing.projectWorkspaceId,
-              repoUrl: existing.repoUrl,
-              repoRef: existing.baseRef,
+              repoUrl: projectWorkspace?.repoUrl ?? existing.repoUrl,
+              repoRef: projectWorkspace?.repoRef ?? projectWorkspace?.defaultRef ?? existing.baseRef,
             },
             workspace: {
+              id: existing.id,
+              sourceIssueId: existing.sourceIssueId,
               mode: existing.mode,
               strategyType: existing.strategyType,
               cwd: existing.cwd,
@@ -310,6 +313,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
+                remoteRefreshPolicy: existing.config?.remoteRefreshPolicy ?? null,
                 provisionCommand:
                   existing.config?.provisionCommand
                   ?? projectPolicy?.workspaceStrategy?.provisionCommand
@@ -605,6 +609,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         metadata: req.body.metadata,
       }),
     );
+    const reviewAuthority = await resolveProvenanceBoundImplementationReviewAuthority(db, existing);
     const patch: Record<string, unknown> = {
       ...(req.body.name === undefined ? {} : { name: req.body.name }),
       ...(req.body.cwd === undefined ? {} : { cwd: req.body.cwd }),
@@ -618,6 +623,18 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         ? { cleanupEligibleAt: req.body.cleanupEligibleAt ? new Date(req.body.cleanupEligibleAt) : null }
         : {}),
     };
+    if (reviewAuthority) {
+      // These are every PATCH-writable field that can redirect Git identity or
+      // location. Mode, strategy type, project binding, and source issue are
+      // not patchable; name/status/cleanup fields do not select reviewed code.
+      Object.assign(patch, {
+        baseRef: reviewAuthority.exactBaseRef,
+        cwd: existing.cwd,
+        repoUrl: existing.repoUrl,
+        branchName: existing.branchName,
+        providerRef: existing.providerRef,
+      });
+    }
     if (req.body.metadata !== undefined || req.body.config !== undefined) {
       const requestedMetadata = req.body.metadata === undefined
         ? (existing.metadata as Record<string, unknown> | null)
@@ -625,6 +642,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       patch.metadata = req.body.config === undefined
         ? requestedMetadata
         : mergeExecutionWorkspaceConfig(requestedMetadata, req.body.config ?? null);
+      if (reviewAuthority) {
+        patch.metadata = mergeExecutionWorkspaceConfig(
+          patch.metadata as Record<string, unknown> | null,
+          { remoteRefreshPolicy: "local_only" },
+        );
+      }
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];

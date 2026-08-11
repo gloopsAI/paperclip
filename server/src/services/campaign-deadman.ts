@@ -1,7 +1,16 @@
 import { createConnection } from "node:net";
+import {
+  buildExecutionPhaseBudgetPlan,
+  type ExecutionInvocationBudget,
+} from "@paperclipai/adapter-utils/execution-envelope";
 
 export const CAMPAIGN_EPOCH_CONTEXT_KEY = "paperclipCampaignEpoch";
 export const CAMPAIGN_DEADMAN_SCHEMA_VERSION = "gloops.campaign-deadman.v1";
+export const CAMPAIGN_BINDING_CONTEXT_KEY = "paperclipCampaignBinding";
+export const CAMPAIGN_BINDING_SCHEMA_VERSION = "gloops.campaign-binding.v1";
+export const CAMPAIGN_TERMINAL_RECEIPT_KEY = "campaignBindingTerminal";
+export const CAMPAIGN_TERMINAL_CLEANUP_KEY = "campaignBindingTerminalCleanupCompletedAt";
+export const CAMPAIGN_BOUND_RUN_ERROR_CODE = "campaign_deadman.bound_run_scope_unavailable";
 
 export type CampaignDeadmanPolicy = {
   campaignId: string;
@@ -9,6 +18,10 @@ export type CampaignDeadmanPolicy = {
   durationSeconds: number;
   timeoutMs: number;
 };
+
+export type ExecutionCampaignPolicy =
+  | { scope: "general"; deadman: null }
+  | { scope: "campaign-bound"; deadman: CampaignDeadmanPolicy };
 
 export type CampaignEpochReceipt = {
   schemaVersion: typeof CAMPAIGN_DEADMAN_SCHEMA_VERSION;
@@ -19,6 +32,12 @@ export type CampaignEpochReceipt = {
   deadlineAt: string;
   durationSeconds: number;
   epochSha256: string;
+};
+
+export type CampaignRunBinding = {
+  schemaVersion: typeof CAMPAIGN_BINDING_SCHEMA_VERSION;
+  scope: "campaign-bound";
+  campaignId: string;
 };
 
 type CampaignAdmissionRequest = {
@@ -154,6 +173,187 @@ export function parseCampaignDeadmanPolicy(
   return { campaignId, socketPath, durationSeconds, timeoutMs };
 }
 
+export function parseExecutionCampaignPolicy(
+  env: Record<string, string | undefined> = process.env,
+): ExecutionCampaignPolicy {
+  const configuredScope = env.PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE?.trim() ?? "";
+  const hasLegacyCampaignEnvelope = Boolean(
+    env.PAPERCLIP_CAMPAIGN_ID?.trim() || env.PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET?.trim(),
+  );
+  const scope = configuredScope || (hasLegacyCampaignEnvelope ? "campaign-bound" : "general");
+  if (scope !== "general" && scope !== "campaign-bound") {
+    throw new Error("PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE must be general or campaign-bound");
+  }
+  if (scope === "general") {
+    const forbidden = [
+      "PAPERCLIP_CAMPAIGN_ID",
+      "PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",
+      "PAPERCLIP_CAMPAIGN_DURATION_SECONDS",
+      "PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS",
+    ].filter((name) => env[name]?.trim());
+    if (forbidden.length > 0) {
+      throw new Error(
+        `general execution must not inherit campaign configuration: ${forbidden.join(", ")}`,
+      );
+    }
+    return { scope: "general", deadman: null };
+  }
+  const deadman = parseCampaignDeadmanPolicy(env);
+  if (!deadman) {
+    throw new Error("campaign-bound execution requires a complete campaign deadman policy");
+  }
+  return { scope: "campaign-bound", deadman };
+}
+
+export function readCampaignEpochReceipt(value: unknown): CampaignEpochReceipt | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.schemaVersion !== CAMPAIGN_DEADMAN_SCHEMA_VERSION ||
+    typeof candidate.campaignId !== "string" ||
+    typeof candidate.companyId !== "string" ||
+    typeof candidate.firstRunId !== "string" ||
+    typeof candidate.firstAdmittedAt !== "string" ||
+    typeof candidate.deadlineAt !== "string" ||
+    typeof candidate.durationSeconds !== "number" ||
+    typeof candidate.epochSha256 !== "string"
+  ) return null;
+  return candidate as CampaignEpochReceipt;
+}
+
+function readRecordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** Read durable campaign provenance, including legacy rows that only have an epoch receipt. */
+export function readCampaignRunBinding(contextSnapshot: unknown): CampaignRunBinding | null {
+  const context = readRecordOrNull(contextSnapshot);
+  if (!context) return null;
+  const candidate = readRecordOrNull(context[CAMPAIGN_BINDING_CONTEXT_KEY]);
+  if (
+    candidate?.schemaVersion === CAMPAIGN_BINDING_SCHEMA_VERSION &&
+    candidate.scope === "campaign-bound" &&
+    typeof candidate.campaignId === "string" &&
+    CAMPAIGN_ID_PATTERN.test(candidate.campaignId)
+  ) {
+    return candidate as CampaignRunBinding;
+  }
+  const legacyEpoch = readCampaignEpochReceipt(context[CAMPAIGN_EPOCH_CONTEXT_KEY]);
+  return legacyEpoch
+    ? {
+        schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+        scope: "campaign-bound",
+        campaignId: legacyEpoch.campaignId,
+      }
+    : null;
+}
+
+/** Stamp new campaign work while preserving any older durable binding on continuations. */
+export function bindExecutionCampaignContext(
+  contextSnapshot: Record<string, unknown>,
+  policy: ExecutionCampaignPolicy,
+): Record<string, unknown> {
+  const existing = readCampaignRunBinding(contextSnapshot);
+  if (existing) {
+    return contextSnapshot[CAMPAIGN_BINDING_CONTEXT_KEY]
+      ? contextSnapshot
+      : { ...contextSnapshot, [CAMPAIGN_BINDING_CONTEXT_KEY]: existing };
+  }
+  if (policy.scope === "general") return contextSnapshot;
+  return {
+    ...contextSnapshot,
+    [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+      schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+      scope: "campaign-bound",
+      campaignId: policy.deadman.campaignId,
+    } satisfies CampaignRunBinding,
+  };
+}
+
+/** Copy only campaign authority when a recovery path intentionally builds a fresh context. */
+export function inheritCampaignRunBinding(
+  sourceContext: unknown,
+  targetContext: Record<string, unknown>,
+): Record<string, unknown> {
+  const binding = readCampaignRunBinding(sourceContext);
+  if (!binding) return targetContext;
+  const source = readRecordOrNull(sourceContext);
+  const epoch = source ? readCampaignEpochReceipt(source[CAMPAIGN_EPOCH_CONTEXT_KEY]) : null;
+  return {
+    ...targetContext,
+    [CAMPAIGN_BINDING_CONTEXT_KEY]: binding,
+    ...(epoch ? { [CAMPAIGN_EPOCH_CONTEXT_KEY]: epoch } : {}),
+  };
+}
+
+export function resolveRunExecutionCampaignPolicy(
+  processPolicy: ExecutionCampaignPolicy,
+  contextSnapshot: unknown,
+):
+  | { admitted: true; policy: ExecutionCampaignPolicy; binding: CampaignRunBinding | null }
+  | { admitted: false; binding: CampaignRunBinding; reason: string } {
+  const binding = readCampaignRunBinding(contextSnapshot);
+  if (!binding) return { admitted: true, policy: processPolicy, binding: null };
+  if (processPolicy.scope === "general") {
+    return {
+      admitted: false,
+      binding,
+      reason: `Campaign-bound run for ${binding.campaignId} cannot be claimed by the general execution plane`,
+    };
+  }
+  if (processPolicy.deadman.campaignId !== binding.campaignId) {
+    return {
+      admitted: false,
+      binding,
+      reason: `Campaign-bound run for ${binding.campaignId} cannot be claimed by campaign ${processPolicy.deadman.campaignId}`,
+    };
+  }
+  return { admitted: true, policy: processPolicy, binding };
+}
+
+/**
+ * Bind a campaign run's actual adapter wall clock to its immutable epoch.
+ * General execution passes through unchanged. Campaign-bound execution refuses
+ * a missing receipt/budget and cannot run beyond the broker-issued deadline.
+ */
+export function enforceCampaignExecutionDeadline(input: {
+  policy: ExecutionCampaignPolicy;
+  receipt: unknown;
+  budget: ExecutionInvocationBudget | null;
+  now?: Date;
+}): ExecutionInvocationBudget | null {
+  if (input.policy.scope === "general") return input.budget;
+  const receipt = readCampaignEpochReceipt(input.receipt);
+  if (!receipt || receipt.campaignId !== input.policy.deadman.campaignId) {
+    throw new Error("campaign-bound execution requires its exact claim-time epoch receipt");
+  }
+  if (!input.budget) {
+    throw new Error("campaign-bound execution requires a strict adapter wall-time budget");
+  }
+  const deadlineMs = Date.parse(receipt.deadlineAt);
+  const remainingMs = deadlineMs - (input.now ?? new Date()).getTime();
+  if (!Number.isFinite(deadlineMs) || remainingMs <= 0) {
+    throw new Error("campaign epoch expired before adapter invocation");
+  }
+  const maxWallMs = Math.min(input.budget.maxWallMs, Math.floor(remainingMs));
+  if (maxWallMs <= 0) {
+    throw new Error("campaign epoch expired before adapter invocation");
+  }
+  return {
+    ...input.budget,
+    maxWallMs,
+    phasePlan: buildExecutionPhaseBudgetPlan({
+      inputTokens: input.budget.discretionaryInputTokens ?? input.budget.maxInputTokens,
+      outputTokens: input.budget.maxOutputTokens,
+      turns: input.budget.maxTurns,
+      toolCalls: input.budget.maxToolCalls,
+      wallMs: maxWallMs,
+    }),
+  };
+}
+
 function requestOverUnixSocket(
   policy: CampaignDeadmanPolicy,
   request: CampaignAdmissionRequest,
@@ -274,4 +474,13 @@ export async function admitCampaignRun(
     durationSeconds: policy.durationSeconds,
     epochSha256: response.epochSha256,
   };
+}
+
+export async function admitExecutionCampaign(
+  policy: ExecutionCampaignPolicy,
+  input: { companyId: string; runId: string; now?: Date },
+  admitter: typeof admitCampaignRun = admitCampaignRun,
+): Promise<CampaignEpochReceipt | null> {
+  if (policy.scope === "general") return null;
+  return admitter(policy.deadman, input);
 }

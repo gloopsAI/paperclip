@@ -31,6 +31,7 @@ export const workspaceOverviewQuerySchema = z.object({
 
 export const executionWorkspaceConfigSchema = z.object({
   environmentId: z.string().uuid().optional().nullable(),
+  remoteRefreshPolicy: z.enum(["allowed", "local_only"]).optional().nullable(),
   provisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),

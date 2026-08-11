@@ -5,6 +5,7 @@ import type {
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
 } from "@paperclipai/shared";
+import { issueReviewProvenanceSchema } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
 export type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
@@ -38,6 +39,9 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   return {
     type,
     ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
+    ...(parsed.remoteRefreshPolicy === "allowed" || parsed.remoteRefreshPolicy === "local_only"
+      ? { remoteRefreshPolicy: parsed.remoteRefreshPolicy }
+      : {}),
     ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
     ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
     ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
@@ -189,6 +193,10 @@ export function parseIssueExecutionWorkspaceSettings(
   // Default true: explicit issue environmentId must survive parse/update/heartbeat
   // round-trips. Callers may set includeEnvironmentId: false to strip it.
   const includeEnvironmentId = options.includeEnvironmentId !== false;
+  const reviewProvenanceResult = issueReviewProvenanceSchema.safeParse(parsed.reviewProvenance);
+  const parsedReviewProvenance = reviewProvenanceResult.success
+    ? reviewProvenanceResult.data
+    : null;
   return {
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
@@ -200,6 +208,7 @@ export function parseIssueExecutionWorkspaceSettings(
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
+    ...(parsedReviewProvenance ? { reviewProvenance: parsedReviewProvenance } : {}),
   };
 }
 
@@ -386,11 +395,11 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
-      const strategy =
-        input.issueSettings?.workspaceStrategy ??
-        input.projectPolicy?.workspaceStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+      const strategy = resolveEffectiveExecutionWorkspaceStrategy({
+        agentConfig: nextConfig,
+        projectPolicy: input.projectPolicy,
+        issueSettings: input.issueSettings,
+      });
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
       delete nextConfig.workspaceStrategy;
@@ -406,4 +415,25 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   }
 
   return nextConfig;
+}
+
+export function resolveEffectiveExecutionWorkspaceStrategy(input: {
+  agentConfig?: Record<string, unknown> | null;
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+}): ExecutionWorkspaceStrategy {
+  const agentStrategy = parseExecutionWorkspaceStrategy(input.agentConfig?.workspaceStrategy);
+  const projectStrategy = input.projectPolicy?.enabled
+    ? input.projectPolicy.workspaceStrategy ?? null
+    : null;
+  const issueStrategy = input.issueSettings?.workspaceStrategy ?? null;
+  const selected = issueStrategy ?? projectStrategy ?? agentStrategy;
+  if (!selected) return { type: "git_worktree" };
+  if (selected.type !== "git_worktree") return selected;
+  return {
+    ...(agentStrategy?.type === "git_worktree" ? agentStrategy : {}),
+    ...(projectStrategy?.type === "git_worktree" ? projectStrategy : {}),
+    ...(issueStrategy?.type === "git_worktree" ? issueStrategy : {}),
+    type: "git_worktree",
+  };
 }

@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { agents, executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   describeSupportedWorkspaceBranchTemplateVariables,
   findUnsupportedWorkspaceBranchTemplateVariables,
@@ -20,7 +20,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -39,6 +39,15 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import {
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+  resolveEffectiveExecutionWorkspaceStrategy,
+} from "./execution-workspace-policy.js";
+import {
+  isExactHeadSha,
+  parseImplementationReviewProvenance,
+} from "./implementation-review-handoff.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -112,6 +121,152 @@ export class WorkspacePreparationFailure extends Error {
       workspacePreparation: { ...workspacePreparation, message },
     };
   }
+}
+
+function canonicalizePotentialWorkspacePath(value: string): string {
+  let existingAncestor = path.resolve(value);
+  const missingSegments: string[] = [];
+  while (!existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) break;
+    missingSegments.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
+  const canonicalAncestor = existsSync(existingAncestor)
+    ? realpathSync(existingAncestor)
+    : existingAncestor;
+  return path.resolve(canonicalAncestor, ...missingSegments);
+}
+
+export type ProvenanceBoundImplementationReviewAuthority = {
+  exactBaseRef: string;
+  issue: ExecutionWorkspaceIssueRef;
+  agent: ExecutionWorkspaceAgentRef | null;
+  projectId: string | null;
+  workspaceRepoRef: string | null;
+  workspaceStrategy: NonNullable<
+    NonNullable<ReturnType<typeof parseIssueExecutionWorkspaceSettings>>["workspaceStrategy"]
+  >;
+};
+
+export async function resolveProvenanceBoundImplementationReviewAuthority(
+  db: Db,
+  workspace: {
+    id: string;
+    companyId: string;
+    sourceIssueId?: string | null;
+  },
+): Promise<ProvenanceBoundImplementationReviewAuthority | null> {
+  if (!workspace.sourceIssueId) return null;
+  const sourceIssue = await db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      workMode: issues.workMode,
+      projectId: issues.projectId,
+      projectWorkspaceId: issues.projectWorkspaceId,
+      assigneeAgentId: issues.assigneeAgentId,
+      parentId: issues.parentId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+      executionWorkspaceSettings: issues.executionWorkspaceSettings,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.id, workspace.sourceIssueId),
+      eq(issues.companyId, workspace.companyId),
+      eq(issues.executionWorkspaceId, workspace.id),
+    ))
+    .then((rows) => rows[0] ?? null);
+  const provenance = sourceIssue
+    ? parseImplementationReviewProvenance(sourceIssue.executionWorkspaceSettings)
+    : null;
+  const issueWorkspaceSettings = sourceIssue
+    ? parseIssueExecutionWorkspaceSettings(sourceIssue.executionWorkspaceSettings)
+    : null;
+  const issueWorkspaceStrategy = issueWorkspaceSettings?.workspaceStrategy;
+  const exactBaseRef = issueWorkspaceStrategy?.baseRef;
+  if (
+    !sourceIssue?.parentId
+    || provenance?.parentIssueId !== sourceIssue.parentId
+    || issueWorkspaceStrategy?.type !== "git_worktree"
+    || issueWorkspaceStrategy.remoteRefreshPolicy !== "local_only"
+    || !isExactHeadSha(exactBaseRef)
+  ) {
+    return null;
+  }
+  const [parentIssue, sourceRun, projectPolicyRow, sourceAgent, sourceProjectWorkspace] = await Promise.all([
+    db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(
+        eq(issues.id, sourceIssue.parentId),
+        eq(issues.companyId, workspace.companyId),
+      ))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, provenance.sourceRunId),
+        eq(heartbeatRuns.companyId, workspace.companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sourceIssue.parentId}`,
+      ))
+      .then((rows) => rows[0] ?? null),
+    sourceIssue.projectId
+      ? db
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .from(projects)
+          .where(and(
+            eq(projects.id, sourceIssue.projectId),
+            eq(projects.companyId, workspace.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    sourceIssue.assigneeAgentId
+      ? db
+          .select({ id: agents.id, name: agents.name, adapterConfig: agents.adapterConfig })
+          .from(agents)
+          .where(and(
+            eq(agents.id, sourceIssue.assigneeAgentId),
+            eq(agents.companyId, workspace.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    sourceIssue.projectWorkspaceId
+      ? db
+          .select({ repoRef: projectWorkspaces.repoRef, defaultRef: projectWorkspaces.defaultRef })
+          .from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.id, sourceIssue.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, workspace.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+  ]);
+  const workspaceStrategy = resolveEffectiveExecutionWorkspaceStrategy({
+    agentConfig: parseObject(sourceAgent?.adapterConfig),
+    projectPolicy: parseProjectExecutionWorkspacePolicy(projectPolicyRow?.executionWorkspacePolicy),
+    issueSettings: issueWorkspaceSettings,
+  });
+  if (workspaceStrategy.type !== "git_worktree") return null;
+  return parentIssue && sourceRun
+    ? {
+        exactBaseRef: exactBaseRef.trim().toLowerCase(),
+        issue: {
+          id: sourceIssue.id,
+          identifier: sourceIssue.identifier,
+          title: sourceIssue.title,
+          workMode: sourceIssue.workMode,
+        },
+        agent: sourceAgent
+          ? { id: sourceAgent.id, name: sourceAgent.name, companyId: workspace.companyId }
+          : null,
+        projectId: sourceIssue.projectId,
+        workspaceRepoRef: sourceProjectWorkspace?.repoRef ?? sourceProjectWorkspace?.defaultRef ?? null,
+        workspaceStrategy,
+      }
+    : null;
 }
 
 export interface RuntimeServiceRef {
@@ -632,7 +787,69 @@ function parseRemoteTrackingRef(ref: string): { remote: string; branch: string }
   return { remote, branch };
 }
 
-async function refreshRemoteTrackingBaseRef(repoRoot: string, baseRef: string): Promise<string[]> {
+type RemoteRefreshPolicy = "allowed" | "local_only";
+
+function readRemoteRefreshPolicy(value: unknown): RemoteRefreshPolicy {
+  return value === "local_only" ? "local_only" : "allowed";
+}
+
+function assertLocalOnlyBaseObject(input: {
+  remoteRefreshPolicy: RemoteRefreshPolicy;
+  expectedHeadSha: string | null;
+  repoRoot: string;
+  baseRef: string | null;
+  worktreePath: string;
+}) {
+  if (input.remoteRefreshPolicy !== "local_only") return;
+  if (!input.expectedHeadSha) {
+    throw new WorkspacePreparationFailure(
+      `Cannot resolve local-only base ref "${input.baseRef ?? "unset"}" before workspace reuse.`,
+      {
+        reason: "local_review_object_missing",
+        owner: "platform_workspace",
+        action: "materialize_exact_review_objects_and_retry",
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        baseRef: input.baseRef,
+        remoteRefreshPolicy: input.remoteRefreshPolicy,
+      },
+    );
+  }
+}
+
+async function assertLocalOnlyWorktreeHead(input: {
+  remoteRefreshPolicy: RemoteRefreshPolicy;
+  worktreePath: string;
+  expectedHeadSha: string | null;
+  repoRoot: string;
+  baseRef: string | null;
+}) {
+  assertLocalOnlyBaseObject(input);
+  if (input.remoteRefreshPolicy !== "local_only") return;
+  const actualHeadSha = await runGit(["rev-parse", "HEAD"], input.worktreePath).catch(() => null);
+  if (actualHeadSha === input.expectedHeadSha) return;
+  throw new WorkspacePreparationFailure(
+    `Local-only execution workspace at "${input.worktreePath}" is not pinned to declared head ${input.expectedHeadSha}; found ${actualHeadSha ?? "no readable HEAD"}.`,
+    {
+      reason: "local_review_head_mismatch",
+      owner: "platform_workspace",
+      action: "discard_stale_review_workspace_and_retry",
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      baseRef: input.baseRef,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha,
+      remoteRefreshPolicy: input.remoteRefreshPolicy,
+    },
+  );
+}
+
+async function refreshRemoteTrackingBaseRef(
+  repoRoot: string,
+  baseRef: string,
+  remoteRefreshPolicy: RemoteRefreshPolicy = "allowed",
+): Promise<string[]> {
+  if (remoteRefreshPolicy === "local_only") return [];
   const remoteTracking = parseRemoteTrackingRef(baseRef);
   if (!remoteTracking) return [];
 
@@ -2016,6 +2233,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 async function resolveAuthoritativeBaseRef(
   repoRoot: string,
   configuredBaseRef: string | null,
+  remoteRefreshPolicy: RemoteRefreshPolicy = "allowed",
 ): Promise<{ baseRef: string; warnings: string[]; refreshed: boolean }> {
   const warnings: string[] = [];
   const detectOrHead = async () => (await detectDefaultBranch(repoRoot)) ?? "HEAD";
@@ -2038,7 +2256,7 @@ async function resolveAuthoritativeBaseRef(
     const remoteCandidate = `origin/${configured}`;
     // Refresh here and keep the warnings; the caller skips its own refresh of
     // the returned ref (see `refreshed`) so we never fetch the same ref twice.
-    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, remoteRefreshPolicy));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
       return { baseRef: remoteCandidate, warnings, refreshed: true };
     }
@@ -2057,9 +2275,9 @@ async function resolveAuthoritativeBaseRef(
   if (await resolveBaseRefSha(repoRoot, configured)) {
     return { baseRef: configured, warnings, refreshed: false };
   }
-  if (await remoteExists(repoRoot, "origin")) {
+  if (remoteRefreshPolicy === "allowed" && await remoteExists(repoRoot, "origin")) {
     const remoteCandidate = `origin/${configured}`;
-    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, remoteRefreshPolicy));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
       return { baseRef: remoteCandidate, warnings, refreshed: true };
     }
@@ -2355,11 +2573,15 @@ export async function inspectManagedGitWorktreeBranch(input: {
     };
   }
 
-  const actualBranchName = await runGit(
-    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+  const actualBranchRef = await runGit(
+    ["symbolic-ref", "--quiet", "HEAD"],
     worktreePath,
   ).catch(() => null);
-  if (expectedBranchName && actualBranchName !== expectedBranchName) {
+  const actualBranchName = actualBranchRef?.startsWith("refs/heads/")
+    ? actualBranchRef.slice("refs/heads/".length)
+    : actualBranchRef;
+  const expectedBranchRef = expectedBranchName ? `refs/heads/${expectedBranchName}` : null;
+  if (expectedBranchRef && actualBranchRef !== expectedBranchRef) {
     return {
       ...base,
       valid: false,
@@ -2747,6 +2969,7 @@ export async function realizeExecutionWorkspace(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
+  const remoteRefreshPolicy = readRemoteRefreshPolicy(rawStrategy.remoteRefreshPolicy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
     return {
@@ -2784,16 +3007,36 @@ export async function realizeExecutionWorkspace(input: {
     baseRef,
     warnings: baseRefResolutionWarnings,
     refreshed: baseRefAlreadyRefreshed,
-  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef);
+  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, remoteRefreshPolicy);
   const baseRefreshWarnings = [
     ...baseRefResolutionWarnings,
-    ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef)),
+    ...(baseRefAlreadyRefreshed
+      ? []
+      : await refreshRemoteTrackingBaseRef(repoRoot, baseRef, remoteRefreshPolicy)),
   ];
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
+
+  // A local-only declared object is an admission prerequisite. Refuse before
+  // creating parent directories or inspecting/repairing reusable worktrees,
+  // because reconciliation may checkout, detach, or quarantine branches.
+  assertLocalOnlyBaseObject({
+    remoteRefreshPolicy,
+    expectedHeadSha: currentBaseRefSha,
+    repoRoot,
+    baseRef,
+    worktreePath,
+  });
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
   async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {
+    await assertLocalOnlyWorktreeHead({
+      remoteRefreshPolicy,
+      worktreePath: reusablePath,
+      expectedHeadSha: currentBaseRefSha,
+      repoRoot,
+      baseRef,
+    });
     const refresh = currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
@@ -2925,10 +3168,16 @@ export async function realizeExecutionWorkspace(input: {
   // ref is a typed pre-model setup failure the caller can repair and retry
   // without consuming the run's provider admission reservation.
   if (!currentBaseRefSha) {
+    const localOnly = remoteRefreshPolicy === "local_only";
     throw new WorkspacePreparationFailure(
-      `Cannot resolve base ref "${baseRef}" to a commit in base checkout "${repoRoot}" after fetching from origin. The requested ref may not exist on the remote.`,
+      localOnly
+        ? `Cannot resolve local-only base ref "${baseRef}" to a commit in base checkout "${repoRoot}". Remote refresh is prohibited for this execution stage.`
+        : `Cannot resolve base ref "${baseRef}" to a commit in base checkout "${repoRoot}" after fetching from origin. The requested ref may not exist on the remote.`,
       {
-        reason: "base_ref_unresolvable",
+        reason: localOnly ? "local_review_object_missing" : "base_ref_unresolvable",
+        owner: localOnly ? "platform_workspace" : "repository_owner",
+        action: localOnly ? "materialize_exact_review_objects_and_retry" : "repair_repository_ref",
+        remoteRefreshPolicy,
         repoRoot,
         baseRef,
         configuredBaseRef,
@@ -2991,7 +3240,11 @@ export async function realizeExecutionWorkspace(input: {
   // Verified disposable worktree: the checkout must exist and, for a freshly
   // created task branch, point at the resolved base SHA before dispatch.
   const worktreeHeadSha = await runGit(["rev-parse", "HEAD"], worktreePath).catch(() => null);
-  if (!worktreeHeadSha || (!attachedExistingBranch && worktreeHeadSha !== currentBaseRefSha)) {
+  if (
+    !worktreeHeadSha
+    || ((remoteRefreshPolicy === "local_only" || !attachedExistingBranch)
+      && worktreeHeadSha !== currentBaseRefSha)
+  ) {
     throw new WorkspacePreparationFailure(
       `Git worktree at "${worktreePath}" failed verification after creation: expected HEAD ${currentBaseRefSha}, found ${worktreeHeadSha ?? "no readable HEAD"}.`,
       {
@@ -3035,6 +3288,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   base: ExecutionWorkspaceInput;
   workspace: {
     id?: string | null;
+    sourceIssueId?: string | null;
     mode: string | null | undefined;
     strategyType: string | null | undefined;
     cwd: string | null | undefined;
@@ -3047,6 +3301,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     metadata?: Record<string, unknown> | null;
     config?: {
       provisionCommand?: string | null;
+      remoteRefreshPolicy?: "allowed" | "local_only" | null;
     } | null;
   };
   issue: ExecutionWorkspaceIssueRef | null;
@@ -3056,10 +3311,20 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   enableWorkspaceDirtyQuarantineRepair?: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace | null> {
-  const cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
-  if (!cwd) return null;
-
-  const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
+  let cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
+  // Authentic review authority must be resolved before every strategy/cwd
+  // dispatch. Persisted rows are untrusted input and may claim a non-git
+  // strategy specifically to bypass git admission.
+  const reviewAuthority = input.db && input.workspace.id
+    ? await resolveProvenanceBoundImplementationReviewAuthority(input.db, {
+        id: input.workspace.id,
+        companyId: input.agent.companyId,
+        sourceIssueId: input.workspace.sourceIssueId ?? input.issue?.id ?? null,
+      })
+    : null;
+  const strategy = reviewAuthority || input.workspace.strategyType === "git_worktree"
+    ? "git_worktree"
+    : "project_primary";
   const realized: RealizedExecutionWorkspace = {
     baseCwd: input.base.baseCwd,
     source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
@@ -3076,17 +3341,110 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRefSha: readRecordedBaseRefSha(input.workspace.metadata),
   };
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
+  let remoteRefreshPolicy = readRemoteRefreshPolicy(input.workspace.config?.remoteRefreshPolicy);
 
   if (strategy !== "git_worktree") {
+    if (!cwd) return null;
     if (!await directoryExists(cwd)) {
       return null;
     }
     return realized;
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  let declaredBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  if (reviewAuthority) {
+    const branchTemplate = asString(
+      reviewAuthority.workspaceStrategy.branchTemplate,
+      "{{issue.identifier}}-{{slug}}",
+    );
+    const expectedBranchName = sanitizeBranchName(renderWorkspaceTemplate(branchTemplate, {
+      issue: reviewAuthority.issue,
+      agent: reviewAuthority.agent ?? input.agent,
+      projectId: reviewAuthority.projectId ?? input.base.projectId,
+      // Match fresh realization exactly: template variables describe the
+      // project/input workspace, while baseRef authority remains the exact
+      // implementation SHA below.
+      repoRef: reviewAuthority.workspaceRepoRef ?? input.base.repoRef,
+    }));
+    const configuredParentDir = asString(reviewAuthority.workspaceStrategy.worktreeParentDir, "");
+    const expectedWorktreeParentDir = configuredParentDir
+      ? resolveConfiguredPath(configuredParentDir, repoRoot)
+      : path.join(repoRoot, ".paperclip", "worktrees");
+    const expectedWorktreePath = path.join(expectedWorktreeParentDir, expectedBranchName);
+    const actualProviderRef = asString(input.workspace.providerRef, "").trim();
+    const identityMismatches = [
+      input.workspace.strategyType === "git_worktree" ? null : "strategyType",
+      (input.workspace.baseRef ?? "").trim().toLowerCase() === reviewAuthority.exactBaseRef
+        ? null
+        : "baseRef",
+      input.workspace.branchName === expectedBranchName ? null : "branchName",
+      cwd && canonicalizePotentialWorkspacePath(cwd) === canonicalizePotentialWorkspacePath(expectedWorktreePath)
+        ? null
+        : "cwd",
+      !actualProviderRef
+        || canonicalizePotentialWorkspacePath(actualProviderRef) === canonicalizePotentialWorkspacePath(expectedWorktreePath)
+        ? null
+        : "providerRef",
+      (input.workspace.repoUrl ?? null) === (input.base.repoUrl ?? null) ? null : "repoUrl",
+    ].filter((field): field is string => field !== null);
+    if (identityMismatches.length > 0) {
+      throw new WorkspacePreparationFailure(
+        `Persisted implementation-review workspace identity does not match its canonical source issue (${identityMismatches.join(", ")}).`,
+        {
+          reason: "review_workspace_identity_mismatch",
+          owner: "platform_workspace",
+          action: "restore_canonical_review_workspace_identity_and_retry",
+          executionWorkspaceId: input.workspace.id,
+          sourceIssueId: input.workspace.sourceIssueId ?? input.issue?.id ?? null,
+          mismatchedFields: identityMismatches,
+          expectedBaseRef: reviewAuthority.exactBaseRef,
+          expectedBranchName,
+          expectedWorktreePath,
+          expectedRepoUrl: input.base.repoUrl ?? null,
+        },
+      );
+    }
+    cwd = expectedWorktreePath;
+    realized.cwd = expectedWorktreePath;
+    realized.worktreePath = expectedWorktreePath;
+    realized.branchName = expectedBranchName;
+    realized.repoUrl = input.base.repoUrl;
+    realized.repoRef = reviewAuthority.exactBaseRef;
+    declaredBaseRef = reviewAuthority.exactBaseRef;
+    remoteRefreshPolicy = "local_only";
+  }
+  if (!cwd) return null;
+  let localOnlyDeclaredBaseRefSha: string | null = null;
+  if (remoteRefreshPolicy === "local_only") {
+    localOnlyDeclaredBaseRefSha = declaredBaseRef
+      ? await resolveBaseRefSha(repoRoot, declaredBaseRef)
+      : null;
+    // Admission for a declared local-only object must happen before inspecting
+    // or repairing an existing worktree and before restoring a missing one.
+    // Coherence repair may checkout, detach, or quarantine branches.
+    assertLocalOnlyBaseObject({
+      remoteRefreshPolicy,
+      expectedHeadSha: localOnlyDeclaredBaseRefSha,
+      repoRoot,
+      baseRef: declaredBaseRef,
+      worktreePath: realized.worktreePath ?? cwd,
+    });
+  }
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
-  if (await directoryExists(cwd)) {
-    const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  const persistedCwdExists = await directoryExists(cwd);
+  if (persistedCwdExists && remoteRefreshPolicy === "local_only") {
+    // HEAD verification is read-only and must precede branch coherence.
+    // Coherence may checkout, detach, or quarantine a stale worktree.
+    await assertLocalOnlyWorktreeHead({
+      remoteRefreshPolicy,
+      worktreePath: realized.worktreePath ?? cwd,
+      expectedHeadSha: localOnlyDeclaredBaseRefSha,
+      repoRoot,
+      baseRef: declaredBaseRef,
+    });
+  }
+  if (persistedCwdExists) {
+    const reuseBaseRef = declaredBaseRef;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
     const repairWarnings: string[] = [];
     if (await isGitCheckout(reuseWorktreePath)) {
@@ -3130,10 +3488,23 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         },
       );
     }
-    const baseRefreshWarnings = reuseBaseRef
-      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)
-      : [];
-    const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
+    const baseRefreshWarnings = remoteRefreshPolicy === "local_only"
+      ? []
+      : reuseBaseRef
+        ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, remoteRefreshPolicy)
+        : [];
+    const currentBaseRefSha = remoteRefreshPolicy === "local_only"
+      ? localOnlyDeclaredBaseRefSha
+      : reuseBaseRef
+        ? await resolveBaseRefSha(repoRoot, reuseBaseRef)
+        : null;
+    await assertLocalOnlyWorktreeHead({
+      remoteRefreshPolicy,
+      worktreePath: reuseWorktreePath,
+      expectedHeadSha: currentBaseRefSha,
+      repoRoot,
+      baseRef: reuseBaseRef,
+    });
     const refresh = reuseBaseRef && currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
@@ -3178,18 +3549,58 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   if (!branchName) {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
   }
+  const canonicalBranchRef = `refs/heads/${branchName}`;
+
+  const restoreBaseRef = declaredBaseRef;
+  let restoreRefreshWarnings: string[] = [];
+  let restoreCurrentBaseRefSha = remoteRefreshPolicy === "local_only"
+    ? localOnlyDeclaredBaseRefSha
+    : null;
+
+  if (remoteRefreshPolicy !== "local_only") {
+    restoreRefreshWarnings = restoreBaseRef
+      ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef, remoteRefreshPolicy)
+      : [];
+    restoreCurrentBaseRefSha = restoreBaseRef
+      ? await resolveBaseRefSha(repoRoot, restoreBaseRef)
+      : null;
+  } else {
+    // A missing checkout can leave its canonical branch registered at a
+    // different commit. Resolve and validate that ref before mkdir/prune/add:
+    // each of those operations mutates filesystem or Git worktree state.
+    const restoreBranchHeadSha = await resolveBaseRefSha(repoRoot, canonicalBranchRef);
+    if (restoreBranchHeadSha !== restoreCurrentBaseRefSha) {
+      throw new WorkspacePreparationFailure(
+        `Local-only execution workspace branch "${branchName}" is not pinned to declared head ${restoreCurrentBaseRefSha}; found ${restoreBranchHeadSha ?? "no readable branch ref"}.`,
+        {
+          reason: "local_review_head_mismatch",
+          owner: "platform_workspace",
+          action: "discard_stale_review_workspace_and_retry",
+          repoRoot,
+          worktreePath,
+          branchName,
+          baseRef: restoreBaseRef,
+          expectedHeadSha: restoreCurrentBaseRefSha,
+          actualHeadSha: restoreBranchHeadSha,
+          remoteRefreshPolicy,
+        },
+      );
+    }
+  }
 
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
-  const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
-  const restoreRefreshWarnings = restoreBaseRef ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef) : [];
-  const restoreCurrentBaseRefSha = restoreBaseRef ? await resolveBaseRefSha(repoRoot, restoreBaseRef) : null;
 
   let created = false;
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
+      args: [
+        "worktree",
+        "add",
+        worktreePath,
+        branchName,
+      ],
       cwd: repoRoot,
       metadata: {
         repoRoot,
@@ -3232,6 +3643,26 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     created = true;
   }
 
+  const restoredValidation = await validateLinkedGitWorktree({
+    repoRoot,
+    worktreePath,
+    expectedBranchName: branchName,
+  });
+  if (!restoredValidation.valid) {
+    throw new WorkspaceRuntimeValidationFailure(
+      `Restored git worktree "${worktreePath}" does not match recorded branch "${branchName}" (${restoredValidation.reason}).`,
+      {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          reasonCode: restoredValidation.reasonCode,
+          worktreePath,
+          expectedBranchName: branchName,
+          executionWorkspaceId: input.workspace.id ?? null,
+        },
+      },
+    );
+  }
+
   const baseDrift = await inspectExecutionWorkspaceBaseDrift({
     repoRoot,
     worktreePath,
@@ -3239,6 +3670,13 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
     recordedBaseRefSha,
     skipRefresh: true,
+  });
+  await assertLocalOnlyWorktreeHead({
+    remoteRefreshPolicy,
+    worktreePath,
+    expectedHeadSha: restoreCurrentBaseRefSha,
+    repoRoot,
+    baseRef: restoreBaseRef,
   });
 
   await provisionExecutionWorktree({

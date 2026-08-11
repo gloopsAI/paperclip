@@ -1,9 +1,8 @@
 [Unit]
 Description=Paperclip root-owned one-run GitHub push broker
 Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
-Requires=paperclip-campaign-deadman.service docker.service
-BindsTo=paperclip-campaign-deadman.service
-After=network-online.target docker.service paperclip-campaign-deadman.service
+Requires=docker.service
+After=network-online.target docker.service
 Wants=network-online.target
 ConditionPathExists=/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED
 OnFailure=paperclip-gloops-alert@%n.service

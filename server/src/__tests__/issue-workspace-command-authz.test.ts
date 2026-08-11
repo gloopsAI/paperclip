@@ -1,6 +1,10 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -286,6 +290,93 @@ describe("issue workspace command authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers that request the board-only Induct intake", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Bypass lease selection",
+        projectId: "11111111-1111-4111-8111-111111111111",
+        intakeTarget: "induct",
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a conflicting exact head before a board intake emits a task or wakeup", async () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "induct-intake-route-"));
+    const run = (args: string[]) => {
+      const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+      if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+      return (result.stdout ?? "").trim();
+    };
+    run(["init"]);
+    run(["config", "user.email", "test@example.com"]);
+    run(["config", "user.name", "Route Test"]);
+    writeFileSync(path.join(cwd, "README.md"), "# induct\n");
+    run(["add", "."]);
+    run(["commit", "-m", "lease"]);
+    const leaseHead = run(["rev-parse", "HEAD"]).toLowerCase();
+    const declaredHead = "b".repeat(40);
+    const workspaceId = "22222222-2222-4222-8222-222222222222";
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const previousWorkspaceIds = process.env.PAPERCLIP_INDUCT_PROJECT_WORKSPACE_IDS;
+    process.env.PAPERCLIP_INDUCT_PROJECT_WORKSPACE_IDS = workspaceId;
+    mockDbSelectWhere.mockImplementation(() =>
+      Promise.resolve([{
+        id: workspaceId,
+        companyId: "company-1",
+        projectId,
+        name: "induct@main",
+        cwd,
+        repoUrl: "https://github.com/InductAI/induct.git",
+        repoRef: leaseHead,
+        defaultRef: "main",
+      }]),
+    );
+
+    try {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        companyIds: ["company-1"],
+        source: "local_trusted",
+        isInstanceAdmin: true,
+      });
+      const res = await request(app)
+        .post("/api/companies/company-1/issues")
+        .send({
+          title: "Authorized Induct work",
+          projectId,
+          intakeTarget: "induct",
+          description: `## Scope\n- README.md\n\nBase SHA: \`${declaredHead}\`\nExact head: \`${leaseHead}\``,
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details?.code ?? res.body.code ?? res.body.error).toMatch(
+        /induct_intake\.exact_head_mismatch/,
+      );
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    } finally {
+      if (previousWorkspaceIds === undefined) {
+        delete process.env.PAPERCLIP_INDUCT_PROJECT_WORKSPACE_IDS;
+      } else {
+        process.env.PAPERCLIP_INDUCT_PROJECT_WORKSPACE_IDS = previousWorkspaceIds;
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("rejects agent callers that patch assignee adapter workspace teardown commands", async () => {

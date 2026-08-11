@@ -981,6 +981,7 @@ describe("applyPersistedExecutionWorkspaceConfig", () => {
     const result = applyPersistedExecutionWorkspaceConfig({
       config: {},
       workspaceConfig: {
+        remoteRefreshPolicy: "local_only",
         provisionCommand: null,
         teardownCommand: null,
         cleanupCommand: null,
@@ -995,6 +996,7 @@ describe("applyPersistedExecutionWorkspaceConfig", () => {
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "workspace-web" }],
     });
+    expect(result.workspaceStrategy).toEqual({ remoteRefreshPolicy: "local_only" });
   });
 });
 
@@ -1006,6 +1008,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       createdByRuntime: true,
       configSnapshot: {
         environmentId: "env-new",
+        remoteRefreshPolicy: "local_only",
         provisionCommand: "bash ./scripts/provision.sh",
       },
       shouldReuseExisting: false,
@@ -1016,6 +1019,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       createdByRuntime: true,
       config: {
         environmentId: "env-new",
+        remoteRefreshPolicy: "local_only",
         provisionCommand: "bash ./scripts/provision.sh",
         teardownCommand: null,
         cleanupCommand: null,

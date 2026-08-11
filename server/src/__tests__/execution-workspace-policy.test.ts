@@ -206,6 +206,39 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("inherits project branch placement while issue authority overrides the exact review base", () => {
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "review/{{workspace.repoRef}}/{{issue.identifier}}/{{slug}}",
+          worktreeParentDir: ".paperclip/custom-review-worktrees",
+        },
+      },
+      issueSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "a".repeat(40),
+          remoteRefreshPolicy: "local_only",
+        },
+      },
+      mode: "isolated_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+
+    expect(result.workspaceStrategy).toEqual({
+      type: "git_worktree",
+      baseRef: "a".repeat(40),
+      remoteRefreshPolicy: "local_only",
+      branchTemplate: "review/{{workspace.repoRef}}/{{issue.identifier}}/{{slug}}",
+      worktreeParentDir: ".paperclip/custom-review-worktrees",
+    });
+  });
+
   it("preserves project authorization policy for trust-preset resolution", () => {
     expect(parseProjectExecutionWorkspacePolicy({
       enabled: true,

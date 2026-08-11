@@ -12,7 +12,7 @@ readonly RECEIPT="${STATE_DIR}/stop.json"
 }
 
 for unit in \
-  paperclip-gloops.service \
+  paperclip-controlled-swarm.service \
   paperclip-gloops-handshake.service \
   paperclip-hermes-execution.service \
   paperclip-hermes-handshake.service \

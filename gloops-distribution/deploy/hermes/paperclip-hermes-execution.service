@@ -1,9 +1,9 @@
 [Unit]
 Description=Paperclip Hermes execution-only sidecar (operator-activated only)
 Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
-Requires=docker.service paperclip-campaign-deadman.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service
-BindsTo=paperclip-campaign-deadman.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service
-After=docker.service network-online.target paperclip-campaign-deadman.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service
+Requires=docker.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service
+BindsTo=paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service
+After=docker.service network-online.target paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service
 Wants=network-online.target
 Conflicts=paperclip-hermes-handshake.service
 ConditionPathExists=/etc/paperclip-gloops/HERMES_EXECUTION_APPROVED

@@ -1,11 +1,10 @@
 [Unit]
 Description=GLoops-owned Paperclip distribution (operator-activated only)
 Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
-Requires=docker.service paperclip-campaign-deadman.service
-BindsTo=paperclip-campaign-deadman.service
-After=docker.service network-online.target paperclip-campaign-deadman.service
+Requires=docker.service
+After=docker.service network-online.target
 Wants=network-online.target
-Conflicts=paperclip-gloops-handshake.service
+Conflicts=paperclip-gloops-handshake.service paperclip-controlled-swarm.service
 ConditionPathExists=/etc/paperclip-gloops/ACTIVATION_APPROVED
 OnFailure=paperclip-gloops-alert@%n.service
 StartLimitIntervalSec=900
@@ -16,11 +15,10 @@ Type=simple
 EnvironmentFile=/etc/paperclip-gloops/runtime.env
 ExecCondition=/usr/bin/test ! -e /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE
 ExecStartPre=/usr/local/lib/paperclip-gloops/github-app-credentials.py refresh-projector
-ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh
+ExecStartPre=/usr/local/lib/paperclip-gloops/preflight.sh --general
 ExecStartPre=-/usr/bin/docker rm -f paperclip-gloops
-ExecStart=/usr/bin/docker run --rm --name paperclip-gloops --pull never --user 995:985 --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --cap-drop ALL --security-opt no-new-privileges:true --network paperclip-execution --publish 127.0.0.1:3100:3100 --env-file /etc/paperclip-gloops/runtime.env --mount type=bind,src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip --mount type=bind,src=/opt/paperclip/plugins,dst=/opt/paperclip/plugins,readonly --mount type=bind,src=/home/paperclip/mte-shadow-package,dst=/home/paperclip/mte-shadow-package,readonly --mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace --mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly --mount type=bind,src=/etc/paperclip-gloops/github-broker-receipt-token,dst=/run/secrets/paperclip-github-broker-receipt-token,readonly --memory 1536m --memory-swap 1536m --cpus 2.0 --pids-limit 512 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --health-cmd "node -e \"fetch('http://127.0.0.1:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"" --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 45s ${PAPERCLIP_IMAGE}
+ExecStart=/usr/bin/docker run --rm --name paperclip-gloops --pull never --user 995:985 --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m --cap-drop ALL --security-opt no-new-privileges:true --network paperclip-execution --publish 127.0.0.1:3100:3100 --env-file /etc/paperclip-gloops/runtime.env --mount type=bind,src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip --mount type=bind,src=/opt/paperclip/plugins,dst=/opt/paperclip/plugins,readonly --mount type=bind,src=/home/paperclip/mte-shadow-package,dst=/home/paperclip/mte-shadow-package,readonly --mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace --mount type=bind,src=/etc/paperclip-gloops/github-broker-receipt-token,dst=/run/secrets/paperclip-github-broker-receipt-token,readonly --memory 1536m --memory-swap 1536m --cpus 2.0 --pids-limit 512 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --health-cmd "node -e \"fetch('http://127.0.0.1:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"" --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 45s ${PAPERCLIP_IMAGE}
 ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh
-ExecStartPost=/usr/local/lib/paperclip-gloops/controlled-swarm-commissioner.py --verify-live-if-commissioned
 ExecStartPost=/usr/local/lib/paperclip-gloops/github-app-credentials.py rotate-projector
 ExecStop=/usr/local/lib/paperclip-gloops/github-app-credentials.py clear-projector
 ExecStop=/usr/bin/docker stop --time 45 paperclip-gloops

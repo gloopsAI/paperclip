@@ -51,6 +51,7 @@ import type {
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
+  IssueReviewProvenance,
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
@@ -59,6 +60,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueReviewProvenanceSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -329,6 +331,27 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   };
 }
 
+function hasReviewProvenanceField(raw: unknown): boolean {
+  return Boolean(
+    raw
+    && typeof raw === "object"
+    && !Array.isArray(raw)
+    && Object.prototype.hasOwnProperty.call(raw, "reviewProvenance"),
+  );
+}
+
+function assertReviewProvenanceIsServerOwned(raw: unknown): void {
+  if (hasReviewProvenanceField(raw)) {
+    throw unprocessable("executionWorkspaceSettings.reviewProvenance is server-owned");
+  }
+}
+
+function withoutReviewProvenance(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const { reviewProvenance: _reviewProvenance, ...settings } = raw as Record<string, unknown>;
+  return Object.keys(settings).length > 0 ? settings : null;
+}
+
 // Accepted-plan children are not realized yet, so carry only unresolved
 // workspace intent and let the first child run render/persist its own branch.
 function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<string, unknown> | null {
@@ -346,6 +369,9 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
     next.workspaceStrategy = {
       type: settings.workspaceStrategy.type,
       ...(settings.workspaceStrategy.baseRef ? { baseRef: settings.workspaceStrategy.baseRef } : {}),
+      ...(settings.workspaceStrategy.remoteRefreshPolicy
+        ? { remoteRefreshPolicy: settings.workspaceStrategy.remoteRefreshPolicy }
+        : {}),
       ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
       ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
       ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
@@ -660,6 +686,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
   trustExplicitResponsibleUserId?: boolean;
+  /** Internal-only evidence minted by the implementation-review handoff service. */
+  serverReviewProvenance?: IssueReviewProvenance;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -5783,6 +5811,7 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      assertReviewProvenanceIsServerOwned(issueData.executionWorkspaceSettings);
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
@@ -6327,8 +6356,16 @@ export function issueService(db: Db) {
         actorRunId,
         actorResponsibleUserId,
         trustExplicitResponsibleUserId,
+        serverReviewProvenance,
         ...issueData
       } = data;
+      assertReviewProvenanceIsServerOwned(issueData.executionWorkspaceSettings);
+      const parsedServerReviewProvenance = serverReviewProvenance === undefined
+        ? null
+        : issueReviewProvenanceSchema.safeParse(serverReviewProvenance);
+      if (parsedServerReviewProvenance && !parsedServerReviewProvenance.success) {
+        throw unprocessable("Invalid server review provenance");
+      }
       const requestedExecutionWorkspaceId = issueData.executionWorkspaceId ?? null;
       assertExplicitExecutionWorkspacePreference(
         requestedExecutionWorkspaceId,
@@ -6400,7 +6437,7 @@ export function issueService(db: Db) {
               executionWorkspaceId = sourceWorkspace.id;
               executionWorkspacePreference = "reuse_existing";
               executionWorkspaceSettings = {
-                ...((workspaceSource.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
+                ...(withoutReviewProvenance(workspaceSource.executionWorkspaceSettings) ?? {}),
                 mode: issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
               };
             }
@@ -6503,6 +6540,13 @@ export function issueService(db: Db) {
             executionWorkspacePreference,
             executionWorkspaceSettings: issueData.executionWorkspaceSettings,
           });
+        }
+
+        if (parsedServerReviewProvenance?.success) {
+          executionWorkspaceSettings = {
+            ...(executionWorkspaceSettings ?? {}),
+            reviewProvenance: parsedServerReviewProvenance.data,
+          };
         }
 
         // C2: implement/review/release creates require explicit workspace + 40-char baseRef.
@@ -6692,6 +6736,18 @@ export function issueService(db: Db) {
         runtimeExecutionWorkspacePersistence,
         ...issueData
       } = data;
+      if (hasReviewProvenanceField(issueData.executionWorkspaceSettings)) {
+        if (!runtimeExecutionWorkspacePersistence) {
+          assertReviewProvenanceIsServerOwned(issueData.executionWorkspaceSettings);
+        }
+        issueData.executionWorkspaceSettings = withoutReviewProvenance(
+          issueData.executionWorkspaceSettings,
+        );
+      }
+      const existingReviewProvenance = parseIssueExecutionWorkspaceSettings(
+        existing.executionWorkspaceSettings,
+        { includeEnvironmentId: true },
+      )?.reviewProvenance ?? null;
       const requestedExecutionWorkspaceId = issueData.executionWorkspaceId ?? null;
       if (!runtimeExecutionWorkspacePersistence) {
         assertExplicitExecutionWorkspacePreference(
@@ -6779,6 +6835,12 @@ export function issueService(db: Db) {
               includeEnvironmentId: true,
             });
       if (issueData.executionWorkspaceSettings !== undefined) {
+        if (existingReviewProvenance) {
+          nextExecutionWorkspaceSettings = {
+            ...(nextExecutionWorkspaceSettings ?? {}),
+            reviewProvenance: existingReviewProvenance,
+          };
+        }
         patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
           ? { ...nextExecutionWorkspaceSettings }
           : null;

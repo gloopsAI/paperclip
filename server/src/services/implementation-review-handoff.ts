@@ -6,9 +6,10 @@
  * (Argus) with the exact head SHA. Does not open PRs (broker-owned) and does
  * not weaken verified_change.
  */
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, issues } from "@paperclipai/db";
+import { agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { issueReviewProvenanceSchema, type IssueReviewProvenance } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "./issues.js";
 
@@ -39,6 +40,7 @@ export type ImplementationReviewHandoffPlan =
       parentId: string;
       projectId: string;
       assigneeAgentId: string;
+      exactBaseSha: string | null;
       exactHeadSha: string;
       draftPrUrl: string | null;
     };
@@ -51,11 +53,14 @@ export function isExactHeadSha(value: string | null | undefined): value is strin
  * Declared workspace head for maw-implementation-review children (GLO-1940 / C2).
  * Always bind baseRef to the exact implement head — never project pin / gloops/stable.
  */
-export function buildReviewExecutionWorkspaceSettings(exactHeadSha: string): {
+export function buildReviewExecutionWorkspaceSettings(
+  exactHeadSha: string,
+): {
   mode: "isolated_workspace";
   workspaceStrategy: {
     type: "git_worktree";
     baseRef: string;
+    remoteRefreshPolicy: "local_only";
   };
 } {
   if (!isExactHeadSha(exactHeadSha)) {
@@ -66,6 +71,7 @@ export function buildReviewExecutionWorkspaceSettings(exactHeadSha: string): {
     workspaceStrategy: {
       type: "git_worktree",
       baseRef: exactHeadSha.trim().toLowerCase(),
+      remoteRefreshPolicy: "local_only",
     },
   };
 }
@@ -82,6 +88,7 @@ export function buildImplementationReviewTitle(input: {
 export function buildImplementationReviewDescription(input: {
   parentIdentifier: string | null | undefined;
   parentId: string;
+  exactBaseSha?: string | null;
   exactHeadSha: string;
   implementerAgentId: string;
   draftPr: DraftPullRequestEvidence;
@@ -97,7 +104,9 @@ Independent exact-head review of implementation for ${parentLabel}.
 
 ## Scope
 - Review **exact head** \`${input.exactHeadSha}\`
+- Compare from exact base \`${isExactHeadSha(input.exactBaseSha) ? input.exactBaseSha.trim().toLowerCase() : "not recorded"}\`
 - Read-only: diff, touched files, tests/CI evidence if present
+- Local objects only; remote refresh is prohibited during review admission
 - Verdict: APPROVE or CHANGES_REQUESTED (≤3 findings)
 
 ## Grounding
@@ -125,6 +134,7 @@ export function planImplementationReviewHandoff(input: {
     workMode?: string | null;
     title?: string | null;
   };
+  exactBaseSha?: string | null;
   exactHeadSha: string | null | undefined;
   implementerAgentId: string;
   reviewerAgentId: string | null | undefined;
@@ -184,6 +194,7 @@ export function planImplementationReviewHandoff(input: {
     description: buildImplementationReviewDescription({
       parentIdentifier: input.parent.identifier,
       parentId: input.parent.id,
+      exactBaseSha: input.exactBaseSha,
       exactHeadSha: head,
       implementerAgentId: input.implementerAgentId,
       draftPr: input.draftPr,
@@ -191,6 +202,9 @@ export function planImplementationReviewHandoff(input: {
     parentId: input.parent.id,
     projectId: input.parent.projectId,
     assigneeAgentId: input.reviewerAgentId,
+    exactBaseSha: isExactHeadSha(input.exactBaseSha)
+      ? input.exactBaseSha.trim().toLowerCase()
+      : null,
     exactHeadSha: head,
     draftPrUrl,
   };
@@ -241,6 +255,274 @@ export type ImplementationReviewHandoffResult =
   | { ok: true; action: "created"; reviewIssueId: string; reviewIdentifier: string | null; reviewerPickSource: Exclude<ReviewerPickSource, "none"> }
   | { ok: false; error: string };
 
+export type ReviewTerminalFailureInput = {
+  runId: string;
+  errorCode: string;
+  error?: string;
+  errorMessage?: string;
+  exactBaseSha?: string | null;
+  exactHeadSha?: string | null;
+};
+
+export const REVIEW_TERMINAL_FAILURE_MARKER = "REVIEW_TERMINAL_V1";
+
+export function parseImplementationReviewProvenance(
+  executionWorkspaceSettings: unknown,
+): IssueReviewProvenance | null {
+  if (
+    !executionWorkspaceSettings
+    || typeof executionWorkspaceSettings !== "object"
+    || Array.isArray(executionWorkspaceSettings)
+  ) {
+    return null;
+  }
+  const parsed = issueReviewProvenanceSchema.safeParse(
+    (executionWorkspaceSettings as Record<string, unknown>).reviewProvenance,
+  );
+  return parsed.success ? parsed.data : null;
+}
+
+export function isImplementationReviewIssue(input: {
+  executionWorkspaceSettings?: unknown;
+  parentId?: string | null;
+  authenticSourceRunId?: string | null;
+}): boolean {
+  const provenance = parseImplementationReviewProvenance(input.executionWorkspaceSettings);
+  return provenance !== null
+    && provenance.parentIssueId === input.parentId
+    && provenance.sourceRunId === input.authenticSourceRunId;
+}
+
+export function buildReviewTerminalFailureComment(input: ReviewTerminalFailureInput): string {
+  const exactBase = isExactHeadSha(input.exactBaseSha)
+    ? input.exactBaseSha.trim().toLowerCase()
+    : "unknown";
+  const exactHead = isExactHeadSha(input.exactHeadSha)
+    ? input.exactHeadSha.trim().toLowerCase()
+    : "unknown";
+  const terminalRecord = JSON.stringify({
+    disposition: "REVIEW_NOT_RUN",
+    owner: "platform_workspace",
+    action: "materialize_exact_review_objects_and_retry",
+    exactBaseSha: exactBase,
+    exactHeadSha: exactHead,
+    runId: input.runId,
+    errorCode: input.errorCode,
+  });
+  return `## Review terminal disposition — REVIEW_NOT_RUN
+
+- ${REVIEW_TERMINAL_FAILURE_MARKER}:${terminalRecord}
+- Marker: \`${REVIEW_TERMINAL_FAILURE_MARKER}\`
+- Disposition: \`REVIEW_NOT_RUN\`
+- Owner: \`platform_workspace\`
+- Required action: \`materialize_exact_review_objects_and_retry\`
+- Exact base: \`${exactBase}\`
+- Exact head: \`${exactHead}\`
+- Run: \`${input.runId}\`
+- Failure: \`${input.errorCode}\` — ${input.error ?? input.errorMessage ?? "No error message recorded"}
+
+This is a terminal platform disposition for this attempt, not a code-review verdict. The review issue and its parent are blocked until the exact objects are locally available and a fresh review run is admitted.`;
+}
+
+function readDeclaredReviewSha(description: string | null | undefined, label: "base" | "head") {
+  const match = String(description ?? "").match(
+    new RegExp(`exact ${label}[^0-9a-f]+([0-9a-f]{40})`, "i"),
+  );
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+/** Persist a non-vacuous terminal review failure instead of leaving `in_review`. */
+export async function persistImplementationReviewTerminalFailure(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+  } & ReviewTerminalFailureInput,
+): Promise<{ action: "recorded" | "duplicate" | "not_review_issue" | "stale_attempt"; parentBlocked: boolean }> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      select id from issues
+      where id = ${input.issueId} and company_id = ${input.companyId}
+      for update
+    `);
+    const issue = await tx
+      .select({
+        id: issues.id,
+        title: issues.title,
+        description: issues.description,
+        status: issues.status,
+        parentId: issues.parentId,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    const provenance = issue
+      ? parseImplementationReviewProvenance(issue.executionWorkspaceSettings)
+      : null;
+    const authenticParent = issue?.parentId && provenance?.parentIssueId === issue.parentId
+      ? await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.id, issue.parentId),
+            eq(issues.companyId, input.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const authenticSourceRun = authenticParent && provenance
+      ? await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, provenance.sourceRunId),
+            eq(heartbeatRuns.companyId, input.companyId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue!.parentId!}`,
+          ))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (
+      !issue
+      || !authenticParent
+      || !isImplementationReviewIssue({
+        ...issue,
+        authenticSourceRunId: authenticSourceRun?.id ?? null,
+      })
+    ) {
+      return { action: "not_review_issue" as const, parentBlocked: false };
+    }
+    if (
+      issue.status === "done"
+      || issue.status === "cancelled"
+      || (issue.executionRunId !== input.runId && issue.checkoutRunId !== input.runId)
+    ) {
+      return { action: "stale_attempt" as const, parentBlocked: false };
+    }
+
+    const body = buildReviewTerminalFailureComment({
+      ...input,
+      exactBaseSha: input.exactBaseSha ?? readDeclaredReviewSha(issue.description, "base"),
+      exactHeadSha: input.exactHeadSha ?? readDeclaredReviewSha(issue.description, "head"),
+    });
+    const duplicate = await tx
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        eq(issueComments.createdByRunId, input.runId),
+        eq(issueComments.authorType, "system"),
+        sql`${issueComments.body} like ${`%${REVIEW_TERMINAL_FAILURE_MARKER}:%`}`,
+        sql`${issueComments.body} like ${`%"disposition":"REVIEW_NOT_RUN"%`}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!duplicate) {
+      await tx.insert(issueComments).values({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        authorType: "system",
+        createdByRunId: input.runId,
+        body,
+      });
+    }
+    await tx
+      .update(issues)
+      .set({ status: "blocked", updatedAt: new Date() })
+      .where(and(
+        eq(issues.id, issue.id),
+        eq(issues.companyId, input.companyId),
+        or(eq(issues.executionRunId, input.runId), eq(issues.checkoutRunId, input.runId)),
+      ));
+    const parentBlocked = Boolean(issue.parentId) && (await tx
+      .update(issues)
+      .set({ status: "blocked", updatedAt: new Date() })
+      .where(and(
+        eq(issues.id, issue.parentId!),
+        eq(issues.companyId, input.companyId),
+        eq(issues.status, "in_review"),
+      ))
+      .returning({ id: issues.id })).length === 1;
+    return { action: duplicate ? "duplicate" as const : "recorded" as const, parentBlocked };
+  });
+}
+
+async function persistImplementationReviewHandoffFailure(
+  db: Db,
+  input: {
+    companyId: string;
+    parentIssueId: string;
+    runId: string;
+    errorCode: string;
+    error: string;
+    exactBaseSha?: string | null;
+    exactHeadSha?: string | null;
+  },
+) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      select id from issues
+      where id = ${input.parentIssueId} and company_id = ${input.companyId}
+      for update
+    `);
+    const parent = await tx
+      .select({
+        id: issues.id,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.parentIssueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !parent
+      || parent.status !== "in_review"
+      || (parent.executionRunId !== input.runId && parent.checkoutRunId !== input.runId)
+    ) return "stale_attempt" as const;
+
+    const body = buildReviewTerminalFailureComment({
+      runId: input.runId,
+      errorCode: input.errorCode,
+      error: input.error,
+      exactBaseSha: input.exactBaseSha,
+      exactHeadSha: input.exactHeadSha,
+    });
+    const existing = await tx
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, parent.id),
+        eq(issueComments.createdByRunId, input.runId),
+        eq(issueComments.authorType, "system"),
+        sql`${issueComments.body} like ${`%${REVIEW_TERMINAL_FAILURE_MARKER}:%`}`,
+        sql`${issueComments.body} like ${`%"disposition":"REVIEW_NOT_RUN"%`}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existing) {
+      await tx.insert(issueComments).values({
+        companyId: input.companyId,
+        issueId: parent.id,
+        authorType: "system",
+        createdByRunId: input.runId,
+        body,
+      });
+    }
+    await tx.update(issues).set({ status: "blocked", updatedAt: new Date() }).where(and(
+      eq(issues.id, parent.id),
+      eq(issues.companyId, input.companyId),
+      eq(issues.status, "in_review"),
+      or(eq(issues.executionRunId, input.runId), eq(issues.checkoutRunId, input.runId)),
+    ));
+    return existing ? "duplicate" as const : "recorded" as const;
+  });
+}
+
 /**
  * Best-effort: create Argus review child after implementation_ready.
  * Never throws into the settlement path — callers should catch/log.
@@ -251,6 +533,8 @@ export async function ensureImplementationReviewHandoff(
     companyId: string;
     parentIssueId: string;
     implementerAgentId: string;
+    sourceRunId: string;
+    exactBaseSha?: string | null;
     exactHeadSha: string | null | undefined;
     draftPr?: DraftPullRequestEvidence;
     enqueueWakeup?: (agentId: string, payload: {
@@ -270,12 +554,30 @@ export async function ensureImplementationReviewHandoff(
         workMode: issues.workMode,
         title: issues.title,
         companyId: issues.companyId,
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
       })
       .from(issues)
       .where(and(eq(issues.id, input.parentIssueId), eq(issues.companyId, input.companyId)))
       .limit(1);
     if (!parent) {
       return { ok: false, error: "parent_issue_not_found" };
+    }
+    if (parent.executionRunId !== input.sourceRunId && parent.checkoutRunId !== input.sourceRunId) {
+      return { ok: false, error: "source_run_not_bound_to_parent" };
+    }
+    const authenticSourceRun = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, input.sourceRunId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.implementerAgentId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${parent.id}`,
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!authenticSourceRun) {
+      return { ok: false, error: "source_run_not_authentic" };
     }
 
     const companyAgents = await db
@@ -310,6 +612,7 @@ export async function ensureImplementationReviewHandoff(
 
     const plan = planImplementationReviewHandoff({
       parent,
+      exactBaseSha: input.exactBaseSha,
       exactHeadSha: input.exactHeadSha,
       implementerAgentId: input.implementerAgentId,
       reviewerAgentId,
@@ -318,6 +621,17 @@ export async function ensureImplementationReviewHandoff(
     });
 
     if (plan.action === "skip") {
+      if (plan.reason !== "duplicate_open_review" && plan.reason !== "probe_work_mode") {
+        await persistImplementationReviewHandoffFailure(db, {
+          companyId: input.companyId,
+          parentIssueId: input.parentIssueId,
+          runId: input.sourceRunId,
+          errorCode: `review_handoff_${plan.reason}`,
+          error: `Implementation review handoff could not be created: ${plan.reason}`,
+          exactBaseSha: input.exactBaseSha,
+          exactHeadSha: input.exactHeadSha,
+        });
+      }
       return {
         ok: true,
         action: "skipped",
@@ -338,7 +652,12 @@ export async function ensureImplementationReviewHandoff(
       // Declared workspace head MUST be exact head for reviews (GLO-1940 / GLO-1941 / C2).
       // Never fall back to project pin / origin/gloops/stable here.
       executionWorkspaceSettings: buildReviewExecutionWorkspaceSettings(plan.exactHeadSha),
-    } as never);
+      serverReviewProvenance: {
+        kind: "implementation_exact_head",
+        parentIssueId: plan.parentId,
+        sourceRunId: authenticSourceRun.id,
+      },
+    });
 
     const reviewIssueId = (created as { id?: string })?.id;
     const reviewIdentifier = (created as { identifier?: string | null })?.identifier ?? null;
@@ -354,6 +673,7 @@ export async function ensureImplementationReviewHandoff(
         payload: {
           issueId: reviewIssueId,
           parentIssueId: parent.id,
+          exactBaseSha: plan.exactBaseSha,
           exactHeadSha: plan.exactHeadSha,
           draftPrUrl: plan.draftPrUrl,
           reviewerPickSource: reviewerPick.source,
@@ -365,6 +685,7 @@ export async function ensureImplementationReviewHandoff(
       parentIssueId: parent.id,
       reviewIssueId,
       reviewerAgentId: plan.assigneeAgentId,
+      exactBaseSha: plan.exactBaseSha,
       exactHeadSha: plan.exactHeadSha,
       reviewerPickSource: reviewerPick.source,
     };
@@ -387,6 +708,20 @@ export async function ensureImplementationReviewHandoff(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await persistImplementationReviewHandoffFailure(db, {
+      companyId: input.companyId,
+      parentIssueId: input.parentIssueId,
+      runId: input.sourceRunId,
+      errorCode: "review_handoff_failed",
+      error: message,
+      exactBaseSha: input.exactBaseSha,
+      exactHeadSha: input.exactHeadSha,
+    }).catch((persistError) => {
+      logger.error(
+        { err: persistError, parentIssueId: input.parentIssueId, runId: input.sourceRunId },
+        "failed to persist implementation review handoff failure",
+      );
+    });
     logger.warn({ err: error, parentIssueId: input.parentIssueId }, "implementation review handoff failed");
     return { ok: false, error: message };
   }

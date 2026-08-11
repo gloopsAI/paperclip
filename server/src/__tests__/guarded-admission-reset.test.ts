@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupIdempotency,
@@ -8,6 +8,7 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issues,
   projects,
@@ -19,6 +20,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  CAMPAIGN_BINDING_CONTEXT_KEY,
+  CAMPAIGN_BINDING_SCHEMA_VERSION,
+  CAMPAIGN_BOUND_RUN_ERROR_CODE,
+  CAMPAIGN_TERMINAL_RECEIPT_KEY,
+} from "../services/campaign-deadman.js";
+import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
   buildExecutionAdmissionEnvelope,
@@ -26,6 +33,21 @@ import {
   parseExecutionAdmissionPolicy,
 } from "../services/execution-admission.js";
 import { guardedAdmissionResetService } from "../services/guarded-admission-reset.js";
+import { heartbeatService } from "../services/heartbeat.js";
+
+const adapterExecute = vi.hoisted(() => vi.fn());
+
+vi.mock("../adapters/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      supportsExecutionBudget: true,
+      execute: adapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -77,6 +99,7 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     await db.delete(activityLog);
     await db.delete(agentWakeupIdempotency);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(projectWorkspaces);
@@ -345,6 +368,22 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     expect(replay.receipt).toEqual(first.receipt);
   });
 
+  it("keeps ordinary exhausted-admission resets free of inapplicable workspace evidence", async () => {
+    const seeded = await seed();
+    const service = guardedAdmissionResetService(db);
+
+    await expect(service.getWorkspaceRecoveryRequirement({
+      issueId: seeded.issueId,
+      companyId: seeded.companyId,
+    })).resolves.toEqual({
+      required: false,
+      projectWorkspaceId: seeded.projectWorkspaceId,
+      failedObservedHeadSha: null,
+    });
+    await expect(service.resetExhaustedAdmissionAndCheckout(resetInput(seeded)))
+      .resolves.toMatchObject({ created: true });
+  });
+
   it("fails closed when an idempotent replay receipt no longer binds the reset facts", async () => {
     const seeded = await seed();
     const service = guardedAdmissionResetService(db);
@@ -450,6 +489,7 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
       projectWorkspaceId: seeded.projectWorkspaceId,
       [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: "board-reset-1",
     });
+    expect(context).not.toHaveProperty(CAMPAIGN_BINDING_CONTEXT_KEY);
     expect(receipt).toMatchObject({
       issueId: seeded.issueId,
       agentId: seeded.agentId,
@@ -480,6 +520,66 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     });
   });
 
+  it("terminalizes a reset queued by campaign A behind an active lock when the general plane resumes", async () => {
+    adapterExecute.mockClear();
+    const seeded = await seed();
+    const campaignId = `reset-${seeded.companyId.slice(0, 8)}`;
+    const blockerRunId = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        responsibleUserId: seeded.responsibleUserId,
+        contextSnapshot: {},
+        startedAt: new Date(),
+      })
+      .returning({ id: heartbeatRuns.id })
+      .then((rows) => rows[0]!.id);
+    const reset = await guardedAdmissionResetService(db, {
+      runtimeEnv: {
+        PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE: "campaign-bound",
+        PAPERCLIP_CAMPAIGN_ID: campaignId,
+        PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
+      },
+    }).resetExhaustedAdmissionAndCheckout(resetInput(seeded));
+
+    expect(reset.run).toMatchObject({
+      status: "queued",
+      contextSnapshot: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+          schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+          scope: "campaign-bound",
+          campaignId,
+        },
+      },
+    });
+    expect(adapterExecute).not.toHaveBeenCalled();
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, blockerRunId));
+    const general = heartbeatService(db, { runtimeEnv: {} });
+    await general.resumeQueuedRuns();
+
+    const terminal = await general.getRun(reset.run.id);
+    expect(terminal).toMatchObject({
+      status: "cancelled",
+      errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
+      resultJson: {
+        providerInvocationAttempted: false,
+        [CAMPAIGN_TERMINAL_RECEIPT_KEY]: {
+          campaignId,
+          disposition: "cancelled",
+        },
+      },
+    });
+    expect(adapterExecute).not.toHaveBeenCalled();
+  });
+
   it("does not mistake ordinary failed preflight history for an exhausted epoch", async () => {
     const seeded = await seed({ exhausted: false });
     await db.insert(heartbeatRuns).values({
@@ -497,6 +597,73 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     ).rejects.toMatchObject({
       details: { code: "admission_reset_epoch_not_exhausted" },
     });
+  });
+
+  it("requires a validated changed workspace head before resetting an epoch poisoned by workspace admission", async () => {
+    const seeded = await seed();
+    await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      status: "cancelled",
+      invocationSource: "assignment",
+      finishedAt: new Date("2026-08-01T00:02:00.000Z"),
+      errorCode: "workspace_admit.head_mismatch",
+      contextSnapshot: { issueId: seeded.issueId },
+      resultJson: {
+        workspaceAdmit: {
+          projectWorkspaceId: seeded.projectWorkspaceId,
+          expectedHeadSha: "a".repeat(40),
+          observedHeadSha: "b".repeat(40),
+        },
+      },
+    });
+
+    await expect(
+      guardedAdmissionResetService(db).resetExhaustedAdmissionAndCheckout(resetInput(seeded)),
+    ).rejects.toMatchObject({
+      details: { code: "admission_reset_workspace_revalidation_required" },
+    });
+
+    const service = guardedAdmissionResetService(db);
+    await expect(service.getWorkspaceRecoveryRequirement({
+      issueId: seeded.issueId,
+      companyId: seeded.companyId,
+    })).resolves.toEqual({
+      required: true,
+      projectWorkspaceId: seeded.projectWorkspaceId,
+      failedObservedHeadSha: "b".repeat(40),
+    });
+
+    const first = await service.resetExhaustedAdmissionAndCheckout({
+      ...resetInput(seeded),
+      workspaceRecovery: {
+        projectWorkspaceId: seeded.projectWorkspaceId,
+        expectedHeadSha: "c".repeat(40),
+        observedHeadSha: "c".repeat(40),
+        validatedAt: "2026-08-01T00:03:00.000Z",
+      },
+    });
+    expect(first).toMatchObject({
+      created: true,
+      receipt: {
+        workspaceRecovery: {
+          observedHeadSha: "c".repeat(40),
+        },
+      },
+    });
+
+    const replay = await service.resetExhaustedAdmissionAndCheckout({
+      ...resetInput(seeded),
+      workspaceRecovery: {
+        projectWorkspaceId: seeded.projectWorkspaceId,
+        expectedHeadSha: "c".repeat(40),
+        observedHeadSha: "c".repeat(40),
+        validatedAt: "2026-08-01T00:04:00.000Z",
+      },
+    });
+    expect(replay.created).toBe(false);
+    expect(replay.run.id).toBe(first.run.id);
+    expect(replay.receipt.workspaceRecovery?.validatedAt).toBe("2026-08-01T00:03:00.000Z");
   });
 
   it("fails closed when the latest retry-exhaustion denial has a malformed envelope", async () => {

@@ -2,7 +2,7 @@
 Description=Root-owned non-renewing Paperclip campaign deadman
 Documentation=https://github.com/gloopsAI/paperclip/tree/gloops/stable/gloops-distribution/deploy/hermes
 RequiresMountsFor=/var/lib/paperclip-gloops
-Before=paperclip-hermes-execution.service paperclip-gloops.service
+Before=paperclip-controlled-swarm.service paperclip-gloops-handshake.service
 OnFailure=paperclip-gloops-alert@%n.service
 StartLimitIntervalSec=900
 StartLimitBurst=2

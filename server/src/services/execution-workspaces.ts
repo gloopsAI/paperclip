@@ -704,6 +704,9 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
 
   const config: ExecutionWorkspaceConfig = {
     environmentId: readNullableString(raw.environmentId),
+    ...(raw.remoteRefreshPolicy === "allowed" || raw.remoteRefreshPolicy === "local_only"
+      ? { remoteRefreshPolicy: raw.remoteRefreshPolicy }
+      : {}),
     provisionCommand: readNullableString(raw.provisionCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
@@ -728,6 +731,7 @@ export function mergeExecutionWorkspaceConfig(
   const nextMetadata = isRecord(metadata) ? { ...metadata } : {};
   const current = readExecutionWorkspaceConfig(metadata) ?? {
     environmentId: null,
+    remoteRefreshPolicy: null,
     provisionCommand: null,
     teardownCommand: null,
     cleanupCommand: null,
@@ -743,6 +747,11 @@ export function mergeExecutionWorkspaceConfig(
 
   const nextConfig: ExecutionWorkspaceConfig = {
     environmentId: patch.environmentId !== undefined ? readNullableString(patch.environmentId) : current.environmentId,
+    remoteRefreshPolicy: patch.remoteRefreshPolicy !== undefined
+      ? patch.remoteRefreshPolicy === "allowed" || patch.remoteRefreshPolicy === "local_only"
+        ? patch.remoteRefreshPolicy
+        : null
+      : current.remoteRefreshPolicy ?? null,
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
     teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
     cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
@@ -764,6 +773,7 @@ export function mergeExecutionWorkspaceConfig(
   if (hasConfig) {
     nextMetadata.config = {
       environmentId: nextConfig.environmentId,
+      ...(nextConfig.remoteRefreshPolicy ? { remoteRefreshPolicy: nextConfig.remoteRefreshPolicy } : {}),
       provisionCommand: nextConfig.provisionCommand,
       teardownCommand: nextConfig.teardownCommand,
       cleanupCommand: nextConfig.cleanupCommand,

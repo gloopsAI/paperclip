@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createAcceptedPlanDecompositionSchema,
+  createChildIssueSchema,
   createIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionWorkspaceSettingsSchema,
@@ -31,6 +33,39 @@ describe("issue validators", () => {
       .toBeUndefined();
     expect(updateIssueSchema.parse({ comment: undefined }).comment)
       .toBeUndefined();
+  });
+
+  it("exposes authorized intake only on top-level create", () => {
+    expect(createIssueSchema.parse({ title: "Induct work", intakeTarget: "induct" }))
+      .toMatchObject({ intakeTarget: "induct" });
+    expect(createChildIssueSchema.parse({ title: "Child", intakeTarget: "induct" }))
+      .not.toHaveProperty("intakeTarget");
+    expect(updateIssueSchema.parse({ intakeTarget: "induct" }))
+      .not.toHaveProperty("intakeTarget");
+    expect(createAcceptedPlanDecompositionSchema.parse({
+      acceptedPlanRevisionId: "11111111-1111-4111-8111-111111111111",
+      children: [{ title: "Child", intakeTarget: "induct" }],
+    }).children[0]).not.toHaveProperty("intakeTarget");
+  });
+
+  it("rejects server-owned review provenance on ordinary create and update inputs", () => {
+    const reviewProvenance = {
+      kind: "implementation_exact_head",
+      parentIssueId: "11111111-1111-4111-8111-111111111111",
+      sourceRunId: "22222222-2222-4222-8222-222222222222",
+    } as const;
+    const executionWorkspaceSettings = {
+      mode: "isolated_workspace",
+      reviewProvenance,
+    } as const;
+
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse(executionWorkspaceSettings).success)
+      .toBe(false);
+    expect(createIssueSchema.safeParse({
+      title: "Spoof review provenance",
+      executionWorkspaceSettings,
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ executionWorkspaceSettings }).success).toBe(false);
   });
 
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
