@@ -107,6 +107,7 @@ function localOnlyRuntimeConfig() {
 function createReviewWorkspaceDb(input: {
   workspaceId: string;
   sourceIssueId: string;
+  exactBaseRef: string;
   repoRoot?: string;
 }) {
   const parentIssueId = "11111111-1111-4111-8111-111111111111";
@@ -121,6 +122,12 @@ function createReviewWorkspaceDb(input: {
                 parentId: parentIssueId,
                 executionWorkspaceId: input.workspaceId,
                 executionWorkspaceSettings: {
+                  mode: "isolated_workspace",
+                  workspaceStrategy: {
+                    type: "git_worktree",
+                    baseRef: input.exactBaseRef,
+                    remoteRefreshPolicy: "local_only",
+                  },
                   reviewProvenance: {
                     kind: "implementation_exact_head",
                     parentIssueId,
@@ -238,6 +245,7 @@ describe.sequential("execution workspace routes", () => {
     ]);
     const branchBefore = await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]);
     const headBefore = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+    const attackerHead = await readGit(repoRoot, ["rev-parse", "main"]);
 
     const actor = {
       type: "agent",
@@ -246,17 +254,32 @@ describe.sequential("execution workspace routes", () => {
       source: "agent_key",
       runId: "run-1",
     };
-    const db = createReviewWorkspaceDb({ workspaceId, sourceIssueId });
+    const db = createReviewWorkspaceDb({ workspaceId, sourceIssueId, exactBaseRef: missingHead });
     const app = createApp(actor, db);
     const patchRes = await request(app)
       .patch(`/api/execution-workspaces/${workspaceId}`)
-      .send({ config: { remoteRefreshPolicy: "allowed" } });
+      .send({
+        baseRef: attackerHead,
+        cwd: repoRoot,
+        repoUrl: `file://${repoRoot}`,
+        branchName: actualBranch,
+        providerRef: repoRoot,
+        config: { remoteRefreshPolicy: "allowed" },
+      });
     expect(patchRes.status).toBe(200);
     expect(persistedWorkspace.config?.remoteRefreshPolicy).toBe("local_only");
+    expect(persistedWorkspace).toMatchObject({
+      baseRef: missingHead,
+      cwd: worktreePath,
+      repoUrl: null,
+      branchName: expectedBranch,
+      providerRef: worktreePath,
+    });
     // Defense in depth: command execution must derive the authority invariant
     // even if an older/corrupt row somehow contains a downgraded value.
     persistedWorkspace = {
       ...persistedWorkspace,
+      baseRef: attackerHead,
       metadata: mergeExecutionWorkspaceConfig(persistedWorkspace.metadata, {
         remoteRefreshPolicy: "allowed",
       }),
@@ -326,6 +349,7 @@ describe.sequential("execution workspace routes", () => {
     });
     const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
     const branchHeadBefore = await readGit(repoRoot, ["rev-parse", branchName]);
+    const attackerHead = await readGit(repoRoot, ["rev-parse", "main"]);
 
     const actor = {
       type: "agent",
@@ -334,21 +358,41 @@ describe.sequential("execution workspace routes", () => {
       source: "agent_key",
       runId: "run-1",
     };
-    const db = createReviewWorkspaceDb({ workspaceId, sourceIssueId, repoRoot });
+    const db = createReviewWorkspaceDb({
+      workspaceId,
+      sourceIssueId,
+      exactBaseRef: missingHead,
+      repoRoot,
+    });
     const app = createApp(actor, db);
     const patchRes = await request(app)
       .patch(`/api/execution-workspaces/${workspaceId}`)
-      .send({ metadata: { replacement: true } });
+      .send({
+        baseRef: attackerHead,
+        cwd: repoRoot,
+        repoUrl: `file://${repoRoot}`,
+        branchName: "main",
+        providerRef: repoRoot,
+        metadata: { replacement: true },
+      });
     expect(patchRes.status).toBe(200);
     expect(persistedWorkspace.metadata).toMatchObject({
       replacement: true,
       config: { remoteRefreshPolicy: "local_only" },
     });
     expect(persistedWorkspace.config?.remoteRefreshPolicy).toBe("local_only");
+    expect(persistedWorkspace).toMatchObject({
+      baseRef: missingHead,
+      cwd: worktreePath,
+      repoUrl: null,
+      branchName,
+      providerRef: worktreePath,
+    });
     // Simulate a legacy row that lost the config block entirely; restart must
     // still resolve the authentic review source and enforce local-only.
     persistedWorkspace = {
       ...persistedWorkspace,
+      baseRef: attackerHead,
       metadata: { replacement: true },
       config: null,
     };

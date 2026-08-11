@@ -14,8 +14,14 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
-import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
-import { parseImplementationReviewProvenance } from "../services/implementation-review-handoff.js";
+import {
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+} from "../services/execution-workspace-policy.js";
+import {
+  isExactHeadSha,
+  parseImplementationReviewProvenance,
+} from "../services/implementation-review-handoff.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -39,15 +45,15 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
-async function isProvenanceBoundImplementationReviewWorkspace(
+async function resolveProvenanceBoundImplementationReviewAuthority(
   db: Db,
   workspace: {
     id: string;
     companyId: string;
     sourceIssueId?: string | null;
   },
-): Promise<boolean> {
-  if (!workspace.sourceIssueId) return false;
+): Promise<{ exactBaseRef: string } | null> {
+  if (!workspace.sourceIssueId) return null;
   const sourceIssue = await db
     .select({
       id: issues.id,
@@ -65,7 +71,18 @@ async function isProvenanceBoundImplementationReviewWorkspace(
   const provenance = sourceIssue
     ? parseImplementationReviewProvenance(sourceIssue.executionWorkspaceSettings)
     : null;
-  if (!sourceIssue?.parentId || provenance?.parentIssueId !== sourceIssue.parentId) return false;
+  const issueWorkspaceSettings = sourceIssue
+    ? parseIssueExecutionWorkspaceSettings(sourceIssue.executionWorkspaceSettings)
+    : null;
+  const exactBaseRef = issueWorkspaceSettings?.workspaceStrategy?.baseRef;
+  if (
+    !sourceIssue?.parentId
+    || provenance?.parentIssueId !== sourceIssue.parentId
+    || issueWorkspaceSettings?.workspaceStrategy?.remoteRefreshPolicy !== "local_only"
+    || !isExactHeadSha(exactBaseRef)
+  ) {
+    return null;
+  }
   const [parentIssue, sourceRun] = await Promise.all([
     db
       .select({ id: issues.id })
@@ -85,7 +102,9 @@ async function isProvenanceBoundImplementationReviewWorkspace(
       ))
       .then((rows) => rows[0] ?? null),
   ]);
-  return Boolean(parentIssue && sourceRun);
+  return parentIssue && sourceRun
+    ? { exactBaseRef: exactBaseRef.trim().toLowerCase() }
+    : null;
 }
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
@@ -220,9 +239,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       executionWorkspaceId: existing.id,
       sourceIssueId: existing.sourceIssueId,
     });
-    const enforceReviewLocalOnly = action === "stop"
-      ? false
-      : await isProvenanceBoundImplementationReviewWorkspace(db, existing);
+    const reviewAuthority = action === "stop"
+      ? null
+      : await resolveProvenanceBoundImplementationReviewAuthority(db, existing);
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
@@ -348,7 +367,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               projectId: existing.projectId,
               workspaceId: existing.projectWorkspaceId,
               repoUrl: existing.repoUrl,
-              repoRef: existing.baseRef,
+              repoRef: reviewAuthority?.exactBaseRef ?? existing.baseRef,
             },
             workspace: {
               mode: existing.mode,
@@ -358,12 +377,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               projectId: existing.projectId,
               projectWorkspaceId: existing.projectWorkspaceId,
               repoUrl: existing.repoUrl,
-              baseRef: existing.baseRef,
+              baseRef: reviewAuthority?.exactBaseRef ?? existing.baseRef,
               branchName: existing.branchName,
               metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
-                remoteRefreshPolicy: enforceReviewLocalOnly
+                remoteRefreshPolicy: reviewAuthority
                   ? "local_only"
                   : existing.config?.remoteRefreshPolicy ?? null,
                 provisionCommand:
@@ -661,7 +680,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         metadata: req.body.metadata,
       }),
     );
-    const enforceReviewLocalOnly = await isProvenanceBoundImplementationReviewWorkspace(db, existing);
+    const reviewAuthority = await resolveProvenanceBoundImplementationReviewAuthority(db, existing);
     const patch: Record<string, unknown> = {
       ...(req.body.name === undefined ? {} : { name: req.body.name }),
       ...(req.body.cwd === undefined ? {} : { cwd: req.body.cwd }),
@@ -675,6 +694,18 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         ? { cleanupEligibleAt: req.body.cleanupEligibleAt ? new Date(req.body.cleanupEligibleAt) : null }
         : {}),
     };
+    if (reviewAuthority) {
+      // These are every PATCH-writable field that can redirect Git identity or
+      // location. Mode, strategy type, project binding, and source issue are
+      // not patchable; name/status/cleanup fields do not select reviewed code.
+      Object.assign(patch, {
+        baseRef: reviewAuthority.exactBaseRef,
+        cwd: existing.cwd,
+        repoUrl: existing.repoUrl,
+        branchName: existing.branchName,
+        providerRef: existing.providerRef,
+      });
+    }
     if (req.body.metadata !== undefined || req.body.config !== undefined) {
       const requestedMetadata = req.body.metadata === undefined
         ? (existing.metadata as Record<string, unknown> | null)
@@ -682,7 +713,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       patch.metadata = req.body.config === undefined
         ? requestedMetadata
         : mergeExecutionWorkspaceConfig(requestedMetadata, req.body.config ?? null);
-      if (enforceReviewLocalOnly) {
+      if (reviewAuthority) {
         patch.metadata = mergeExecutionWorkspaceConfig(
           patch.metadata as Record<string, unknown> | null,
           { remoteRefreshPolicy: "local_only" },
