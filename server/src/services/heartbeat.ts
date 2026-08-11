@@ -13408,6 +13408,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    const livenessGraceMs = Math.max(staleThresholdMs, 90_000);
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -13424,6 +13425,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+
+      // Never convert an active writer into `process_lost` solely because this
+      // service instance lacks an in-memory handle. A fresh runtime heartbeat
+      // or durable output/useful-action timestamp is positive liveness; leave
+      // the run running until that signal ages past the same grace window used
+      // for orphan detection. This protects remote and restarted executors
+      // without inventing terminal truth.
+      const runtimeHeartbeat = getHeartbeatRunRuntimeStatus(run.id, {
+        companyId: run.companyId,
+        agentId: run.agentId,
+        now,
+      });
+      const durableLivenessAt = latestDate(run.lastOutputAt, run.lastUsefulActionAt);
+      const hasFreshDurableLiveness = Boolean(
+        durableLivenessAt && now.getTime() - durableLivenessAt.getTime() < livenessGraceMs,
+      );
+      if (runtimeHeartbeat || hasFreshDurableLiveness) {
+        logger.debug(
+          {
+            runId: run.id,
+            source: runtimeHeartbeat ? "runtime_heartbeat" : "durable_run_activity",
+            livenessAt: (runtimeHeartbeat?.lastEventAt ?? runtimeHeartbeat?.updatedAt ?? durableLivenessAt)?.toISOString(),
+          },
+          "orphan reaper retained run with live writer evidence",
+        );
+        continue;
+      }
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {

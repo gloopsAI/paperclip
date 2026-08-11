@@ -501,6 +501,22 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+#### Workspace repair creates a distinct admission epoch
+
+An exhausted admission epoch does not become safe merely because an operator asks
+to retry it. When the issue history contains a workspace validation failure,
+Paperclip requires a fresh successful exact-head validation for the same project
+workspace before it creates the reset run. If the failed record includes an
+exact observed checkout head, the validated head must also differ. The reset
+receipt carries that validation evidence and the fresh run receives a new
+admission epoch, so stale strikes remain attached to the failed lease rather
+than being silently inherited by the repaired one.
+
+This is intentionally fail-closed: missing validation, a non-exact head, a
+same-head replay, or validation for another workspace denies the reset. The
+board can still see the historical failure and its terminal receipts; repair
+does not erase activity truth.
+
 The same bounded rule applies when the previous heartbeat reported waiting on a local/background watcher and that watcher was killed, disappeared, or was never represented by a durable Paperclip primitive. Paperclip queues at most one continuation for the same recovery fingerprint. If the continuation also leaves only local watcher evidence, Paperclip must surface a real blocker or explicit recovery action instead of repeating continuation recovery. A new monitor, scheduled wake, healthy delegated blocker issue, or other durable source mutation resolves that recovery fingerprint normally.
 
 #### Deliberate wait is not a lost run
@@ -533,6 +549,14 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 5. reconcile productivity reviews
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
+
+Before reaping a handle-less `running` run, Paperclip checks for fresh positive
+liveness: a live runtime-status heartbeat or durable output/useful-action
+timestamp. Either signal retains the run rather than manufacturing
+`process_lost`; only after the signal ages beyond the reaper grace window may
+the normal orphan path establish terminal truth. This keeps an active remote or
+restarted writer from being cancelled simply because the current process does
+not own its in-memory handle.
 
 ## 11. Task Watchdog for Issue Trees
 

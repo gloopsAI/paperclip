@@ -136,6 +136,10 @@ import {
 import {
   buildSubscriptionRouteAttemptEvidence,
 } from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  clearAllHeartbeatRunRuntimeStatuses,
+  setHeartbeatRunRuntimeStatus,
+} from "../services/heartbeat-run-runtime-status.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -374,6 +378,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
+    clearAllHeartbeatRunRuntimeStatuses();
     vi.clearAllMocks();
     const localServiceSupervisor = await vi.importActual<typeof import("../services/local-service-supervisor.js")>(
       "../services/local-service-supervisor.js",
@@ -1304,6 +1309,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("does not reap a handle-less active writer with a fresh live-run heartbeat", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "process",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date("2026-03-19T00:00:00.000Z") })
+      .where(eq(heartbeatRuns.id, runId));
+    setHeartbeatRunRuntimeStatus({
+      companyId,
+      agentId,
+      runId,
+      issueId: null,
+      phase: "run_activity",
+      message: "Writing verified workspace changes",
+      updatedAt: new Date(),
+      lastEventAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1 })).toEqual({
+      reaped: 0,
+      runIds: [],
+    });
+    expect((await heartbeat.getRun(runId))?.status).toBe("running");
   });
 
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {

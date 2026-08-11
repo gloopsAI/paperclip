@@ -499,6 +499,51 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     });
   });
 
+  it("requires a validated changed workspace head before resetting an epoch poisoned by workspace admission", async () => {
+    const seeded = await seed();
+    await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      status: "cancelled",
+      invocationSource: "assignment",
+      finishedAt: new Date("2026-08-01T00:02:00.000Z"),
+      errorCode: "workspace_admit.head_mismatch",
+      contextSnapshot: { issueId: seeded.issueId },
+      resultJson: {
+        workspaceAdmit: {
+          projectWorkspaceId: seeded.projectWorkspaceId,
+          expectedHeadSha: "a".repeat(40),
+          observedHeadSha: "b".repeat(40),
+        },
+      },
+    });
+
+    await expect(
+      guardedAdmissionResetService(db).resetExhaustedAdmissionAndCheckout(resetInput(seeded)),
+    ).rejects.toMatchObject({
+      details: { code: "admission_reset_workspace_revalidation_required" },
+    });
+
+    await expect(
+      guardedAdmissionResetService(db).resetExhaustedAdmissionAndCheckout({
+        ...resetInput(seeded),
+        workspaceRecovery: {
+          projectWorkspaceId: seeded.projectWorkspaceId,
+          expectedHeadSha: "c".repeat(40),
+          observedHeadSha: "c".repeat(40),
+          validatedAt: "2026-08-01T00:03:00.000Z",
+        },
+      }),
+    ).resolves.toMatchObject({
+      created: true,
+      receipt: {
+        workspaceRecovery: {
+          observedHeadSha: "c".repeat(40),
+        },
+      },
+    });
+  });
+
   it("fails closed when the latest retry-exhaustion denial has a malformed envelope", async () => {
     const seeded = await seed();
     await db.insert(heartbeatRuns).values({
