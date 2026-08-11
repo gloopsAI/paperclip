@@ -138,6 +138,17 @@ def validate(repo_root: pathlib.Path) -> list[str]:
         failures.append("campaign expiry actuator does not restore the general product control plane")
     elif actuator.find("paperclip-controlled-swarm.service") > actuator.find(restore_command):
         failures.append("campaign expiry restores general Paperclip before fencing campaign execution")
+    durable_restore_parts = (
+        'readonly RESTORE_PENDING="${STATE_DIR}/product-restore-pending.json"',
+        '[[ -e "${RESTORE_PENDING}" ]] && restore_general=1',
+        'rm -f "${RESTORE_PENDING}"',
+    )
+    if not all(part in actuator for part in durable_restore_parts):
+        failures.append("campaign restore obligation is not durable across actuator retries")
+    elif actuator.find('rm -f "${RESTORE_PENDING}"') < actuator.find('mv -f "${tmp}" "${RECEIPT}"'):
+        failures.append("campaign restore obligation clears before its success receipt commits")
+    if "preserve_receipt=1" not in actuator or "prior_outcome" not in actuator:
+        failures.append("campaign stop receipt can downgrade a settled product outcome")
 
     runtime = (hermes / "runtime.env").read_text(encoding="utf-8").splitlines()
     if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general" not in runtime:
@@ -193,6 +204,8 @@ def main() -> int:
             "campaign expiry actuator does not stop campaign execution",
             "campaign expiry actuator does not clear campaign execution authority",
             "campaign expiry actuator does not restore the general product control plane",
+            "campaign restore obligation is not durable across actuator retries",
+            "campaign stop receipt can downgrade a settled product outcome",
             "general runtime has no explicit general campaign scope",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_ID",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",

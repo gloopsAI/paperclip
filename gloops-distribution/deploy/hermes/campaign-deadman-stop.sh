@@ -5,13 +5,12 @@ readonly REASON="${1:-campaign_epoch_expired}"
 readonly CONFIG_DIR="${PAPERCLIP_CAMPAIGN_CONFIG_DIR:-/etc/paperclip-gloops}"
 readonly STATE_DIR="${PAPERCLIP_CAMPAIGN_STATE_DIR:-/var/lib/paperclip-gloops/campaign-deadman}"
 readonly RECEIPT="${STATE_DIR}/last-stop.json"
+readonly RESTORE_PENDING="${STATE_DIR}/product-restore-pending.json"
 readonly SYSTEMCTL="${PAPERCLIP_CAMPAIGN_SYSTEMCTL:-systemctl}"
 readonly DOCKER="${PAPERCLIP_CAMPAIGN_DOCKER:-docker}"
 readonly COMMISSIONING_MARKER="${PAPERCLIP_CAMPAIGN_COMMISSIONING_MARKER:-/etc/paperclip-gloops/CONTROLLED_SWARM_COMMISSIONING_APPROVED}"
 readonly COMMISSIONING_RECEIPT="${PAPERCLIP_CAMPAIGN_COMMISSIONING_RECEIPT:-/var/lib/paperclip-gloops/controlled-swarm/commissioning.json}"
 readonly SET_COMMISSIONING="${PAPERCLIP_CAMPAIGN_SET_COMMISSIONING:-/usr/local/lib/paperclip-gloops/set-controlled-swarm-commissioning.py}"
-restore_general=0
-[[ -e "${CONFIG_DIR}/CONTROLLED_SWARM_RUNTIME_APPROVED" ]] && restore_general=1
 
 [[ "${EUID}" -eq 0 || "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" == 'network-free' ]] || {
   echo "campaign stop actuator must run as root" >&2
@@ -45,6 +44,39 @@ if [[ "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" == 'network-free' ]]; then
 else
   install -d -m 0700 -o root -g root "${STATE_DIR}"
 fi
+
+# Persist the product-restoration obligation before deleting the campaign
+# authority marker. The stop actuator may be retried after any partial failure;
+# only a verified healthy general product plane is allowed to clear this state.
+if [[ -e "${CONFIG_DIR}/CONTROLLED_SWARM_RUNTIME_APPROVED" && ! -e "${RESTORE_PENDING}" ]]; then
+  pending_tmp="$(mktemp "${STATE_DIR}/product-restore-pending.XXXXXX")"
+  trap 'rm -f "${pending_tmp}"' EXIT
+  python3 - "${pending_tmp}" "${REASON}" <<'PY'
+import datetime as dt
+import json
+import pathlib
+import sys
+import uuid
+
+path = pathlib.Path(sys.argv[1])
+pending = {
+    "schemaVersion": "gloops.product-restore-pending.v1",
+    "obligationId": str(uuid.uuid4()),
+    "reason": sys.argv[2],
+    "requestedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+}
+path.write_text(json.dumps(pending, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
+  chmod 0600 "${pending_tmp}"
+  if [[ "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" != 'network-free' ]]; then
+    chown root:root "${pending_tmp}"
+  fi
+  mv -f "${pending_tmp}" "${RESTORE_PENDING}"
+  trap - EXIT
+fi
+restore_general=0
+[[ -e "${RESTORE_PENDING}" ]] && restore_general=1
+
 rm -f \
   "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED" \
   "${CONFIG_DIR}/CONTROLLED_SWARM_RUNTIME_APPROVED"
@@ -100,6 +132,7 @@ rm -f \
 
 outcome='campaign_stopped'
 restore_failed=0
+preserve_receipt=0
 if ((restore_general == 1)); then
   # The campaign and general control planes deliberately share one port and
   # container name. Fence and mask the campaign unit first, then restore the
@@ -130,11 +163,37 @@ if ((restore_general == 1)); then
       restore_failed=1
     fi
   fi
+elif [[ -f "${RECEIPT}" ]]; then
+  # A late broker retry after successful restoration must not downgrade the
+  # durable product outcome to a generic campaign stop. Likewise, a missing
+  # pending file cannot silently turn a recorded restoration failure green.
+  prior_outcome="$(python3 - "${RECEIPT}" <<'PY' 2>/dev/null || true
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")).get("outcome")
+if value in {"product_restored", "product_restore_failed"}:
+    print(value)
+PY
+)"
+  case "${prior_outcome}" in
+    product_restored)
+      outcome='product_restored'
+      preserve_receipt=1
+      ;;
+    product_restore_failed)
+      outcome='product_restore_failed'
+      preserve_receipt=1
+      restore_failed=1
+      ;;
+  esac
 fi
 
-tmp="$(mktemp "${STATE_DIR}/last-stop.XXXXXX")"
-trap 'rm -f "${tmp}"' EXIT
-python3 - "${tmp}" "${REASON}" "${outcome}" <<'PY'
+if ((preserve_receipt == 0)); then
+  tmp="$(mktemp "${STATE_DIR}/last-stop.XXXXXX")"
+  trap 'rm -f "${tmp}"' EXIT
+  python3 - "${tmp}" "${REASON}" "${outcome}" <<'PY'
 import datetime as dt
 import json
 import pathlib
@@ -149,10 +208,15 @@ receipt = {
 }
 path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
-chmod 0600 "${tmp}"
-if [[ "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" != 'network-free' ]]; then
-  chown root:root "${tmp}"
+  chmod 0600 "${tmp}"
+  if [[ "${PAPERCLIP_CAMPAIGN_TEST_MODE:-}" != 'network-free' ]]; then
+    chown root:root "${tmp}"
+  fi
+  mv -f "${tmp}" "${RECEIPT}"
+  trap - EXIT
 fi
-mv -f "${tmp}" "${RECEIPT}"
-trap - EXIT
+
+if ((restore_general == 1 && restore_failed == 0)); then
+  rm -f "${RESTORE_PENDING}"
+fi
 ((restore_failed == 0))

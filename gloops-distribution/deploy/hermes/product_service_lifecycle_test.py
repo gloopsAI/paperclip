@@ -15,7 +15,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 
 class ProductServiceLifecycleTest(unittest.TestCase):
-    def test_deadman_expiry_preserves_general_services_and_markers(self) -> None:
+    def test_restore_obligation_survives_broker_retries_and_failures(self) -> None:
         with tempfile.TemporaryDirectory(prefix="paperclip-campaign-lifecycle-", dir="/tmp") as raw:
             root = pathlib.Path(raw)
             config = root / "config"
@@ -45,7 +45,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                     "active": [],
                     "masked": sorted(units),
                     "portOwner": None,
-                    "generalStartFailuresRemaining": 2,
+                    "generalStartFailuresRemaining": 100,
                 }),
                 encoding="utf-8",
             )
@@ -156,7 +156,34 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            pending = state / "product-restore-pending.json"
+            self.assertTrue(pending.exists())
+            self.assertEqual(pending.stat().st_mode & 0o777, 0o600)
+            self.assertFalse((config / "CONTROLLED_SWARM_RUNTIME_APPROVED").exists())
+            first_obligation = json.loads(pending.read_text(encoding="utf-8"))[
+                "obligationId"
+            ]
+            failed_receipt = json.loads((state / "last-stop.json").read_text(encoding="utf-8"))
+            self.assertEqual(failed_receipt["outcome"], "product_restore_failed")
+            failed_state = json.loads(service_state.read_text(encoding="utf-8"))
+            self.assertNotIn("paperclip-gloops.service", failed_state["active"])
+
+            # Model the broker retrying the same actuator after the campaign
+            # marker has already been removed. Two transient failures remain,
+            # so the retry must consume them and restore on its third attempt.
+            failed_state["generalStartFailuresRemaining"] = 2
+            service_state.write_text(json.dumps(failed_state), encoding="utf-8")
+            retry = subprocess.run(
+                [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(retry.returncode, 0, retry.stderr)
+            self.assertFalse(pending.exists())
+            self.assertTrue(first_obligation)
 
             self.assertTrue((config / "ACTIVATION_APPROVED").exists())
             self.assertTrue((config / "HERMES_EXECUTION_APPROVED").exists())
@@ -192,6 +219,58 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             receipt = json.loads((state / "last-stop.json").read_text(encoding="utf-8"))
             self.assertEqual(receipt["reason"], "campaign_epoch_expired")
             self.assertEqual(receipt["outcome"], "product_restored")
+
+            # A redundant retry after success has no campaign marker or
+            # pending obligation; it must preserve the product-restored truth.
+            receipt_bytes = (state / "last-stop.json").read_bytes()
+            settled_retry = subprocess.run(
+                [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(settled_retry.returncode, 0, settled_retry.stderr)
+            self.assertEqual((state / "last-stop.json").read_bytes(), receipt_bytes)
+
+            # A new campaign creates a new restoration obligation. Permanent
+            # start failure must remain nonzero and truthful on every retry.
+            second_activation = subprocess.run(
+                [str(HERE / "activate-controlled-swarm-runtime.sh")],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(second_activation.returncode, 0, second_activation.stderr)
+            persistent_state = json.loads(service_state.read_text(encoding="utf-8"))
+            persistent_state["generalStartFailuresRemaining"] = 100
+            service_state.write_text(json.dumps(persistent_state), encoding="utf-8")
+            persistent_obligation = None
+            for _ in range(2):
+                persistent = subprocess.run(
+                    [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                    env=env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(persistent.returncode, 0, persistent.stderr)
+                self.assertTrue(pending.exists())
+                obligation = json.loads(pending.read_text(encoding="utf-8"))[
+                    "obligationId"
+                ]
+                if persistent_obligation is None:
+                    persistent_obligation = obligation
+                self.assertEqual(obligation, persistent_obligation)
+                persistent_receipt = json.loads(
+                    (state / "last-stop.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    persistent_receipt["outcome"], "product_restore_failed"
+                )
+            still_failed = json.loads(service_state.read_text(encoding="utf-8"))
+            self.assertEqual(still_failed["generalStartFailuresRemaining"], 94)
 
 
 if __name__ == "__main__":
