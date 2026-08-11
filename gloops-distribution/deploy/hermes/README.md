@@ -7,6 +7,18 @@
 
 # Hermes dark deployment envelope
 
+## Board-authorized Induct intake
+
+For a new Induct implementation work item, use the issue-create payload field
+`"intakeTarget":"induct"` with the intended `projectId`. This is a board-only
+path: before an issue or assignment wakeup is emitted, Paperclip selects the
+configured managed Induct workspace, proves it belongs to that project and the
+`InductAI/induct` namespace, probes the container-visible clean lease, and pins
+the workspace's exact SHA into the packet. A missing, wrong-project, wrong-repo,
+or host-only lease is rejected with an `induct_intake.*` code. The offline
+fixture harness is `bin/verify-authorized-induct-intake.sh`; it includes the
+top-level-only schema boundary and HTTP authorization/probe checks.
+
 This directory installs the GLoops-owned Paperclip image on Hermes without activating it. The installer is deliberately fail-closed: it installs one immutable digest, removes the activation marker, disables legacy Paperclip/Hermes services, and masks the production service.
 
 ## Guarantees while dark

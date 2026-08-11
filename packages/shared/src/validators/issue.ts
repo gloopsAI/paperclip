@@ -490,10 +490,17 @@ const createIssueBaseSchema = z.object({
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
+  /** Board-only, opt-in resolver for a managed Induct implementation lease. */
+  intakeTarget: z.enum(["induct"]).optional(),
   status: createIssueBaseSchema.shape.status.optional(),
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+export const createIssueSchema = withCreateIssueStatusDefault(
+  createIssueBaseSchema.extend({
+    /** Board-only, opt-in resolver for a managed Induct implementation lease. */
+    intakeTarget: z.enum(["induct"]).optional(),
+  }),
+);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 

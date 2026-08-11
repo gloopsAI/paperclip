@@ -3,6 +3,8 @@ import {
   ISSUE_PACKET_REASON,
   evaluateIssuePacketReadiness,
   extractMarkdownSection,
+  findDeclaredExactHeadShas,
+  findExactHeadSha,
   getIssuePacketDorMode,
   isOpsPlaneResidualPacket,
   type IssuePacketReadinessInput,
@@ -10,6 +12,16 @@ import {
 
 const GOOD_SHA = "a".repeat(40);
 const GOOD_DIGEST = `sha256:${"b".repeat(64)}`;
+
+describe("canonical exact-head declarations", () => {
+  it("preserves downstream precedence while exposing every canonical alias", () => {
+    const baseSha = "b".repeat(40);
+    const exactHead = "a".repeat(40);
+    const description = `Base SHA: \`${baseSha}\`\nExact head: \`${exactHead}\``;
+    expect(findDeclaredExactHeadShas(description)).toEqual([baseSha, exactHead]);
+    expect(findExactHeadSha(description)).toBe(baseSha);
+  });
+});
 
 function baseImplement(overrides: Partial<IssuePacketReadinessInput> = {}): IssuePacketReadinessInput {
   return {

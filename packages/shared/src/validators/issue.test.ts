@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createAcceptedPlanDecompositionSchema,
+  createChildIssueSchema,
   createIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionWorkspaceSettingsSchema,
@@ -31,6 +33,19 @@ describe("issue validators", () => {
       .toBeUndefined();
     expect(updateIssueSchema.parse({ comment: undefined }).comment)
       .toBeUndefined();
+  });
+
+  it("exposes authorized intake only on top-level create", () => {
+    expect(createIssueSchema.parse({ title: "Induct work", intakeTarget: "induct" }))
+      .toMatchObject({ intakeTarget: "induct" });
+    expect(createChildIssueSchema.parse({ title: "Child", intakeTarget: "induct" }))
+      .not.toHaveProperty("intakeTarget");
+    expect(updateIssueSchema.parse({ intakeTarget: "induct" }))
+      .not.toHaveProperty("intakeTarget");
+    expect(createAcceptedPlanDecompositionSchema.parse({
+      acceptedPlanRevisionId: "11111111-1111-4111-8111-111111111111",
+      children: [{ title: "Child", intakeTarget: "induct" }],
+    }).children[0]).not.toHaveProperty("intakeTarget");
   });
 
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {

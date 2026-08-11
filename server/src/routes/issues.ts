@@ -200,6 +200,10 @@ import {
   recommendedRecipesForAdmitCodes,
   SDLC_PREFLIGHT_REASON,
 } from "../services/sdlc-preflight.js";
+import {
+  appendExactHeadToIntakeDescription,
+  evaluateAuthorizedInductWorkItemIntake,
+} from "../services/authorized-induct-work-item-intake.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -7028,11 +7032,13 @@ export function issueRoutes(
       rawCreateBody.assigneeAgentId as string | null | undefined,
     );
     const actor = getActorInfo(req);
-    const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
+    const runWorkspaceInheritanceSourceIssueId =
+      hasExplicitIssueWorkspaceCreateSelection(rawCreateBody) || rawCreateBody.intakeTarget === "induct"
       ? null
       : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
+    const { intakeTarget, ...rawIssueCreateBody } = rawCreateBody;
     const createBody = {
-      ...rawCreateBody,
+      ...rawIssueCreateBody,
       parentId: effectiveParentId,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
@@ -7062,6 +7068,44 @@ export function issueRoutes(
         }
         : {}),
     };
+    let authorizedIntake: { workspaceId: string; exactHeadSha: string } | null = null;
+    if (intakeTarget === "induct") {
+      assertBoard(req);
+      const candidates = await db
+        .select({
+          id: projectWorkspaces.id,
+          companyId: projectWorkspaces.companyId,
+          projectId: projectWorkspaces.projectId,
+          name: projectWorkspaces.name,
+          cwd: projectWorkspaces.cwd,
+          repoUrl: projectWorkspaces.repoUrl,
+          repoRef: projectWorkspaces.repoRef,
+          defaultRef: projectWorkspaces.defaultRef,
+        })
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.companyId, companyId));
+      const intake = evaluateAuthorizedInductWorkItemIntake({
+        boardAuthorized: req.actor.type === "board",
+        companyId,
+        projectId: createBody.projectId as string | null | undefined,
+        requestedRepoUrl: "InductAI/induct",
+        description: createBody.description as string | null | undefined,
+        workspaceCandidates: candidates,
+      });
+      if (!intake.ok || !intake.workspace || !intake.exactHeadSha) {
+        throw unprocessable(intake.details, {
+          code: intake.reasonCodes[0] ?? "induct_intake.failed",
+          reasonCodes: intake.reasonCodes,
+          gate: "authorized_induct_intake",
+        });
+      }
+      createBody.projectWorkspaceId = intake.workspace.id;
+      createBody.description = appendExactHeadToIntakeDescription(
+        createBody.description as string | null | undefined,
+        intake.exactHeadSha,
+      );
+      authorizedIntake = { workspaceId: intake.workspace.id, exactHeadSha: intake.exactHeadSha };
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
@@ -7170,6 +7214,15 @@ export function issueRoutes(
               watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
               watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
               stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
+            },
+          }
+          : {}),
+        ...(authorizedIntake
+          ? {
+            authorizedIntake: {
+              target: "induct",
+              workspaceId: authorizedIntake.workspaceId,
+              exactHeadSha: authorizedIntake.exactHeadSha,
             },
           }
           : {}),

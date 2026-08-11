@@ -279,11 +279,24 @@ function resolveProfile(input: IssuePacketReadinessInput): IssuePacketProfile {
  * structured workspaceStrategy.baseRef (WG-PLAT-008 P1).
  */
 export function findExactHeadSha(description: string | null | undefined): string | null {
-  if (!description) return null;
-  const lineMatch = EXACT_HEAD_LINE_RE.exec(description);
-  if (lineMatch?.[1]) return lineMatch[1].toLowerCase();
+  return findDeclaredExactHeadShas(description)[0] ?? null;
+}
+
+/**
+ * Return every SHA declared with the same canonical labels used by downstream
+ * packet/admission parsing. If no label is present, preserve the historical
+ * single bare-SHA fallback used by findExactHeadSha.
+ */
+export function findDeclaredExactHeadShas(
+  description: string | null | undefined,
+): string[] {
+  if (!description) return [];
+  const labeled = [...description.matchAll(new RegExp(EXACT_HEAD_LINE_RE.source, "gi"))]
+    .map((match) => match[1]?.toLowerCase())
+    .filter((sha): sha is string => Boolean(sha));
+  if (labeled.length > 0) return [...new Set(labeled)];
   const bare = EXACT_HEAD_SHA_RE.exec(description);
-  return bare?.[0]?.toLowerCase() ?? null;
+  return bare?.[0] ? [bare[0].toLowerCase()] : [];
 }
 
 function hasReleaseAnchor(description: string | null | undefined): boolean {
