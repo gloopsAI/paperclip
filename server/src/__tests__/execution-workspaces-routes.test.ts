@@ -297,6 +297,7 @@ describe.sequential("execution workspace routes", () => {
     persistedWorkspace = {
       ...persistedWorkspace,
       baseRef: attackerHead,
+      strategyType: "project_primary",
       metadata: mergeExecutionWorkspaceConfig(persistedWorkspace.metadata, {
         remoteRefreshPolicy: "allowed",
       }),
@@ -417,6 +418,7 @@ describe.sequential("execution workspace routes", () => {
     persistedWorkspace = {
       ...persistedWorkspace,
       baseRef: attackerHead,
+      strategyType: null,
       metadata: { replacement: true },
       config: null,
     };

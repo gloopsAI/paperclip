@@ -395,11 +395,11 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
-      const strategy =
-        input.issueSettings?.workspaceStrategy ??
-        input.projectPolicy?.workspaceStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+      const strategy = resolveEffectiveExecutionWorkspaceStrategy({
+        agentConfig: nextConfig,
+        projectPolicy: input.projectPolicy,
+        issueSettings: input.issueSettings,
+      });
       nextConfig.workspaceStrategy = strategy as unknown as Record<string, unknown>;
     } else {
       delete nextConfig.workspaceStrategy;
@@ -415,4 +415,25 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   }
 
   return nextConfig;
+}
+
+export function resolveEffectiveExecutionWorkspaceStrategy(input: {
+  agentConfig?: Record<string, unknown> | null;
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+}): ExecutionWorkspaceStrategy {
+  const agentStrategy = parseExecutionWorkspaceStrategy(input.agentConfig?.workspaceStrategy);
+  const projectStrategy = input.projectPolicy?.enabled
+    ? input.projectPolicy.workspaceStrategy ?? null
+    : null;
+  const issueStrategy = input.issueSettings?.workspaceStrategy ?? null;
+  const selected = issueStrategy ?? projectStrategy ?? agentStrategy;
+  if (!selected) return { type: "git_worktree" };
+  if (selected.type !== "git_worktree") return selected;
+  return {
+    ...(agentStrategy?.type === "git_worktree" ? agentStrategy : {}),
+    ...(projectStrategy?.type === "git_worktree" ? projectStrategy : {}),
+    ...(issueStrategy?.type === "git_worktree" ? issueStrategy : {}),
+    type: "git_worktree",
+  };
 }

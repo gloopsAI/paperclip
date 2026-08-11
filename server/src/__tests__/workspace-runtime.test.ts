@@ -138,6 +138,7 @@ function createAuthenticReviewWorkspaceDb(input: {
   exactBaseRef: string;
   identifier: string;
   title: string;
+  projectPolicy?: Record<string, unknown> | null;
 }) {
   const parentIssueId = "71111111-1111-4111-8111-111111111111";
   const sourceRunId = "72222222-2222-4222-8222-222222222222";
@@ -151,6 +152,7 @@ function createAuthenticReviewWorkspaceDb(input: {
                 identifier: input.identifier,
                 title: input.title,
                 workMode: "review",
+                projectId: input.projectPolicy ? "project-1" : null,
                 parentId: parentIssueId,
                 executionWorkspaceId: input.workspaceId,
                 executionWorkspaceSettings: {
@@ -167,7 +169,9 @@ function createAuthenticReviewWorkspaceDb(input: {
                   },
                 },
               }]
-            : [{ id: parentIssueId }],
+            : "executionWorkspacePolicy" in selection
+              ? [{ executionWorkspacePolicy: input.projectPolicy }]
+              : [{ id: parentIssueId }],
         ),
       }),
     }),
@@ -198,7 +202,7 @@ async function expectPersistedBranchMismatchRejected(input: {
       workspace: {
         id: input.executionWorkspaceId,
         mode: "isolated_workspace",
-        strategyType: "git_worktree",
+        strategyType: "project_primary",
         cwd: input.worktreePath,
         providerRef: input.worktreePath,
         projectId: "project-1",
@@ -2908,7 +2912,7 @@ describe("realizeExecutionWorkspace", () => {
         id: workspaceId,
         sourceIssueId,
         mode: "isolated_workspace",
-        strategyType: "git_worktree",
+        strategyType: "project_primary",
         cwd: attackerPath,
         providerRef: attackerPath,
         projectId: "project-1",
@@ -2929,7 +2933,7 @@ describe("realizeExecutionWorkspace", () => {
           expectedBaseRef: exactHead,
           expectedBranchName: expectedBranch,
           expectedWorktreePath: expect.stringContaining(`/.paperclip/worktrees/${expectedBranch}`),
-          mismatchedFields: expect.arrayContaining(["baseRef", "branchName", "cwd", "providerRef"]),
+          mismatchedFields: expect.arrayContaining(["strategyType", "baseRef", "branchName", "cwd", "providerRef"]),
         }),
       }),
     });
@@ -2983,7 +2987,7 @@ describe("realizeExecutionWorkspace", () => {
         id: workspaceId,
         sourceIssueId,
         mode: "isolated_workspace",
-        strategyType: "git_worktree",
+        strategyType: null,
         cwd: expectedPath,
         providerRef: expectedPath,
         projectId: "project-1",
@@ -3001,7 +3005,7 @@ describe("realizeExecutionWorkspace", () => {
       resultJson: expect.objectContaining({
         workspacePreparation: expect.objectContaining({
           reason: "review_workspace_identity_mismatch",
-          mismatchedFields: expect.arrayContaining(["baseRef", "branchName"]),
+          mismatchedFields: expect.arrayContaining(["strategyType", "baseRef", "branchName"]),
         }),
       }),
     });
@@ -3015,6 +3019,71 @@ describe("realizeExecutionWorkspace", () => {
     ])).toBe(branchRefsBefore);
     await expect(fs.access(expectedPath)).rejects.toThrow();
     expect(operations).toEqual([]);
+  });
+
+  it("accepts a valid review worktree using the effective custom project branch template and parent", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "79999999-9999-4999-8999-999999999999";
+    const sourceIssueId = "7aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const expectedBranch = "review/review-custom/custom-parent";
+    const expectedPath = path.join(
+      repoRoot,
+      ".paperclip",
+      "custom-review-worktrees",
+      expectedBranch,
+    );
+    await fs.mkdir(path.dirname(expectedPath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, exactHead]);
+    await runGit(repoRoot, ["worktree", "add", expectedPath, expectedBranch]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-custom",
+        title: "custom parent",
+        projectPolicy: {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "review/{{issue.identifier}}/{{slug}}",
+            worktreeParentDir: ".paperclip/custom-review-worktrees",
+          },
+        },
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: expectedPath,
+        providerRef: expectedPath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: exactHead,
+        branchName: expectedBranch,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-custom", title: "custom parent" },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+      heartbeatRunId: "7bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+
+    expect(restored?.branchName).toBe(expectedBranch);
+    await expect(fs.realpath(restored?.cwd ?? "")).resolves.toBe(await fs.realpath(expectedPath));
+    expect(await readGit(expectedPath, ["rev-parse", "HEAD"])).toBe(exactHead);
   });
 
   it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {

@@ -7,7 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, heartbeatRuns, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   describeSupportedWorkspaceBranchTemplateVariables,
   findUnsupportedWorkspaceBranchTemplateVariables,
@@ -39,7 +39,11 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { parseIssueExecutionWorkspaceSettings } from "./execution-workspace-policy.js";
+import {
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+  resolveEffectiveExecutionWorkspaceStrategy,
+} from "./execution-workspace-policy.js";
 import {
   isExactHeadSha,
   parseImplementationReviewProvenance,
@@ -157,6 +161,7 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
       identifier: issues.identifier,
       title: issues.title,
       workMode: issues.workMode,
+      projectId: issues.projectId,
       parentId: issues.parentId,
       executionWorkspaceId: issues.executionWorkspaceId,
       executionWorkspaceSettings: issues.executionWorkspaceSettings,
@@ -174,18 +179,18 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
   const issueWorkspaceSettings = sourceIssue
     ? parseIssueExecutionWorkspaceSettings(sourceIssue.executionWorkspaceSettings)
     : null;
-  const workspaceStrategy = issueWorkspaceSettings?.workspaceStrategy;
-  const exactBaseRef = workspaceStrategy?.baseRef;
+  const issueWorkspaceStrategy = issueWorkspaceSettings?.workspaceStrategy;
+  const exactBaseRef = issueWorkspaceStrategy?.baseRef;
   if (
     !sourceIssue?.parentId
     || provenance?.parentIssueId !== sourceIssue.parentId
-    || workspaceStrategy?.type !== "git_worktree"
-    || workspaceStrategy.remoteRefreshPolicy !== "local_only"
+    || issueWorkspaceStrategy?.type !== "git_worktree"
+    || issueWorkspaceStrategy.remoteRefreshPolicy !== "local_only"
     || !isExactHeadSha(exactBaseRef)
   ) {
     return null;
   }
-  const [parentIssue, sourceRun] = await Promise.all([
+  const [parentIssue, sourceRun, projectPolicyRow] = await Promise.all([
     db
       .select({ id: issues.id })
       .from(issues)
@@ -203,7 +208,22 @@ export async function resolveProvenanceBoundImplementationReviewAuthority(
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sourceIssue.parentId}`,
       ))
       .then((rows) => rows[0] ?? null),
+    sourceIssue.projectId
+      ? db
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .from(projects)
+          .where(and(
+            eq(projects.id, sourceIssue.projectId),
+            eq(projects.companyId, workspace.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
   ]);
+  const workspaceStrategy = resolveEffectiveExecutionWorkspaceStrategy({
+    projectPolicy: parseProjectExecutionWorkspacePolicy(projectPolicyRow?.executionWorkspacePolicy),
+    issueSettings: issueWorkspaceSettings,
+  });
+  if (workspaceStrategy.type !== "git_worktree") return null;
   return parentIssue && sourceRun
     ? {
         exactBaseRef: exactBaseRef.trim().toLowerCase(),
@@ -3257,8 +3277,19 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace | null> {
   let cwd = asString(input.workspace.cwd ?? input.workspace.providerRef, "").trim();
-
-  const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
+  // Authentic review authority must be resolved before every strategy/cwd
+  // dispatch. Persisted rows are untrusted input and may claim a non-git
+  // strategy specifically to bypass git admission.
+  const reviewAuthority = input.db && input.workspace.id
+    ? await resolveProvenanceBoundImplementationReviewAuthority(input.db, {
+        id: input.workspace.id,
+        companyId: input.agent.companyId,
+        sourceIssueId: input.workspace.sourceIssueId ?? input.issue?.id ?? null,
+      })
+    : null;
+  const strategy = reviewAuthority || input.workspace.strategyType === "git_worktree"
+    ? "git_worktree"
+    : "project_primary";
   const realized: RealizedExecutionWorkspace = {
     baseCwd: input.base.baseCwd,
     source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
@@ -3285,13 +3316,6 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     return realized;
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
-  const reviewAuthority = input.db && input.workspace.id
-    ? await resolveProvenanceBoundImplementationReviewAuthority(input.db, {
-        id: input.workspace.id,
-        companyId: input.agent.companyId,
-        sourceIssueId: input.workspace.sourceIssueId ?? input.issue?.id ?? null,
-      })
-    : null;
   let declaredBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
   if (reviewAuthority) {
     const branchTemplate = asString(
@@ -3311,6 +3335,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     const expectedWorktreePath = path.join(expectedWorktreeParentDir, expectedBranchName);
     const actualProviderRef = asString(input.workspace.providerRef, "").trim();
     const identityMismatches = [
+      input.workspace.strategyType === "git_worktree" ? null : "strategyType",
       (input.workspace.baseRef ?? "").trim().toLowerCase() === reviewAuthority.exactBaseRef
         ? null
         : "baseRef",
