@@ -21,6 +21,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             config = root / "config"
             state = root / "state"
             controlled = root / "controlled"
+            manual_state = root / "manual-stop"
             bin_dir = root / "bin"
             log = root / "commands.log"
             service_state = root / "service-state.json"
@@ -98,6 +99,8 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             verify_profile.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             curl = bin_dir / "curl"
             curl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            flock = bin_dir / "flock"
+            flock.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             for command in (
                 systemctl,
                 docker,
@@ -105,10 +108,12 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 verify_deadman,
                 verify_profile,
                 curl,
+                flock,
             ):
                 command.chmod(0o755)
             env = {
                 **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
                 "PAPERCLIP_CAMPAIGN_TEST_MODE": "network-free",
                 "PAPERCLIP_CAMPAIGN_CONFIG_DIR": str(config),
                 "PAPERCLIP_CAMPAIGN_STATE_DIR": str(state),
@@ -123,6 +128,17 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "PAPERCLIP_CAMPAIGN_VERIFY_DEADMAN": str(verify_deadman),
                 "PAPERCLIP_CAMPAIGN_VERIFY_PROFILE": str(verify_profile),
                 "PAPERCLIP_CAMPAIGN_CURL": str(curl),
+                "PAPERCLIP_CONTROLLED_SWARM_TEST_MODE": "network-free",
+                "PAPERCLIP_CONTROLLED_SWARM_CONFIG_DIR": str(config),
+                "PAPERCLIP_CONTROLLED_SWARM_LIB_DIR": str(HERE),
+                "PAPERCLIP_CONTROLLED_SWARM_STATE_DIR": str(manual_state),
+                "PAPERCLIP_CONTROLLED_SWARM_LOCK": str(root / "controlled-swarm.lock"),
+                "PAPERCLIP_CONTROLLED_SWARM_STOP_ACTUATOR": str(
+                    HERE / "campaign-deadman-stop.sh"
+                ),
+                "PAPERCLIP_CONTROLLED_SWARM_SET_COMMISSIONING": str(
+                    set_commissioning
+                ),
             }
             activation = subprocess.run(
                 [str(HERE / "activate-controlled-swarm-runtime.sh")],
@@ -150,7 +166,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             )
             self.assertNotIn("paperclip-gloops.service", active_after_activation["active"])
             result = subprocess.run(
-                [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                [str(HERE / "stop-controlled-swarm.sh")],
                 env=env,
                 check=False,
                 capture_output=True,
@@ -166,6 +182,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             ]
             failed_receipt = json.loads((state / "last-stop.json").read_text(encoding="utf-8"))
             self.assertEqual(failed_receipt["outcome"], "product_restore_failed")
+            self.assertFalse((manual_state / "last-manual-stop.json").exists())
             failed_state = json.loads(service_state.read_text(encoding="utf-8"))
             self.assertNotIn("paperclip-gloops.service", failed_state["active"])
 
@@ -175,7 +192,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             failed_state["generalStartFailuresRemaining"] = 2
             service_state.write_text(json.dumps(failed_state), encoding="utf-8")
             retry = subprocess.run(
-                [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                [str(HERE / "stop-controlled-swarm.sh")],
                 env=env,
                 check=False,
                 capture_output=True,
@@ -217,14 +234,18 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             ):
                 self.assertIn(campaign_only, commands)
             receipt = json.loads((state / "last-stop.json").read_text(encoding="utf-8"))
-            self.assertEqual(receipt["reason"], "campaign_epoch_expired")
+            self.assertEqual(receipt["reason"], "operator_requested_stop")
             self.assertEqual(receipt["outcome"], "product_restored")
+            manual_receipt = json.loads(
+                (manual_state / "last-manual-stop.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manual_receipt["outcome"], "product_continues")
 
             # A redundant retry after success has no campaign marker or
             # pending obligation; it must preserve the product-restored truth.
             receipt_bytes = (state / "last-stop.json").read_bytes()
             settled_retry = subprocess.run(
-                [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                [str(HERE / "stop-controlled-swarm.sh")],
                 env=env,
                 check=False,
                 capture_output=True,
@@ -249,7 +270,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             persistent_obligation = None
             for _ in range(2):
                 persistent = subprocess.run(
-                    [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
+                    [str(HERE / "stop-controlled-swarm.sh")],
                     env=env,
                     check=False,
                     capture_output=True,

@@ -244,11 +244,12 @@ existing issue, including GLO-2227, is admitted by the release pin itself. The
 live preflight also keeps `HEARTBEAT_SCHEDULER_ENABLED=false`, matching the
 inert runtime envelope instead of enabling background claim discovery.
 
-`observe-controlled-swarm.py` is read-only. `stop-controlled-swarm.sh` removes
-the runtime markers, stops the execution units, preserves any production epoch
-as evidence, masks the governed units, and requires the complete dark verifier
-to pass. Neither control creates work, unpauses agents, changes the roster, or
-arms the campaign epoch. Inert activation also keeps
+`observe-controlled-swarm.py` is read-only. `stop-controlled-swarm.sh` leaves
+the campaign runtime marker for the deadman actuator to atomically convert into
+a durable product-restoration obligation, then stops and masks only the
+campaign-governed units after the general product plane is healthy. Neither
+control creates work, unpauses agents, changes the roster, or arms the campaign
+epoch. Inert activation also keeps
 `PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false`, so explicit authenticated
 admission and adapter invocation remain mechanically denied while the
 activation receipt is produced. A separate independently reviewed commissioning

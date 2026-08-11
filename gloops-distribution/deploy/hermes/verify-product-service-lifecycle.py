@@ -150,6 +150,34 @@ def validate(repo_root: pathlib.Path) -> list[str]:
     if "preserve_receipt=1" not in actuator or "prior_outcome" not in actuator:
         failures.append("campaign stop receipt can downgrade a settled product outcome")
 
+    stop_wrapper = (hermes / "stop-controlled-swarm.sh").read_text(encoding="utf-8")
+    actuator_invocation = '"${STOP_ACTUATOR}" operator_requested_stop'
+    if actuator_invocation not in stop_wrapper:
+        failures.append("controlled-swarm stop wrapper bypasses the durable stop actuator")
+    wrapper_actuator_index = stop_wrapper.find(actuator_invocation)
+    if wrapper_actuator_index < 0:
+        wrapper_actuator_index = stop_wrapper.find(
+            '"${LIB_DIR}/campaign-deadman-stop.sh" operator_requested_stop'
+        )
+    wrapper_prefix = (
+        stop_wrapper if wrapper_actuator_index < 0 else stop_wrapper[:wrapper_actuator_index]
+    )
+    if any(
+        "CONTROLLED_SWARM_RUNTIME_APPROVED" in line
+        for line in wrapper_prefix.splitlines()
+        if not line.lstrip().startswith("#")
+    ):
+        failures.append("controlled-swarm stop wrapper consumes campaign authority before the actuator")
+
+    lifecycle_test_path = hermes / "product_service_lifecycle_test.py"
+    lifecycle_test = (
+        lifecycle_test_path.read_text(encoding="utf-8")
+        if lifecycle_test_path.is_file()
+        else ""
+    )
+    if "stop-controlled-swarm.sh" not in lifecycle_test:
+        failures.append("network-free lifecycle proof bypasses the real stop wrapper")
+
     runtime = (hermes / "runtime.env").read_text(encoding="utf-8").splitlines()
     if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general" not in runtime:
         failures.append("general runtime has no explicit general campaign scope")
@@ -177,8 +205,31 @@ def main() -> int:
         action="store_true",
         help="prove that this gate rejects an unfixed service graph",
     )
+    parser.add_argument(
+        "--expect-wrapper-pre-fix-failure",
+        action="store_true",
+        help="prove that this gate rejects the marker-consuming stop wrapper",
+    )
     args = parser.parse_args()
     failures = validate(args.repo_root.resolve())
+    if args.expect_wrapper_pre_fix_failure:
+        expected = {
+            "controlled-swarm stop wrapper bypasses the durable stop actuator",
+            "controlled-swarm stop wrapper consumes campaign authority before the actuator",
+            "network-free lifecycle proof bypasses the real stop wrapper",
+        }
+        if set(failures) != expected:
+            missing = sorted(expected - set(failures))
+            unexpected = sorted(set(failures) - expected)
+            print(
+                f"FAIL wrapper pre-fix failure set drifted; missing={missing}; unexpected={unexpected}",
+                file=sys.stderr,
+            )
+            return 1
+        print("PASS exact marker-consuming wrapper rejected:")
+        for failure in failures:
+            print(f"- {failure}")
+        return 0
     if args.expect_pre_fix_failure:
         expected = {
             "paperclip-gloops.service still has Requires=paperclip-campaign-deadman.service",
@@ -206,6 +257,8 @@ def main() -> int:
             "campaign expiry actuator does not restore the general product control plane",
             "campaign restore obligation is not durable across actuator retries",
             "campaign stop receipt can downgrade a settled product outcome",
+            "controlled-swarm stop wrapper bypasses the durable stop actuator",
+            "network-free lifecycle proof bypasses the real stop wrapper",
             "general runtime has no explicit general campaign scope",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_ID",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",
