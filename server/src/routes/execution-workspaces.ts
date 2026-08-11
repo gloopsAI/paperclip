@@ -310,6 +310,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
+                remoteRefreshPolicy: existing.config?.remoteRefreshPolicy ?? null,
                 provisionCommand:
                   existing.config?.provisionCommand
                   ?? projectPolicy?.workspaceStrategy?.provisionCommand

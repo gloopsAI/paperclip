@@ -88,6 +88,8 @@ export interface ExecutionWorkspaceStrategy {
 
 export interface ExecutionWorkspaceConfig {
   environmentId?: string | null;
+  /** Persisted preparation authority for restored/reused workspaces. */
+  remoteRefreshPolicy?: "allowed" | "local_only" | null;
   provisionCommand: string | null;
   teardownCommand: string | null;
   cleanupCommand: string | null;

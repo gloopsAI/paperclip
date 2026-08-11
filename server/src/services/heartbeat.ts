@@ -1218,6 +1218,10 @@ export function applyPersistedExecutionWorkspaceConfig(input: {
 
   if (input.workspaceConfig && input.mode === "isolated_workspace") {
     const nextStrategy = parseObject(nextConfig.workspaceStrategy);
+    if (input.workspaceConfig.remoteRefreshPolicy === null) delete nextStrategy.remoteRefreshPolicy;
+    else if (input.workspaceConfig.remoteRefreshPolicy) {
+      nextStrategy.remoteRefreshPolicy = input.workspaceConfig.remoteRefreshPolicy;
+    }
     if (input.workspaceConfig.provisionCommand === null) delete nextStrategy.provisionCommand;
     else nextStrategy.provisionCommand = input.workspaceConfig.provisionCommand;
     if (input.workspaceConfig.teardownCommand === null) delete nextStrategy.teardownCommand;
@@ -1294,6 +1298,10 @@ function buildExecutionWorkspaceConfigSnapshot(
   }
 
   if ("workspaceStrategy" in config) {
+    snapshot.remoteRefreshPolicy =
+      strategy.remoteRefreshPolicy === "allowed" || strategy.remoteRefreshPolicy === "local_only"
+        ? strategy.remoteRefreshPolicy
+        : null;
     snapshot.provisionCommand = typeof strategy.provisionCommand === "string" ? strategy.provisionCommand : null;
     snapshot.teardownCommand = typeof strategy.teardownCommand === "string" ? strategy.teardownCommand : null;
   }
@@ -14826,9 +14834,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                     ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
                     ?? null,
                   remoteRefreshPolicy:
-                    workspaceStrategyForFingerprint.remoteRefreshPolicy === "local_only"
+                    configSnapshot?.remoteRefreshPolicy
+                    ?? reusableExistingExecutionWorkspace.config?.remoteRefreshPolicy
+                    ?? (workspaceStrategyForFingerprint.remoteRefreshPolicy === "local_only"
                       ? "local_only"
-                      : null,
+                      : null),
                 },
               },
               issue: issueRef,

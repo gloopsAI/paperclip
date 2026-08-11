@@ -1,8 +1,17 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+import { readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+
+const execFileAsync = promisify(execFile);
+const tempRepos: string[] = [];
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -42,19 +51,73 @@ function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "session",
   isInstanceAdmin: false,
-}) {
+}, db: any = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", executionWorkspaceRoutes({} as any));
+  app.use("/api", executionWorkspaceRoutes(db));
   app.use(errorHandler);
   return app;
 }
 
+async function runGit(cwd: string, args: string[]) {
+  await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+}
+
+async function readGit(cwd: string, args: string[]) {
+  const result = await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+  return result.stdout.trim();
+}
+
+async function createTempRepo() {
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-route-local-only-"));
+  tempRepos.push(repoRoot);
+  await execFileAsync("git", ["init", "-b", "main", repoRoot]);
+  await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  await fs.writeFile(path.join(repoRoot, "README.md"), "route test\n", "utf8");
+  await runGit(repoRoot, ["add", "README.md"]);
+  await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+  return repoRoot;
+}
+
+function localOnlyRuntimeConfig() {
+  const metadata = {
+    config: {
+      remoteRefreshPolicy: "local_only",
+      workspaceRuntime: {
+        services: [{ name: "web", command: "node -e \"process.exit(0)\"" }],
+      },
+    },
+  };
+  return { metadata, config: readExecutionWorkspaceConfig(metadata) };
+}
+
+function createProjectWorkspaceDb(repoRoot: string) {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([{
+          id: "project-workspace-1",
+          cwd: repoRoot,
+          repoUrl: null,
+          repoRef: "main",
+          defaultRef: "main",
+          metadata: null,
+        }]),
+      }),
+    }),
+  };
+}
+
 describe.sequential("execution workspace routes", () => {
+  afterEach(async () => {
+    await Promise.all(tempRepos.splice(0).map((repoRoot) => fs.rm(repoRoot, { recursive: true, force: true })));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -83,6 +146,105 @@ describe.sequential("execution workspace routes", () => {
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    mockWorkspaceOperationService.createRecorder.mockReturnValue({
+      recordOperation: vi.fn(async (input: { run: () => Promise<unknown> }) => await input.run()),
+    });
+  });
+
+  it("keeps an existing persisted worktree unchanged when route start cannot resolve its local-only object", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "review-route-expected";
+    const actualBranch = "review-route-actual";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+    const missingHead = "d".repeat(40);
+    const persisted = localOnlyRuntimeConfig();
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-route-existing",
+      companyId: "company-1",
+      projectId: null,
+      projectWorkspaceId: null,
+      sourceIssueId: "issue-review-route-existing",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Existing exact-head review",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      repoUrl: null,
+      baseRef: missingHead,
+      branchName: expectedBranch,
+      metadata: persisted.metadata,
+      config: persisted.config,
+      runtimeServices: [],
+    });
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const branchBefore = await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]);
+    const headBefore = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-route-existing/runtime-services/start")
+      .send({});
+
+    expect(res.status).toBe(500);
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]))
+      .toBe(branchBefore);
+    expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(headBefore);
+  });
+
+  it("keeps missing persisted worktree state unchanged when route restart cannot resolve its local-only object", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "review-route-missing";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    await fs.rm(worktreePath, { recursive: true, force: true });
+    const missingHead = "c".repeat(40);
+    const persisted = localOnlyRuntimeConfig();
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-route-missing",
+      companyId: "company-1",
+      projectId: null,
+      projectWorkspaceId: "project-workspace-1",
+      sourceIssueId: "issue-review-route-missing",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Missing exact-head review",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      repoUrl: null,
+      baseRef: missingHead,
+      branchName,
+      metadata: persisted.metadata,
+      config: persisted.config,
+      runtimeServices: [],
+    });
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchHeadBefore = await readGit(repoRoot, ["rev-parse", branchName]);
+
+    const res = await request(createApp(undefined, createProjectWorkspaceDb(repoRoot)))
+      .post("/api/execution-workspaces/workspace-route-missing/runtime-services/restart")
+      .send({});
+
+    expect(res.status).toBe(500);
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, ["rev-parse", branchName])).toBe(branchHeadBefore);
+    await expect(fs.access(worktreePath)).rejects.toThrow();
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {

@@ -862,7 +862,7 @@ describe("realizeExecutionWorkspace", () => {
       },
       agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
     };
-    await realizeExecutionWorkspace({
+    const existing = await realizeExecutionWorkspace({
       ...common,
       config: {
         workspaceStrategy: {
@@ -873,6 +873,17 @@ describe("realizeExecutionWorkspace", () => {
         },
       },
     });
+    await runGit(existing.cwd, ["checkout", "-b", "unexpected-local-review-branch"]);
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const checkedOutBranchBefore = await readGit(existing.cwd, ["symbolic-ref", "--short", "HEAD"]);
+    const headBefore = await readGit(existing.cwd, ["rev-parse", "HEAD"]);
+    const statusBefore = await readGit(existing.cwd, ["status", "--porcelain=v1"]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     const missingHead = "f".repeat(40);
     await expect(realizeExecutionWorkspace({
@@ -885,6 +896,9 @@ describe("realizeExecutionWorkspace", () => {
           remoteRefreshPolicy: "local_only",
         },
       },
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
+      recorder,
     })).rejects.toMatchObject({
       resultJson: expect.objectContaining({
         workspacePreparation: expect.objectContaining({
@@ -893,6 +907,18 @@ describe("realizeExecutionWorkspace", () => {
         }),
       }),
     });
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(await readGit(existing.cwd, ["symbolic-ref", "--short", "HEAD"]))
+      .toBe(checkedOutBranchBefore);
+    expect(await readGit(existing.cwd, ["rev-parse", "HEAD"])).toBe(headBefore);
+    expect(await readGit(existing.cwd, ["status", "--porcelain=v1"])).toBe(statusBefore);
+    expect(operations).toEqual([]);
   });
 
   it("maps a configured local branch base ref to origin/<branch> for fresh worktrees", async () => {

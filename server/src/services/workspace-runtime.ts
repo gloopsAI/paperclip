@@ -2857,6 +2857,17 @@ export async function realizeExecutionWorkspace(input: {
   ];
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
 
+  // A local-only declared object is an admission prerequisite. Refuse before
+  // creating parent directories or inspecting/repairing reusable worktrees,
+  // because reconciliation may checkout, detach, or quarantine branches.
+  assertLocalOnlyBaseObject({
+    remoteRefreshPolicy,
+    expectedHeadSha: currentBaseRefSha,
+    repoRoot,
+    baseRef,
+    worktreePath,
+  });
+
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
   async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {

@@ -43,6 +43,7 @@ describe("execution workspace config helpers", () => {
       source: "project_primary",
       config: {
         environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
+        remoteRefreshPolicy: "local_only",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",
@@ -52,6 +53,7 @@ describe("execution workspace config helpers", () => {
       },
     })).toEqual({
       environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
+      remoteRefreshPolicy: "local_only",
       provisionCommand: "bash ./scripts/provision-worktree.sh",
       teardownCommand: "bash ./scripts/teardown-worktree.sh",
       cleanupCommand: "pkill -f vite || true",
@@ -70,6 +72,7 @@ describe("execution workspace config helpers", () => {
         createdByRuntime: false,
         config: {
           environmentId: "32e0464c-2a0b-4ce9-886d-2cc99e6f3e7b",
+          remoteRefreshPolicy: "local_only",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
           cleanupCommand: "pkill -f vite || true",
         },
@@ -86,6 +89,7 @@ describe("execution workspace config helpers", () => {
       createdByRuntime: false,
       config: {
         environmentId: "6286d5a9-9ea7-42b9-98b3-18ee904c26d7",
+        remoteRefreshPolicy: "local_only",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
         cleanupCommand: "pkill -f vite || true",

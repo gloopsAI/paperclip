@@ -2,9 +2,19 @@ import { describe, expect, it } from "vitest";
 import {
   SUPPORTED_WORKSPACE_BRANCH_TEMPLATE_VARIABLES,
   describeSupportedWorkspaceBranchTemplateVariables,
+  executionWorkspaceConfigSchema,
   findUnsupportedWorkspaceBranchTemplateVariables,
   hasStrayWorkspaceBranchTemplatePlaceholderSyntax,
 } from "./execution-workspace.js";
+
+describe("executionWorkspaceConfigSchema", () => {
+  it("accepts only durable remote refresh authority values", () => {
+    expect(executionWorkspaceConfigSchema.parse({ remoteRefreshPolicy: "local_only" }))
+      .toMatchObject({ remoteRefreshPolicy: "local_only" });
+    expect(executionWorkspaceConfigSchema.safeParse({ remoteRefreshPolicy: "fetch" }).success)
+      .toBe(false);
+  });
+});
 
 // WG-PLAT-006: a workspace branch template like `GLO-{identifier}-<slug>`
 // used to materialize as the literal branch `GLO-identifier-<slug>` because
