@@ -29,7 +29,8 @@ class RegisteredPublishPathTest(unittest.TestCase):
             self.assertNotIn("induct-request-push.py", content)
             self.assertNotIn("induct-git-push.py", content)
         self.assertIn("draft-only", guidance)
-        self.assertIn("Missing, expired, replayed, or disagreeing authorization", guidance)
+        self.assertIn("Missing, expired, replayed, or disagreeing", guidance)
+        self.assertIn("authorization fails before token mint", guidance)
 
     def test_registered_broker_keeps_root_and_draft_only_boundaries(self) -> None:
         broker = (ROOT / "github-push-broker.py").read_text()

@@ -7,11 +7,13 @@ or direct token-minting publisher.
 ## Preconditions
 
 Paperclip must durably create the root authorization for one canonical run. It
-binds the issue/company/agent/run identities, repository, exact old/new commit
-objects, leased non-default branch, expiry, nonce, idempotency allocation, and
-optional **draft-only** pull request. The broker—not the agent—owns branch and
-PR metadata. Missing, expired, replayed, or disagreeing authorization fails
-before token mint.
+binds the issue/company/agent/run identities, repository, expected old commit,
+leased non-default branch, deadline, and optional **draft-only** pull request.
+After reconciling that authorization with live Paperclip facts and the client's
+validated object closure, the broker issues a one-use lease binding the exact
+new commit, nonce, and idempotency allocation. The broker—not the agent—owns
+branch and PR metadata. Missing, expired, replayed, or disagreeing
+authorization fails before token mint.
 
 ## Agent step (inside the assigned Hermes run)
 
