@@ -1,33 +1,47 @@
-# Induct agent write path (P1)
+# Induct publication path
 
-## Why two tools
-- Hermes runs as uid 10000 and **cannot** read root App private keys.
-- `induct-git-push.py` mints Induct App tokens → must run as **root on host**.
-- Agents use `induct-request-push.py` to write a pending request under the lease.
-- Host `induct-push-poller.py` executes requests with the App.
+There is exactly one authorized path: the ADR-0019 registered root-owned GitHub
+push broker. There is no host poller, root CLI bypass, lease-root request file,
+or direct token-minting publisher.
 
-## Agent steps (inside Hermes)
+## Preconditions
+
+Paperclip must durably create the root authorization for one canonical run. It
+binds the issue/company/agent/run identities, repository, exact old/new commit
+objects, leased non-default branch, expiry, nonce, idempotency allocation, and
+optional **draft-only** pull request. The broker—not the agent—owns branch and
+PR metadata. Missing, expired, replayed, or disagreeing authorization fails
+before token mint.
+
+## Agent step (inside the assigned Hermes run)
+
+After committing and verifying the exact worktree head:
+
 ```bash
-# after commits on lease
-python3 /opt/data/bin/induct-request-push.py \
-  --cwd /opt/data/workspace/induct-main \
-  --branch agent/wren/glo-XXXX-short \
-  --title "fix: ..." \
-  --body "..." \
-  --pr
+test -n "$PAPERCLIP_RUN_ID"
+git -C "$CWD" status --porcelain=v1 --untracked-files=all  # must be empty
+git -C "$CWD" rev-parse HEAD                              # exact authorized head
+node /opt/data/bin/github-push-tool.bundle.cjs client \
+  --run-id "$PAPERCLIP_RUN_ID" \
+  --repo-dir "$CWD"
 ```
 
-## Host execute (Lead/ops or timer)
-```bash
-sudo python3 /usr/local/lib/paperclip-gloops/bin/induct-push-poller.py --once
-# or direct:
-sudo python3 /usr/local/lib/paperclip-gloops/tools/induct-git-push.py push-pr \
-  --cwd /opt/paperclip/hermes-execution-state/workspace/induct-main \
-  --branch agent/wren/glo-XXXX-short --title "..." --body "..."
-```
+The unprivileged client receives no credential. It packages the exact object
+closure and calls the Unix-socket broker. The broker independently resolves
+Paperclip and root authorization, validates the closure, journals the leased
+mutation, mints a memory-only token, reconciles uncertain responses without a
+second write, and emits the durable push/draft-PR receipt.
 
-## Direct host push (canary without agent)
-Same `induct-git-push.py` as root.
+## Forbidden paths
+
+- writing a pending request under a repository or lease root;
+- a host timer/poller that infers repository, branch, or PR authority;
+- running a publisher as root against an agent-controlled checkout;
+- direct App token minting, `git push`, `gh pr create`, non-draft PR, merge, or
+  default-branch mutation.
+
+Host operators may observe broker health and receipts. They do not execute the
+mutation for an agent.
 
 ## P3 verify
 ```bash
