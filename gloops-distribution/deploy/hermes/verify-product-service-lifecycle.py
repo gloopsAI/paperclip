@@ -96,6 +96,31 @@ def validate(repo_root: pathlib.Path) -> list[str]:
         ):
             if required not in campaign_execution:
                 failures.append(f"campaign execution unit is missing {required}")
+        clear_projector = (
+            "ExecStop=/usr/local/lib/paperclip-gloops/"
+            "github-app-credentials.py clear-projector"
+        )
+        stop_container = "ExecStop=/usr/bin/docker stop"
+        revoke_projector = (
+            "ExecStopPost=-/usr/local/lib/paperclip-gloops/"
+            "github-app-credentials.py revoke-projector"
+        )
+        remove_container = "ExecStopPost=-/usr/bin/docker rm"
+        cleanup_lines = (
+            clear_projector,
+            stop_container,
+            revoke_projector,
+            remove_container,
+        )
+        if not all(line in campaign_execution for line in cleanup_lines):
+            failures.append("campaign execution omits the projector cleanup lifecycle")
+        elif (
+            campaign_execution.index(clear_projector)
+            > campaign_execution.index(stop_container)
+            or campaign_execution.index(revoke_projector)
+            > campaign_execution.index(remove_container)
+        ):
+            failures.append("campaign execution cleans projector credentials after container teardown")
 
     activation = (hermes / "activate-controlled-swarm.sh").read_text(encoding="utf-8")
     if "readonly PAPERCLIP='paperclip-controlled-swarm.service'" not in activation:
@@ -210,10 +235,30 @@ def main() -> int:
         action="store_true",
         help="prove that this gate rejects the marker-consuming stop wrapper",
     )
+    parser.add_argument(
+        "--expect-projector-pre-fix-failure",
+        action="store_true",
+        help="prove that this gate rejects the campaign unit without projector cleanup",
+    )
     args = parser.parse_args()
     failures = validate(args.repo_root.resolve())
+    if args.expect_projector_pre_fix_failure:
+        expected = {"campaign execution omits the projector cleanup lifecycle"}
+        if set(failures) != expected:
+            missing = sorted(expected - set(failures))
+            unexpected = sorted(set(failures) - expected)
+            print(
+                f"FAIL projector pre-fix failure set drifted; missing={missing}; unexpected={unexpected}",
+                file=sys.stderr,
+            )
+            return 1
+        print("PASS exact campaign projector-cleanup omission rejected:")
+        for failure in failures:
+            print(f"- {failure}")
+        return 0
     if args.expect_wrapper_pre_fix_failure:
         expected = {
+            "campaign execution omits the projector cleanup lifecycle",
             "controlled-swarm stop wrapper bypasses the durable stop actuator",
             "controlled-swarm stop wrapper consumes campaign authority before the actuator",
             "network-free lifecycle proof bypasses the real stop wrapper",

@@ -41,12 +41,37 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "paperclip-hermes-handshake.service",
                 "paperclip-hermes-handshake-egress.service",
             }
+            campaign_unit = (HERE / "paperclip-controlled-swarm.service").read_text(
+                encoding="utf-8"
+            )
+            clear_hook = (
+                "ExecStop=/usr/local/lib/paperclip-gloops/"
+                "github-app-credentials.py clear-projector"
+            )
+            revoke_hook = (
+                "ExecStopPost=-/usr/local/lib/paperclip-gloops/"
+                "github-app-credentials.py revoke-projector"
+            )
+            self.assertIn(clear_hook, campaign_unit)
+            self.assertIn(revoke_hook, campaign_unit)
+            self.assertLess(
+                campaign_unit.index(clear_hook),
+                campaign_unit.index("ExecStop=/usr/bin/docker stop"),
+            )
+            self.assertLess(
+                campaign_unit.index(revoke_hook),
+                campaign_unit.index("ExecStopPost=-/usr/bin/docker rm"),
+            )
             service_state.write_text(
                 json.dumps({
                     "active": [],
                     "masked": sorted(units),
                     "portOwner": None,
                     "generalStartFailuresRemaining": 100,
+                    "projectorOwner": None,
+                    "projectorTokenPresent": False,
+                    "projectorMarkerPresent": False,
+                    "projectorCleanupEvents": [],
                 }),
                 encoding="utf-8",
             )
@@ -57,8 +82,12 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "import json, pathlib, sys\n"
                 f"state_path = pathlib.Path({str(service_state)!r})\n"
                 f"log_path = pathlib.Path({str(log)!r})\n"
+                f"campaign_clear_hook = {bool(clear_hook in campaign_unit)!r}\n"
+                f"campaign_revoke_hook = {bool(revoke_hook in campaign_unit)!r}\n"
                 "args = sys.argv[1:]\n"
-                "with log_path.open('a', encoding='utf-8') as fh: fh.write(' '.join(args) + '\\n')\n"
+                "def record(message):\n"
+                "    with log_path.open('a', encoding='utf-8') as fh: fh.write(message + '\\n')\n"
+                "record(' '.join(args))\n"
                 "state = json.loads(state_path.read_text(encoding='utf-8'))\n"
                 "active, masked = set(state['active']), set(state['masked'])\n"
                 "command = args[0]\n"
@@ -71,6 +100,9 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "        if unit in masked: sys.exit(1)\n"
                 "        if unit == 'paperclip-controlled-swarm.service':\n"
                 "            active.discard('paperclip-gloops.service'); state['portOwner'] = unit\n"
+                "            state['projectorOwner'] = 'campaign'\n"
+                "            state['projectorTokenPresent'] = True\n"
+                "            state['projectorMarkerPresent'] = True\n"
                 "        elif unit == 'paperclip-gloops.service':\n"
                 "            if 'paperclip-controlled-swarm.service' in active: sys.exit(1)\n"
                 "            if state.get('generalStartFailuresRemaining', 0) > 0:\n"
@@ -79,9 +111,25 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "                state_path.write_text(json.dumps(state), encoding='utf-8')\n"
                 "                sys.exit(1)\n"
                 "            state['portOwner'] = unit\n"
+                "            state['projectorOwner'] = 'general'\n"
+                "            state['projectorTokenPresent'] = True\n"
+                "            state['projectorMarkerPresent'] = True\n"
                 "        active.add(unit)\n"
                 "elif command == 'stop':\n"
-                "    active.difference_update(targets)\n"
+                "    for unit in targets:\n"
+                "        if unit == 'paperclip-controlled-swarm.service' and unit in active:\n"
+                "            if campaign_clear_hook:\n"
+                "                record('hook clear-projector paperclip-controlled-swarm.service')\n"
+                "                state['projectorTokenPresent'] = False\n"
+                "                state['projectorMarkerPresent'] = False\n"
+                "                state['projectorCleanupEvents'].append('clear-projector')\n"
+                "            if campaign_revoke_hook:\n"
+                "                record('hook revoke-projector paperclip-controlled-swarm.service')\n"
+                "                state['projectorTokenPresent'] = False\n"
+                "                state['projectorMarkerPresent'] = False\n"
+                "                state['projectorOwner'] = None\n"
+                "                state['projectorCleanupEvents'].append('revoke-projector')\n"
+                "        active.discard(unit)\n"
                 "    if state.get('portOwner') in targets: state['portOwner'] = None\n"
                 "elif command == 'is-active':\n"
                 "    raise SystemExit(0 if targets[-1] in active else 3)\n"
@@ -185,6 +233,22 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             self.assertFalse((manual_state / "last-manual-stop.json").exists())
             failed_state = json.loads(service_state.read_text(encoding="utf-8"))
             self.assertNotIn("paperclip-gloops.service", failed_state["active"])
+            self.assertIsNone(failed_state["projectorOwner"])
+            self.assertFalse(failed_state["projectorTokenPresent"])
+            self.assertFalse(failed_state["projectorMarkerPresent"])
+            self.assertEqual(
+                failed_state["projectorCleanupEvents"],
+                ["clear-projector", "revoke-projector"],
+            )
+            failed_commands = log.read_text(encoding="utf-8")
+            self.assertLess(
+                failed_commands.index("hook clear-projector"),
+                failed_commands.index("start paperclip-gloops.service"),
+            )
+            self.assertLess(
+                failed_commands.index("hook revoke-projector"),
+                failed_commands.index("start paperclip-gloops.service"),
+            )
 
             # Model the broker retrying the same actuator after the campaign
             # marker has already been removed. Two transient failures remain,
@@ -213,6 +277,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             self.assertNotIn("paperclip-controlled-swarm.service", final_state["active"])
             self.assertNotIn("paperclip-gloops.service", final_state["masked"])
             self.assertEqual(final_state["generalStartFailuresRemaining"], 0)
+            self.assertEqual(final_state["projectorOwner"], "general")
             commands = log.read_text(encoding="utf-8")
             stop_commands = "\n".join(
                 line for line in commands.splitlines() if line.startswith("stop ")
@@ -292,6 +357,18 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 )
             still_failed = json.loads(service_state.read_text(encoding="utf-8"))
             self.assertEqual(still_failed["generalStartFailuresRemaining"], 94)
+            self.assertIsNone(still_failed["projectorOwner"])
+            self.assertFalse(still_failed["projectorTokenPresent"])
+            self.assertFalse(still_failed["projectorMarkerPresent"])
+            self.assertEqual(
+                still_failed["projectorCleanupEvents"],
+                [
+                    "clear-projector",
+                    "revoke-projector",
+                    "clear-projector",
+                    "revoke-projector",
+                ],
+            )
 
 
 if __name__ == "__main__":
