@@ -140,6 +140,7 @@ function readReceipt(value: unknown): GuardedAdmissionResetReceipt | null {
 }
 
 function requestFingerprint(input: ResetInput, projectWorkspaceId: string) {
+  const workspaceRecovery = readValidatedWorkspaceRecovery(input.workspaceRecovery);
   return `sha256:${createHash("sha256")
     .update(JSON.stringify({
       schemaVersion: RECEIPT_SCHEMA_VERSION,
@@ -149,7 +150,16 @@ function requestFingerprint(input: ResetInput, projectWorkspaceId: string) {
       projectWorkspaceId,
       resetId: input.resetId,
       requestedByUserId: input.requestedByUserId,
-      workspaceRecovery: readValidatedWorkspaceRecovery(input.workspaceRecovery),
+      // Validation time is receipt evidence, not request identity. Re-probing
+      // the same exact repaired head must replay the original run instead of
+      // conflicting solely because the wall clock advanced.
+      workspaceRecovery: workspaceRecovery
+        ? {
+            projectWorkspaceId: workspaceRecovery.projectWorkspaceId,
+            expectedHeadSha: workspaceRecovery.expectedHeadSha,
+            observedHeadSha: workspaceRecovery.observedHeadSha,
+          }
+        : null,
     }))
     .digest("hex")}`;
 }
@@ -159,7 +169,51 @@ function resetIdempotencyKey(issueId: string, resetId: string) {
 }
 
 export function guardedAdmissionResetService(db: Db) {
+  async function getWorkspaceRecoveryRequirement(input: {
+    issueId: string;
+    companyId: string;
+  }): Promise<{
+    required: boolean;
+    projectWorkspaceId: string | null;
+    failedObservedHeadSha: string | null;
+  }> {
+    const issue = await db
+      .select({ projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue?.projectWorkspaceId) {
+      return { required: false, projectWorkspaceId: null, failedObservedHeadSha: null };
+    }
+    const latestWorkspaceFailure = await db
+      .select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        or(
+          sql`${heartbeatRuns.resultJson} -> 'workspaceAdmit' ->> 'projectWorkspaceId' = ${issue.projectWorkspaceId}`,
+          sql`${heartbeatRuns.resultJson} -> 'workspaceValidation' ->> 'issueProjectWorkspaceId' = ${issue.projectWorkspaceId}`,
+        ),
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return {
+      required: isWorkspaceFailureForProject(
+        latestWorkspaceFailure?.resultJson,
+        issue.projectWorkspaceId,
+      ),
+      projectWorkspaceId: issue.projectWorkspaceId,
+      failedObservedHeadSha: priorWorkspaceObservedHead(
+        latestWorkspaceFailure?.resultJson,
+        issue.projectWorkspaceId,
+      ),
+    };
+  }
+
   return {
+    getWorkspaceRecoveryRequirement,
     resetExhaustedAdmissionAndCheckout: async (input: ResetInput) => {
       if (!input.requestedByUserId.trim()) {
         throw new HttpError(403, "A concrete board user is required");

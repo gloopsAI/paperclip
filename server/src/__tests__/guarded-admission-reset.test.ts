@@ -345,6 +345,22 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
     expect(replay.receipt).toEqual(first.receipt);
   });
 
+  it("keeps ordinary exhausted-admission resets free of inapplicable workspace evidence", async () => {
+    const seeded = await seed();
+    const service = guardedAdmissionResetService(db);
+
+    await expect(service.getWorkspaceRecoveryRequirement({
+      issueId: seeded.issueId,
+      companyId: seeded.companyId,
+    })).resolves.toEqual({
+      required: false,
+      projectWorkspaceId: seeded.projectWorkspaceId,
+      failedObservedHeadSha: null,
+    });
+    await expect(service.resetExhaustedAdmissionAndCheckout(resetInput(seeded)))
+      .resolves.toMatchObject({ created: true });
+  });
+
   it("fails closed when an idempotent replay receipt no longer binds the reset facts", async () => {
     const seeded = await seed();
     const service = guardedAdmissionResetService(db);
@@ -524,17 +540,26 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
       details: { code: "admission_reset_workspace_revalidation_required" },
     });
 
-    await expect(
-      guardedAdmissionResetService(db).resetExhaustedAdmissionAndCheckout({
-        ...resetInput(seeded),
-        workspaceRecovery: {
-          projectWorkspaceId: seeded.projectWorkspaceId,
-          expectedHeadSha: "c".repeat(40),
-          observedHeadSha: "c".repeat(40),
-          validatedAt: "2026-08-01T00:03:00.000Z",
-        },
-      }),
-    ).resolves.toMatchObject({
+    const service = guardedAdmissionResetService(db);
+    await expect(service.getWorkspaceRecoveryRequirement({
+      issueId: seeded.issueId,
+      companyId: seeded.companyId,
+    })).resolves.toEqual({
+      required: true,
+      projectWorkspaceId: seeded.projectWorkspaceId,
+      failedObservedHeadSha: "b".repeat(40),
+    });
+
+    const first = await service.resetExhaustedAdmissionAndCheckout({
+      ...resetInput(seeded),
+      workspaceRecovery: {
+        projectWorkspaceId: seeded.projectWorkspaceId,
+        expectedHeadSha: "c".repeat(40),
+        observedHeadSha: "c".repeat(40),
+        validatedAt: "2026-08-01T00:03:00.000Z",
+      },
+    });
+    expect(first).toMatchObject({
       created: true,
       receipt: {
         workspaceRecovery: {
@@ -542,6 +567,19 @@ describeEmbeddedPostgres("guarded exhausted-admission reset and checkout", () =>
         },
       },
     });
+
+    const replay = await service.resetExhaustedAdmissionAndCheckout({
+      ...resetInput(seeded),
+      workspaceRecovery: {
+        projectWorkspaceId: seeded.projectWorkspaceId,
+        expectedHeadSha: "c".repeat(40),
+        observedHeadSha: "c".repeat(40),
+        validatedAt: "2026-08-01T00:04:00.000Z",
+      },
+    });
+    expect(replay.created).toBe(false);
+    expect(replay.run.id).toBe(first.run.id);
+    expect(replay.receipt.workspaceRecovery?.validatedAt).toBe("2026-08-01T00:03:00.000Z");
   });
 
   it("fails closed when the latest retry-exhaustion denial has a malformed envelope", async () => {

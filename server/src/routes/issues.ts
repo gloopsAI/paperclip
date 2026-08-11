@@ -9175,37 +9175,53 @@ export function issueRoutes(
       // exact-head validation. The service independently verifies that this
       // evidence repairs a different failed head before it creates the fresh
       // admission epoch.
-      const resetAgent = await agentsSvc.getById(req.body.agentId);
-      const workspaceAdmit = await runWorkspaceAdmitPreflight(db, {
-        companyId: issue.companyId,
-        issue: {
-          id: issue.id,
-          title: issue.title,
-          description: issue.description,
-          workMode: issue.workMode,
-          status: issue.status,
-          projectWorkspaceId: issue.projectWorkspaceId,
-          executionWorkspaceId: issue.executionWorkspaceId,
-          projectId: issue.projectId,
-          parentId: issue.parentId,
-        },
-        assignee: {
-          role: resetAgent?.role ?? null,
-          name: resetAgent?.name ?? null,
-        },
-      });
-      const workspaceRecovery =
-        workspaceAdmit.admitted &&
-        workspaceAdmit.projectWorkspaceId &&
-        workspaceAdmit.expectedHeadSha &&
-        workspaceAdmit.observedHeadSha
-          ? {
-              projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
-              expectedHeadSha: workspaceAdmit.expectedHeadSha,
-              observedHeadSha: workspaceAdmit.observedHeadSha,
-              validatedAt: new Date().toISOString(),
-            }
-          : undefined;
+      const workspaceRecoveryRequirement =
+        await guardedAdmissionReset.getWorkspaceRecoveryRequirement({
+          issueId: issue.id,
+          companyId: issue.companyId,
+        });
+      let workspaceRecovery:
+        | {
+            projectWorkspaceId: string;
+            expectedHeadSha: string;
+            observedHeadSha: string;
+            validatedAt: string;
+          }
+        | undefined;
+      if (workspaceRecoveryRequirement.required) {
+        const resetAgent = await agentsSvc.getById(req.body.agentId);
+        const workspaceAdmit = await runWorkspaceAdmitPreflight(db, {
+          companyId: issue.companyId,
+          issue: {
+            id: issue.id,
+            title: issue.title,
+            description: issue.description,
+            workMode: issue.workMode,
+            status: issue.status,
+            projectWorkspaceId: issue.projectWorkspaceId,
+            executionWorkspaceId: issue.executionWorkspaceId,
+            projectId: issue.projectId,
+            parentId: issue.parentId,
+          },
+          assignee: {
+            role: resetAgent?.role ?? null,
+            name: resetAgent?.name ?? null,
+          },
+        });
+        if (
+          workspaceAdmit.admitted &&
+          workspaceAdmit.projectWorkspaceId &&
+          workspaceAdmit.expectedHeadSha &&
+          workspaceAdmit.observedHeadSha
+        ) {
+          workspaceRecovery = {
+            projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+            expectedHeadSha: workspaceAdmit.expectedHeadSha,
+            observedHeadSha: workspaceAdmit.observedHeadSha,
+            validatedAt: new Date().toISOString(),
+          };
+        }
+      }
 
       const result = await guardedAdmissionReset.resetExhaustedAdmissionAndCheckout({
         issueId: issue.id,
