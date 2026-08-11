@@ -23,6 +23,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             controlled = root / "controlled"
             bin_dir = root / "bin"
             log = root / "commands.log"
+            mode = root / "service-mode"
             for directory in (config, state, controlled, bin_dir):
                 directory.mkdir(parents=True)
             for marker in (
@@ -30,6 +31,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "HERMES_EXECUTION_APPROVED",
                 "HERMES_HANDSHAKE_APPROVED",
                 "CONTROLLED_SWARM_COMMISSIONING_APPROVED",
+                "CONTROLLED_SWARM_RUNTIME_APPROVED",
             ):
                 (config / marker).write_text("approved\n", encoding="utf-8")
             commissioning = controlled / "commissioning.json"
@@ -39,6 +41,7 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             systemctl.write_text(
                 "#!/bin/sh\n"
                 f"printf '%s\\n' \"$*\" >> {log}\n"
+                f"[ \"$1\" = is-active ] && [ \"$(cat {mode})\" = active ] && exit 0\n"
                 "[ \"$1\" = is-active ] && exit 3\n"
                 "exit 0\n",
                 encoding="utf-8",
@@ -47,8 +50,22 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             set_commissioning = bin_dir / "set-commissioning"
             set_commissioning.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            for command in (systemctl, docker, set_commissioning):
+            verify_deadman = bin_dir / "verify-deadman"
+            verify_deadman.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            verify_profile = bin_dir / "verify-profile"
+            verify_profile.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            curl = bin_dir / "curl"
+            curl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            for command in (
+                systemctl,
+                docker,
+                set_commissioning,
+                verify_deadman,
+                verify_profile,
+                curl,
+            ):
                 command.chmod(0o755)
+            mode.write_text("active\n", encoding="utf-8")
 
             env = {
                 **os.environ,
@@ -62,7 +79,32 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 ),
                 "PAPERCLIP_CAMPAIGN_COMMISSIONING_RECEIPT": str(commissioning),
                 "PAPERCLIP_CAMPAIGN_SET_COMMISSIONING": str(set_commissioning),
+                "PAPERCLIP_CAMPAIGN_EPOCH_PATH": str(state / "epoch.json"),
+                "PAPERCLIP_CAMPAIGN_VERIFY_DEADMAN": str(verify_deadman),
+                "PAPERCLIP_CAMPAIGN_VERIFY_PROFILE": str(verify_profile),
+                "PAPERCLIP_CAMPAIGN_CURL": str(curl),
             }
+            activation = subprocess.run(
+                [str(HERE / "activate-controlled-swarm-runtime.sh")],
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(activation.returncode, 0, activation.stderr)
+            self.assertTrue((config / "CONTROLLED_SWARM_RUNTIME_APPROVED").exists())
+            activation_commands = log.read_text(encoding="utf-8")
+            self.assertIn("start paperclip-controlled-swarm.service", activation_commands)
+            self.assertNotIn("start paperclip-gloops.service", activation_commands)
+            self.assertIn("start paperclip-hermes-execution.service", activation_commands)
+            for broker in (
+                "paperclip-github-push-broker.service",
+                "paperclip-github-read-broker.service",
+                "paperclip-platform-ops-broker.service",
+            ):
+                self.assertIn(f"start {broker}", activation_commands)
+
+            mode.write_text("inactive\n", encoding="utf-8")
             result = subprocess.run(
                 [str(HERE / "campaign-deadman-stop.sh"), "campaign_epoch_expired"],
                 env=env,
@@ -75,8 +117,12 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             self.assertTrue((config / "ACTIVATION_APPROVED").exists())
             self.assertTrue((config / "HERMES_EXECUTION_APPROVED").exists())
             self.assertFalse((config / "HERMES_HANDSHAKE_APPROVED").exists())
+            self.assertFalse((config / "CONTROLLED_SWARM_RUNTIME_APPROVED").exists())
             self.assertFalse(commissioning.exists())
             commands = log.read_text(encoding="utf-8")
+            stop_commands = "\n".join(
+                line for line in commands.splitlines() if line.startswith("stop ")
+            )
             for general in (
                 "paperclip-gloops.service",
                 "paperclip-hermes-execution.service",
@@ -84,8 +130,9 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 "paperclip-github-read-broker.service",
                 "paperclip-platform-ops-broker.service",
             ):
-                self.assertNotIn(general, commands)
+                self.assertNotIn(general, stop_commands)
             for campaign_only in (
+                "paperclip-controlled-swarm.service",
                 "paperclip-gloops-handshake.service",
                 "paperclip-hermes-handshake.service",
                 "paperclip-hermes-handshake-egress.service",

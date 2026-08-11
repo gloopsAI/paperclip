@@ -14,7 +14,7 @@ readonly HERMES_UID='10000'
 readonly HERMES_GID='10000'
 
 [[ "${EUID}" -eq 0 ]] || { echo 'run with sudo' >&2; exit 1; }
-for unit in paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
+for unit in paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service; do
   if systemctl is-active --quiet "${unit}"; then
     echo "refusing profile preparation while ${unit} is active" >&2
     exit 1

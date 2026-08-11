@@ -24,6 +24,7 @@ GENERAL_UNITS = (
     "paperclip-platform-ops-broker.service",
 )
 CAMPAIGN_UNIT = "paperclip-campaign-deadman.service"
+CAMPAIGN_EXECUTION_UNIT = "paperclip-controlled-swarm.service"
 FORBIDDEN_UNIT_KEYS = ("Requires", "Requisite", "BindsTo", "PartOf", "After")
 GENERAL_STOP_TARGETS = (
     "paperclip-gloops.service",
@@ -77,6 +78,40 @@ def validate(repo_root: pathlib.Path) -> list[str]:
     if "--env-file /etc/paperclip-gloops/campaign-runtime.env" not in handshake:
         failures.append("campaign handshake container does not receive the campaign runtime envelope")
 
+    campaign_execution_path = hermes / CAMPAIGN_EXECUTION_UNIT
+    if not campaign_execution_path.is_file():
+        failures.append("campaign execution unit is missing")
+    else:
+        campaign_execution = campaign_execution_path.read_text(encoding="utf-8")
+        for key in ("Requires", "BindsTo", "After"):
+            if CAMPAIGN_UNIT not in unit_value(campaign_execution, key).split():
+                failures.append(f"campaign execution has no {key}={CAMPAIGN_UNIT}")
+        for required in (
+            "EnvironmentFile=/etc/paperclip-gloops/campaign-runtime.env",
+            "--env-file /etc/paperclip-gloops/campaign-runtime.env",
+            "preflight.sh --campaign-bound",
+            "/run/paperclip-campaign",
+            "ConditionPathExists=/etc/paperclip-gloops/CONTROLLED_SWARM_RUNTIME_APPROVED",
+            "Conflicts=paperclip-gloops.service",
+        ):
+            if required not in campaign_execution:
+                failures.append(f"campaign execution unit is missing {required}")
+
+    activation = (hermes / "activate-controlled-swarm.sh").read_text(encoding="utf-8")
+    if "readonly PAPERCLIP='paperclip-controlled-swarm.service'" not in activation:
+        failures.append("controlled-swarm activation still targets the general Paperclip service")
+    activation_helper_path = hermes / "activate-controlled-swarm-runtime.sh"
+    if not activation_helper_path.is_file():
+        failures.append("network-free controlled-swarm activation helper is missing")
+    else:
+        activation_helper = activation_helper_path.read_text(encoding="utf-8")
+        if 'readonly CAMPAIGN_PAPERCLIP=\'paperclip-controlled-swarm.service\'' not in activation_helper:
+            failures.append("controlled-swarm activation helper does not name the campaign service")
+        if '"${SYSTEMCTL}" start "${CAMPAIGN_PAPERCLIP}"' not in activation_helper:
+            failures.append("controlled-swarm activation helper does not start the campaign service")
+        if '"${SYSTEMCTL}" start paperclip-gloops.service' in activation_helper:
+            failures.append("controlled-swarm activation helper starts the general Paperclip service")
+
     actuator = (hermes / "campaign-deadman-stop.sh").read_text(encoding="utf-8")
     for target in GENERAL_STOP_TARGETS:
         if target in actuator:
@@ -86,6 +121,10 @@ def validate(repo_root: pathlib.Path) -> list[str]:
             failures.append(f"campaign expiry actuator still clears {marker}")
     if "HERMES_HANDSHAKE_APPROVED" not in actuator:
         failures.append("campaign expiry actuator no longer clears the handshake-only marker")
+    if CAMPAIGN_EXECUTION_UNIT not in actuator:
+        failures.append("campaign expiry actuator does not stop campaign execution")
+    if "CONTROLLED_SWARM_RUNTIME_APPROVED" not in actuator:
+        failures.append("campaign expiry actuator does not clear campaign execution authority")
 
     runtime = (hermes / "runtime.env").read_text(encoding="utf-8").splitlines()
     if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general" not in runtime:
@@ -131,10 +170,15 @@ def main() -> int:
             "preflight has no explicit general default mode",
             "preflight has no campaign-bound mode for handshake execution",
             "campaign handshake container does not receive the campaign runtime envelope",
+            "campaign execution unit is missing",
+            "controlled-swarm activation still targets the general Paperclip service",
+            "network-free controlled-swarm activation helper is missing",
             "campaign expiry actuator still stops paperclip-gloops.service",
             "campaign expiry actuator still stops paperclip-hermes-execution.service",
             "campaign expiry actuator still clears ACTIVATION_APPROVED",
             "campaign expiry actuator still clears HERMES_EXECUTION_APPROVED",
+            "campaign expiry actuator does not stop campaign execution",
+            "campaign expiry actuator does not clear campaign execution authority",
             "general runtime has no explicit general campaign scope",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_ID",
             "general runtime still inherits PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",

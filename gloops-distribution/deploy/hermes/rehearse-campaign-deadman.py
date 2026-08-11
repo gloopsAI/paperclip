@@ -31,7 +31,7 @@ from typing import Any
 
 UTC = dt.timezone.utc
 PRODUCTION_UNITS = (
-    "paperclip-gloops.service",
+    "paperclip-controlled-swarm.service",
     "paperclip-gloops-handshake.service",
     "paperclip-hermes-execution.service",
     "paperclip-hermes-handshake.service",

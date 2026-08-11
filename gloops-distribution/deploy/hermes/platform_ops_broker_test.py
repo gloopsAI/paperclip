@@ -769,7 +769,7 @@ class PlatformOpsDeploymentWiringTests(unittest.TestCase):
         )
         self.assertIn(
             "systemctl mask paperclip-gloops.service "
-            "paperclip-gloops-handshake.service",
+            "paperclip-controlled-swarm.service paperclip-gloops-handshake.service",
             installer,
         )
         self.assertIn("paperclip-platform-ops-broker.service", installer)
@@ -823,20 +823,19 @@ class PlatformOpsDeploymentWiringTests(unittest.TestCase):
             handshake,
         )
 
-    def test_controlled_swarm_activates_and_stops_broker(self):
+    def test_controlled_swarm_activates_broker_but_expiry_preserves_it(self):
         activate = MODULE_PATH.with_name("activate-controlled-swarm.sh").read_text()
+        runtime_activate = MODULE_PATH.with_name(
+            "activate-controlled-swarm-runtime.sh"
+        ).read_text()
         stop = MODULE_PATH.with_name("stop-controlled-swarm.sh").read_text()
         self.assertIn(
             "readonly PLATFORM_OPS_BROKER='paperclip-platform-ops-broker.service'",
             activate,
         )
-        self.assertIn('systemctl start "${PLATFORM_OPS_BROKER}"', activate)
-        self.assertIn('systemctl is-active --quiet "${PLATFORM_OPS_BROKER}"', activate)
-        self.assertIn(
-            "systemctl stop paperclip-platform-ops-broker.service",
-            stop,
-        )
-        self.assertIn("paperclip-platform-ops-broker.service", stop)
+        self.assertIn('"${SYSTEMCTL}" start "${PLATFORM_OPS_BROKER}"', runtime_activate)
+        self.assertIn('"${SYSTEMCTL}" is-active --quiet "${unit}"', runtime_activate)
+        self.assertNotIn("systemctl stop paperclip-platform-ops-broker.service", stop)
 
 
 if __name__ == "__main__":

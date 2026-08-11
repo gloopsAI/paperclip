@@ -14,7 +14,7 @@ readonly HERMES='paperclip-hermes-execution.service'
 readonly GITHUB_BROKER='paperclip-github-push-broker.service'
 readonly GITHUB_READ_BROKER='paperclip-github-read-broker.service'
 readonly PLATFORM_OPS_BROKER='paperclip-platform-ops-broker.service'
-readonly PAPERCLIP='paperclip-gloops.service'
+readonly PAPERCLIP='paperclip-controlled-swarm.service'
 readonly COMMISSIONING_RECOVERY='paperclip-controlled-swarm-commissioning-recovery.service'
 
 [[ "${EUID}" -eq 0 ]] || {
@@ -176,6 +176,7 @@ cleanup() {
   rm -f \
     "${CONFIG_DIR}/ACTIVATION_APPROVED" \
     "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED" \
+    "${CONFIG_DIR}/CONTROLLED_SWARM_RUNTIME_APPROVED" \
     "${CONFIG_DIR}/github-push-authorization.json" \
     "${CONFIG_DIR}/github-push-authorization.sha256" \
     "${APPROVAL}" \
@@ -188,30 +189,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-systemctl unmask "${DEADMAN}" "${GITHUB_BROKER}" "${GITHUB_READ_BROKER}" "${PLATFORM_OPS_BROKER}" "${HERMES}" "${PAPERCLIP}" "${COMMISSIONING_RECOVERY}"
-systemctl daemon-reload
-systemctl enable "${COMMISSIONING_RECOVERY}"
-systemctl start "${DEADMAN}"
-"${LIB_DIR}/verify-campaign-deadman.py" \
-  --campaign-id "${CAMPAIGN_ID}" \
-  --wait-seconds 15 \
-  --require-status unarmed
-install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/HERMES_EXECUTION_APPROVED"
-systemctl start "${GITHUB_BROKER}"
-systemctl start "${GITHUB_READ_BROKER}"
-systemctl start "${PLATFORM_OPS_BROKER}"
-systemctl start "${HERMES}"
-install -m 0600 -o root -g root /dev/null "${CONFIG_DIR}/ACTIVATION_APPROVED"
-systemctl start "${PAPERCLIP}"
-systemctl is-active --quiet "${DEADMAN}"
-systemctl is-active --quiet "${GITHUB_BROKER}"
-systemctl is-active --quiet "${GITHUB_READ_BROKER}"
-systemctl is-active --quiet "${PLATFORM_OPS_BROKER}"
-systemctl is-active --quiet "${HERMES}"
-systemctl is-active --quiet "${PAPERCLIP}"
-curl --fail --silent --show-error --max-time 5 \
-  http://127.0.0.1:3100/api/health >/dev/null
-"${LIB_DIR}/verify-hermes-execution-profile.sh" --live
+"${LIB_DIR}/activate-controlled-swarm-runtime.sh"
 [[ ! -e "${EPOCH}" ]] || {
   echo "inert activation unexpectedly armed the campaign epoch" >&2
   exit 1

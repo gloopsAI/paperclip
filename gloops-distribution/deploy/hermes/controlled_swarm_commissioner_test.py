@@ -118,7 +118,7 @@ class FakePlatform:
 
     def is_active(self, unit: str) -> bool:
         self.calls.append(f"is_active:{unit}")
-        if unit == "paperclip-gloops.service":
+        if unit == "paperclip-controlled-swarm.service":
             return self.paperclip_active
         return True
 
@@ -233,12 +233,12 @@ class CommissionerTest(unittest.TestCase):
                 [
                     "systemctl",
                     "reset-failed",
-                    "paperclip-gloops.service",
+                    "paperclip-controlled-swarm.service",
                 ],
                 [
                     "systemctl",
                     "restart",
-                    "paperclip-gloops.service",
+                    "paperclip-controlled-swarm.service",
                 ],
             ],
         )

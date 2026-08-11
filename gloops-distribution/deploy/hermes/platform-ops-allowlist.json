@@ -6,6 +6,11 @@
       "container": "paperclip-gloops",
       "imageEnv": "PAPERCLIP_IMAGE"
     },
+    "paperclip-controlled-swarm.service": {
+      "healthUrl": "http://127.0.0.1:3100/api/health",
+      "container": "paperclip-gloops",
+      "imageEnv": "PAPERCLIP_IMAGE"
+    },
     "paperclip-hermes-execution.service": {
       "healthUrl": null,
       "container": "paperclip-hermes-execution",

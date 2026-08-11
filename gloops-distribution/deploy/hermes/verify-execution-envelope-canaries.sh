@@ -139,8 +139,8 @@ rollback_script="${repo_root}/gloops-distribution/deploy/hermes/rollback.sh"
 backup_script="${repo_root}/gloops-distribution/deploy/hermes/backup-dark.sh"
 rollback_units='paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service'
 grep -Fq "${rollback_units}" "${rollback_script}"
-grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
-grep -Fq 'systemctl mask paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'systemctl disable --now paperclip.service paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
+grep -Fq 'systemctl mask paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service' "${rollback_script}"
 grep -Fq "${rollback_units}" "${backup_script}"
 if grep -Fq 'rm -rf /var/lib/paperclip-gloops/campaign-deadman' "${rollback_script}"; then
   echo "Refusing canaries because rollback deletes durable campaign epoch evidence" >&2
@@ -217,6 +217,7 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/product_service_lifecycle_test.py \
     gloops-distribution/deploy/hermes/rehearse-campaign-deadman.py \
     gloops-distribution/deploy/hermes/activate-controlled-swarm.sh \
+    gloops-distribution/deploy/hermes/activate-controlled-swarm-runtime.sh \
     gloops-distribution/deploy/hermes/commission-controlled-swarm.sh \
     gloops-distribution/deploy/hermes/controlled-swarm-commissioner.py \
     gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
@@ -229,6 +230,7 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/observe-controlled-swarm.py \
     gloops-distribution/deploy/hermes/paperclip-campaign-deadman.service \
     gloops-distribution/deploy/hermes/paperclip-gloops.service \
+    gloops-distribution/deploy/hermes/paperclip-controlled-swarm.service \
     gloops-distribution/deploy/hermes/paperclip-gloops-handshake.service \
     gloops-distribution/deploy/hermes/paperclip-hermes-execution.service \
     gloops-distribution/deploy/hermes/install-dark.sh \

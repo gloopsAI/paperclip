@@ -44,12 +44,14 @@ else
   install -d -m 0700 -o root -g root "${STATE_DIR}"
 fi
 rm -f \
-  "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED"
+  "${CONFIG_DIR}/HERMES_HANDSHAKE_APPROVED" \
+  "${CONFIG_DIR}/CONTROLLED_SWARM_RUNTIME_APPROVED"
 
 # A campaign expiry ends only the campaign-bound handshake/recovery plane.
 # General Paperclip execution and the registered brokers are product services:
 # their lifecycle is intentionally independent of a gym campaign timer.
 "${SYSTEMCTL}" stop --no-block \
+  paperclip-controlled-swarm.service \
   paperclip-gloops-handshake.service \
   paperclip-hermes-handshake.service \
   paperclip-hermes-handshake-egress.service \
@@ -59,6 +61,7 @@ deadline=$((SECONDS + 120))
 while ((SECONDS < deadline)); do
   active=0
   for unit in \
+    paperclip-controlled-swarm.service \
     paperclip-gloops-handshake.service \
     paperclip-hermes-handshake.service \
     paperclip-hermes-handshake-egress.service \
@@ -70,12 +73,14 @@ while ((SECONDS < deadline)); do
 done
 
 for container in \
+  paperclip-gloops \
   paperclip-gloops-handshake \
   paperclip-hermes-handshake; do
   "${DOCKER}" rm -f "${container}" >/dev/null 2>&1 || true
 done
 
 for unit in \
+  paperclip-controlled-swarm.service \
   paperclip-gloops-handshake.service \
   paperclip-hermes-handshake.service \
   paperclip-hermes-handshake-egress.service \

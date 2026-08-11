@@ -44,7 +44,7 @@ check_inactive() {
   fi
 }
 
-for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
+for unit in paperclip.service gloops-runner.service hermes-agent.service paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service; do
   check_inactive "${unit}"
 done
 
@@ -125,6 +125,13 @@ if [[ "$(systemctl is-enabled paperclip-gloops.service 2>/dev/null || true)" == 
   echo "PASS paperclip-gloops.service is masked"
 else
   echo "FAIL paperclip-gloops.service is not masked" >&2
+  failed=1
+fi
+
+if [[ "$(systemctl is-enabled paperclip-controlled-swarm.service 2>/dev/null || true)" == "masked" ]]; then
+  echo "PASS paperclip-controlled-swarm.service is masked"
+else
+  echo "FAIL paperclip-controlled-swarm.service is not masked" >&2
   failed=1
 fi
 
@@ -256,6 +263,13 @@ if [[ ! -e /etc/paperclip-gloops/HERMES_HANDSHAKE_APPROVED ]]; then
   echo "PASS Hermes handshake activation marker is absent"
 else
   echo "FAIL Hermes handshake activation marker exists" >&2
+  failed=1
+fi
+
+if [[ ! -e /etc/paperclip-gloops/CONTROLLED_SWARM_RUNTIME_APPROVED ]]; then
+  echo "PASS controlled-swarm runtime marker is absent"
+else
+  echo "FAIL controlled-swarm runtime marker exists" >&2
   failed=1
 fi
 
@@ -483,6 +497,7 @@ fi
 provider_config=(
   /etc/paperclip-gloops
   /usr/local/lib/systemd/system/paperclip-gloops.service
+  /usr/local/lib/systemd/system/paperclip-controlled-swarm.service
   /etc/gloops-runner.env
   /etc/hermes-agent.env
   /opt/paperclip/hermes-home/.env

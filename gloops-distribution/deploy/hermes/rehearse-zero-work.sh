@@ -4,6 +4,7 @@ set -euo pipefail
 readonly CONFIG_DIR='/etc/paperclip-gloops'
 readonly LIB_DIR='/usr/local/lib/paperclip-gloops'
 readonly PAPERCLIP_UNIT='paperclip-gloops.service'
+readonly CAMPAIGN_PAPERCLIP_UNIT='paperclip-controlled-swarm.service'
 readonly HERMES_UNIT='paperclip-hermes-execution.service'
 readonly GITHUB_BROKER_UNIT='paperclip-github-push-broker.service'
 readonly DEADMAN_UNIT='paperclip-campaign-deadman.service'
@@ -53,6 +54,7 @@ require_campaign_duration_in_range() {
 
 for unit in \
   "${PAPERCLIP_UNIT}" \
+  "${CAMPAIGN_PAPERCLIP_UNIT}" \
   "${HERMES_UNIT}" \
   "${GITHUB_BROKER_UNIT}" \
   "${DEADMAN_UNIT}"; do

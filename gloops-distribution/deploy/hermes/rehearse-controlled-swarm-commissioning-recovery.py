@@ -31,7 +31,7 @@ INSTALLED_UNIT = Path(
 )
 DEFAULT_RECEIPT_DIR = Path("/var/lib/paperclip-gloops/rehearsals")
 RECOVERY_UNIT = "paperclip-controlled-swarm-commissioning-recovery.service"
-PAPERCLIP_UNIT = "paperclip-gloops.service"
+PAPERCLIP_UNIT = "paperclip-controlled-swarm.service"
 GITHUB_BROKER = INSTALLED_ROOT / "github-app-credentials.py"
 GITHUB_APP_CONFIG = Path("/etc/paperclip-gloops/github-app.json")
 GITHUB_CREDENTIAL_RECEIPT = Path(
@@ -1114,7 +1114,7 @@ class PersistentPlatform:
             os.close(descriptor)
 
     def is_active(self, unit: str) -> bool:
-        if unit == "paperclip-gloops.service":
+        if unit == "paperclip-controlled-swarm.service":
             return bool(self._read()["paperclipActive"])
         return True
 
@@ -1392,7 +1392,7 @@ def rehearse_installed_recovery_unit(module: Any) -> dict[str, object]:
     for required in (
         "paperclip-campaign-deadman.service",
         "paperclip-hermes-execution.service",
-        "paperclip-gloops.service",
+        "paperclip-controlled-swarm.service",
     ):
         if not platform.is_active(required):
             raise RuntimeError(
@@ -1566,7 +1566,7 @@ def rehearse_installed_recovery_unit(module: Any) -> dict[str, object]:
                 raise RuntimeError(
                     f"installed recovery unit left phase {phase} commissioned",
                 )
-            if not platform.is_active("paperclip-gloops.service"):
+            if not platform.is_active("paperclip-controlled-swarm.service"):
                 raise RuntimeError(
                     f"installed recovery unit did not restore phase {phase} inert",
                 )
@@ -1708,7 +1708,7 @@ def rehearse_exact_installed_wrapper(module: Any) -> dict[str, object]:
     for required in (
         "paperclip-campaign-deadman.service",
         "paperclip-hermes-execution.service",
-        "paperclip-gloops.service",
+        "paperclip-controlled-swarm.service",
     ):
         if not platform.is_active(required):
             raise RuntimeError(
@@ -1883,7 +1883,7 @@ def rehearse_exact_installed_wrapper(module: Any) -> dict[str, object]:
                 raise RuntimeError(
                     f"exact-host recovery left phase {phase} commissioned",
                 )
-            if not platform.is_active("paperclip-gloops.service"):
+            if not platform.is_active("paperclip-controlled-swarm.service"):
                 raise RuntimeError(
                     f"exact-host recovery did not restore phase {phase} inert",
                 )
