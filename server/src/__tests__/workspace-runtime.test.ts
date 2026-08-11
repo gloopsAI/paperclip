@@ -2889,6 +2889,88 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations).toEqual([]);
   });
 
+  it("rejects a tag shadowing an absent canonical review branch before restoring its missing path", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "7f666666-6666-4666-8666-666666666666";
+    const sourceIssueId = "7f777777-7777-4777-8777-777777777777";
+    const branchName = "review-tag-shadow-branch";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await runGit(repoRoot, ["tag", "-a", "-m", "Shadow absent review branch", branchName, exactHead]);
+
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const tagRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/tags",
+    ]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-tag-shadow",
+        title: "branch",
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: exactHead,
+        branchName,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-tag-shadow", title: "branch" },
+      agent: { id: "heartbeat-caller", name: "Heartbeat Caller", companyId: "company-1" },
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_head_mismatch",
+          expectedHeadSha: exactHead,
+          actualHeadSha: null,
+          branchName,
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/tags",
+    ])).toBe(tagRefsBefore);
+    await expect(fs.access(path.dirname(worktreePath))).rejects.toThrow();
+    expect(operations).toEqual([]);
+  });
+
   it("rejects a missing local-only object before mutating an existing persisted worktree", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-451-local-review-expected";

@@ -3545,6 +3545,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   if (!branchName) {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
   }
+  const canonicalBranchRef = `refs/heads/${branchName}`;
 
   const restoreBaseRef = declaredBaseRef;
   let restoreRefreshWarnings: string[] = [];
@@ -3563,7 +3564,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     // A missing checkout can leave its canonical branch registered at a
     // different commit. Resolve and validate that ref before mkdir/prune/add:
     // each of those operations mutates filesystem or Git worktree state.
-    const restoreBranchHeadSha = await resolveBaseRefSha(repoRoot, branchName);
+    const restoreBranchHeadSha = await resolveBaseRefSha(repoRoot, canonicalBranchRef);
     if (restoreBranchHeadSha !== restoreCurrentBaseRefSha) {
       throw new WorkspacePreparationFailure(
         `Local-only execution workspace branch "${branchName}" is not pinned to declared head ${restoreCurrentBaseRefSha}; found ${restoreBranchHeadSha ?? "no readable branch ref"}.`,
@@ -3590,7 +3591,12 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", worktreePath, branchName],
+      args: [
+        "worktree",
+        "add",
+        worktreePath,
+        remoteRefreshPolicy === "local_only" ? canonicalBranchRef : branchName,
+      ],
       cwd: repoRoot,
       metadata: {
         repoRoot,
@@ -3631,6 +3637,26 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       failureLabel: `git worktree add ${worktreePath}`,
     });
     created = true;
+  }
+
+  const restoredValidation = await validateLinkedGitWorktree({
+    repoRoot,
+    worktreePath,
+    expectedBranchName: branchName,
+  });
+  if (!restoredValidation.valid) {
+    throw new WorkspaceRuntimeValidationFailure(
+      `Restored git worktree "${worktreePath}" does not match recorded branch "${branchName}" (${restoredValidation.reason}).`,
+      {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          reasonCode: restoredValidation.reasonCode,
+          worktreePath,
+          expectedBranchName: branchName,
+          executionWorkspaceId: input.workspace.id ?? null,
+        },
+      },
+    );
   }
 
   const baseDrift = await inspectExecutionWorkspaceBaseDrift({
