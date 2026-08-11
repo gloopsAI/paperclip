@@ -32,6 +32,12 @@ GENERAL_STOP_TARGETS = (
     "paperclip-github-read-broker.service",
     "paperclip-platform-ops-broker.service",
 )
+CAMPAIGN_ENV_NAMES = (
+    "PAPERCLIP_CAMPAIGN_ID",
+    "PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",
+    "PAPERCLIP_CAMPAIGN_DURATION_SECONDS",
+    "PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS",
+)
 
 
 def unit_value(unit: str, key: str) -> str:
@@ -67,6 +73,10 @@ def validate(repo_root: pathlib.Path) -> list[str]:
     if '--campaign-bound' not in preflight:
         failures.append("preflight has no campaign-bound mode for handshake execution")
 
+    handshake = (hermes / "paperclip-gloops-handshake.service").read_text(encoding="utf-8")
+    if "--env-file /etc/paperclip-gloops/campaign-runtime.env" not in handshake:
+        failures.append("campaign handshake container does not receive the campaign runtime envelope")
+
     actuator = (hermes / "campaign-deadman-stop.sh").read_text(encoding="utf-8")
     for target in GENERAL_STOP_TARGETS:
         if target in actuator:
@@ -76,6 +86,23 @@ def validate(repo_root: pathlib.Path) -> list[str]:
             failures.append(f"campaign expiry actuator still clears {marker}")
     if "HERMES_HANDSHAKE_APPROVED" not in actuator:
         failures.append("campaign expiry actuator no longer clears the handshake-only marker")
+
+    runtime = (hermes / "runtime.env").read_text(encoding="utf-8").splitlines()
+    if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general" not in runtime:
+        failures.append("general runtime has no explicit general campaign scope")
+    for name in CAMPAIGN_ENV_NAMES:
+        if any(line.startswith(f"{name}=") for line in runtime):
+            failures.append(f"general runtime still inherits {name}")
+    campaign_runtime_path = hermes / "campaign-runtime.env"
+    if not campaign_runtime_path.is_file():
+        failures.append("campaign runtime envelope is missing")
+    else:
+        campaign_runtime = campaign_runtime_path.read_text(encoding="utf-8").splitlines()
+        if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=campaign-bound" not in campaign_runtime:
+            failures.append("campaign runtime has no explicit campaign-bound scope")
+        for name in CAMPAIGN_ENV_NAMES:
+            if not any(line.startswith(f"{name}=") and line.split("=", 1)[1] for line in campaign_runtime):
+                failures.append(f"campaign runtime is missing {name}")
     return failures
 
 
@@ -90,10 +117,37 @@ def main() -> int:
     args = parser.parse_args()
     failures = validate(args.repo_root.resolve())
     if args.expect_pre_fix_failure:
-        if not failures:
-            print("FAIL expected the unfixed service graph to be rejected", file=sys.stderr)
+        expected = {
+            "paperclip-gloops.service still has Requires=paperclip-campaign-deadman.service",
+            "paperclip-gloops.service still has BindsTo=paperclip-campaign-deadman.service",
+            "paperclip-gloops.service still has After=paperclip-campaign-deadman.service",
+            "paperclip-gloops.service still mounts or references campaign runtime state",
+            "paperclip-hermes-execution.service still has Requires=paperclip-campaign-deadman.service",
+            "paperclip-hermes-execution.service still has BindsTo=paperclip-campaign-deadman.service",
+            "paperclip-hermes-execution.service still has After=paperclip-campaign-deadman.service",
+            "paperclip-github-push-broker.service still has Requires=paperclip-campaign-deadman.service",
+            "paperclip-github-push-broker.service still has BindsTo=paperclip-campaign-deadman.service",
+            "paperclip-github-push-broker.service still has After=paperclip-campaign-deadman.service",
+            "preflight has no explicit general default mode",
+            "preflight has no campaign-bound mode for handshake execution",
+            "campaign handshake container does not receive the campaign runtime envelope",
+            "campaign expiry actuator still stops paperclip-gloops.service",
+            "campaign expiry actuator still stops paperclip-hermes-execution.service",
+            "campaign expiry actuator still clears ACTIVATION_APPROVED",
+            "campaign expiry actuator still clears HERMES_EXECUTION_APPROVED",
+            "general runtime has no explicit general campaign scope",
+            "general runtime still inherits PAPERCLIP_CAMPAIGN_ID",
+            "general runtime still inherits PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET",
+            "general runtime still inherits PAPERCLIP_CAMPAIGN_DURATION_SECONDS",
+            "general runtime still inherits PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS",
+            "campaign runtime envelope is missing",
+        }
+        if set(failures) != expected:
+            missing = sorted(expected - set(failures))
+            unexpected = sorted(set(failures) - expected)
+            print(f"FAIL pre-fix failure set drifted; missing={missing}; unexpected={unexpected}", file=sys.stderr)
             return 1
-        print("PASS pre-fix service graph rejected:")
+        print("PASS exact pre-fix service graph rejected:")
         for failure in failures:
             print(f"- {failure}")
         return 0

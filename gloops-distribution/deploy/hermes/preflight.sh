@@ -58,9 +58,6 @@ readonly EXPECTED_IMAGE="$(tr -d '\r\n' < "${APPROVED_IMAGE_FILE}")"
   exit 1
 }
 declare -A EXPECTED_EXECUTION_ENVELOPE=(
-  [PAPERCLIP_CAMPAIGN_ID]='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
-  [PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
-  [PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
   [HEARTBEAT_SCHEDULER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
@@ -77,12 +74,23 @@ declare -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION]='64'
   [PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION]='240'
 )
-if [[ "${MODE}" == '--general' ]]; then
-  # These values remain available to campaign-specific admission code, but a
-  # product control-plane restart must not require a trainer socket or epoch.
-  unset 'EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_ID]'
-  unset 'EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]'
-  unset 'EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]'
+if [[ "${MODE}" == '--campaign-bound' ]]; then
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE]='campaign-bound'
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_ID]='controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139'
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET]='/run/paperclip-campaign/deadman.sock'
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS]='2000'
+else
+  EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE]='general'
+  for forbidden_campaign_setting in \
+    PAPERCLIP_CAMPAIGN_ID \
+    PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET \
+    PAPERCLIP_CAMPAIGN_DURATION_SECONDS \
+    PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS; do
+    [[ -z "${!forbidden_campaign_setting:-}" ]] || {
+      echo "general execution inherited ${forbidden_campaign_setting}" >&2
+      exit 1
+    }
+  done
 fi
 for execution_setting in "${!EXPECTED_EXECUTION_ENVELOPE[@]}"; do
   [[ "${!execution_setting:-}" == "${EXPECTED_EXECUTION_ENVELOPE[${execution_setting}]}" ]] || {

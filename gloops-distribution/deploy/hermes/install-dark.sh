@@ -91,6 +91,7 @@ rm -f \
 rm -f /run/paperclip-gloops/HERMES_HANDSHAKE_ACTIVE /run/paperclip-gloops/PAPERCLIP_HANDSHAKE_ACTIVE
 rm -f /run/paperclip-campaign/deadman.sock
 install -m 0600 -o root -g root "${SCRIPT_DIR}/runtime.env" "${CONFIG_DIR}/runtime.env"
+install -m 0600 -o root -g root "${SCRIPT_DIR}/campaign-runtime.env" "${CONFIG_DIR}/campaign-runtime.env"
 sed -i '/^PAPERCLIP_IMAGE=/d' "${CONFIG_DIR}/runtime.env"
 printf 'PAPERCLIP_IMAGE=%s\n' "${IMAGE}" >>"${CONFIG_DIR}/runtime.env"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/read-lane-snapshot.sh" "${LIB_DIR}/read-lane-snapshot.sh"

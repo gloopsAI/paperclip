@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   admitCampaignRun,
+  admitExecutionCampaign,
   CAMPAIGN_DEADMAN_SCHEMA_VERSION,
   DEFAULT_CAMPAIGN_DURATION_SECONDS,
   MAX_CAMPAIGN_DURATION_SECONDS,
   MIN_CAMPAIGN_DURATION_SECONDS,
+  enforceCampaignExecutionDeadline,
   parseCampaignDeadmanPolicy,
+  parseExecutionCampaignPolicy,
   type CampaignDeadmanPolicy,
 } from "./campaign-deadman.js";
 
@@ -34,6 +37,86 @@ const configured = (
 });
 
 describe("campaign deadman policy", () => {
+  it("admits general execution without campaign environment or a socket call", async () => {
+    const general = parseExecutionCampaignPolicy({
+      PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE: "general",
+    });
+    let campaignAdmissionCalls = 0;
+    await expect(admitExecutionCampaign(
+      general,
+      { companyId: "company-1", runId: "run-1" },
+      async () => {
+        campaignAdmissionCalls += 1;
+        throw new Error("general execution touched the campaign deadman");
+      },
+    )).resolves.toBeNull();
+    expect(campaignAdmissionCalls).toBe(0);
+    expect(enforceCampaignExecutionDeadline({
+      policy: general,
+      receipt: null,
+      budget: null,
+    })).toBeNull();
+  });
+
+  it("requires explicit, non-ambiguous campaign scoping", () => {
+    expect(parseExecutionCampaignPolicy(configured({
+      PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE: "campaign-bound",
+    }))).toEqual({ scope: "campaign-bound", deadman: policy });
+    expect(() => parseExecutionCampaignPolicy(configured({
+      PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE: "general",
+    }))).toThrow("general execution must not inherit campaign configuration");
+    expect(() => parseExecutionCampaignPolicy({
+      PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE: "campaign-bound",
+    })).toThrow("requires a complete campaign deadman policy");
+  });
+
+  it("caps an in-flight campaign invocation at the epoch and refuses expiry", () => {
+    const campaign = parseExecutionCampaignPolicy(configured({
+      PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE: "campaign-bound",
+    }));
+    const receipt = {
+      schemaVersion: CAMPAIGN_DEADMAN_SCHEMA_VERSION,
+      campaignId: policy.campaignId,
+      companyId: "company-1",
+      firstRunId: "run-1",
+      firstAdmittedAt,
+      deadlineAt,
+      durationSeconds: policy.durationSeconds,
+      epochSha256: `sha256:${"a".repeat(64)}`,
+    };
+    const budget = {
+      schemaVersion: "paperclip.provider-invocation-budget.v1" as const,
+      budgetId: "budget-1",
+      reservationId: "a".repeat(64),
+      maxInputTokens: 1_000,
+      maxOutputTokens: 500,
+      maxTurns: 8,
+      maxToolCalls: 32,
+      maxWallMs: 60_000,
+    };
+    const capped = enforceCampaignExecutionDeadline({
+      policy: campaign,
+      receipt,
+      budget,
+      now: new Date("2026-07-18T06:59:30.000Z"),
+    });
+    expect(capped?.maxWallMs).toBe(30_000);
+    expect(Object.values(capped?.phasePlan ?? {}).reduce((sum, phase) => sum + phase.wallMs, 0))
+      .toBe(30_000);
+    expect(() => enforceCampaignExecutionDeadline({
+      policy: campaign,
+      receipt,
+      budget,
+      now: new Date(deadlineAt),
+    })).toThrow("campaign epoch expired before adapter invocation");
+    expect(() => enforceCampaignExecutionDeadline({
+      policy: campaign,
+      receipt,
+      budget: null,
+      now: new Date("2026-07-18T06:59:30.000Z"),
+    })).toThrow("strict adapter wall-time budget");
+  });
+
   it("requires the campaign id and deadman socket as a complete pair", () => {
     expect(parseCampaignDeadmanPolicy({})).toBeNull();
     expect(() => parseCampaignDeadmanPolicy({

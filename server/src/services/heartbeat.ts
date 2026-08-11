@@ -302,8 +302,10 @@ import { withAgentStartLock } from "./agent-start-lock.js";
 import { withCompanyQueuePumpLock } from "./company-queue-pump-lock.js";
 import {
   admitCampaignRun,
+  admitExecutionCampaign,
   CAMPAIGN_EPOCH_CONTEXT_KEY,
-  parseCampaignDeadmanPolicy,
+  enforceCampaignExecutionDeadline,
+  parseExecutionCampaignPolicy,
 } from "./campaign-deadman.js";
 import {
   evaluateAgentInvokability,
@@ -5430,11 +5432,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // Constructed during server startup. Enabling the gate with incomplete
   // ceilings fails closed before this service can invoke any adapter.
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  const executionAdmissionPolicy = parseExecutionAdmissionPolicy();
+  const executionAdmissionPolicy = parseExecutionAdmissionPolicy(runtimeEnv);
   const reconciledExecutionAdapters = parseReconciledExecutionAdapters(runtimeEnv);
+  const executionCampaignPolicy = parseExecutionCampaignPolicy(runtimeEnv);
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
   const backlogBankruptcyAdmissionPolicy = parseBacklogBankruptcyAdmissionPolicy(runtimeEnv);
-  const campaignDeadmanPolicy = parseCampaignDeadmanPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
   /**
    * Collect resource budgets from the issue and its ancestors, root-to-leaf.
@@ -11614,15 +11616,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "company_wip_deferred" as const, observed, limit };
           }
         }
-        if (!controlledSwarmAdmissionPolicy.commissioned) {
+        if (
+          executionCampaignPolicy.scope === "campaign-bound" &&
+          !controlledSwarmAdmissionPolicy.commissioned
+        ) {
           throw new Error("controlled swarm is not commissioned for execution");
         }
-        const campaignEpoch = campaignDeadmanPolicy
-          ? await campaignDeadmanAdmission(campaignDeadmanPolicy, {
-            companyId: run.companyId,
-            runId: run.id,
-          })
-          : null;
+        const campaignEpoch = await admitExecutionCampaign(
+          executionCampaignPolicy,
+          { companyId: run.companyId, runId: run.id },
+          campaignDeadmanAdmission,
+        );
         const nextContext = campaignEpoch
           ? {
               ...context,
@@ -11939,15 +11943,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : { kind: "lost_race" as const };
       }
 
-      if (!controlledSwarmAdmissionPolicy.commissioned) {
+      if (
+        executionCampaignPolicy.scope === "campaign-bound" &&
+        !controlledSwarmAdmissionPolicy.commissioned
+      ) {
         throw new Error("controlled swarm is not commissioned for execution");
       }
-      const campaignEpoch = campaignDeadmanPolicy
-        ? await campaignDeadmanAdmission(campaignDeadmanPolicy, {
-          companyId: run.companyId,
-          runId: run.id,
-        })
-        : null;
+      const campaignEpoch = await admitExecutionCampaign(
+        executionCampaignPolicy,
+        { companyId: run.companyId, runId: run.id },
+        campaignDeadmanAdmission,
+      );
       const claimContext = campaignEpoch
         ? {
             ...nextContext,
@@ -15861,9 +15867,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       let adapterInvocationAttempted = false;
       const subscriptionRouteAdmission = evaluateSubscriptionRouteAdmission(agent.adapterType, context);
-      const invocationBudget = executionInvocationBudgetFromEnvelope(
+      let invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
+      const executionBudgetMode = invocationBudget
+        ? adapter.supportsExecutionBudget === true
+          ? "strict"
+          : reconciledExecutionAdapters.has(agent.adapterType)
+            ? "reconciled"
+            : "unsupported"
+        : null;
+      if (executionCampaignPolicy.scope === "campaign-bound" && executionBudgetMode === "strict") {
+        invocationBudget = enforceCampaignExecutionDeadline({
+          policy: executionCampaignPolicy,
+          receipt: context[CAMPAIGN_EPOCH_CONTEXT_KEY],
+          budget: invocationBudget,
+        });
+      }
       const completionProfile = issueRef
         ? resolveIssueExecutionCompletionProfile({
           executionPolicy: issueContext?.executionPolicy,
@@ -15945,14 +15965,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
-      const executionBudgetMode = invocationBudget
-        ? adapter.supportsExecutionBudget === true
-          ? "strict"
-          : reconciledExecutionAdapters.has(agent.adapterType)
-            ? "reconciled"
-            : "unsupported"
-        : null;
-      if (workPreparation.decision === "denied" || workPreparation.decision === "split") {
+      if (
+        executionCampaignPolicy.scope === "campaign-bound" &&
+        executionBudgetMode !== "strict"
+      ) {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "campaign_deadman.inflight_cutoff_unsupported",
+          errorMessage: `Adapter ${agent.adapterType} cannot enforce the campaign epoch during execution`,
+          clearSession: true,
+          providerInvocationAttempted: false,
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else if (workPreparation.decision === "denied" || workPreparation.decision === "split") {
         const isSplit = workPreparation.decision === "split";
         adapterResult = {
           exitCode: 1,

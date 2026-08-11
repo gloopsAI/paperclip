@@ -63,6 +63,19 @@ vi.mock("../adapters/index.js", async () => {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+const executionAdmissionEnv = {
+  PAPERCLIP_EXECUTION_ADMISSION_ENABLED: "true",
+  PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK: "3",
+  PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK: "2",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK: "1000",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK: "200",
+  PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK: "60000",
+  PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION: "400",
+  PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION: "100",
+  PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION: "6",
+  PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION: "24",
+};
+
 async function waitForTerminalRuns(db: ReturnType<typeof createDb>, ids: string[]) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -707,8 +720,8 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
       contextSnapshot: {},
     });
 
-    const firstAdmittedAt = "2026-07-17T07:00:00.000Z";
-    const deadlineAt = "2026-07-18T07:00:00.000Z";
+    const firstAdmittedAt = new Date(Date.now() - 1_000).toISOString();
+    const deadlineAt = new Date(Date.now() + 86_399_000).toISOString();
     const campaignDeadmanAdmission = vi.fn(async (
       policy: {
         campaignId: string;
@@ -730,6 +743,7 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     }));
     const heartbeat = heartbeatService(db, {
       runtimeEnv: {
+        ...executionAdmissionEnv,
         PAPERCLIP_CAMPAIGN_ID: "controlled-swarm-20260717",
         PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET: "/run/paperclip-campaign/deadman.sock",
         PAPERCLIP_CAMPAIGN_DURATION_SECONDS: "86400",
