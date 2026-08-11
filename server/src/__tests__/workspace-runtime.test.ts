@@ -2971,6 +2971,55 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations).toEqual([]);
   });
 
+  it("reattaches a valid missing local-only review worktree to its canonical branch", async () => {
+    const repoRoot = await createTempRepo();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+    const workspaceId = "7f888888-8888-4888-8888-888888888888";
+    const sourceIssueId = "7f999999-9999-4999-8999-999999999999";
+    const branchName = "review-missing-valid-branch";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await runGit(repoRoot, ["branch", branchName, exactHead]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      db: createAuthenticReviewWorkspaceDb({
+        workspaceId,
+        sourceIssueId,
+        exactBaseRef: exactHead,
+        identifier: "review-missing-valid",
+        title: "branch",
+      }) as any,
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      workspace: {
+        id: workspaceId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: exactHead,
+        branchName,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: { id: sourceIssueId, identifier: "review-missing-valid", title: "branch" },
+      agent: { id: "heartbeat-caller", name: "Heartbeat Caller", companyId: "company-1" },
+    });
+
+    expect(restored?.branchName).toBe(branchName);
+    await expect(fs.realpath(restored?.cwd ?? "")).resolves.toBe(await fs.realpath(worktreePath));
+    expect(await readGit(worktreePath, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/${branchName}`);
+    expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(exactHead);
+  });
+
   it("rejects a missing local-only object before mutating an existing persisted worktree", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-451-local-review-expected";

@@ -2573,11 +2573,15 @@ export async function inspectManagedGitWorktreeBranch(input: {
     };
   }
 
-  const actualBranchName = await runGit(
-    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+  const actualBranchRef = await runGit(
+    ["symbolic-ref", "--quiet", "HEAD"],
     worktreePath,
   ).catch(() => null);
-  if (expectedBranchName && actualBranchName !== expectedBranchName) {
+  const actualBranchName = actualBranchRef?.startsWith("refs/heads/")
+    ? actualBranchRef.slice("refs/heads/".length)
+    : actualBranchRef;
+  const expectedBranchRef = expectedBranchName ? `refs/heads/${expectedBranchName}` : null;
+  if (expectedBranchRef && actualBranchRef !== expectedBranchRef) {
     return {
       ...base,
       valid: false,
@@ -3595,7 +3599,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         "worktree",
         "add",
         worktreePath,
-        remoteRefreshPolicy === "local_only" ? canonicalBranchRef : branchName,
+        branchName,
       ],
       cwd: repoRoot,
       metadata: {
