@@ -2720,6 +2720,81 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations).toEqual([]);
   });
 
+  it("rejects a missing local-only object before mutating an existing persisted worktree", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-451-local-review-expected";
+    const actualBranch = "PAP-451-local-review-actual";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+
+    const missingHead = "e".repeat(40);
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const branchRefsBefore = await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ]);
+    const checkedOutBranchBefore = await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]);
+    const headBefore = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+    const statusBefore = await readGit(worktreePath, ["status", "--porcelain=v1"]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: missingHead,
+      },
+      workspace: {
+        id: "execution-workspace-local-review-existing",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: missingHead,
+        branchName: expectedBranch,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: {
+        id: "review-missing-existing-1",
+        identifier: "PAP-REVIEW-MISSING-EXISTING-1",
+        title: "Review missing local object in existing worktree",
+      },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: true,
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_object_missing",
+          baseRef: missingHead,
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads",
+    ])).toBe(branchRefsBefore);
+    expect(await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]))
+      .toBe(checkedOutBranchBefore);
+    expect(await readGit(worktreePath, ["rev-parse", "HEAD"])).toBe(headBefore);
+    expect(await readGit(worktreePath, ["status", "--porcelain=v1"])).toBe(statusBefore);
+    expect(operations).toEqual([]);
+  });
+
   it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-454-repair-clean-branch-mismatch";

@@ -3169,9 +3169,26 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     return realized;
   }
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  const declaredBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  let localOnlyDeclaredBaseRefSha: string | null = null;
+  if (remoteRefreshPolicy === "local_only") {
+    localOnlyDeclaredBaseRefSha = declaredBaseRef
+      ? await resolveBaseRefSha(repoRoot, declaredBaseRef)
+      : null;
+    // Admission for a declared local-only object must happen before inspecting
+    // or repairing an existing worktree and before restoring a missing one.
+    // Coherence repair may checkout, detach, or quarantine branches.
+    assertLocalOnlyBaseObject({
+      remoteRefreshPolicy,
+      expectedHeadSha: localOnlyDeclaredBaseRefSha,
+      repoRoot,
+      baseRef: declaredBaseRef,
+      worktreePath: realized.worktreePath ?? cwd,
+    });
+  }
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
-    const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+    const reuseBaseRef = declaredBaseRef;
     const reuseWorktreePath = realized.worktreePath ?? cwd;
     const repairWarnings: string[] = [];
     if (await isGitCheckout(reuseWorktreePath)) {
@@ -3215,10 +3232,16 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         },
       );
     }
-    const baseRefreshWarnings = reuseBaseRef
-      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, remoteRefreshPolicy)
-      : [];
-    const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
+    const baseRefreshWarnings = remoteRefreshPolicy === "local_only"
+      ? []
+      : reuseBaseRef
+        ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, remoteRefreshPolicy)
+        : [];
+    const currentBaseRefSha = remoteRefreshPolicy === "local_only"
+      ? localOnlyDeclaredBaseRefSha
+      : reuseBaseRef
+        ? await resolveBaseRefSha(repoRoot, reuseBaseRef)
+        : null;
     await assertLocalOnlyWorktreeHead({
       remoteRefreshPolicy,
       worktreePath: reuseWorktreePath,
@@ -3271,24 +3294,11 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
   }
 
-  const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  const restoreBaseRef = declaredBaseRef;
   let restoreRefreshWarnings: string[] = [];
-  let restoreCurrentBaseRefSha: string | null = null;
-  if (remoteRefreshPolicy === "local_only") {
-    restoreCurrentBaseRefSha = restoreBaseRef
-      ? await resolveBaseRefSha(repoRoot, restoreBaseRef)
-      : null;
-    // This gate must precede mkdir, worktree prune, and worktree add. A
-    // declared local-only review object that is not already materialized may
-    // not mutate persisted restore state while failing admission.
-    assertLocalOnlyBaseObject({
-      remoteRefreshPolicy,
-      expectedHeadSha: restoreCurrentBaseRefSha,
-      repoRoot,
-      baseRef: restoreBaseRef,
-      worktreePath,
-    });
-  }
+  let restoreCurrentBaseRefSha = remoteRefreshPolicy === "local_only"
+    ? localOnlyDeclaredBaseRefSha
+    : null;
 
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
