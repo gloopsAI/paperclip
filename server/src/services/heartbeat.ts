@@ -5432,6 +5432,8 @@ export interface HeartbeatServiceOptions {
     }) => Promise<void>;
   };
   campaignBoundRunTerminalizationHooks?: {
+    /** Test/coordination seam immediately before the active-status compare-and-set. */
+    beforeRunStatusPersisted?: (input: { runId: string }) => Promise<void>;
     /** Test/coordination seam after the terminal run receipt is durable and before cleanup. */
     afterRunStatusPersisted?: (input: { runId: string }) => Promise<void>;
   };
@@ -8342,7 +8344,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!binding) return null;
     const existingResult = parseObject(run.resultJson);
     const existingReceipt = parseObject(existingResult[CAMPAIGN_TERMINAL_RECEIPT_KEY]);
-    const terminalReceipt =
+    const proposedTerminalReceipt =
       existingReceipt.schemaVersion === "gloops.campaign-binding-terminal.v1" &&
       existingReceipt.campaignId === binding.campaignId &&
       existingReceipt.disposition === "cancelled" &&
@@ -8356,17 +8358,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
             terminalizedAt: new Date().toISOString(),
           };
-    const finishedAt = run.finishedAt ? new Date(run.finishedAt) : new Date(terminalReceipt.terminalizedAt as string);
     let terminalRun = run;
     let statusPersisted = false;
 
     if (["queued", "scheduled_retry", "running"].includes(run.status)) {
+      await options.campaignBoundRunTerminalizationHooks?.beforeRunStatusPersisted?.({
+        runId: run.id,
+      });
+      const proposedFinishedAt = new Date(proposedTerminalReceipt.terminalizedAt as string);
       const cancelled = await db
         .update(heartbeatRuns)
         .set({
           status: "cancelled",
-          finishedAt,
-          updatedAt: finishedAt,
+          finishedAt: proposedFinishedAt,
+          updatedAt: proposedFinishedAt,
           error: reason,
           errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE,
           resultJson: {
@@ -8374,7 +8379,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             stopReason: CAMPAIGN_BOUND_RUN_ERROR_CODE,
             timeoutFired: false,
             providerInvocationAttempted: false,
-            [CAMPAIGN_TERMINAL_RECEIPT_KEY]: terminalReceipt,
+            [CAMPAIGN_TERMINAL_RECEIPT_KEY]: proposedTerminalReceipt,
           },
         })
         .where(and(
@@ -8383,14 +8388,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ))
         .returning()
         .then((rows) => rows[0] ?? null);
-      terminalRun = cancelled ?? await getRun(run.id) ?? run;
       statusPersisted = Boolean(cancelled);
     }
+
+    // CAS winners and losers both reload. Everything after this point uses the
+    // one receipt/timestamp that actually won durable storage, never a local proposal.
+    terminalRun = await getRun(run.id, { unsafeFullResultJson: true }) ?? terminalRun;
 
     if (
       terminalRun.status !== "cancelled" ||
       terminalRun.errorCode !== CAMPAIGN_BOUND_RUN_ERROR_CODE
     ) return terminalRun;
+
+    const canonicalResult = parseObject(terminalRun.resultJson);
+    const canonicalReceipt = parseObject(canonicalResult[CAMPAIGN_TERMINAL_RECEIPT_KEY]);
+    if (
+      canonicalReceipt.schemaVersion !== "gloops.campaign-binding-terminal.v1" ||
+      canonicalReceipt.campaignId !== binding.campaignId ||
+      canonicalReceipt.disposition !== "cancelled" ||
+      canonicalReceipt.reason !== CAMPAIGN_BOUND_RUN_ERROR_CODE ||
+      typeof canonicalReceipt.terminalizedAt !== "string"
+    ) {
+      throw new Error(`Campaign terminal row ${terminalRun.id} has no canonical receipt`);
+    }
+    const finishedAt = terminalRun.finishedAt
+      ? new Date(terminalRun.finishedAt)
+      : new Date(canonicalReceipt.terminalizedAt);
+    if (Number.isNaN(finishedAt.getTime())) {
+      throw new Error(`Campaign terminal row ${terminalRun.id} has an invalid canonical timestamp`);
+    }
 
     if (statusPersisted) {
       publishRunStatusUpdate(terminalRun);
@@ -8409,28 +8435,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       deferQueuePump: cleanupOptions.deferQueuePump,
     });
 
-    const existingTerminalEvent = await db
-      .select({ id: heartbeatRunEvents.id })
-      .from(heartbeatRunEvents)
-      .where(and(
-        eq(heartbeatRunEvents.runId, terminalRun.id),
-        eq(heartbeatRunEvents.eventType, "lifecycle"),
-        sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = ${CAMPAIGN_TERMINAL_EVENT_KIND}`,
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (!existingTerminalEvent) {
-      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
+    await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`campaign-terminal-event:${terminalRun.id}`}, 0))`,
+      );
+      const existingTerminalEvent = await tx
+        .select({ id: heartbeatRunEvents.id })
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.runId, terminalRun.id),
+          eq(heartbeatRunEvents.eventType, "lifecycle"),
+          sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = ${CAMPAIGN_TERMINAL_EVENT_KIND}`,
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingTerminalEvent) return;
+      const transactionalDb = tx as unknown as Db;
+      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id, transactionalDb), {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
         message: replayReason,
         payload: {
-          ...terminalReceipt,
+          ...canonicalReceipt,
           terminalizationKind: CAMPAIGN_TERMINAL_EVENT_KIND,
         },
-      });
-    }
+      }, transactionalDb);
+    });
 
     const cleanedAt = new Date().toISOString();
     return db
@@ -9028,6 +9059,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message?: string;
       payload?: Record<string, unknown>;
     },
+    executor: Db = db,
   ) {
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
@@ -9049,7 +9081,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       at: eventAt,
     });
 
-    await db.insert(heartbeatRunEvents).values({
+    await executor.insert(heartbeatRunEvents).values({
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
@@ -9098,8 +9130,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function nextRunEventSeq(runId: string) {
-    const [row] = await db
+  async function nextRunEventSeq(runId: string, executor: Db = db) {
+    const [row] = await executor
       .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));

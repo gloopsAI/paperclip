@@ -1265,6 +1265,163 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     expect(adapterExecute.mock.calls.filter(([input]) => input.agent.id === agentId)).toHaveLength(0);
   });
 
+  it("converges concurrent campaign terminalizers on one canonical receipt, event, and promotion", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const issueId = randomUUID();
+    const runAId = randomUUID();
+    const wakeAId = randomUUID();
+    const deferredBId = randomUUID();
+    const campaignAId = `race-a-${companyId.slice(0, 8)}`;
+    const campaignBId = `race-b-${companyId.slice(0, 8)}`;
+    const binding = (campaignId: string) => ({
+      [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+        schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+        scope: "campaign-bound",
+        campaignId,
+      },
+    });
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: wakeAId,
+        companyId,
+        agentId: agentId!,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "campaign_retry",
+        payload: { issueId },
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: "retry_scheduler",
+        runId: runAId,
+      },
+      {
+        id: deferredBId,
+        companyId,
+        agentId: agentId!,
+        source: "on_demand",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred",
+        payload: {
+          issueId,
+          _paperclipWakeContext: { issueId, ...binding(campaignBId) },
+        },
+        status: "deferred_issue_execution",
+        requestedByActorType: "user",
+        requestedByActorId: "operator",
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runAId,
+      companyId,
+      agentId: agentId!,
+      status: "scheduled_retry",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      wakeupRequestId: wakeAId,
+      responsibleUserId: "operator",
+      scheduledRetryAt: new Date("2026-01-01T00:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_infrastructure",
+      contextSnapshot: { issueId, ...binding(campaignAId) },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1,
+      identifier: `RACE-${companyId.slice(0, 6)}`,
+      title: "Converge concurrent campaign terminalizers",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId!,
+      checkoutRunId: runAId,
+      executionRunId: runAId,
+      executionAgentNameKey: "swarmagent0",
+      executionLockedAt: new Date(),
+      responsibleUserId: "operator",
+    });
+
+    let arrivals = 0;
+    let releaseBoth!: () => void;
+    let firstArrived!: () => void;
+    const bothAtCas = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const firstAtCas = new Promise<void>((resolve) => {
+      firstArrived = resolve;
+    });
+    const beforeRunStatusPersisted = async () => {
+      arrivals += 1;
+      if (arrivals === 1) firstArrived();
+      if (arrivals === 2) releaseBoth();
+      await bothAtCas;
+    };
+    const first = heartbeatService(db, {
+      runtimeEnv: {},
+      campaignBoundRunTerminalizationHooks: { beforeRunStatusPersisted },
+    });
+    const second = heartbeatService(db, {
+      runtimeEnv: {},
+      campaignBoundRunTerminalizationHooks: { beforeRunStatusPersisted },
+    });
+    const now = new Date("2026-01-02T00:00:00.000Z");
+    const firstTerminalizer = first.promoteDueScheduledRetries(now);
+    await firstAtCas;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const secondTerminalizer = second.promoteDueScheduledRetries(now);
+    expect(await Promise.all([firstTerminalizer, secondTerminalizer])).toEqual([
+      { promoted: 0, runIds: [] },
+      { promoted: 0, runIds: [] },
+    ]);
+
+    const canonicalA = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runAId))
+      .then((rows) => rows[0]);
+    const canonicalResult = canonicalA.resultJson as Record<string, unknown>;
+    const canonicalReceipt = canonicalResult[CAMPAIGN_TERMINAL_RECEIPT_KEY] as Record<string, unknown>;
+    expect(canonicalA).toMatchObject({ status: "cancelled", errorCode: CAMPAIGN_BOUND_RUN_ERROR_CODE });
+    expect(canonicalA.finishedAt?.toISOString()).toBe(canonicalReceipt.terminalizedAt);
+    expect(canonicalResult[CAMPAIGN_TERMINAL_CLEANUP_KEY]).toEqual(expect.any(String));
+
+    const terminalEvents = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.runId, runAId),
+        sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = 'campaign_bound_scope_unavailable'`,
+      ));
+    expect(terminalEvents).toHaveLength(1);
+    expect(terminalEvents[0]?.payload).toMatchObject({
+      campaignId: campaignAId,
+      terminalizedAt: canonicalReceipt.terminalizedAt,
+    });
+
+    const promotedB = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.wakeupRequestId, deferredBId));
+    expect(promotedB).toHaveLength(1);
+    expect(promotedB[0]).toMatchObject({
+      status: "cancelled",
+      contextSnapshot: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: { campaignId: campaignBId },
+      },
+    });
+    expect(await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeAId))
+      .then((rows) => rows[0]?.status)).toBe("cancelled");
+    expect(await db
+      .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0])).toEqual({ executionRunId: null, checkoutRunId: null });
+    expect(adapterExecute.mock.calls.filter(([input]) => input.agent.id === agentId)).toHaveLength(0);
+  }, 30_000);
+
   it("terminalizes a due campaign-bound scheduled retry in the general plane without promotion", async () => {
     adapterExecute.mockClear();
     const { companyId, agentIds: [agentId] } = await seedCompany(1);
