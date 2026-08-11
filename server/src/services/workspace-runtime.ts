@@ -632,7 +632,69 @@ function parseRemoteTrackingRef(ref: string): { remote: string; branch: string }
   return { remote, branch };
 }
 
-async function refreshRemoteTrackingBaseRef(repoRoot: string, baseRef: string): Promise<string[]> {
+type RemoteRefreshPolicy = "allowed" | "local_only";
+
+function readRemoteRefreshPolicy(value: unknown): RemoteRefreshPolicy {
+  return value === "local_only" ? "local_only" : "allowed";
+}
+
+function assertLocalOnlyBaseObject(input: {
+  remoteRefreshPolicy: RemoteRefreshPolicy;
+  expectedHeadSha: string | null;
+  repoRoot: string;
+  baseRef: string | null;
+  worktreePath: string;
+}) {
+  if (input.remoteRefreshPolicy !== "local_only") return;
+  if (!input.expectedHeadSha) {
+    throw new WorkspacePreparationFailure(
+      `Cannot resolve local-only base ref "${input.baseRef ?? "unset"}" before workspace reuse.`,
+      {
+        reason: "local_review_object_missing",
+        owner: "platform_workspace",
+        action: "materialize_exact_review_objects_and_retry",
+        repoRoot: input.repoRoot,
+        worktreePath: input.worktreePath,
+        baseRef: input.baseRef,
+        remoteRefreshPolicy: input.remoteRefreshPolicy,
+      },
+    );
+  }
+}
+
+async function assertLocalOnlyWorktreeHead(input: {
+  remoteRefreshPolicy: RemoteRefreshPolicy;
+  worktreePath: string;
+  expectedHeadSha: string | null;
+  repoRoot: string;
+  baseRef: string | null;
+}) {
+  assertLocalOnlyBaseObject(input);
+  if (input.remoteRefreshPolicy !== "local_only") return;
+  const actualHeadSha = await runGit(["rev-parse", "HEAD"], input.worktreePath).catch(() => null);
+  if (actualHeadSha === input.expectedHeadSha) return;
+  throw new WorkspacePreparationFailure(
+    `Local-only execution workspace at "${input.worktreePath}" is not pinned to declared head ${input.expectedHeadSha}; found ${actualHeadSha ?? "no readable HEAD"}.`,
+    {
+      reason: "local_review_head_mismatch",
+      owner: "platform_workspace",
+      action: "discard_stale_review_workspace_and_retry",
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      baseRef: input.baseRef,
+      expectedHeadSha: input.expectedHeadSha,
+      actualHeadSha,
+      remoteRefreshPolicy: input.remoteRefreshPolicy,
+    },
+  );
+}
+
+async function refreshRemoteTrackingBaseRef(
+  repoRoot: string,
+  baseRef: string,
+  remoteRefreshPolicy: RemoteRefreshPolicy = "allowed",
+): Promise<string[]> {
+  if (remoteRefreshPolicy === "local_only") return [];
   const remoteTracking = parseRemoteTrackingRef(baseRef);
   if (!remoteTracking) return [];
 
@@ -2016,6 +2078,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 async function resolveAuthoritativeBaseRef(
   repoRoot: string,
   configuredBaseRef: string | null,
+  remoteRefreshPolicy: RemoteRefreshPolicy = "allowed",
 ): Promise<{ baseRef: string; warnings: string[]; refreshed: boolean }> {
   const warnings: string[] = [];
   const detectOrHead = async () => (await detectDefaultBranch(repoRoot)) ?? "HEAD";
@@ -2038,7 +2101,7 @@ async function resolveAuthoritativeBaseRef(
     const remoteCandidate = `origin/${configured}`;
     // Refresh here and keep the warnings; the caller skips its own refresh of
     // the returned ref (see `refreshed`) so we never fetch the same ref twice.
-    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, remoteRefreshPolicy));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
       return { baseRef: remoteCandidate, warnings, refreshed: true };
     }
@@ -2057,9 +2120,9 @@ async function resolveAuthoritativeBaseRef(
   if (await resolveBaseRefSha(repoRoot, configured)) {
     return { baseRef: configured, warnings, refreshed: false };
   }
-  if (await remoteExists(repoRoot, "origin")) {
+  if (remoteRefreshPolicy === "allowed" && await remoteExists(repoRoot, "origin")) {
     const remoteCandidate = `origin/${configured}`;
-    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate));
+    warnings.push(...await refreshRemoteTrackingBaseRef(repoRoot, remoteCandidate, remoteRefreshPolicy));
     if (await resolveBaseRefSha(repoRoot, remoteCandidate)) {
       return { baseRef: remoteCandidate, warnings, refreshed: true };
     }
@@ -2747,6 +2810,7 @@ export async function realizeExecutionWorkspace(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
+  const remoteRefreshPolicy = readRemoteRefreshPolicy(rawStrategy.remoteRefreshPolicy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
     return {
@@ -2784,16 +2848,25 @@ export async function realizeExecutionWorkspace(input: {
     baseRef,
     warnings: baseRefResolutionWarnings,
     refreshed: baseRefAlreadyRefreshed,
-  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef);
+  } = await resolveAuthoritativeBaseRef(repoRoot, configuredBaseRef, remoteRefreshPolicy);
   const baseRefreshWarnings = [
     ...baseRefResolutionWarnings,
-    ...(baseRefAlreadyRefreshed ? [] : await refreshRemoteTrackingBaseRef(repoRoot, baseRef)),
+    ...(baseRefAlreadyRefreshed
+      ? []
+      : await refreshRemoteTrackingBaseRef(repoRoot, baseRef, remoteRefreshPolicy)),
   ];
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
   async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {
+    await assertLocalOnlyWorktreeHead({
+      remoteRefreshPolicy,
+      worktreePath: reusablePath,
+      expectedHeadSha: currentBaseRefSha,
+      repoRoot,
+      baseRef,
+    });
     const refresh = currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
@@ -2925,10 +2998,16 @@ export async function realizeExecutionWorkspace(input: {
   // ref is a typed pre-model setup failure the caller can repair and retry
   // without consuming the run's provider admission reservation.
   if (!currentBaseRefSha) {
+    const localOnly = remoteRefreshPolicy === "local_only";
     throw new WorkspacePreparationFailure(
-      `Cannot resolve base ref "${baseRef}" to a commit in base checkout "${repoRoot}" after fetching from origin. The requested ref may not exist on the remote.`,
+      localOnly
+        ? `Cannot resolve local-only base ref "${baseRef}" to a commit in base checkout "${repoRoot}". Remote refresh is prohibited for this execution stage.`
+        : `Cannot resolve base ref "${baseRef}" to a commit in base checkout "${repoRoot}" after fetching from origin. The requested ref may not exist on the remote.`,
       {
-        reason: "base_ref_unresolvable",
+        reason: localOnly ? "local_review_object_missing" : "base_ref_unresolvable",
+        owner: localOnly ? "platform_workspace" : "repository_owner",
+        action: localOnly ? "materialize_exact_review_objects_and_retry" : "repair_repository_ref",
+        remoteRefreshPolicy,
         repoRoot,
         baseRef,
         configuredBaseRef,
@@ -2991,7 +3070,11 @@ export async function realizeExecutionWorkspace(input: {
   // Verified disposable worktree: the checkout must exist and, for a freshly
   // created task branch, point at the resolved base SHA before dispatch.
   const worktreeHeadSha = await runGit(["rev-parse", "HEAD"], worktreePath).catch(() => null);
-  if (!worktreeHeadSha || (!attachedExistingBranch && worktreeHeadSha !== currentBaseRefSha)) {
+  if (
+    !worktreeHeadSha
+    || ((remoteRefreshPolicy === "local_only" || !attachedExistingBranch)
+      && worktreeHeadSha !== currentBaseRefSha)
+  ) {
     throw new WorkspacePreparationFailure(
       `Git worktree at "${worktreePath}" failed verification after creation: expected HEAD ${currentBaseRefSha}, found ${worktreeHeadSha ?? "no readable HEAD"}.`,
       {
@@ -3047,6 +3130,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     metadata?: Record<string, unknown> | null;
     config?: {
       provisionCommand?: string | null;
+      remoteRefreshPolicy?: "allowed" | "local_only" | null;
     } | null;
   };
   issue: ExecutionWorkspaceIssueRef | null;
@@ -3076,6 +3160,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRefSha: readRecordedBaseRefSha(input.workspace.metadata),
   };
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
+  const remoteRefreshPolicy = readRemoteRefreshPolicy(input.workspace.config?.remoteRefreshPolicy);
 
   if (strategy !== "git_worktree") {
     if (!await directoryExists(cwd)) {
@@ -3131,9 +3216,16 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       );
     }
     const baseRefreshWarnings = reuseBaseRef
-      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)
+      ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, remoteRefreshPolicy)
       : [];
     const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
+    await assertLocalOnlyWorktreeHead({
+      remoteRefreshPolicy,
+      worktreePath: reuseWorktreePath,
+      expectedHeadSha: currentBaseRefSha,
+      repoRoot,
+      baseRef: reuseBaseRef,
+    });
     const refresh = reuseBaseRef && currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
@@ -3179,11 +3271,35 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
   }
 
+  const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  let restoreRefreshWarnings: string[] = [];
+  let restoreCurrentBaseRefSha: string | null = null;
+  if (remoteRefreshPolicy === "local_only") {
+    restoreCurrentBaseRefSha = restoreBaseRef
+      ? await resolveBaseRefSha(repoRoot, restoreBaseRef)
+      : null;
+    // This gate must precede mkdir, worktree prune, and worktree add. A
+    // declared local-only review object that is not already materialized may
+    // not mutate persisted restore state while failing admission.
+    assertLocalOnlyBaseObject({
+      remoteRefreshPolicy,
+      expectedHeadSha: restoreCurrentBaseRefSha,
+      repoRoot,
+      baseRef: restoreBaseRef,
+      worktreePath,
+    });
+  }
+
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
-  const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
-  const restoreRefreshWarnings = restoreBaseRef ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef) : [];
-  const restoreCurrentBaseRefSha = restoreBaseRef ? await resolveBaseRefSha(repoRoot, restoreBaseRef) : null;
+  if (remoteRefreshPolicy !== "local_only") {
+    restoreRefreshWarnings = restoreBaseRef
+      ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef, remoteRefreshPolicy)
+      : [];
+    restoreCurrentBaseRefSha = restoreBaseRef
+      ? await resolveBaseRefSha(repoRoot, restoreBaseRef)
+      : null;
+  }
 
   let created = false;
   try {
@@ -3239,6 +3355,13 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
     recordedBaseRefSha,
     skipRefresh: true,
+  });
+  await assertLocalOnlyWorktreeHead({
+    remoteRefreshPolicy,
+    worktreePath,
+    expectedHeadSha: restoreCurrentBaseRefSha,
+    repoRoot,
+    baseRef: restoreBaseRef,
   });
 
   await provisionExecutionWorktree({

@@ -3223,12 +3223,13 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     ]);
   });
 
-  it("createChild preserves strategy-only workspace intent without realizing the parent workspace", async () => {
+  it("keeps review provenance server-owned and non-inheritable", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const parentIssueId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const environmentId = randomUUID();
+    const sourceRunId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -3269,6 +3270,11 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
           baseRef: "origin/master",
           branchTemplate: "{{issue.identifier}}-{{slug}}",
         },
+        reviewProvenance: {
+          kind: "implementation_exact_head",
+          parentIssueId,
+          sourceRunId,
+        },
       },
     });
 
@@ -3293,6 +3299,24 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
         branchTemplate: "{{issue.identifier}}-{{slug}}",
       },
     });
+
+    const spoofedSettings = {
+      mode: "isolated_workspace",
+      reviewProvenance: {
+        kind: "implementation_exact_head",
+        parentIssueId,
+        sourceRunId,
+      },
+    } as const;
+    await expect(svc.create(companyId, {
+      title: "Spoof review provenance on create",
+      status: "todo",
+      priority: "medium",
+      executionWorkspaceSettings: spoofedSettings,
+    } as never)).rejects.toThrow(/reviewProvenance is server-owned/);
+    await expect(svc.update(parentIssueId, {
+      executionWorkspaceSettings: spoofedSettings,
+    } as never)).rejects.toThrow(/reviewProvenance is server-owned/);
   });
 
   it("clamps helper-created child requestDepth to the safe maximum", async () => {

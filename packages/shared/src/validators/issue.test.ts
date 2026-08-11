@@ -48,6 +48,26 @@ describe("issue validators", () => {
     }).children[0]).not.toHaveProperty("intakeTarget");
   });
 
+  it("rejects server-owned review provenance on ordinary create and update inputs", () => {
+    const reviewProvenance = {
+      kind: "implementation_exact_head",
+      parentIssueId: "11111111-1111-4111-8111-111111111111",
+      sourceRunId: "22222222-2222-4222-8222-222222222222",
+    } as const;
+    const executionWorkspaceSettings = {
+      mode: "isolated_workspace",
+      reviewProvenance,
+    } as const;
+
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse(executionWorkspaceSettings).success)
+      .toBe(false);
+    expect(createIssueSchema.safeParse({
+      title: "Spoof review provenance",
+      executionWorkspaceSettings,
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({ executionWorkspaceSettings }).success).toBe(false);
+  });
+
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",

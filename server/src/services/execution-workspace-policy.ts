@@ -5,6 +5,7 @@ import type {
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
 } from "@paperclipai/shared";
+import { issueReviewProvenanceSchema } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
 export type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
@@ -38,6 +39,9 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
   return {
     type,
     ...(typeof parsed.baseRef === "string" ? { baseRef: parsed.baseRef } : {}),
+    ...(parsed.remoteRefreshPolicy === "allowed" || parsed.remoteRefreshPolicy === "local_only"
+      ? { remoteRefreshPolicy: parsed.remoteRefreshPolicy }
+      : {}),
     ...(typeof parsed.branchTemplate === "string" ? { branchTemplate: parsed.branchTemplate } : {}),
     ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
     ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
@@ -189,6 +193,10 @@ export function parseIssueExecutionWorkspaceSettings(
   // Default true: explicit issue environmentId must survive parse/update/heartbeat
   // round-trips. Callers may set includeEnvironmentId: false to strip it.
   const includeEnvironmentId = options.includeEnvironmentId !== false;
+  const reviewProvenanceResult = issueReviewProvenanceSchema.safeParse(parsed.reviewProvenance);
+  const parsedReviewProvenance = reviewProvenanceResult.success
+    ? reviewProvenanceResult.data
+    : null;
   return {
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
@@ -200,6 +208,7 @@ export function parseIssueExecutionWorkspaceSettings(
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
+    ...(parsedReviewProvenance ? { reviewProvenance: parsedReviewProvenance } : {}),
   };
 }
 

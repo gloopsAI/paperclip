@@ -753,6 +753,148 @@ describe("realizeExecutionWorkspace", () => {
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(originHead);
   });
 
+  it("uses an already-materialized remote-tracking ref without attempting fetch in local-only mode", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const tracePath = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-review-trace-")),
+      "git-trace.jsonl",
+    );
+    const priorTrace = process.env.GIT_TRACE2_EVENT;
+    process.env.GIT_TRACE2_EVENT = tracePath;
+    try {
+      const workspace = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "origin/master",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            baseRef: "origin/master",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            remoteRefreshPolicy: "local_only",
+          },
+        },
+        issue: {
+          id: "review-1",
+          identifier: "PAP-REVIEW-1",
+          title: "Review exact local head",
+        },
+        agent: {
+          id: "argus-1",
+          name: "Argus",
+          companyId: "company-1",
+        },
+      });
+
+      expect(workspace.baseRefSha).toBe(await readGit(repoRoot, ["rev-parse", "origin/master"]));
+      const trace = await fs.readFile(tracePath, "utf8");
+      expect(trace).not.toMatch(/\"argv\":\[\"git\",\"fetch\"/);
+    } finally {
+      if (priorTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
+      else process.env.GIT_TRACE2_EVENT = priorTrace;
+    }
+  });
+
+  it("rejects a stale reused local-only worktree instead of reviewing the wrong head", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+    const request = () => realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary" as const,
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: exactHead,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: exactHead,
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          remoteRefreshPolicy: "local_only",
+        },
+      },
+      issue: {
+        id: "review-stale-1",
+        identifier: "PAP-REVIEW-STALE-1",
+        title: "Review exact local head",
+      },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+    });
+
+    const first = await request();
+    await fs.writeFile(path.join(first.cwd, "stale-review.txt"), "wrong head\n", "utf8");
+    await runGit(first.cwd, ["add", "stale-review.txt"]);
+    await runGit(first.cwd, ["commit", "-m", "Advance stale review branch"]);
+
+    await expect(request()).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_head_mismatch",
+          expectedHeadSha: exactHead,
+        }),
+      }),
+    });
+  });
+
+  it("rejects local-only reuse when the declared object is missing", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const exactHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+    const common = {
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary" as const,
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: exactHead,
+      },
+      issue: {
+        id: "review-missing-1",
+        identifier: "PAP-REVIEW-MISSING-1",
+        title: "Review exact local head",
+      },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+    };
+    await realizeExecutionWorkspace({
+      ...common,
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: exactHead,
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          remoteRefreshPolicy: "local_only",
+        },
+      },
+    });
+
+    const missingHead = "f".repeat(40);
+    await expect(realizeExecutionWorkspace({
+      ...common,
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: missingHead,
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          remoteRefreshPolicy: "local_only",
+        },
+      },
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_object_missing",
+          baseRef: missingHead,
+        }),
+      }),
+    });
+  });
+
   it("maps a configured local branch base ref to origin/<branch> for fresh worktrees", async () => {
     const { repoRoot } = await createClonedRepoWithRemote();
     const originHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
@@ -2520,6 +2662,63 @@ describe("realizeExecutionWorkspace", () => {
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: initial.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
   }, 15_000);
+
+  it("rejects a missing local-only restore object before mutating persisted worktree state", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-451-local-review-object-missing";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    const branchHeadBefore = await readGit(repoRoot, ["rev-parse", branchName]);
+    await fs.rm(worktreePath, { recursive: true, force: true });
+    const worktreeStateBefore = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    const missingHead = "f".repeat(40);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: missingHead,
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: missingHead,
+        branchName,
+        config: { remoteRefreshPolicy: "local_only" },
+      },
+      issue: {
+        id: "review-missing-restore-1",
+        identifier: "PAP-REVIEW-MISSING-RESTORE-1",
+        title: "Review missing local object",
+      },
+      agent: { id: "argus-1", name: "Argus", companyId: "company-1" },
+      recorder,
+    })).rejects.toMatchObject({
+      resultJson: expect.objectContaining({
+        workspacePreparation: expect.objectContaining({
+          reason: "local_review_object_missing",
+          baseRef: missingHead,
+        }),
+      }),
+    });
+
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"]))
+      .toBe(worktreeStateBefore);
+    expect(await readGit(repoRoot, ["rev-parse", branchName])).toBe(branchHeadBefore);
+    await expect(fs.access(worktreePath)).rejects.toThrow();
+    expect(operations).toEqual([]);
+  });
 
   it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {
     const repoRoot = await createTempRepo();

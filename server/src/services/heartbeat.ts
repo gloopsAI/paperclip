@@ -166,7 +166,10 @@ import {
   TERMINAL_RECONCILIATION_PRESERVE_CONTEXT_KEY,
   terminalIssueLifecycleNeedsUpdate,
 } from "./terminal-issue-reconciliation.js";
-import { ensureImplementationReviewHandoff } from "./implementation-review-handoff.js";
+import {
+  ensureImplementationReviewHandoff,
+  persistImplementationReviewTerminalFailure,
+} from "./implementation-review-handoff.js";
 import { terminalReconciliationService } from "./terminal-reconciliation.js";
 import { decideTerminalAgentTruth } from "./terminal-agent-reconciliation.js";
 import {
@@ -5681,6 +5684,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   );
   const repositoryMutationReceipts = repositoryMutationReceiptService(db);
 
+  async function recordReviewTerminalFailure(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string;
+    errorCode: string;
+    error: string;
+  }) {
+    const result = await persistImplementationReviewTerminalFailure(db, {
+      companyId: input.run.companyId,
+      issueId: input.issueId,
+      runId: input.run.id,
+      errorCode: input.errorCode,
+      error: input.error,
+    });
+    if (result.action === "recorded" || result.action === "duplicate") {
+      logger.warn(
+        {
+          companyId: input.run.companyId,
+          issueId: input.issueId,
+          runId: input.run.id,
+          reviewDisposition: "REVIEW_NOT_RUN",
+          owner: "platform_workspace",
+          action: "materialize_exact_review_objects_and_retry",
+          persisted: result.action,
+          parentBlocked: result.parentBlocked,
+        },
+        "implementation review terminal failure persisted",
+      );
+    }
+    return result;
+  }
+
   async function readTerminalWorkspaceHeadSha(cwd: string | null | undefined) {
     const normalized = readNonEmptyString(cwd);
     if (!normalized) return null;
@@ -5696,6 +5730,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     providerTerminalEvidence: boolean;
     workspaceFinalized: boolean;
     workspaceCwd: string | null;
+    exactBaseSha?: string | null;
     budgetExceeded: string[];
     routePathIds: string[];
     executionWorkspaceMode?: string | null;
@@ -5937,6 +5972,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 implementerAgentId: currentRun.agentId,
                 companyId: currentRun.companyId,
                 issueId: currentIssue.id,
+                sourceRunId: currentRun.id,
               };
             }
           }
@@ -5952,6 +5988,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         implementerAgentId: currentRun.agentId,
         companyId: currentRun.companyId,
         issueId: currentIssue.id,
+        sourceRunId: currentRun.id,
       };
     }).then(async (result) => {
       // MAW lane 2: when implementation is ready for verified_change, hand off
@@ -5963,13 +6000,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         result.issueId &&
         result.implementerAgentId &&
         result.companyId
+        && result.sourceRunId
       ) {
         try {
           await ensureImplementationReviewHandoff(db, {
             companyId: result.companyId,
             parentIssueId: result.issueId,
             implementerAgentId: result.implementerAgentId,
+            sourceRunId: result.sourceRunId,
             exactHeadSha: result.exactHeadSha,
+            exactBaseSha: input.exactBaseSha,
             enqueueWakeup: async (agentId, payload) => {
               const issueId =
                 payload.payload && typeof payload.payload.issueId === "string"
@@ -9235,6 +9275,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "warn",
         message: "Run ended without an issue comment after one retry; demoted succeeded→failed (review_missing_disposition); no further comment wake will be queued",
       });
+      await recordReviewTerminalFailure({
+        run,
+        issueId,
+        errorCode: "review_missing_disposition",
+        error: "Review run ended without a disposition comment after one bounded retry",
+      });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
 
@@ -9301,6 +9347,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "succeeded")));
     }
+    await recordReviewTerminalFailure({
+      run,
+      issueId,
+      errorCode: "review_missing_disposition",
+      error: "Review run ended without a disposition comment and no retry could be admitted",
+    });
     return { outcome: "retry_exhausted" as const, queuedRun: null };
   }
 
@@ -14773,6 +14825,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                     ?? reusableExistingExecutionWorkspace.config?.provisionCommand
                     ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
                     ?? null,
+                  remoteRefreshPolicy:
+                    workspaceStrategyForFingerprint.remoteRefreshPolicy === "local_only"
+                      ? "local_only"
+                      : null,
                 },
               },
               issue: issueRef,
@@ -16621,6 +16677,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             providerTerminalEvidence: Boolean(adapterResult.providerIoTerminalEvidence),
             workspaceFinalized: adapterFinalizeOutcome === "succeeded",
             workspaceCwd: executionWorkspace.cwd,
+            exactBaseSha: executionWorkspace.baseRefSha,
             budgetExceeded: terminalExceeded,
             routePathIds: terminalRoutePathIds,
             executionWorkspaceMode: persistedExecutionWorkspace
@@ -16809,6 +16866,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         } else if (!subscriptionRouteAdvance && outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
+        if (issueId && outcome === "failed") {
+          await recordReviewTerminalFailure({
+            run: livenessRun,
+            issueId,
+            errorCode: livenessRun.errorCode ?? "review_execution_failed",
+            error: livenessRun.error ?? adapterResult.errorMessage ?? "Review execution failed",
+          }).catch((reviewFailureError) => {
+            logger.error(
+              { err: reviewFailureError, runId: livenessRun.id, issueId },
+              "failed to persist terminal implementation-review execution failure",
+            );
+          });
+        }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun, {
           suppressImmediateRecovery: Boolean(subscriptionRouteAdvance),
@@ -16986,6 +17056,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         await refreshContinuationSummaryForRun(livenessRun, agent);
+        if (issueId) {
+          await recordReviewTerminalFailure({
+            run: livenessRun,
+            issueId,
+            errorCode: failureErrorCode,
+            error: message,
+          }).catch((reviewFailureError) => {
+            logger.error(
+              { err: reviewFailureError, runId: livenessRun.id, issueId },
+              "failed to persist terminal implementation-review adapter failure",
+            );
+          });
+        }
         if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
@@ -17119,6 +17202,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const livenessRun = await classifyAndPersistRunLiveness(failedRun).catch(() => failedRun);
             const setupFailureIssueId = readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId);
             if (setupFailureIssueId) {
+              if (workspacePreparationSetupFailure || workspaceValidationSetupFailure) {
+                await recordReviewTerminalFailure({
+                  run: livenessRun,
+                  issueId: setupFailureIssueId,
+                  errorCode: setupFailureErrorCode,
+                  error: message,
+                }).catch((reviewFailureError) => {
+                  logger.error(
+                    { err: reviewFailureError, runId: livenessRun.id, issueId: setupFailureIssueId },
+                    "failed to persist terminal implementation-review failure",
+                  );
+                });
+              }
               await completeSkillTestRunForHeartbeatOutcome({
                 run: livenessRun,
                 issueId: setupFailureIssueId,

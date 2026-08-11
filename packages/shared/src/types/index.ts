@@ -284,6 +284,7 @@ export type {
   ProjectExecutionWorkspacePolicy,
   ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
+  IssueReviewProvenance,
 } from "./workspace-runtime.js";
 export type {
   WorkspaceOperation,

@@ -73,6 +73,13 @@ export interface WorkspaceCommandDefinition {
 export interface ExecutionWorkspaceStrategy {
   type: ExecutionWorkspaceStrategyType;
   baseRef?: string | null;
+  /**
+   * Controls whether workspace preparation may contact a git remote while
+   * resolving the declared base. Exact-head review uses `local_only`: both
+   * objects must already be materialized by the authorized intake/publish
+   * path, and admission must fail with a typed preflight instead of fetching.
+   */
+  remoteRefreshPolicy?: "allowed" | "local_only" | null;
   branchTemplate?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
@@ -160,11 +167,18 @@ export interface ProjectExecutionWorkspacePolicy {
   authorizationPolicy?: TrustAuthorizationPolicy | null;
 }
 
+export interface IssueReviewProvenance {
+  kind: "implementation_exact_head";
+  parentIssueId: string;
+  sourceRunId: string;
+}
+
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
+  reviewProvenance?: IssueReviewProvenance | null;
 }
 
 export interface ExecutionWorkspaceSummary {
