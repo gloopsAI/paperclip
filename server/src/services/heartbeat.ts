@@ -5436,6 +5436,8 @@ export interface HeartbeatServiceOptions {
     beforeRunStatusPersisted?: (input: { runId: string }) => Promise<void>;
     /** Test/coordination seam after the terminal run receipt is durable and before cleanup. */
     afterRunStatusPersisted?: (input: { runId: string }) => Promise<void>;
+    /** Test/coordination seam after event insertion and before its transaction commits. */
+    beforeTerminalEventTransactionCommit?: (input: { runId: string }) => Promise<void>;
   };
 }
 
@@ -8435,7 +8437,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       deferQueuePump: cleanupOptions.deferQueuePump,
     });
 
-    await db.transaction(async (tx) => {
+    const publishTerminalEvent = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`campaign-terminal-event:${terminalRun.id}`}, 0))`,
       );
@@ -8451,17 +8453,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
       if (existingTerminalEvent) return;
       const transactionalDb = tx as unknown as Db;
-      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id, transactionalDb), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: replayReason,
-        payload: {
-          ...canonicalReceipt,
-          terminalizationKind: CAMPAIGN_TERMINAL_EVENT_KIND,
+      const appended = await appendRunEvent(
+        terminalRun,
+        await nextRunEventSeq(terminalRun.id, transactionalDb),
+        {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: replayReason,
+          payload: {
+            ...canonicalReceipt,
+            terminalizationKind: CAMPAIGN_TERMINAL_EVENT_KIND,
+          },
         },
-      }, transactionalDb);
+        transactionalDb,
+        { publishLive: false },
+      );
+      await options.campaignBoundRunTerminalizationHooks?.beforeTerminalEventTransactionCommit?.({
+        runId: terminalRun.id,
+      });
+      return appended.publishLive;
     });
+    publishTerminalEvent?.();
 
     const cleanedAt = new Date().toISOString();
     return db
@@ -9060,6 +9073,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload?: Record<string, unknown>;
     },
     executor: Db = db,
+    options: { publishLive?: boolean } = {},
   ) {
     const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
@@ -9094,40 +9108,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: sanitizedPayload,
     });
 
-    publishLiveEvent({
-      companyId: run.companyId,
-      type: "heartbeat.run.event",
-      payload: {
-        runId: run.id,
-        agentId: run.agentId,
-        issueId,
-        seq,
-        eventType: event.eventType,
-        stream: event.stream ?? null,
-        level: event.level ?? null,
-        color: event.color ?? null,
-        message: sanitizedMessage ?? null,
-        currentToolName: progress?.currentToolName ?? null,
-        lastAssistantSnippet: progress?.lastAssistantSnippet ?? null,
-        lastEventAt: (progress?.lastEventAt ?? eventAt).toISOString(),
-        payload: sanitizedPayload ?? null,
-      },
-    });
-    if (progress && isHeartbeatRunRuntimeStatusActive(run.status)) {
-      const status = setHeartbeatRunRuntimeStatus({
+    const publishPersistedLiveEvent = () => {
+      publishLiveEvent({
         companyId: run.companyId,
-        issueId,
-        agentId: run.agentId,
-        runId: run.id,
-        phase: progress.phase,
-        message: progress.message,
-        updatedAt: eventAt,
-        currentToolName: progress.currentToolName,
-        lastAssistantSnippet: progress.lastAssistantSnippet,
-        lastEventAt: progress.lastEventAt,
+        type: "heartbeat.run.event",
+        payload: {
+          runId: run.id,
+          agentId: run.agentId,
+          issueId,
+          seq,
+          eventType: event.eventType,
+          stream: event.stream ?? null,
+          level: event.level ?? null,
+          color: event.color ?? null,
+          message: sanitizedMessage ?? null,
+          currentToolName: progress?.currentToolName ?? null,
+          lastAssistantSnippet: progress?.lastAssistantSnippet ?? null,
+          lastEventAt: (progress?.lastEventAt ?? eventAt).toISOString(),
+          payload: sanitizedPayload ?? null,
+        },
       });
-      if (status) publishHeartbeatRunRuntimeProgress(status);
-    }
+      if (progress && isHeartbeatRunRuntimeStatusActive(run.status)) {
+        const status = setHeartbeatRunRuntimeStatus({
+          companyId: run.companyId,
+          issueId,
+          agentId: run.agentId,
+          runId: run.id,
+          phase: progress.phase,
+          message: progress.message,
+          updatedAt: eventAt,
+          currentToolName: progress.currentToolName,
+          lastAssistantSnippet: progress.lastAssistantSnippet,
+          lastEventAt: progress.lastEventAt,
+        });
+        if (status) publishHeartbeatRunRuntimeProgress(status);
+      }
+    };
+    if (options.publishLive !== false) publishPersistedLiveEvent();
+    return { publishLive: publishPersistedLiveEvent };
   }
 
   async function nextRunEventSeq(runId: string, executor: Db = db) {

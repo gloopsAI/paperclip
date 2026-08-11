@@ -216,7 +216,7 @@ async function expectPersistedBranchMismatchRejected(input: {
       workspace: {
         id: input.executionWorkspaceId,
         mode: "isolated_workspace",
-        strategyType: "project_primary",
+        strategyType: "git_worktree",
         cwd: input.worktreePath,
         providerRef: input.worktreePath,
         projectId: "project-1",

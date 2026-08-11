@@ -13,6 +13,10 @@ import {
 import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
+  bindExecutionCampaignContext,
+  parseExecutionCampaignPolicy,
+} from "./campaign-deadman.js";
+import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
   isNonDispositionalReviewSuccess,
@@ -168,7 +172,12 @@ function resetIdempotencyKey(issueId: string, resetId: string) {
   return `issue-admission-reset:${issueId}:${resetId}`;
 }
 
-export function guardedAdmissionResetService(db: Db) {
+export function guardedAdmissionResetService(
+  db: Db,
+  options: { runtimeEnv?: Record<string, string | undefined> } = {},
+) {
+  const executionCampaignPolicy = parseExecutionCampaignPolicy(options.runtimeEnv ?? process.env);
+
   async function getWorkspaceRecoveryRequirement(input: {
     issueId: string;
     companyId: string;
@@ -535,7 +544,7 @@ export function guardedAdmissionResetService(db: Db) {
           .returning()
           .then((rows) => rows[0]!);
 
-        const initialContext = {
+        const initialContext = bindExecutionCampaignContext({
           issueId: issue.id,
           taskId: issue.id,
           taskKey: issue.identifier ?? issue.id,
@@ -544,7 +553,7 @@ export function guardedAdmissionResetService(db: Db) {
           source: "issue.execution_admission_reset",
           wakeReason: "issue_execution_admission_reset",
           [EXECUTION_ADMISSION_RESET_CONTEXT_KEY]: input.resetId,
-        };
+        }, executionCampaignPolicy);
         const insertedRun = await tx
           .insert(heartbeatRuns)
           .values({

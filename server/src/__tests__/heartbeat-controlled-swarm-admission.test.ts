@@ -13,6 +13,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   CAMPAIGN_BINDING_CONTEXT_KEY,
   CAMPAIGN_BINDING_SCHEMA_VERSION,
@@ -1420,6 +1421,84 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0])).toEqual({ executionRunId: null, checkoutRunId: null });
     expect(adapterExecute.mock.calls.filter(([input]) => input.agent.id === agentId)).toHaveLength(0);
+  }, 30_000);
+
+  it("publishes a campaign terminal event only after its transaction commits", async () => {
+    adapterExecute.mockClear();
+    const { companyId, agentIds: [agentId] } = await seedCompany(1);
+    const runId = randomUUID();
+    const campaignId = `event-commit-${companyId.slice(0, 8)}`;
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: agentId!,
+      status: "scheduled_retry",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      responsibleUserId: "operator",
+      scheduledRetryAt: new Date("2026-01-01T00:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_infrastructure",
+      contextSnapshot: {
+        [CAMPAIGN_BINDING_CONTEXT_KEY]: {
+          schemaVersion: CAMPAIGN_BINDING_SCHEMA_VERSION,
+          scope: "campaign-bound",
+          campaignId,
+        },
+      },
+    });
+
+    const liveTerminalEvents: unknown[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      if (
+        event.type === "heartbeat.run.event" &&
+        event.payload.runId === runId &&
+        (event.payload.payload as Record<string, unknown> | undefined)?.terminalizationKind ===
+          "campaign_bound_scope_unavailable"
+      ) {
+        liveTerminalEvents.push(event);
+      }
+    });
+    try {
+      const failCommit = heartbeatService(db, {
+        runtimeEnv: {},
+        campaignBoundRunTerminalizationHooks: {
+          beforeTerminalEventTransactionCommit: async () => {
+            throw new Error("inject campaign terminal event commit failure");
+          },
+        },
+      });
+      await expect(
+        failCommit.promoteDueScheduledRetries(new Date("2026-01-02T00:00:00.000Z")),
+      ).rejects.toThrow("inject campaign terminal event commit failure");
+
+      expect(await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.runId, runId),
+          sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = 'campaign_bound_scope_unavailable'`,
+        ))
+        .then((rows) => rows[0]?.count ?? 0)).toBe(0);
+      expect(liveTerminalEvents).toHaveLength(0);
+
+      const retry = heartbeatService(db, { runtimeEnv: {} });
+      await retry.resumeQueuedRuns();
+      await retry.resumeQueuedRuns();
+
+      expect(await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.runId, runId),
+          sql`${heartbeatRunEvents.payload} ->> 'terminalizationKind' = 'campaign_bound_scope_unavailable'`,
+        ))
+        .then((rows) => rows[0]?.count ?? 0)).toBe(1);
+      expect(liveTerminalEvents).toHaveLength(1);
+      expect(adapterExecute).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   }, 30_000);
 
   it("terminalizes a due campaign-bound scheduled retry in the general plane without promotion", async () => {

@@ -2511,10 +2511,14 @@ export function issueRoutes(
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
+  const heartbeatRuntimeEnv = process.env;
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
+    runtimeEnv: heartbeatRuntimeEnv,
   });
-  const guardedAdmissionReset = guardedAdmissionResetService(db);
+  const guardedAdmissionReset = guardedAdmissionResetService(db, {
+    runtimeEnv: heartbeatRuntimeEnv,
+  });
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
