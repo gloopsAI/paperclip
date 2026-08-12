@@ -201,6 +201,36 @@ raise SystemExit(0)
             self.assertIn("unit_state", entry)
             self.assertIn("exit_status", entry)
 
+    def test_a6_explicit_allowlisted_update_appends_one_missing_runtime_key(self) -> None:
+        missing_line = "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=\n"
+        self.runtime.write_text(
+            self.runtime.read_text(encoding="utf-8").replace(missing_line, ""),
+            encoding="utf-8",
+        )
+        self.reconcile()
+        result = self.command(
+            "apply", *self.identity(), "--intent", "initialize new governed runtime key",
+            "--set", "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=",
+            check=True,
+        )
+        self.assertTrue(json.loads(result.stdout)["ok"])
+        lines = self.runtime.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines.count("PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS="), 1)
+
+    def test_a7_duplicate_runtime_key_still_fails_closed(self) -> None:
+        self.runtime.write_text(
+            self.runtime.read_text(encoding="utf-8")
+            + "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=duplicate\n",
+            encoding="utf-8",
+        )
+        before = self.runtime.read_text(encoding="utf-8")
+        result = self.command(
+            "reconcile", *self.identity(), "--reason", "must reject duplicate",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runtime.env contains duplicate key", result.stderr)
+        self.assertEqual(self.runtime.read_text(encoding="utf-8"), before)
+
 
 if __name__ == "__main__":
     unittest.main()

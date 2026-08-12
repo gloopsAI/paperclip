@@ -129,9 +129,12 @@ def update_runtime(updates: dict[str, str]) -> None:
             output.append(f"{key}={updates[key]}")
         else:
             output.append(line)
-    invalid = {key: count for key, count in seen.items() if count != 1}
-    if invalid:
-        raise HostctlError(f"runtime.env keys must exist exactly once: {invalid}")
+    duplicates = {key: count for key, count in seen.items() if count > 1}
+    if duplicates:
+        raise HostctlError(f"runtime.env keys must not be duplicated: {duplicates}")
+    for key, count in seen.items():
+        if count == 0:
+            output.append(f"{key}={updates[key]}")
     file_stat = RUNTIME_ENV.stat()
     atomic_write(
         RUNTIME_ENV,
