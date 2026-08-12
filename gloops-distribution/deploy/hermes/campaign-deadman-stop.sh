@@ -106,8 +106,10 @@ while ((SECONDS < deadline)); do
   sleep 1
 done
 
+# The campaign and general units share the paperclip-gloops name. The campaign
+# unit's own ExecStopPost removes it while the unit is still fenced above; a
+# direct removal here can race a restored general unit on an actuator retry.
 for container in \
-  paperclip-gloops \
   paperclip-gloops-handshake \
   paperclip-hermes-handshake; do
   "${DOCKER}" rm -f "${container}" >/dev/null 2>&1 || true

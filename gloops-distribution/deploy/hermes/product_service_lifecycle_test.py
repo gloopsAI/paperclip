@@ -138,7 +138,12 @@ class ProductServiceLifecycleTest(unittest.TestCase):
                 encoding="utf-8",
             )
             docker = bin_dir / "docker"
-            docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            docker.write_text(
+                "#!/bin/sh\n"
+                f"printf 'docker %s\\n' \"$*\" >> {str(log)!r}\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
             set_commissioning = bin_dir / "set-commissioning"
             set_commissioning.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             verify_deadman = bin_dir / "verify-deadman"
@@ -318,6 +323,16 @@ class ProductServiceLifecycleTest(unittest.TestCase):
             )
             self.assertEqual(settled_retry.returncode, 0, settled_retry.stderr)
             self.assertEqual((state / "last-stop.json").read_bytes(), receipt_bytes)
+            docker_commands = [
+                line
+                for line in log.read_text(encoding="utf-8").splitlines()
+                if line.startswith("docker ")
+            ]
+            self.assertNotIn(
+                "docker rm -f paperclip-gloops",
+                docker_commands,
+                "a campaign stop retry must never delete the general product container",
+            )
 
             # A new campaign creates a new restoration obligation. Permanent
             # start failure must remain nonzero and truthful on every retry.
