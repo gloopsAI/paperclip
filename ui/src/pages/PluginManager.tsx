@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, FlaskConical, FolderOpen, Package, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToastActions } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
+import { ChoosePathButton } from "@/components/PathInstructionsModal";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -92,6 +93,7 @@ export function PluginManager() {
   const { pushToast } = useToastActions();
 
   const [installPackage, setInstallPackage] = useState("");
+  const [isLocalPath, setIsLocalPath] = useState(false);
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
@@ -129,6 +131,7 @@ export function PluginManager() {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
+      setIsLocalPath(false);
       pushToast({ title: "Plugin installed successfully", tone: "success" });
     },
     onError: (err: Error) => {
@@ -197,7 +200,16 @@ export function PluginManager() {
           <h1 className="text-xl font-semibold">Plugin Manager</h1>
         </div>
         
-        <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
+        <Dialog
+          open={installDialogOpen}
+          onOpenChange={(open) => {
+            setInstallDialogOpen(open);
+            if (!open) {
+              setInstallPackage("");
+              setIsLocalPath(false);
+            }
+          }}
+        >
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
               <Plus className="h-4 w-4" />
@@ -208,24 +220,78 @@ export function PluginManager() {
             <DialogHeader>
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
+                Install a plugin from npm or from a prebuilt package on the host filesystem.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
-                <Input
-                  id="packageName"
-                  placeholder="@paperclipai/plugin-example"
-                  value={installPackage}
-                  onChange={(e) => setInstallPackage(e.target.value)}
-                />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    !isLocalPath
+                      ? "border-foreground bg-accent text-foreground"
+                      : "border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  )}
+                  onClick={() => setIsLocalPath(false)}
+                >
+                  <Package className="h-3.5 w-3.5" />
+                  npm package
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
+                    isLocalPath
+                      ? "border-foreground bg-accent text-foreground"
+                      : "border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  )}
+                  onClick={() => setIsLocalPath(true)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  Local path
+                </button>
               </div>
+
+              {isLocalPath ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="pluginLocalPath">Path to prebuilt plugin package</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="pluginLocalPath"
+                      className="flex-1 font-mono text-xs"
+                      placeholder="/opt/paperclip/plugins/my-plugin"
+                      value={installPackage}
+                      onChange={(event) => setInstallPackage(event.target.value)}
+                    />
+                    <ChoosePathButton />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    The path is resolved by the Paperclip server and must contain a built plugin manifest.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  <Label htmlFor="packageName">npm Package Name</Label>
+                  <Input
+                    id="packageName"
+                    placeholder="@paperclipai/plugin-example"
+                    value={installPackage}
+                    onChange={(event) => setInstallPackage(event.target.value)}
+                  />
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
               <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
+                onClick={() =>
+                  installMutation.mutate({
+                    packageName: installPackage,
+                    version: undefined,
+                    isLocalPath,
+                  })
+                }
                 disabled={!installPackage || installMutation.isPending}
               >
                 {installMutation.isPending ? "Installing..." : "Install"}
