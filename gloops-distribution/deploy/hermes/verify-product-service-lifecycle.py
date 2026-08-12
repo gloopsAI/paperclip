@@ -206,6 +206,16 @@ def validate(repo_root: pathlib.Path) -> list[str]:
     runtime = (hermes / "runtime.env").read_text(encoding="utf-8").splitlines()
     if "PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general" not in runtime:
         failures.append("general runtime has no explicit general campaign scope")
+    allowed_hostnames = next(
+        (
+            line.split("=", 1)[1].split(",")
+            for line in runtime
+            if line.startswith("PAPERCLIP_ALLOWED_HOSTNAMES=")
+        ),
+        [],
+    )
+    if "paperclip.gloops.ai" not in allowed_hostnames:
+        failures.append("general runtime does not allow the Buzz Paperclip hostname")
     for name in CAMPAIGN_ENV_NAMES:
         if any(line.startswith(f"{name}=") for line in runtime):
             failures.append(f"general runtime still inherits {name}")
