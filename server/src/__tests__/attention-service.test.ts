@@ -572,7 +572,7 @@ describeEmbeddedPostgres("attention service", () => {
     )).toBe(false);
 
     // Company-wide list (no userId) retains telemetry sources for non-personal surfaces.
-    expect(companyFeed.totalCount).toBe(12);
+    expect(companyFeed.totalCount).toBe(11);
     expect(companyFeed.countsBySourceKind).toMatchObject({
       approval: 2,
       issue_thread_interaction: 1,
@@ -581,7 +581,7 @@ describeEmbeddedPostgres("attention service", () => {
       productivity_review: 1,
       blocker_attention: 1,
       review: 1,
-      failed_run: 1,
+      failed_run: 0,
       budget_alert: 2,
       agent_error_alert: 1,
     });
@@ -617,14 +617,16 @@ describeEmbeddedPostgres("attention service", () => {
       kind: "blocker",
       blockingIssue: { identifier: "ATN-5", title: "Stalled review blocker" },
     });
-    expect(companyFeed.items.find((item) => item.sourceKind === "failed_run")?.detail).toMatchObject({
-      kind: "failed_run",
-      agentName: "Worker",
-      failureReasonExcerpt: "adapter failed",
-    });
+    expect(companyFeed.items.some((item) => item.sourceKind === "failed_run")).toBe(false);
+    expect(companyFeed.items.find((item) =>
+      item.sourceKind === "budget_alert" && item.detail?.kind === "budget" && item.detail.observedPercent === 85
+    )).toBeTruthy();
     expect(companyFeed.items.find((item) =>
       item.sourceKind === "budget_alert" && item.detail?.kind === "budget" && item.detail.observedPercent === 100
     )).toBeTruthy();
+    expect(companyFeed.items.some((item) =>
+      item.sourceKind === "budget_alert" && item.detail?.kind === "budget" && item.detail.observedPercent === 84
+    )).toBe(false);
     expect(companyFeed.items.find((item) => item.sourceKind === "agent_error_alert")?.detail).toMatchObject({
       kind: "agent_error",
       agentName: "Broken Agent",

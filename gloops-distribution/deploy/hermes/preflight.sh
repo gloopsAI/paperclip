@@ -123,11 +123,7 @@ if [[ "${MODE}" == '--campaign-bound' ]]; then
     exit 1
   fi
 fi
-[[ -v PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS \
-  && -z "${PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS}" ]] || {
-  echo "backlog-bankruptcy readmission must remain explicitly empty" >&2
-  exit 1
-}
+"/usr/local/lib/paperclip-gloops/verify-backlog-readmit-window.py"
 if [[ "${MODE}" == '--campaign-bound' ]]; then
   "/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py"
 fi
