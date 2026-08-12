@@ -116,7 +116,6 @@ export interface JsonSchemaFormProps {
 /** Resolve the primary type string from a schema node. */
 export function resolveType(schema: JsonSchemaNode): string {
   if (schema.enum) return "enum";
-  if (schema.const !== undefined) return "const";
   if (schema.format === "secret-ref") return "secret-ref";
   if (Array.isArray(schema.type)) {
     // Use the first non-null type
@@ -145,6 +144,7 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
  */
 export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
   if (schema.default !== undefined) return schema.default;
+  if (schema.const !== undefined) return schema.const;
 
   const type = resolveType(schema);
   switch (type) {
@@ -1057,7 +1057,7 @@ const FormField = React.memo(({
   path,
 }: FormFieldProps) => {
   const type = resolveType(propSchema);
-  const isReadOnly = disabled || propSchema.readOnly === true;
+  const isReadOnly = disabled || propSchema.readOnly === true || propSchema.const !== undefined;
 
   switch (type) {
     case "boolean":
