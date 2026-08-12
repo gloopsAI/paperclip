@@ -395,6 +395,45 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     expect("size" in defaults).toBe(false);
   });
 
+  it("preserves const values with their declared JSON Schema types", async () => {
+    const schema = {
+      type: "object" as const,
+      properties: {
+        noActionLimit: { type: "integer" as const, const: 3 },
+        authorityCeiling: { type: "string" as const, const: "proposal" },
+      },
+    };
+    const defaults = getDefaultValues(schema);
+
+    expect(defaults).toEqual({
+      noActionLimit: 3,
+      authorityCeiling: "proposal",
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={defaults}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const numericConst = container.querySelector<HTMLInputElement>('input[type="number"]');
+    expect(numericConst?.value).toBe("3");
+    expect(numericConst?.disabled).toBe(true);
+
+    const stringConst = container.querySelector<HTMLInputElement>('input[type="text"]');
+    expect(stringConst?.value).toBe("proposal");
+    expect(stringConst?.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("renders datalist suggestions for numeric fields when examples are present", async () => {
     const root = createRoot(container);
 
