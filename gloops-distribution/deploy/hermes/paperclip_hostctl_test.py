@@ -24,6 +24,7 @@ class PaperclipHostctlTest(unittest.TestCase):
                     "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
                     "HEARTBEAT_SCHEDULER_ENABLED=false",
                     "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false",
+                    "PAPERCLIP_ALLOWED_HOSTNAMES=ubuntu-hermes-nyc1.taild219d6.ts.net,127.0.0.1,localhost",
                     "PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64,
                     "",
                 )
@@ -153,7 +154,23 @@ raise SystemExit(0)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("runtime.env hash mismatch refuses mutation", refused.stderr)
 
-    def test_a4_commission_restore_journal_reconstructs_window(self) -> None:
+    def test_a4_exact_buzz_hostname_is_an_allowlisted_receipted_mutation(self) -> None:
+        self.reconcile()
+        allowed = self.command(
+            "apply", *self.identity(), "--intent", "allow exact Buzz endpoint",
+            "--set",
+            "PAPERCLIP_ALLOWED_HOSTNAMES="
+            "ubuntu-hermes-nyc1.taild219d6.ts.net,paperclip.gloops.ai,127.0.0.1,localhost",
+            check=False,
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stderr or allowed.stdout)
+        self.assertIn("paperclip.gloops.ai", self.runtime.read_text(encoding="utf-8"))
+        events = self.journal()
+        self.assertEqual(events[-2]["event"], "pre")
+        self.assertEqual(events[-1]["event"], "post")
+        self.assertEqual(events[-1]["exit_status"], 0)
+
+    def test_a5_commission_restore_journal_reconstructs_window(self) -> None:
         self.reconcile()
         commissioned = self.command(
             "apply", *self.identity(), "--intent", "commission one uuid",
