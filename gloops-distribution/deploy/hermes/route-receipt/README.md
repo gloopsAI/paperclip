@@ -26,7 +26,7 @@ whole-file SHA-256 equals `upstream.archiveSha256`:
 python3 apply-hermes-route-receipt.py \
   --root /path/to/hermes-agent \
   --mode source \
-  --source-archive /path/to/9de9c25f620ff7f1ce0fd5457d596052d5159596.tar.gz
+  --source-archive /path/to/hermes-agent-3c27eb6.tar.gz
 ```
 
 Apply only runtime files to the pinned derivative image source tree:
@@ -35,7 +35,7 @@ Apply only runtime files to the pinned derivative image source tree:
 python3 apply-hermes-route-receipt.py \
   --root /opt/hermes \
   --mode runtime \
-  --source-archive /build-inputs/9de9c25f620ff7f1ce0fd5457d596052d5159596.tar.gz
+  --source-archive /build-inputs/hermes-agent-3c27eb6.tar.gz
 ```
 
 The applicator refuses source drift, patch/lock inventory disagreement,
@@ -82,6 +82,14 @@ callbacks, dumps, or this evidence surface. Hermes does not place
 `rawPayloadDisposition` inside its semantic projection: Paperclip records
 `rawPayloadDisposition=not_retained` only after its independent response
 hashers and parsers have finalized.
+
+Cancellation is fail-closed at the execution boundary. A hard interrupt invokes
+the exact worker thread's registered foreground-process killer synchronously,
+and `/v1/runs` remains `stopping` with run ownership retained until both tracked
+tool workers and the disconnected-process reaper have drained. It cannot publish
+`cancelled` while run-owned execution is still live. The network-free
+`rehearse-hermes-cancel-containment.py` harness proves both conditions against
+the built derivative image.
 
 The derivative-image build downloads the exact locked upstream archive by
 commit and checksum, then applies the runtime subset only when every touched

@@ -62,6 +62,10 @@ const buildHermesExecutionImagePath = new URL(
   "../gloops-distribution/deploy/hermes/build-hermes-execution-image.sh",
   import.meta.url,
 );
+const rehearseHermesCancelContainmentPath = new URL(
+  "../gloops-distribution/deploy/hermes/rehearse-hermes-cancel-containment.py",
+  import.meta.url,
+);
 const verifyHermesCommandSecurityImagePath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-command-security-image.sh",
   import.meta.url,
@@ -368,6 +372,10 @@ const hermesExecutionDockerfile = readFileSync(hermesExecutionDockerfilePath, "u
 const patchHermesCommandSecurity = readFileSync(patchHermesCommandSecurityPath, "utf8");
 const patchHermesStartupUpdateCheck = readFileSync(patchHermesStartupUpdateCheckPath, "utf8");
 const buildHermesExecutionImage = readFileSync(buildHermesExecutionImagePath, "utf8");
+const rehearseHermesCancelContainment = readFileSync(
+  rehearseHermesCancelContainmentPath,
+  "utf8",
+);
 const verifyHermesCommandSecurityImage = readFileSync(verifyHermesCommandSecurityImagePath, "utf8");
 const loadHermesExecutionImage = readFileSync(loadHermesExecutionImagePath, "utf8");
 const preflight = readFileSync(preflightPath, "utf8");
@@ -623,10 +631,13 @@ const expectedHermesRouteReceiptFiles = [
   "agent/usage_pricing.py",
   "gateway/platforms/api_server.py",
   "gateway/run_evidence.py",
+  "tools/environments/base.py",
+  "tools/interrupt.py",
   "tests/agent/test_usage_pricing.py",
   "tests/gateway/test_api_server_runs.py",
   "tests/gateway/test_run_evidence.py",
   "tests/run_agent/test_run_evidence_capture.py",
+  "tests/tools/test_interrupt_process_containment.py",
 ];
 if (hermesRouteReceiptLock.schemaVersion !== 1) {
   fail("Hermes route-receipt source lock schemaVersion must be 1");
@@ -636,7 +647,7 @@ if (
   JSON.stringify({
     repository: "https://github.com/NousResearch/hermes-agent.git",
     commit: "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
-    tree: "52abdd27375d83d290cab00c1dc98210039b77f4",
+    tree: "b217767ccb994605dad522e693fa1b4cdbc2f352",
     archiveSha256:
       "a68e96f385768ec6c466122bf21fcb697680a5f349c9a673badfbe27752b6928",
   })
@@ -704,6 +715,7 @@ for (const required of [
   "Ollama Cloud subscription route",
   "one crash-recoverable transaction",
   "rawPayloadDisposition=not_retained",
+  "exact worker thread's registered foreground-process killer",
 ]) {
   if (!hermesRouteReceiptReadme.includes(required)) {
     fail(`Hermes route-receipt README lacks contract: ${required}`);
@@ -1198,7 +1210,10 @@ for (const [surface, content, required] of [
   ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "COPY hermes-agent-3c27eb6.tar.gz /tmp/hermes-source.tar.gz"],
   ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--mode source"],
   ["Hermes derivative Dockerfile", hermesExecutionDockerfile, "--source-archive /tmp/hermes-source.tar.gz"],
-  ["Hermes derivative builder", buildHermesExecutionImage, "hermes-agent-gloops:v020-route-receipt-v1"],
+  ["Hermes derivative builder", buildHermesExecutionImage, "hermes-agent-gloops:v020-cancel-containment-v1"],
+  ["Hermes cancellation harness", rehearseHermesCancelContainment, "register_interrupt_killer"],
+  ["Hermes cancellation harness", rehearseHermesCancelContainment, 'status == "stopping"'],
+  ["Hermes cancellation harness", rehearseHermesCancelContainment, "run ownership cleared before worker exit"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--network none"],
   ["Hermes derivative builder", buildHermesExecutionImage, "--provenance=false"],
   ["Hermes command-security verifier", verifyHermesCommandSecurityImage, "range(security._CRASH_LIMIT)"],
@@ -1213,6 +1228,7 @@ for (const [surface, content, required] of [
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
   ["dark installer", installDark, '"${SCRIPT_DIR}/route-receipt/hermes-source-lock.json" "${LIB_DIR}/route-receipt/hermes-source-lock.json"'],
+  ["dark installer", installDark, '"${SCRIPT_DIR}/rehearse-hermes-cancel-containment.py" "${LIB_DIR}/rehearse-hermes-cancel-containment.py"'],
   ["cold rollback backup", backupDark, "hermes-execution-cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
   ["cold rollback backup transaction guard", backupDark, "refuse_unresolved_commissioning"],

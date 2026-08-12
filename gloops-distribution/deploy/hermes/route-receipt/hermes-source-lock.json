@@ -4,7 +4,7 @@
   "upstream": {
     "repository": "https://github.com/NousResearch/hermes-agent.git",
     "commit": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
-    "tree": "52abdd27375d83d290cab00c1dc98210039b77f4",
+    "tree": "b217767ccb994605dad522e693fa1b4cdbc2f352",
     "archiveSha256": "a68e96f385768ec6c466122bf21fcb697680a5f349c9a673badfbe27752b6928"
   },
   "runtimeBaseImage": {
@@ -17,10 +17,10 @@
   },
   "overlay": {
     "patch": "hermes-agent-3c27eb6-route-receipt.patch",
-    "patchSha256": "f1488e097381f793681b3de7c9e2ee5be17274331c560fbb3a337e58cad106d5",
+    "patchSha256": "df20c9862447a82f30bbeae51b55fc57460b8fc1263820d98598d838fee02c91",
     "owner": "GLoops Platform",
     "distributionRepositoryVisibility": "public",
-    "retirementCondition": "Remove only after the selected upstream Hermes release provides an equivalent fail-closed /v1/runs terminal route receipt with exact received-request byte evidence, actual executed provider/model/fallback facts, explicit usage presence, domain-separated semantic digest equality across SSE and final status, and the GLoops offline negative matrix passes against that upstream implementation."
+    "retirementCondition": "Remove only after the selected upstream Hermes release provides an equivalent fail-closed /v1/runs terminal route receipt with exact received-request byte evidence, actual executed provider/model/fallback facts, explicit usage presence, domain-separated semantic digest equality across SSE and final status, synchronous exact-worker process cancellation, terminal-state publication only after execution drains, and the GLoops offline negative matrix passes against that upstream implementation."
   },
   "files": {
     "agent/conversation_loop.py": {
@@ -33,11 +33,19 @@
     },
     "gateway/platforms/api_server.py": {
       "preimageSha256": "4c12f84662711cc14b6d52ba8d89156d1ad8a1ed22af100104a67d1520333ff6",
-      "postimageSha256": "abfd67d68f4f69667408dd805d601a7c0cc1dc89713601fb6ec9550bb621ed36"
+      "postimageSha256": "a655e49165b43629036dbb152b6a5981820417d47cf3a34fa1e81c08e3b6abd5"
     },
     "gateway/run_evidence.py": {
       "preimage": "absent",
       "postimageSha256": "4f6a7b6f7518e6948f5f5248340f5a6880e4334de0e1066b7f9e81897cda5a21"
+    },
+    "tools/environments/base.py": {
+      "preimageSha256": "1ef7ef9fc134d563492a634d6cc40d2bb44ee07e401136912d64f74daddbf51d",
+      "postimageSha256": "17b71dab3ff22a8d1df04c8d015c489c8a2be1caa1075708902d95a83874aea1"
+    },
+    "tools/interrupt.py": {
+      "preimageSha256": "32baefbf01cf4e33ecf7d3659c79dbb57f57da9f1434b79179a78657d0817db8",
+      "postimageSha256": "ed5c436bcb1cd59c6f4b3b570f4990012f4d171640293f43eda79978d8051254"
     },
     "tests/agent/test_usage_pricing.py": {
       "preimageSha256": "a17e75a5d5c47003ae7746fd0a4bfe390129c7d1997c0d619f00c33979fe4e02",
@@ -45,7 +53,7 @@
     },
     "tests/gateway/test_api_server_runs.py": {
       "preimageSha256": "2640c35f2f5a1019ff5e078f82dc838e984b4b48a4062a35f339c712f470f10c",
-      "postimageSha256": "5d3cc410cc48cbc1f68fdd0985ba8b9f142ac538a41c1d8e15ce794bfaf3f280"
+      "postimageSha256": "1b6d8a64e03d2a0877760557f2f104ffae94c882e6c1719b7c6e8f22c6daaeae"
     },
     "tests/gateway/test_run_evidence.py": {
       "preimage": "absent",
@@ -54,6 +62,10 @@
     "tests/run_agent/test_run_evidence_capture.py": {
       "preimage": "absent",
       "postimageSha256": "a843df430961c4be23b41ff9a280c1689a2059c28ba70bc65ef293c87a2ae0a3"
+    },
+    "tests/tools/test_interrupt_process_containment.py": {
+      "preimage": "absent",
+      "postimageSha256": "62a8d0328413e645fb017ed61aa76ed3ffda5018353db7cf530227ddc42eb4c3"
     }
   }
 }
