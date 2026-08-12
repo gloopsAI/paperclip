@@ -178,6 +178,7 @@ python3 -m unittest \
   gloops-distribution/deploy/hermes/verify_predecessor_campaign_epoch_test.py \
   gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
   gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
+  gloops-distribution/deploy/hermes/verify_backlog_readmit_window_test.py \
   gloops-distribution/deploy/hermes/paperclip_hostctl_test.py
 gloops-distribution/deploy/hermes/rollback_dark_query_failure_test.sh
 
@@ -223,6 +224,8 @@ evidence_sha="$(
     gloops-distribution/deploy/hermes/controlled_swarm_commissioner_test.py \
     gloops-distribution/deploy/hermes/set-controlled-swarm-commissioning.py \
     gloops-distribution/deploy/hermes/set_controlled_swarm_commissioning_test.py \
+    gloops-distribution/deploy/hermes/verify-backlog-readmit-window.py \
+    gloops-distribution/deploy/hermes/verify_backlog_readmit_window_test.py \
     gloops-distribution/deploy/hermes/paperclip-hostctl.py \
     gloops-distribution/deploy/hermes/paperclip_hostctl_test.py \
     gloops-distribution/deploy/hermes/HOST_WRITER_LOCK.md \

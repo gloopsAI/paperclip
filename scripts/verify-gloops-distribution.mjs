@@ -962,6 +962,9 @@ if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5
 if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=$/m.test(runtimeEnv)) {
   fail("release distribution must not readmit any issue without a separately reviewed resource budget");
 }
+if (!/^PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=$/m.test(runtimeEnv)) {
+  fail("release distribution must not readmit any controlled-swarm work item by default");
+}
 if (!/^HEARTBEAT_SCHEDULER_ENABLED=false$/m.test(runtimeEnv) ||
     !preflight.includes("[HEARTBEAT_SCHEDULER_ENABLED]='false'")) {
   fail("inert activation must keep the global heartbeat scheduler disabled in both runtime and preflight");
@@ -969,9 +972,11 @@ if (!/^HEARTBEAT_SCHEDULER_ENABLED=false$/m.test(runtimeEnv) ||
 if (!preflight.includes("[PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS]='89ed0964-d918-4fcc-b830-5be49d2d4089'")) {
   fail("activation preflight must bind the exact frozen GLoops company");
 }
-if (!preflight.includes("-v PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS") ||
-    !preflight.includes("backlog-bankruptcy readmission must remain explicitly empty")) {
-  fail("activation preflight must fail closed unless the readmit list is explicitly empty");
+if (!preflight.includes('"/usr/local/lib/paperclip-gloops/verify-backlog-readmit-window.py"')) {
+  fail("activation preflight must run the single-UUID backlog readmit verifier");
+}
+if (!installDark.includes('verify-backlog-readmit-window.py')) {
+  fail("dark installer must install the single-UUID backlog readmit verifier");
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");

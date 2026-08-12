@@ -239,10 +239,16 @@ governed configuration change requires a Paperclip restart and a fresh live
 receipt.
 
 This release freezes the GLoops company
-`89ed0964-d918-4fcc-b830-5be49d2d4089` and leaves the readmit list empty. No
-existing issue, including GLO-2227, is admitted by the release pin itself. The
-live preflight also keeps `HEARTBEAT_SCHEDULER_ENABLED=false`, matching the
-inert runtime envelope instead of enabling background claim discovery.
+`89ed0964-d918-4fcc-b830-5be49d2d4089` and leaves both readmit lists empty by
+default. No existing issue, including GLO-2227, is admitted by the release pin
+itself. A governed host-writer window may name exactly one canonical issue UUID
+only while `PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false` and both backlog and
+controlled-swarm readmit lists match exactly. This does not revive campaign or
+swarm authority. Mismatched, multiple, malformed, or commissioned values fail
+preflight before the container starts. The issue must also carry an explicit
+normalized resource budget before claim. The live preflight keeps
+`HEARTBEAT_SCHEDULER_ENABLED=false`, matching the inert runtime envelope instead
+of enabling background claim discovery.
 
 `observe-controlled-swarm.py` is read-only. `stop-controlled-swarm.sh` leaves
 the campaign runtime marker for the deadman actuator to atomically convert into

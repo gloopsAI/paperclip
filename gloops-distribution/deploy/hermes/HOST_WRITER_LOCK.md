@@ -31,8 +31,8 @@ sudo /usr/local/lib/paperclip-gloops/paperclip-hostctl.py apply \
   --agent-slug codex-lead \
   --session-id SESSION_ID \
   --mission-id MISSION_ID \
-  --intent 'commission one allowlisted reliability issue' \
-  --set PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true \
+  --intent 'open one allowlisted general-scope reliability issue' \
+  --set PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false \
   --set PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=ISSUE_UUID \
   --set PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=ISSUE_UUID \
   --systemctl reset-failed:paperclip-gloops.service \
@@ -42,7 +42,8 @@ sudo /usr/local/lib/paperclip-gloops/paperclip-hostctl.py apply \
 The issue must first pass the authenticated packet-readiness check with
 `ready=true`, explicit Scope and Acceptance, and the intended resource-budget
 ceilings. A failed packet check is provider-free and never justifies widening
-admission.
+admission. This window does not commission the controlled swarm or enable the
+global scheduler; it only admits the matching issue UUID to a bound wake.
 
 ## Restore the freeze
 
