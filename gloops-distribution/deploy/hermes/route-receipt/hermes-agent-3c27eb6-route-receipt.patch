@@ -483,7 +483,69 @@
  def _coerce_request_bool(value: Any, default: bool = False) -> bool:
      """Normalize boolean-like API payload values.
  
-@@ -6266,9 +6326,20 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -646,7 +706,7 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
+ 
+ def _reap_disconnected_agent_processes(
+     agent: Any, *, source: str = "api_server_sse_disconnect"
+-) -> None:
++) -> Optional[threading.Thread]:
+     """Reap background processes an abandoned API-server turn created.
+ 
+     Mirrors the gateway-turn cleanup in ``gateway/run.py`` (#76115) for this
+@@ -664,10 +724,14 @@ def _reap_disconnected_agent_processes(
+     has since claimed the task_id; that newer run's own baseline covers its
+     eventual cleanup.
+     """
++    existing = getattr(agent, "_api_run_reaper_thread", None)
++    if isinstance(existing, threading.Thread) and existing.is_alive():
++        return existing
++
+     process_task_id = getattr(agent, "_gateway_turn_process_task_id", "")
+     process_baseline = getattr(agent, "_gateway_turn_process_baseline", None)
+     if not process_task_id or process_baseline is None:
+-        return
++        return None
+     epoch = getattr(agent, "_gateway_turn_process_epoch", None)
+     is_still_current: Optional[Any] = None
+     if epoch is not None:
+@@ -686,13 +750,34 @@ def _reap_disconnected_agent_processes(
+ 
+     from gateway.run import _reap_gateway_turn_processes
+ 
+-    threading.Thread(
++    reaper = threading.Thread(
+         target=_reap_gateway_turn_processes,
+         args=(process_task_id, process_baseline),
+         kwargs={"source": source, "is_still_current": is_still_current},
+         name=f"api-turn-reaper-{process_task_id[:12]}",
+         daemon=True,
+-    ).start()
++    )
++    agent._api_run_reaper_thread = reaper
++    reaper.start()
++    return reaper
++
++
++async def _wait_for_agent_execution_drain(agent: Any) -> None:
++    """Do not publish cancellation while exact run-owned work is still live."""
++
++    while True:
++        tracker = getattr(agent, "_tool_worker_threads", None)
++        tracker_lock = getattr(agent, "_tool_worker_threads_lock", None)
++        if isinstance(tracker, set) and tracker_lock is not None:
++            with tracker_lock:
++                active_workers = bool(tracker)
++        else:
++            active_workers = False
++        reaper = getattr(agent, "_api_run_reaper_thread", None)
++        reaper_active = isinstance(reaper, threading.Thread) and reaper.is_alive()
++        if not active_workers and not reaper_active:
++            return
++        await asyncio.sleep(0.05)
+ 
+ 
+ # Per-task-id run epochs for the reap gate above. task_id is a conversation
+@@ -6266,9 +6351,20 @@ class APIServerAdapter(BasePlatformAdapter):
          if limited is not None:
              return limited
  
@@ -506,7 +568,7 @@
              return web.json_response(_openai_error("Invalid JSON"), status=400)
  
          raw_input = body.get("input")
-@@ -6340,7 +6411,12 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6340,7 +6436,12 @@ class APIServerAdapter(BasePlatformAdapter):
              return web.json_response(_openai_error(selection_error), status=400)
  
          run_id = f"run_{uuid.uuid4().hex}"
@@ -520,7 +582,7 @@
          # Approval queues gate host-side tool execution and must be isolated
          # per API run.  Client-provided session IDs and memory session keys are
          # conversation/memory scopes, not authorization namespaces: multiple
-@@ -6417,6 +6493,7 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6417,6 +6518,7 @@ class APIServerAdapter(BasePlatformAdapter):
                          model_options=agent_overrides.get("model_options"),
                          route=route,
                      )
@@ -528,7 +590,15 @@
                  self._active_run_agents[run_id] = agent
  
                  def _approval_notify(approval_data: Dict[str, Any]) -> None:
-@@ -6534,45 +6611,76 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6519,6 +6621,7 @@ class APIServerAdapter(BasePlatformAdapter):
+ 
+                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                 if run_id in self._stopping_run_ids:
++                    await _wait_for_agent_execution_drain(agent)
+                     _put_event_if_active({
+                         "event": "run.cancelled",
+                         "run_id": run_id,
+@@ -6534,45 +6637,76 @@ class APIServerAdapter(BasePlatformAdapter):
                  # block below never fires — issue #15561).
                  elif isinstance(result, dict) and result.get("failed"):
                      error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
@@ -619,7 +689,7 @@
                      })
                  except Exception:
                      pass
-@@ -6604,11 +6712,13 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6604,11 +6738,13 @@ class APIServerAdapter(BasePlatformAdapter):
                      pass
              except Exception as exc:
                  logger.exception("[api_server] run %s failed", run_id)
@@ -633,7 +703,7 @@
                  )
                  try:
                      _put_event_if_active({
-@@ -6616,6 +6726,7 @@ class APIServerAdapter(BasePlatformAdapter):
+@@ -6616,6 +6752,7 @@ class APIServerAdapter(BasePlatformAdapter):
                          "run_id": run_id,
                          "timestamp": time.time(),
                          "error": _redact_api_error_text(exc),
@@ -641,6 +711,770 @@
                      })
                  except Exception:
                      pass
+--- tools/environments/base.py
++++ tools/environments/base.py
+@@ -24,7 +24,7 @@ from typing import IO, Callable, Iterable, Protocol
+ 
+ from hermes_constants import get_hermes_home
+ from hermes_cli._subprocess_compat import windows_hide_flags
+-from tools.interrupt import is_interrupted
++from tools.interrupt import is_interrupted, register_interrupt_killer
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -1101,71 +1101,72 @@ class BaseEnvironment(ABC):
+ 
+         try:
+             _poll_sleep = 0.005
+-            while proc.poll() is None:
+-                _iter_count += 1
+-                if is_interrupted():
+-                    if _DEBUG_INTERRUPT:
+-                        logger.info(
+-                            "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
+-                            "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
+-                            _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
++            with register_interrupt_killer(lambda: self._kill_process(proc)):
++                while proc.poll() is None:
++                    _iter_count += 1
++                    if is_interrupted():
++                        if _DEBUG_INTERRUPT:
++                            logger.info(
++                                "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
++                                "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
++                                _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
++                            )
++                        self._kill_process(proc)
++                        drain_thread.join(timeout=2)
++                        return self._finalize_wait_result(
++                            output,
++                            output.render(suffix="\n[Command interrupted]"),
++                            130,
++                        )
++                    if time.monotonic() > deadline:
++                        if _DEBUG_INTERRUPT:
++                            logger.info(
++                                "[interrupt-debug] _wait_for_process TIMEOUT "
++                                "tid=%s pid=%s iter=%d timeout=%ss",
++                                _tid, _pid, _iter_count, timeout,
++                            )
++                        self._kill_process(proc)
++                        drain_thread.join(timeout=2)
++                        timeout_msg = f"\n[Command timed out after {timeout}s]"
++                        return self._finalize_wait_result(
++                            output,
++                            output.render(suffix=timeout_msg).lstrip()
++                            if output.total_chars == 0
++                            else output.render(suffix=timeout_msg),
++                            124,
+                         )
+-                    self._kill_process(proc)
+-                    drain_thread.join(timeout=2)
+-                    return self._finalize_wait_result(
+-                        output,
+-                        output.render(suffix="\n[Command interrupted]"),
+-                        130,
+-                    )
+-                if time.monotonic() > deadline:
+-                    if _DEBUG_INTERRUPT:
++                    # Periodic activity touch so the gateway knows we're alive
++                    touch_activity_if_due(_activity_state, "terminal command running")
++
++                    # Heartbeat every ~30s: proves the loop is alive and reports
++                    # the activity-callback state (thread-local, can get clobbered
++                    # by nested tool calls or executor thread reuse).
++                    if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
++                        _cb_now_none = get_activity_callback() is None
+                         logger.info(
+-                            "[interrupt-debug] _wait_for_process TIMEOUT "
+-                            "tid=%s pid=%s iter=%d timeout=%ss",
+-                            _tid, _pid, _iter_count, timeout,
++                            "[interrupt-debug] _wait_for_process HEARTBEAT "
++                            "tid=%s pid=%s iter=%d elapsed=%.0fs "
++                            "interrupt=%s activity_cb=%s%s",
++                            _tid, _pid, _iter_count,
++                            time.monotonic() - _activity_state["start"],
++                            is_interrupted(),
++                            "set" if not _cb_now_none else "MISSING",
++                            " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
+                         )
+-                    self._kill_process(proc)
+-                    drain_thread.join(timeout=2)
+-                    timeout_msg = f"\n[Command timed out after {timeout}s]"
+-                    return self._finalize_wait_result(
+-                        output,
+-                        output.render(suffix=timeout_msg).lstrip()
+-                        if output.total_chars == 0
+-                        else output.render(suffix=timeout_msg),
+-                        124,
+-                    )
+-                # Periodic activity touch so the gateway knows we're alive
+-                touch_activity_if_due(_activity_state, "terminal command running")
+-
+-                # Heartbeat every ~30s: proves the loop is alive and reports
+-                # the activity-callback state (thread-local, can get clobbered
+-                # by nested tool calls or executor thread reuse).
+-                if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
+-                    _cb_now_none = get_activity_callback() is None
+-                    logger.info(
+-                        "[interrupt-debug] _wait_for_process HEARTBEAT "
+-                        "tid=%s pid=%s iter=%d elapsed=%.0fs "
+-                        "interrupt=%s activity_cb=%s%s",
+-                        _tid, _pid, _iter_count,
+-                        time.monotonic() - _activity_state["start"],
+-                        is_interrupted(),
+-                        "set" if not _cb_now_none else "MISSING",
+-                        " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
+-                    )
+-                    _last_heartbeat = time.monotonic()
+-                    _cb_was_none = _cb_now_none
+-
+-                # Adaptive poll: start at 5ms so fast commands (echo, pwd,
+-                # date, cat short files) return in ~6ms instead of being
+-                # stuck waiting for the next 200ms tick. Back off
+-                # exponentially toward 200ms so long-running commands
+-                # (builds, tests, sleeps) don't pay measurable CPU in the
+-                # poll loop. For an `echo` this saves ~195ms per tool call;
+-                # for a 10s build the steady-state poll rate is identical
+-                # to the old behavior.
+-                time.sleep(_poll_sleep)
+-                if _poll_sleep < 0.2:
+-                    _poll_sleep = min(_poll_sleep * 1.5, 0.2)
++                        _last_heartbeat = time.monotonic()
++                        _cb_was_none = _cb_now_none
++
++                    # Adaptive poll: start at 5ms so fast commands (echo, pwd,
++                    # date, cat short files) return in ~6ms instead of being
++                    # stuck waiting for the next 200ms tick. Back off
++                    # exponentially toward 200ms so long-running commands
++                    # (builds, tests, sleeps) don't pay measurable CPU in the
++                    # poll loop. For an `echo` this saves ~195ms per tool call;
++                    # for a 10s build the steady-state poll rate is identical
++                    # to the old behavior.
++                    time.sleep(_poll_sleep)
++                    if _poll_sleep < 0.2:
++                        _poll_sleep = min(_poll_sleep * 1.5, 0.2)
+         except (KeyboardInterrupt, SystemExit):
+             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
+             # while we were polling.  The local backend spawns subprocesses
+--- tools/interrupt.py
++++ tools/interrupt.py
+@@ -17,6 +17,8 @@ Usage in tools:
+ import logging
+ import os
+ import threading
++from contextlib import contextmanager
++from typing import Callable, Iterator
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -33,6 +35,7 @@ if _DEBUG_INTERRUPT:
+ 
+ # Set of thread idents that have been interrupted.
+ _interrupted_threads: set[int] = set()
++_interrupt_killers: dict[int, dict[int, Callable[[], None]]] = {}
+ _lock = threading.Lock()
+ 
+ 
+@@ -45,12 +48,23 @@ def set_interrupt(active: bool, thread_id: int | None = None) -> None:
+                    current thread (backward compat for CLI/tests).
+     """
+     tid = thread_id if thread_id is not None else threading.current_thread().ident
++    killers: list[Callable[[], None]] = []
+     with _lock:
+         if active:
+             _interrupted_threads.add(tid)
++            killers = list(_interrupt_killers.get(tid, {}).values())
+         else:
+             _interrupted_threads.discard(tid)
+         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
++    for kill in killers:
++        try:
++            kill()
++        except Exception:
++            logger.warning(
++                "interrupt killer failed for target thread %s",
++                tid,
++                exc_info=True,
++            )
+     if _DEBUG_INTERRUPT:
+         logger.info(
+             "[interrupt-debug] set_interrupt(active=%s, target_tid=%s) "
+@@ -59,6 +73,41 @@ def set_interrupt(active: bool, thread_id: int | None = None) -> None:
+         )
+ 
+ 
++@contextmanager
++def register_interrupt_killer(
++    killer: Callable[[], None],
++    thread_id: int | None = None,
++) -> Iterator[None]:
++    """Bind an idempotent process killer to one tool worker thread.
++
++    Polling ``is_interrupted()`` remains the normal cooperative path. This
++    registration is the containment backstop for a worker blocked inside a
++    backend ``poll()``/SDK call: ``set_interrupt(True, tid)`` invokes the
++    exact worker's killer synchronously instead of waiting for that worker to
++    get scheduled again. Concurrent runs remain isolated by thread id.
++    """
++
++    tid = thread_id if thread_id is not None else threading.current_thread().ident
++    token = id(killer)
++    call_now = False
++    with _lock:
++        if tid in _interrupted_threads:
++            call_now = True
++        else:
++            _interrupt_killers.setdefault(tid, {})[token] = killer
++    if call_now:
++        killer()
++    try:
++        yield
++    finally:
++        with _lock:
++            entries = _interrupt_killers.get(tid)
++            if entries is not None:
++                entries.pop(token, None)
++                if not entries:
++                    _interrupt_killers.pop(tid, None)
++
++
+ def is_interrupted() -> bool:
+     """Check if an interrupt has been requested for the current thread.
+ 
+--- tests/agent/test_usage_pricing.py
++++ tests/agent/test_usage_pricing.py
+@@ -74,6 +74,42 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
+ 
+ 
+ 
++def test_estimate_usage_cost_marks_exact_ollama_cloud_route_included():
++    result = estimate_usage_cost(
++        "qwen3-coder",
++        CanonicalUsage(input_tokens=1000, output_tokens=500),
++        provider="ollama-cloud",
++        base_url="https://ollama.com/v1",
++    )
++
++    assert result.status == "included"
++    assert float(result.amount_usd) == 0.0
++
++
++def test_ollama_provider_label_cannot_mark_a_different_endpoint_included():
++    result = estimate_usage_cost(
++        "qwen3-coder",
++        CanonicalUsage(input_tokens=1000, output_tokens=500),
++        provider="ollama-cloud",
++        base_url="https://api.openai.com/v1",
++    )
++
++    assert result.status == "unknown"
++    assert result.amount_usd is None
++
++
++def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):
++    monkeypatch.setattr(
++        "agent.usage_pricing.fetch_model_metadata",
++        lambda: {
++            "google/gemini-2.5-pro": {
++                "pricing": {
++                    "prompt": "0.00000125",
++                    "completion": "0.00001",
++                }
++            }
++        },
++    )
+ 
+ 
+ 
+--- tests/gateway/test_api_server_runs.py
++++ tests/gateway/test_api_server_runs.py
+@@ -9,8 +9,11 @@ Covers:
+ """
+ 
+ import asyncio
++import hashlib
++import json
+ import threading
+ import time
++from types import SimpleNamespace
+ from unittest.mock import MagicMock, patch
+ 
+ import pytest
+@@ -21,6 +24,8 @@ from gateway.config import PlatformConfig
+ from gateway.platforms.api_server import (
+     APIServerAdapter,
+     _approval_event_choices,
++    _read_strict_json_object,
++    _reap_disconnected_agent_processes,
+     cors_middleware,
+     security_headers_middleware,
+ )
+@@ -104,6 +109,55 @@ def _make_slow_agent(**kwargs):
+     return mock_agent, ready, interrupted
+ 
+ 
++def _make_completed_agent(
++    output: str = "done",
++    *,
++    input_tokens: int = 10,
++    output_tokens: int = 5,
++) -> MagicMock:
++    mock_agent = MagicMock()
++
++    def _run(user_message=None, conversation_history=None, task_id=None):
++        evidence = mock_agent._gloops_run_evidence
++        route = {
++            "provider": "ollama-cloud",
++            "model": "qwen3-coder",
++            "transport_class": "openai_chat_completions",
++            "billing_class": "subscription_included",
++        }
++        evidence.record_provider_attempt(**route)
++        evidence.record_provider_response(
++            response=SimpleNamespace(
++                model="qwen3-coder",
++                usage=SimpleNamespace(
++                    prompt_tokens=input_tokens,
++                    completion_tokens=output_tokens,
++                    prompt_tokens_details=SimpleNamespace(cached_tokens=0),
++                ),
++            ),
++            tool_call_count=0,
++            **route,
++        )
++        return {"final_response": output}
++
++    mock_agent.run_conversation.side_effect = _run
++    mock_agent.session_prompt_tokens = input_tokens
++    mock_agent.session_completion_tokens = output_tokens
++    mock_agent.session_total_tokens = input_tokens + output_tokens
++    return mock_agent
++
++
++class _ChunkedRequestBody:
++    def __init__(self, chunks):
++        self._chunks = list(chunks)
++        self.content_length = sum(len(chunk) for chunk in self._chunks)
++        self.content = self
++        self._read_bytes = None
++
++    async def read(self, _size):
++        return self._chunks.pop(0) if self._chunks else b""
++
++
+ @pytest.fixture
+ def adapter():
+     return _make_adapter()
+@@ -125,11 +179,7 @@ class TestStartRun:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 10
+-                mock_agent.session_completion_tokens = 5
+-                mock_agent.session_total_tokens = 15
++                mock_agent = _make_completed_agent()
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post("/v1/runs", json={"input": "hello"})
+@@ -155,6 +205,64 @@ class TestStartRun:
+         app = _create_runs_app(adapter)
+         captured = {}
+ 
++    @pytest.mark.asyncio
++    async def test_start_invalid_utf8_and_duplicate_keys_return_400_before_allocation(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            invalid_utf8 = await cli.post(
++                "/v1/runs",
++                data=b'{"input":"\\xff"}'.replace(b"\\xff", b"\xff"),
++                headers={"Content-Type": "application/json"},
++            )
++            duplicate = await cli.post(
++                "/v1/runs",
++                data=b'{"input":"first","nested":{"key":1,"key":2}}',
++                headers={"Content-Type": "application/json"},
++            )
++            nonfinite = await cli.post(
++                "/v1/runs",
++                data=b'{"input":"first","value":NaN}',
++                headers={"Content-Type": "application/json"},
++            )
++
++        assert invalid_utf8.status == 400
++        assert duplicate.status == 400
++        assert nonfinite.status == 400
++        assert adapter._run_streams == {}
++        assert adapter._run_statuses == {}
++
++    @pytest.mark.asyncio
++    async def test_strict_reader_hashes_stream_bytes_without_aiohttp_body_cache(self):
++        chunks = [b'{ "input":', b' "hello"', b" }"]
++        request = _ChunkedRequestBody(chunks)
++
++        body, byte_length, digest = await _read_strict_json_object(request)
++
++        raw = b"".join(chunks)
++        assert body == {"input": "hello"}
++        assert byte_length == len(raw)
++        assert digest == hashlib.sha256(raw).hexdigest()
++        assert request._read_bytes is None
++
++    @pytest.mark.asyncio
++    async def test_start_rejects_compressed_entity_before_reading_it(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            response = await cli.post(
++                "/v1/runs",
++                data=b"not actually gzip",
++                headers={
++                    "Content-Type": "application/json",
++                    "Content-Encoding": "gzip",
++                },
++            )
++
++        assert response.status == 415
++        assert adapter._run_streams == {}
++
++    @pytest.mark.asyncio
++    async def test_start_missing_input_returns_400(self, adapter):
++        app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+                 mock_agent = MagicMock()
+@@ -230,12 +338,8 @@ class TestStartRun:
+         app = _create_runs_app(adapter)
+         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}
+         async with TestClient(TestServer(app)) as cli:
+-            with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
++            with patch.object(auth_adapter, "_create_agent") as mock_create:
++                mock_agent = _make_completed_agent("ok", input_tokens=0, output_tokens=0)
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post(
+@@ -265,17 +369,37 @@ class TestStartRun:
+ 
+ 
+ class TestRunStatus:
++    @pytest.mark.asyncio
++    async def test_status_completed_run_includes_output_and_usage(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent") as mock_create:
++                mock_agent = _make_completed_agent(input_tokens=4, output_tokens=2)
++                mock_create.return_value = mock_agent
++
++                resp = await cli.post("/v1/runs", json={"input": "hello"})
++                data = await resp.json()
++                run_id = data["run_id"]
++
++                for _ in range(20):
++                    status_resp = await cli.get(f"/v1/runs/{run_id}")
++                    assert status_resp.status == 200
++                    status = await status_resp.json()
++                    if status["status"] == "completed":
++                        break
++                    await asyncio.sleep(0.05)
++
++                assert status["status"] == "completed"
++                assert status["output"] == "done"
++                assert status["usage"]["total_tokens"] == 6
++                assert status["last_event"] == "run.completed"
+ 
+     @pytest.mark.asyncio
+     async def test_status_reflects_explicit_session_id(self, adapter):
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "done"}
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
++                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post(
+@@ -296,6 +420,68 @@ class TestRunStatus:
+                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
+                 assert status["session_id"] == "space-session"
+ 
++    @pytest.mark.asyncio
++    async def test_status_not_found_returns_404(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            resp = await cli.get("/v1/runs/run_nonexistent")
++        assert resp.status == 404
++
++    @pytest.mark.asyncio
++    async def test_status_requires_auth(self, auth_adapter):
++        app = _create_runs_app(auth_adapter)
++        async with TestClient(TestServer(app)) as cli:
++            resp = await cli.get("/v1/runs/run_any")
++        assert resp.status == 401
++
++    @pytest.mark.asyncio
++    async def test_status_receipt_hashes_exact_received_entity_bytes(self, adapter):
++        app = _create_runs_app(adapter)
++        raw_body = b'{ "input": "hello", "model": "configured-alias" }'
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent", return_value=_make_completed_agent()):
++                response = await cli.post(
++                    "/v1/runs",
++                    data=raw_body,
++                    headers={"Content-Type": "application/json"},
++                )
++                run_id = (await response.json())["run_id"]
++                for _ in range(20):
++                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
++                    if status["status"] in {"completed", "failed"}:
++                        break
++                    await asyncio.sleep(0.05)
++
++        assert status["status"] == "completed"
++        evidence = status["terminalEvidence"]
++        assert evidence["requestByteLength"] == len(raw_body)
++        assert evidence["requestSha256"] == hashlib.sha256(raw_body).hexdigest()
++        assert evidence["resolvedModel"] == "qwen3-coder"
++        assert evidence["resolvedModel"] != "configured-alias"
++
++    @pytest.mark.asyncio
++    async def test_nominal_success_without_provider_evidence_fails_closed(self, adapter):
++        app = _create_runs_app(adapter)
++        mock_agent = MagicMock()
++        mock_agent.run_conversation.return_value = {"final_response": "not evidence"}
++        mock_agent.session_prompt_tokens = 1
++        mock_agent.session_completion_tokens = 1
++        mock_agent.session_total_tokens = 2
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent", return_value=mock_agent):
++                response = await cli.post("/v1/runs", json={"input": "hello"})
++                run_id = (await response.json())["run_id"]
++                for _ in range(20):
++                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
++                    if status["status"] in {"completed", "failed"}:
++                        break
++                    await asyncio.sleep(0.05)
++
++        assert status["status"] == "failed"
++        assert status["terminalEvidence"]["terminalStatus"] == "failed"
++        assert status["terminalEvidence"]["inputUsage"]["present"] is False
++        assert "lacks authoritative evidence" in status["error"]
++
+ 
+ # ---------------------------------------------------------------------------
+ # GET /v1/runs/{run_id}/events — SSE event stream
+@@ -309,11 +495,7 @@ class TestRunEvents:
+         app = _create_runs_app(adapter)
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.run_conversation.return_value = {"final_response": "Hello!"}
+-                mock_agent.session_prompt_tokens = 10
+-                mock_agent.session_completion_tokens = 5
+-                mock_agent.session_total_tokens = 15
++                mock_agent = _make_completed_agent("Hello!")
+                 mock_create.return_value = mock_agent
+ 
+                 # Start run
+@@ -330,7 +512,64 @@ class TestRunEvents:
+                 # Should contain run.completed
+                 assert "run.completed" in body
+                 assert "Hello!" in body
++                terminal_event = next(
++                    json.loads(line.removeprefix("data: "))
++                    for line in body.splitlines()
++                    if line.startswith("data: ") and '"event": "run.completed"' in line
++                )
++                final_status = await (await cli.get(f"/v1/runs/{run_id}")).json()
++                assert terminal_event["terminalEvidence"] == final_status["terminalEvidence"]
++                assert (
++                    terminal_event["terminalEvidenceDigest"]
++                    == final_status["terminalEvidenceDigest"]
++                )
++
++
++
++    @pytest.mark.asyncio
++    async def test_approval_response_without_pending_returns_409(self, adapter):
++        app = _create_runs_app(adapter)
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent") as mock_create:
++                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
++                mock_create.return_value = mock_agent
++
++                resp = await cli.post("/v1/runs", json={"input": "hello"})
++                data = await resp.json()
++                run_id = data["run_id"]
++
++                approval_resp = await cli.post(
++                    f"/v1/runs/{run_id}/approval",
++                    json={"choice": "once"},
++                )
++                assert approval_resp.status == 409
++                approval_data = await approval_resp.json()
++                assert approval_data["error"]["code"] in {
++                    "approval_not_active",
++                    "approval_not_pending",
++                }
++
++    @pytest.mark.asyncio
++    async def test_approval_string_false_does_not_resolve_all(self, adapter):
++        """Quoted false must not fan out approval resolution across the queue."""
++        app = _create_runs_app(adapter)
++        run_id = "run_bool_parse"
++        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
++        adapter._run_approval_sessions[run_id] = "session-123"
+ 
++        async with TestClient(TestServer(app)) as cli:
++            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
++                approval_resp = await cli.post(
++                    f"/v1/runs/{run_id}/approval",
++                    json={"choice": "once", "all": "false"},
++                )
++
++        assert approval_resp.status == 200
++        mock_resolve.assert_called_once_with(
++            "session-123",
++            "once",
++            resolve_all=False,
++        )
+ 
+     @pytest.mark.asyncio
+     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
+@@ -476,29 +715,51 @@ class TestRunLifecycleSweep:
+ 
+ 
+ class TestStopRun:
++    def test_repeated_stop_reuses_live_process_reaper(self):
++        """Repeated stop requests must not lose the first live reaper."""
++        agent = SimpleNamespace(
++            _gateway_turn_process_task_id="run-repeat-stop",
++            _gateway_turn_process_baseline=set(),
++        )
++        started = threading.Event()
++        release = threading.Event()
++        calls = []
++
++        def _blocked_reap(*_args, **_kwargs):
++            calls.append(True)
++            started.set()
++            release.wait(timeout=3)
++
++        with patch("gateway.run._reap_gateway_turn_processes", side_effect=_blocked_reap):
++            first = _reap_disconnected_agent_processes(agent)
++            assert first is not None
++            assert started.wait(timeout=1)
++            second = _reap_disconnected_agent_processes(agent)
++            assert second is first
++            assert len(calls) == 1
++            release.set()
++            first.join(timeout=1)
++
++        assert not first.is_alive()
++
+ 
+     @pytest.mark.asyncio
+     async def test_stop_keeps_uncooperative_executor_tracked_until_exit(self, adapter):
+         """Cancelling an asyncio wrapper must not hide its live executor thread."""
+         app = _create_runs_app(adapter)
++        started = threading.Event()
+         run_can_finish = threading.Event()
+         run_finished = threading.Event()
+ 
+         async with TestClient(TestServer(app)) as cli:
+             with patch.object(adapter, "_create_agent") as mock_create:
+-                mock_agent = MagicMock()
+-                mock_agent.session_prompt_tokens = 0
+-                mock_agent.session_completion_tokens = 0
+-                mock_agent.session_total_tokens = 0
+-                started = threading.Event()
+-
+-                def _run_conversation(*_args, **_kwargs):
++                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
++                def _uncooperative_run(**_kwargs):
+                     started.set()
+-                    run_can_finish.wait(timeout=5)
++                    run_can_finish.wait(timeout=10)
+                     run_finished.set()
+-                    return {"final_response": "late result"}
+-
+-                mock_agent.run_conversation.side_effect = _run_conversation
++                    return {"final_response": "finished"}
++                mock_agent.run_conversation.side_effect = _uncooperative_run
+                 mock_create.return_value = mock_agent
+ 
+                 resp = await cli.post("/v1/runs", json={"input": "hello"})
+@@ -524,6 +785,62 @@ class TestStopRun:
+                 assert run_id not in adapter._active_run_tasks
+                 assert adapter._run_statuses[run_id]["status"] == "cancelled"
+ 
++    @pytest.mark.asyncio
++    async def test_stop_waits_for_abandoned_tool_worker_to_exit(self, adapter):
++        """A cancelled receipt must not precede an abandoned tool worker."""
++        app = _create_runs_app(adapter)
++        run_started = threading.Event()
++        interrupted = threading.Event()
++        worker_started = threading.Event()
++        worker_can_finish = threading.Event()
++
++        mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
++        mock_agent._tool_worker_threads = set()
++        mock_agent._tool_worker_threads_lock = threading.Lock()
++        mock_agent.interrupt = MagicMock(side_effect=lambda _message=None: interrupted.set())
++
++        def _abandoned_worker():
++            tid = threading.current_thread().ident
++            with mock_agent._tool_worker_threads_lock:
++                mock_agent._tool_worker_threads.add(tid)
++            worker_started.set()
++            worker_can_finish.wait(timeout=10)
++            with mock_agent._tool_worker_threads_lock:
++                mock_agent._tool_worker_threads.discard(tid)
++
++        def _run_with_abandoned_worker(**_kwargs):
++            run_started.set()
++            interrupted.wait(timeout=10)
++            worker = threading.Thread(target=_abandoned_worker, daemon=True)
++            worker.start()
++            assert worker_started.wait(timeout=3)
++            return {"final_response": "wrapper returned before tool worker"}
++
++        mock_agent.run_conversation.side_effect = _run_with_abandoned_worker
++
++        async with TestClient(TestServer(app)) as cli:
++            with patch.object(adapter, "_create_agent", return_value=mock_agent):
++                response = await cli.post("/v1/runs", json={"input": "hello"})
++                run_id = (await response.json())["run_id"]
++                assert run_started.wait(timeout=3)
++
++                stop_response = await cli.post(f"/v1/runs/{run_id}/stop")
++                assert stop_response.status == 200
++                assert worker_started.wait(timeout=3)
++                await asyncio.sleep(0.1)
++
++                assert run_id in adapter._active_run_tasks
++                assert adapter._run_statuses[run_id]["status"] == "stopping"
++
++                worker_can_finish.set()
++                for _ in range(40):
++                    if run_id not in adapter._active_run_tasks:
++                        break
++                    await asyncio.sleep(0.05)
++
++                assert run_id not in adapter._active_run_tasks
++                assert adapter._run_statuses[run_id]["status"] == "cancelled"
++
+     @pytest.mark.asyncio
+     async def test_stop_running_agent(self, adapter):
+         """Stop should interrupt the agent and cancel the task."""
 --- /dev/null
 +++ gateway/run_evidence.py
 @@ -0,0 +1,413 @@
@@ -1057,434 +1891,6 @@
 +            self._terminal = copy.deepcopy(terminal)
 +            self._frozen = True
 +            return copy.deepcopy(terminal)
---- tests/agent/test_usage_pricing.py
-+++ tests/agent/test_usage_pricing.py
-@@ -74,6 +74,42 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
- 
- 
- 
-+def test_estimate_usage_cost_marks_exact_ollama_cloud_route_included():
-+    result = estimate_usage_cost(
-+        "qwen3-coder",
-+        CanonicalUsage(input_tokens=1000, output_tokens=500),
-+        provider="ollama-cloud",
-+        base_url="https://ollama.com/v1",
-+    )
-+
-+    assert result.status == "included"
-+    assert float(result.amount_usd) == 0.0
-+
-+
-+def test_ollama_provider_label_cannot_mark_a_different_endpoint_included():
-+    result = estimate_usage_cost(
-+        "qwen3-coder",
-+        CanonicalUsage(input_tokens=1000, output_tokens=500),
-+        provider="ollama-cloud",
-+        base_url="https://api.openai.com/v1",
-+    )
-+
-+    assert result.status == "unknown"
-+    assert result.amount_usd is None
-+
-+
-+def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):
-+    monkeypatch.setattr(
-+        "agent.usage_pricing.fetch_model_metadata",
-+        lambda: {
-+            "google/gemini-2.5-pro": {
-+                "pricing": {
-+                    "prompt": "0.00000125",
-+                    "completion": "0.00001",
-+                }
-+            }
-+        },
-+    )
- 
- 
- 
---- tests/gateway/test_api_server_runs.py
-+++ tests/gateway/test_api_server_runs.py
-@@ -9,8 +9,11 @@ Covers:
- """
- 
- import asyncio
-+import hashlib
-+import json
- import threading
- import time
-+from types import SimpleNamespace
- from unittest.mock import MagicMock, patch
- 
- import pytest
-@@ -21,6 +24,7 @@ from gateway.config import PlatformConfig
- from gateway.platforms.api_server import (
-     APIServerAdapter,
-     _approval_event_choices,
-+    _read_strict_json_object,
-     cors_middleware,
-     security_headers_middleware,
- )
-@@ -104,6 +108,55 @@ def _make_slow_agent(**kwargs):
-     return mock_agent, ready, interrupted
- 
- 
-+def _make_completed_agent(
-+    output: str = "done",
-+    *,
-+    input_tokens: int = 10,
-+    output_tokens: int = 5,
-+) -> MagicMock:
-+    mock_agent = MagicMock()
-+
-+    def _run(user_message=None, conversation_history=None, task_id=None):
-+        evidence = mock_agent._gloops_run_evidence
-+        route = {
-+            "provider": "ollama-cloud",
-+            "model": "qwen3-coder",
-+            "transport_class": "openai_chat_completions",
-+            "billing_class": "subscription_included",
-+        }
-+        evidence.record_provider_attempt(**route)
-+        evidence.record_provider_response(
-+            response=SimpleNamespace(
-+                model="qwen3-coder",
-+                usage=SimpleNamespace(
-+                    prompt_tokens=input_tokens,
-+                    completion_tokens=output_tokens,
-+                    prompt_tokens_details=SimpleNamespace(cached_tokens=0),
-+                ),
-+            ),
-+            tool_call_count=0,
-+            **route,
-+        )
-+        return {"final_response": output}
-+
-+    mock_agent.run_conversation.side_effect = _run
-+    mock_agent.session_prompt_tokens = input_tokens
-+    mock_agent.session_completion_tokens = output_tokens
-+    mock_agent.session_total_tokens = input_tokens + output_tokens
-+    return mock_agent
-+
-+
-+class _ChunkedRequestBody:
-+    def __init__(self, chunks):
-+        self._chunks = list(chunks)
-+        self.content_length = sum(len(chunk) for chunk in self._chunks)
-+        self.content = self
-+        self._read_bytes = None
-+
-+    async def read(self, _size):
-+        return self._chunks.pop(0) if self._chunks else b""
-+
-+
- @pytest.fixture
- def adapter():
-     return _make_adapter()
-@@ -125,11 +178,7 @@ class TestStartRun:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 10
--                mock_agent.session_completion_tokens = 5
--                mock_agent.session_total_tokens = 15
-+                mock_agent = _make_completed_agent()
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post("/v1/runs", json={"input": "hello"})
-@@ -155,6 +204,64 @@ class TestStartRun:
-         app = _create_runs_app(adapter)
-         captured = {}
- 
-+    @pytest.mark.asyncio
-+    async def test_start_invalid_utf8_and_duplicate_keys_return_400_before_allocation(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            invalid_utf8 = await cli.post(
-+                "/v1/runs",
-+                data=b'{"input":"\\xff"}'.replace(b"\\xff", b"\xff"),
-+                headers={"Content-Type": "application/json"},
-+            )
-+            duplicate = await cli.post(
-+                "/v1/runs",
-+                data=b'{"input":"first","nested":{"key":1,"key":2}}',
-+                headers={"Content-Type": "application/json"},
-+            )
-+            nonfinite = await cli.post(
-+                "/v1/runs",
-+                data=b'{"input":"first","value":NaN}',
-+                headers={"Content-Type": "application/json"},
-+            )
-+
-+        assert invalid_utf8.status == 400
-+        assert duplicate.status == 400
-+        assert nonfinite.status == 400
-+        assert adapter._run_streams == {}
-+        assert adapter._run_statuses == {}
-+
-+    @pytest.mark.asyncio
-+    async def test_strict_reader_hashes_stream_bytes_without_aiohttp_body_cache(self):
-+        chunks = [b'{ "input":', b' "hello"', b" }"]
-+        request = _ChunkedRequestBody(chunks)
-+
-+        body, byte_length, digest = await _read_strict_json_object(request)
-+
-+        raw = b"".join(chunks)
-+        assert body == {"input": "hello"}
-+        assert byte_length == len(raw)
-+        assert digest == hashlib.sha256(raw).hexdigest()
-+        assert request._read_bytes is None
-+
-+    @pytest.mark.asyncio
-+    async def test_start_rejects_compressed_entity_before_reading_it(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            response = await cli.post(
-+                "/v1/runs",
-+                data=b"not actually gzip",
-+                headers={
-+                    "Content-Type": "application/json",
-+                    "Content-Encoding": "gzip",
-+                },
-+            )
-+
-+        assert response.status == 415
-+        assert adapter._run_streams == {}
-+
-+    @pytest.mark.asyncio
-+    async def test_start_missing_input_returns_400(self, adapter):
-+        app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
-                 mock_agent = MagicMock()
-@@ -230,12 +337,8 @@ class TestStartRun:
-         app = _create_runs_app(adapter)
-         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}
-         async with TestClient(TestServer(app)) as cli:
--            with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
-+            with patch.object(auth_adapter, "_create_agent") as mock_create:
-+                mock_agent = _make_completed_agent("ok", input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post(
-@@ -265,17 +368,37 @@ class TestStartRun:
- 
- 
- class TestRunStatus:
-+    @pytest.mark.asyncio
-+    async def test_status_completed_run_includes_output_and_usage(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch.object(adapter, "_create_agent") as mock_create:
-+                mock_agent = _make_completed_agent(input_tokens=4, output_tokens=2)
-+                mock_create.return_value = mock_agent
-+
-+                resp = await cli.post("/v1/runs", json={"input": "hello"})
-+                data = await resp.json()
-+                run_id = data["run_id"]
-+
-+                for _ in range(20):
-+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
-+                    assert status_resp.status == 200
-+                    status = await status_resp.json()
-+                    if status["status"] == "completed":
-+                        break
-+                    await asyncio.sleep(0.05)
-+
-+                assert status["status"] == "completed"
-+                assert status["output"] == "done"
-+                assert status["usage"]["total_tokens"] == 6
-+                assert status["last_event"] == "run.completed"
- 
-     @pytest.mark.asyncio
-     async def test_status_reflects_explicit_session_id(self, adapter):
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "done"}
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
-+                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post(
-@@ -296,6 +419,68 @@ class TestRunStatus:
-                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
-                 assert status["session_id"] == "space-session"
- 
-+    @pytest.mark.asyncio
-+    async def test_status_not_found_returns_404(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            resp = await cli.get("/v1/runs/run_nonexistent")
-+        assert resp.status == 404
-+
-+    @pytest.mark.asyncio
-+    async def test_status_requires_auth(self, auth_adapter):
-+        app = _create_runs_app(auth_adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            resp = await cli.get("/v1/runs/run_any")
-+        assert resp.status == 401
-+
-+    @pytest.mark.asyncio
-+    async def test_status_receipt_hashes_exact_received_entity_bytes(self, adapter):
-+        app = _create_runs_app(adapter)
-+        raw_body = b'{ "input": "hello", "model": "configured-alias" }'
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch.object(adapter, "_create_agent", return_value=_make_completed_agent()):
-+                response = await cli.post(
-+                    "/v1/runs",
-+                    data=raw_body,
-+                    headers={"Content-Type": "application/json"},
-+                )
-+                run_id = (await response.json())["run_id"]
-+                for _ in range(20):
-+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-+                    if status["status"] in {"completed", "failed"}:
-+                        break
-+                    await asyncio.sleep(0.05)
-+
-+        assert status["status"] == "completed"
-+        evidence = status["terminalEvidence"]
-+        assert evidence["requestByteLength"] == len(raw_body)
-+        assert evidence["requestSha256"] == hashlib.sha256(raw_body).hexdigest()
-+        assert evidence["resolvedModel"] == "qwen3-coder"
-+        assert evidence["resolvedModel"] != "configured-alias"
-+
-+    @pytest.mark.asyncio
-+    async def test_nominal_success_without_provider_evidence_fails_closed(self, adapter):
-+        app = _create_runs_app(adapter)
-+        mock_agent = MagicMock()
-+        mock_agent.run_conversation.return_value = {"final_response": "not evidence"}
-+        mock_agent.session_prompt_tokens = 1
-+        mock_agent.session_completion_tokens = 1
-+        mock_agent.session_total_tokens = 2
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
-+                response = await cli.post("/v1/runs", json={"input": "hello"})
-+                run_id = (await response.json())["run_id"]
-+                for _ in range(20):
-+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-+                    if status["status"] in {"completed", "failed"}:
-+                        break
-+                    await asyncio.sleep(0.05)
-+
-+        assert status["status"] == "failed"
-+        assert status["terminalEvidence"]["terminalStatus"] == "failed"
-+        assert status["terminalEvidence"]["inputUsage"]["present"] is False
-+        assert "lacks authoritative evidence" in status["error"]
-+
- 
- # ---------------------------------------------------------------------------
- # GET /v1/runs/{run_id}/events — SSE event stream
-@@ -309,11 +494,7 @@ class TestRunEvents:
-         app = _create_runs_app(adapter)
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.run_conversation.return_value = {"final_response": "Hello!"}
--                mock_agent.session_prompt_tokens = 10
--                mock_agent.session_completion_tokens = 5
--                mock_agent.session_total_tokens = 15
-+                mock_agent = _make_completed_agent("Hello!")
-                 mock_create.return_value = mock_agent
- 
-                 # Start run
-@@ -330,8 +511,65 @@ class TestRunEvents:
-                 # Should contain run.completed
-                 assert "run.completed" in body
-                 assert "Hello!" in body
-+                terminal_event = next(
-+                    json.loads(line.removeprefix("data: "))
-+                    for line in body.splitlines()
-+                    if line.startswith("data: ") and '"event": "run.completed"' in line
-+                )
-+                final_status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-+                assert terminal_event["terminalEvidence"] == final_status["terminalEvidence"]
-+                assert (
-+                    terminal_event["terminalEvidenceDigest"]
-+                    == final_status["terminalEvidenceDigest"]
-+                )
-+
- 
- 
-+    @pytest.mark.asyncio
-+    async def test_approval_response_without_pending_returns_409(self, adapter):
-+        app = _create_runs_app(adapter)
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch.object(adapter, "_create_agent") as mock_create:
-+                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
-+                mock_create.return_value = mock_agent
-+
-+                resp = await cli.post("/v1/runs", json={"input": "hello"})
-+                data = await resp.json()
-+                run_id = data["run_id"]
-+
-+                approval_resp = await cli.post(
-+                    f"/v1/runs/{run_id}/approval",
-+                    json={"choice": "once"},
-+                )
-+                assert approval_resp.status == 409
-+                approval_data = await approval_resp.json()
-+                assert approval_data["error"]["code"] in {
-+                    "approval_not_active",
-+                    "approval_not_pending",
-+                }
-+
-+    @pytest.mark.asyncio
-+    async def test_approval_string_false_does_not_resolve_all(self, adapter):
-+        """Quoted false must not fan out approval resolution across the queue."""
-+        app = _create_runs_app(adapter)
-+        run_id = "run_bool_parse"
-+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
-+        adapter._run_approval_sessions[run_id] = "session-123"
-+
-+        async with TestClient(TestServer(app)) as cli:
-+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-+                approval_resp = await cli.post(
-+                    f"/v1/runs/{run_id}/approval",
-+                    json={"choice": "once", "all": "false"},
-+                )
-+
-+        assert approval_resp.status == 200
-+        mock_resolve.assert_called_once_with(
-+            "session-123",
-+            "once",
-+            resolve_all=False,
-+        )
-+
-     @pytest.mark.asyncio
-     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
-         """Same client session_id must not let one run approve another run's queue."""
-@@ -486,19 +724,7 @@ class TestStopRun:
- 
-         async with TestClient(TestServer(app)) as cli:
-             with patch.object(adapter, "_create_agent") as mock_create:
--                mock_agent = MagicMock()
--                mock_agent.session_prompt_tokens = 0
--                mock_agent.session_completion_tokens = 0
--                mock_agent.session_total_tokens = 0
--                started = threading.Event()
--
--                def _run_conversation(*_args, **_kwargs):
--                    started.set()
--                    run_can_finish.wait(timeout=5)
--                    run_finished.set()
--                    return {"final_response": "late result"}
--
--                mock_agent.run_conversation.side_effect = _run_conversation
-+                mock_agent = _make_completed_agent(input_tokens=0, output_tokens=0)
-                 mock_create.return_value = mock_agent
- 
-                 resp = await cli.post("/v1/runs", json={"input": "hello"})
 --- /dev/null
 +++ tests/gateway/test_run_evidence.py
 @@ -0,0 +1,231 @@
@@ -2082,3 +2488,38 @@
 +
 +    assert result == {"same": True}
 +    assert observed == {"payload": api_kwargs, "kwargs": {"trace": ["normal"]}}
+--- /dev/null
++++ tests/tools/test_interrupt_process_containment.py
+@@ -0,0 +1,32 @@
++"""Network-free containment floor for cross-thread tool interruption."""
++
++import threading
++
++from tools.interrupt import register_interrupt_killer, set_interrupt
++
++
++def test_interrupt_invokes_only_the_exact_worker_killer_synchronously():
++    ready = threading.Event()
++    release = threading.Event()
++    killed = threading.Event()
++    target_tid = []
++
++    def worker():
++        target_tid.append(threading.current_thread().ident)
++        with register_interrupt_killer(killed.set):
++            ready.set()
++            release.wait(timeout=3)
++
++    thread = threading.Thread(target=worker, daemon=True)
++    thread.start()
++    assert ready.wait(timeout=1)
++
++    try:
++        set_interrupt(True, target_tid[0])
++        assert killed.wait(timeout=0.1), "hard interrupt returned before process kill"
++    finally:
++        set_interrupt(False, target_tid[0])
++        release.set()
++        thread.join(timeout=1)
++
++    assert not thread.is_alive()
