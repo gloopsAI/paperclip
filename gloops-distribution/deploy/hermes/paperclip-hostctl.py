@@ -47,7 +47,9 @@ TRACKED_KEYS = (
     "HEARTBEAT_SCHEDULER_ENABLED",
     "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED",
 )
-ALLOWED_KEYS = frozenset((*TRACKED_KEYS, "PAPERCLIP_IMAGE"))
+ALLOWED_KEYS = frozenset(
+    (*TRACKED_KEYS, "PAPERCLIP_IMAGE", "PAPERCLIP_ALLOWED_HOSTNAMES")
+)
 ALLOWED_ACTIONS = frozenset(("start", "stop", "restart", "mask", "unmask", "reset-failed"))
 ALLOWED_UNITS = frozenset(
     (
