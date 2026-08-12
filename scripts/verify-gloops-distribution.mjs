@@ -1224,12 +1224,12 @@ for (const [surface, content, required] of [
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property Type=exec"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "--property RuntimeMaxSec=2"],
   ["runtime deadman verifier", verifyRuntimeDeadman, "result}\" == 'timeout'"],
-  ["Hermes image loader", loadHermesExecutionImage, "24bd9079c4594463703fb5a90c0b6b19caec07f8ebd73326fe1828231fec19ef"],
+  ["Hermes image loader", loadHermesExecutionImage, "ab599099beaf87dbf39a8b2bfa58ac44bc3178617638bb4b0360b88a22b75e27"],
   ["Hermes image loader", loadHermesExecutionImage, "zstd -t"],
   ["Hermes image loader", loadHermesExecutionImage, "docker load"],
   ["dark installer", installDark, '"${SCRIPT_DIR}/route-receipt/hermes-source-lock.json" "${LIB_DIR}/route-receipt/hermes-source-lock.json"'],
   ["dark installer", installDark, '"${SCRIPT_DIR}/rehearse-hermes-cancel-containment.py" "${LIB_DIR}/rehearse-hermes-cancel-containment.py"'],
-  ["cold rollback backup", backupDark, "hermes-execution-cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec.tar.zst"],
+  ["cold rollback backup", backupDark, "hermes-execution-c4fa52bdfbba974b4dee60c1ba5efaa8218221a106a8dd5fb50f201a82e896f3.tar.zst"],
   ["cold rollback backup", backupDark, "sha256sum hermes-execution-*.tar.zst"],
   ["cold rollback backup transaction guard", backupDark, "refuse_unresolved_commissioning"],
   ["cold rollback backup transaction journal", backupDark, "commissioning-rollback.json"],
@@ -1392,7 +1392,7 @@ for (const required of [
 }
 
 const hermesExecutionImage =
-  "sha256:cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec";
+  "sha256:c4fa52bdfbba974b4dee60c1ba5efaa8218221a106a8dd5fb50f201a82e896f3";
 if (hermesExecutionPolicy.schemaVersion !== "gloops.hermes-execution-profile.v2") {
   fail("Hermes execution policy schema is not pinned");
 }
@@ -1463,8 +1463,8 @@ if (hermesExecutionPolicy.runtime?.imageAcquisition !== "root-only-content-addre
 if (
   JSON.stringify(hermesExecutionPolicy.runtime?.imageArchive) !==
   JSON.stringify({
-    path: "/opt/paperclip/release-artifacts/hermes-execution-cd65e466dcd2878e9618ccb98e217c451a4460d787cf502f07d90ea3b37bc9ec.tar.zst",
-    sha256: "24bd9079c4594463703fb5a90c0b6b19caec07f8ebd73326fe1828231fec19ef",
+    path: "/opt/paperclip/release-artifacts/hermes-execution-c4fa52bdfbba974b4dee60c1ba5efaa8218221a106a8dd5fb50f201a82e896f3.tar.zst",
+    sha256: "ab599099beaf87dbf39a8b2bfa58ac44bc3178617638bb4b0360b88a22b75e27",
   })
 ) {
   fail("Hermes execution image archive must be content-addressed and exact");
