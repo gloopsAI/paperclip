@@ -17,6 +17,52 @@ test("mutating broker operations outlive the bounded deployment health window", 
   assert.equal(requestTimeoutMs({ operation: "service-status" }), 30_000);
   assert.equal(requestTimeoutMs({ operation: "deploy-pinned-image" }), 180_000);
   assert.equal(requestTimeoutMs({ operation: "rollback-rehearsal" }), 180_000);
+  assert.equal(requestTimeoutMs({ operation: "rollback-proof" }), 180_000);
+  assert.equal(requestTimeoutMs({ operation: "front-door-health" }), 30_000);
+});
+
+test("rollback-proof emits the bounded terminal-proof request", async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "platform-ops-tool-proof-"));
+  const socketPath = path.join(tempDirectory, "broker.sock");
+  let request;
+  const server = net.createServer((socket) => {
+    socket.once("data", (chunk) => {
+      request = JSON.parse(chunk.toString("utf8"));
+      socket.end('{"ok":true,"data":{"state":"completed"}}\n');
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    const expectedImage = `ghcr.io/gloopsai/paperclip-gloops@sha256:${"a".repeat(64)}`;
+    const child = spawn(process.execPath, [
+      scriptPath,
+      "--operation", "rollback-proof",
+      "--service", "paperclip-gloops.service",
+      "--mode", "restored",
+      "--expectedPriorImage", expectedImage,
+      "--actor", "wren-agent",
+      "--idempotencyKey", "proof-001",
+    ], {
+      env: { ...process.env, PLATFORM_OPS_BROKER_SOCKET: socketPath },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const code = await new Promise((resolve) => child.once("exit", resolve));
+    assert.equal(code, 0);
+    assert.deepEqual(request, {
+      operation: "rollback-proof",
+      actor: "wren-agent",
+      idempotencyKey: "proof-001",
+      service: "paperclip-gloops.service",
+      mode: "restored",
+      expectedPriorImage: expectedImage,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
 });
 
 test("a successful response clears the deadline and lets the CLI exit", async () => {
@@ -51,6 +97,35 @@ test("a successful response clears the deadline and lets the CLI exit", async ()
 
     assert.deepEqual(result, { code: 0, signal: null }, `stderr=${stderr}`);
     assert.match(stdout, /"ok": true/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an unhealthy front-door response exits nonzero", async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "platform-ops-tool-unhealthy-"));
+  const socketPath = path.join(tempDirectory, "broker.sock");
+  const server = net.createServer((socket) => {
+    socket.once("data", () => {
+      socket.end('{"ok":true,"data":{"healthy":false,"probes":[]}}\n');
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    const child = spawn(process.execPath, [
+      scriptPath,
+      "--operation", "front-door-health",
+      "--service", "paperclip-gloops.service",
+    ], {
+      env: { ...process.env, PLATFORM_OPS_BROKER_SOCKET: socketPath },
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    const code = await new Promise((resolve) => child.once("exit", resolve));
+    assert.equal(code, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(tempDirectory, { recursive: true, force: true });

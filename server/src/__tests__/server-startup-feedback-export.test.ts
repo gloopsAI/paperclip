@@ -25,6 +25,7 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  workspaceAutoCleanupServiceFactoryMock,
   backfillPrincipalAccessCompatibilityMock,
   bootstrapExecutionPolicyFromEnvMock,
   reconcileCloudUpstreamRunsOnStartupMock,
@@ -83,6 +84,9 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const workspaceAutoCleanupServiceFactoryMock = vi.fn(() => ({
+    runDue: vi.fn(async () => ({ scheduled: 0, cleaned: 0, blocked: 0, failed: 0 })),
+  }));
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -142,6 +146,7 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    workspaceAutoCleanupServiceFactoryMock,
     backfillPrincipalAccessCompatibilityMock,
     bootstrapExecutionPolicyFromEnvMock,
     reconcileCloudUpstreamRunsOnStartupMock,
@@ -266,6 +271,7 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: reconcilePersistedRuntimeServicesOnStartupMock,
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  workspaceAutoCleanupService: workspaceAutoCleanupServiceFactoryMock,
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -376,8 +382,8 @@ describe("startServer feedback export wiring", () => {
     let intervalCallback: (() => void) | null = null;
     const setIntervalSpy = vi
       .spyOn(globalThis, "setInterval")
-      .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
+      .mockImplementation(((callback: () => void, delay?: number) => {
+        if (delay === 30000) intervalCallback = callback;
         return 1 as unknown as ReturnType<typeof setInterval>;
       }) as typeof setInterval);
 
@@ -410,8 +416,8 @@ describe("startServer feedback export wiring", () => {
     let intervalCallback: (() => void) | null = null;
     const setIntervalSpy = vi
       .spyOn(globalThis, "setInterval")
-      .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
+      .mockImplementation(((callback: () => void, delay?: number) => {
+        if (delay === 30000) intervalCallback = callback;
         return 1 as unknown as ReturnType<typeof setInterval>;
       }) as typeof setInterval);
 
@@ -456,8 +462,8 @@ describe("startServer feedback export wiring", () => {
     let intervalCallback: (() => void) | null = null;
     const setIntervalSpy = vi
       .spyOn(globalThis, "setInterval")
-      .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
+      .mockImplementation(((callback: () => void, delay?: number) => {
+        if (delay === 30000) intervalCallback = callback;
         return 1 as unknown as ReturnType<typeof setInterval>;
       }) as typeof setInterval);
     let releaseSlowReap!: (result: { reaped: number; runIds: string[] }) => void;

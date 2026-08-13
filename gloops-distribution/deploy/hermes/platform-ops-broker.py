@@ -66,6 +66,7 @@ TEST_MODE = os.environ.get("GLOOPS_PLATFORM_OPS_BROKER_TEST_MODE") == "1"
 IMAGE_DIGEST_PATTERN = re.compile(
     r"^(?:[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)?@sha256:[0-9a-f]{64}$"
 )
+IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # Service name pattern: word characters, hyphens, dots, ending in .service
 SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+\.service$")
@@ -84,6 +85,7 @@ CREDENTIAL_KEYS = frozenset({
 ALLOWED_OPERATIONS = frozenset({
     "service-status",
     "service-health",
+    "front-door-health",
     "service-restart",
     "disk-usage",
     "memory-usage",
@@ -92,6 +94,7 @@ ALLOWED_OPERATIONS = frozenset({
     "cache-reclaim",
     "deploy-pinned-image",
     "rollback-rehearsal",
+    "rollback-proof",
     "list-receipts",
     "get-receipt",
 })
@@ -102,6 +105,7 @@ MUTATING_OPERATIONS = frozenset({
     "cache-reclaim",
     "deploy-pinned-image",
     "rollback-rehearsal",
+    "rollback-proof",
 })
 
 # Operations that are read-only
@@ -502,6 +506,152 @@ def op_service_health(params: dict[str, Any]) -> Any:
     return result
 
 
+HTTP_PROBE_MARKER = "__PAPERCLIP_HTTP_PROBE__"
+
+
+def _parse_curl_probe(stdout: str) -> tuple[str, int | None, str]:
+    body, separator, metadata = stdout.rpartition("\n" + HTTP_PROBE_MARKER)
+    if not separator:
+        return stdout, None, ""
+    status_text, _, content_type = metadata.partition("\t")
+    try:
+        status = int(status_text.strip())
+    except ValueError:
+        status = None
+    return body, status, content_type.strip()
+
+
+def _http_probe(
+    *,
+    name: str,
+    url: str,
+    expected_statuses: frozenset[int],
+    content_type_prefix: str | None = None,
+    expected_json_status: str | None = None,
+    body_contains: str | None = None,
+) -> dict[str, Any]:
+    returncode, stdout, stderr = run_command(
+        [
+            "curl", "--silent", "--show-error", "--max-time", "10",
+            "--output", "-", "--write-out",
+            f"\n{HTTP_PROBE_MARKER}%{{http_code}}\t%{{content_type}}",
+            url,
+        ],
+        timeout=HEALTH_TIMEOUT_SECONDS,
+    )
+    body, status, content_type = _parse_curl_probe(stdout)
+    passed = returncode == 0 and status in expected_statuses
+    if content_type_prefix is not None:
+        passed = passed and content_type.lower().startswith(content_type_prefix.lower())
+    if body_contains is not None:
+        passed = passed and body_contains in body
+    json_status = None
+    if expected_json_status is not None:
+        try:
+            decoded = json.loads(body)
+            json_status = decoded.get("status") if isinstance(decoded, dict) else None
+        except json.JSONDecodeError:
+            json_status = None
+        passed = passed and json_status == expected_json_status
+    return {
+        "name": name,
+        "url": url,
+        "statusCode": status,
+        "contentType": content_type,
+        "jsonStatus": json_status,
+        "transportSucceeded": returncode == 0,
+        "passed": passed,
+        "error": stderr.strip()[:500] if returncode != 0 else "",
+    }
+
+
+def _websocket_probe(url: str) -> dict[str, Any]:
+    # This is intentionally credential-free.  A 101 proves a local-trusted
+    # upgrade, while 401/403 proves that the public proxy forwarded the upgrade
+    # to Paperclip's authenticated websocket boundary instead of serving a
+    # generic HTTP page or a 404.  curl may hit its short deadline after a 101;
+    # the received upgrade status remains valid evidence in that one case.
+    returncode, stdout, stderr = run_command(
+        [
+            "curl", "--silent", "--show-error", "--max-time", "3",
+            "--http1.1", "--output", "/dev/null", "--write-out",
+            f"\n{HTTP_PROBE_MARKER}%{{http_code}}\t%{{content_type}}",
+            "--header", "Connection: Upgrade",
+            "--header", "Upgrade: websocket",
+            "--header", "Sec-WebSocket-Version: 13",
+            "--header", "Sec-WebSocket-Key: cGFwZXJjbGlwLWhlYWx0aA==",
+            url,
+        ],
+        timeout=HEALTH_TIMEOUT_SECONDS,
+    )
+    _, status, content_type = _parse_curl_probe(stdout)
+    passed = status in {101, 401, 403} and (returncode == 0 or (status == 101 and returncode == 28))
+    return {
+        "name": "websocket",
+        "url": url,
+        "statusCode": status,
+        "contentType": content_type,
+        "transportSucceeded": returncode == 0 or (status == 101 and returncode == 28),
+        "passed": passed,
+        "error": stderr.strip()[:500] if not passed else "",
+    }
+
+
+def _front_door_health(service: str) -> dict[str, Any]:
+    service_config = load_allowlist()["allowedServices"].get(service)
+    if service_config is None:
+        raise BrokerError(f"service {service} is not in the allowlist")
+    config = service_config.get("frontDoorHealth")
+    if not isinstance(config, dict):
+        raise BrokerError(f"service {service} has no front-door health profile")
+    required = (
+        "publicUrl", "publicBodyContains", "apiHealthUrl",
+        "protectedUrl", "websocketUrl",
+    )
+    if any(not isinstance(config.get(key), str) or not config[key] for key in required):
+        raise BrokerError(f"service {service} has an incomplete front-door health profile")
+
+    active = _check_service_active(service)
+    probes = [
+        _http_probe(
+            name="public-browser",
+            url=config["publicUrl"],
+            expected_statuses=frozenset({200}),
+            content_type_prefix="text/html",
+            body_contains=config["publicBodyContains"],
+        ),
+        _http_probe(
+            name="api-health",
+            url=config["apiHealthUrl"],
+            expected_statuses=frozenset({200}),
+            content_type_prefix="application/json",
+            expected_json_status="ok",
+        ),
+        _http_probe(
+            name="protected-api",
+            url=config["protectedUrl"],
+            expected_statuses=frozenset({401, 403}),
+            content_type_prefix="application/json",
+        ),
+        _websocket_probe(config["websocketUrl"]),
+    ]
+    return {
+        "service": service,
+        "healthy": active["active"] and all(probe["passed"] for probe in probes),
+        "systemctl": active,
+        "probes": probes,
+    }
+
+
+def op_front_door_health(params: dict[str, Any]) -> Any:
+    service = params.get("service")
+    if not isinstance(service, str) or not SERVICE_NAME_PATTERN.match(service):
+        raise BrokerError("service must be a valid systemd unit name ending in .service")
+    if service not in allowed_service_names():
+        raise BrokerError(f"service {service} is not in the allowlist")
+    return _front_door_health(service)
+
+
 def derive_receipt_id(command_class: str, target: str, idempotency_key: str) -> str:
     """Return a deterministic receipt id from command class, target and key."""
     base = f"{command_class}:{target}:{idempotency_key}"
@@ -755,6 +905,9 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
         rollback_code, _, rollback_stderr = run_command(
             ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
         )
+        rollback_proof = _safe_rollback_terminal_evidence(
+            service, previous_image, rollback_code,
+        )
         complete_receipt(connection, receipt_id, "failed", {
             "image": image,
             "previousImage": previous_image,
@@ -762,16 +915,56 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "configurationRestored": True,
             "rollbackRestartSucceeded": rollback_code == 0,
             "rollbackStderr": rollback_stderr,
+            "rollbackProof": rollback_proof,
+            "priorRestorationProved": rollback_proof["proofComplete"],
         }, "failure")
         raise BrokerError(f"service restart after deploy failed: {stderr}")
     time.sleep(2)
     post_health = _check_service_active(service)
+    post_front_door = (
+        _front_door_health(service)
+        if service_config.get("frontDoorHealth") is not None
+        else None
+    )
+    post_image_binding = _image_binding_evidence(container, image)
+    release_healthy = (
+        post_health["active"]
+        and (post_front_door is None or post_front_door["healthy"])
+        and post_image_binding["proofComplete"]
+    )
+    if not release_healthy:
+        env_file.write_text(previous_env, encoding="utf-8")
+        os.chmod(env_file, 0o600)
+        approved_image_file.write_text(previous_approved_image, encoding="utf-8")
+        os.chmod(approved_image_file, 0o600)
+        rollback_code, _, rollback_stderr = run_command(
+            ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+        rollback_proof = _safe_rollback_terminal_evidence(
+            service, previous_image, rollback_code,
+        )
+        complete_receipt(connection, receipt_id, "failed", {
+            "image": image,
+            "previousImage": previous_image,
+            "postHealth": post_health,
+            "postFrontDoorHealth": post_front_door,
+            "postImageBinding": post_image_binding,
+            "configurationRestored": True,
+            "rollbackRestartSucceeded": rollback_code == 0,
+            "rollbackStderr": rollback_stderr,
+            "rollbackProof": rollback_proof,
+            "priorRestorationProved": rollback_proof["proofComplete"],
+        }, "failure")
+        raise BrokerError("deployed release failed comprehensive health; prior release restored")
     evidence = {
         "service": service,
         "image": image,
         "previousImage": previous_image,
         "container": container,
         "postHealth": post_health,
+        "postFrontDoorHealth": post_front_door,
+        "postImageBinding": post_image_binding,
+        "comprehensiveHealthPassed": release_healthy,
     }
     complete_receipt(connection, receipt_id, "completed", evidence, "success")
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
@@ -809,6 +1002,340 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
         for entry in sorted(backup_dir.iterdir())[:10]:
             if entry.is_dir():
                 evidence["backups"].append(entry.name)
+    complete_receipt(connection, receipt_id, "completed", evidence, "success")
+    return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
+
+
+def _runtime_env_value(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    matches = [
+        line.split("=", 1)[1]
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith(f"{key}=")
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0].strip()
+
+
+def _inspect_listener_ports(ports: list[int]) -> dict[str, Any]:
+    returncode, stdout, stderr = run_command(
+        ["ss", "--tcp", "--listening", "--numeric", "--no-header"],
+        timeout=HEALTH_TIMEOUT_SECONDS,
+    )
+    if returncode != 0:
+        return {
+            "inspectable": False,
+            "configuredPorts": ports,
+            "presentPorts": [],
+            "error": stderr.strip()[:500],
+        }
+    configured = set(ports)
+    present: set[int] = set()
+    for line in stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        endpoint = fields[3]
+        _, separator, port_text = endpoint.rpartition(":")
+        if not separator:
+            continue
+        try:
+            port = int(port_text)
+        except ValueError:
+            continue
+        if port in configured:
+            present.add(port)
+    return {
+        "inspectable": True,
+        "configuredPorts": ports,
+        "presentPorts": sorted(present),
+        "error": "",
+    }
+
+
+def _inspect_container(container: str) -> dict[str, Any]:
+    returncode, stdout, stderr = run_command(
+        [
+            "docker", "container", "inspect",
+            "--format={{.State.Running}}\t{{.Config.Image}}\t{{.Image}}", container,
+        ],
+        timeout=HEALTH_TIMEOUT_SECONDS,
+    )
+    if returncode != 0:
+        error = stderr.strip()
+        absent = "no such" in error.lower()
+        return {
+            "inspectable": absent,
+            "exists": False if absent else None,
+            "running": False,
+            "configuredImage": "",
+            "imageId": "",
+            "error": "" if absent else error[:500],
+        }
+    parts = stdout.strip().split("\t")
+    if len(parts) != 3 or not IMAGE_ID_PATTERN.match(parts[2].strip()):
+        return {
+            "inspectable": False,
+            "exists": True,
+            "running": False,
+            "configuredImage": parts[1].strip() if len(parts) > 1 else "",
+            "imageId": parts[2].strip() if len(parts) > 2 else "",
+            "error": "docker container inspect returned incomplete immutable image evidence",
+        }
+    return {
+        "inspectable": True,
+        "exists": True,
+        "running": parts[0].lower() == "true",
+        "configuredImage": parts[1].strip(),
+        "imageId": parts[2].strip(),
+        "error": "",
+    }
+
+
+def _inspect_image_reference(image: str) -> dict[str, Any]:
+    returncode, stdout, stderr = run_command(
+        [
+            "docker", "image", "inspect",
+            "--format={{.Id}}\t{{json .RepoDigests}}", image,
+        ],
+        timeout=HEALTH_TIMEOUT_SECONDS,
+    )
+    if returncode != 0:
+        return {
+            "inspectable": False,
+            "reference": image,
+            "imageId": "",
+            "repoDigests": [],
+            "error": stderr.strip()[:500],
+        }
+    image_id, separator, repo_digests_json = stdout.strip().partition("\t")
+    try:
+        repo_digests = json.loads(repo_digests_json) if separator else None
+    except json.JSONDecodeError:
+        repo_digests = None
+    if (
+        not IMAGE_ID_PATTERN.match(image_id.strip())
+        or not isinstance(repo_digests, list)
+        or any(not isinstance(item, str) for item in repo_digests)
+    ):
+        return {
+            "inspectable": False,
+            "reference": image,
+            "imageId": image_id.strip(),
+            "repoDigests": repo_digests if isinstance(repo_digests, list) else [],
+            "error": "docker image inspect returned incomplete immutable image evidence",
+        }
+    return {
+        "inspectable": True,
+        "reference": image,
+        "imageId": image_id.strip(),
+        "repoDigests": repo_digests,
+        "error": "",
+    }
+
+
+def _image_binding_evidence(
+    container: str,
+    expected_image: str,
+    *,
+    container_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    container_state = container_state or _inspect_container(container)
+    expected_state = _inspect_image_reference(expected_image)
+    configured_reference_matches = (
+        container_state["inspectable"]
+        and container_state["configuredImage"] == expected_image
+    )
+    immutable_id_matches = (
+        container_state["inspectable"]
+        and expected_state["inspectable"]
+        and container_state["imageId"] == expected_state["imageId"]
+    )
+    expected_digest_present = (
+        expected_state["inspectable"]
+        and expected_image in expected_state["repoDigests"]
+    )
+    proof_complete = (
+        container_state["inspectable"]
+        and container_state["exists"] is True
+        and container_state["running"]
+        and expected_state["inspectable"]
+        and configured_reference_matches
+        and immutable_id_matches
+        and expected_digest_present
+    )
+    return {
+        "configuredReferenceMatches": configured_reference_matches,
+        "immutableImageIdMatches": immutable_id_matches,
+        "expectedDigestPresent": expected_digest_present,
+        "container": container_state,
+        "expectedImage": expected_state,
+        "proofComplete": proof_complete,
+    }
+
+
+def _rollback_terminal_evidence(
+    service: str,
+    mode: str,
+    expected_prior_image: str | None,
+) -> dict[str, Any]:
+    service_config = load_allowlist()["allowedServices"].get(service)
+    if service_config is None:
+        raise BrokerError(f"service {service} is not in the allowlist")
+    proof_config = service_config.get("rollbackProof")
+    if not isinstance(proof_config, dict):
+        raise BrokerError(f"service {service} has no rollback-proof profile")
+    ports = proof_config.get("listenerPorts")
+    if (
+        not isinstance(ports, list)
+        or not ports
+        or any(not isinstance(port, int) or isinstance(port, bool) or port < 1 or port > 65535 for port in ports)
+    ):
+        raise BrokerError(f"service {service} has invalid rollback-proof listener ports")
+    container = service_config.get("container")
+    image_env = service_config.get("imageEnv")
+    if not isinstance(container, str) or not container:
+        raise BrokerError(f"service {service} has no rollback-proof container artifact")
+
+    service_state = _check_service_active(service)
+    listeners = _inspect_listener_ports(ports)
+    container_state = _inspect_container(container)
+    evidence: dict[str, Any] = {
+        "schemaVersion": "gloops.rollback-proof.v1",
+        "service": service,
+        "mode": mode,
+        "serviceState": service_state,
+        "listeners": listeners,
+        "containerArtifact": container_state,
+    }
+
+    if mode == "absent":
+        proof_complete = (
+            not service_state["active"]
+            and listeners["inspectable"]
+            and not listeners["presentPorts"]
+            and container_state["inspectable"]
+            and container_state["exists"] is False
+        )
+        evidence.update({
+            "listenerAbsenceProved": listeners["inspectable"] and not listeners["presentPorts"],
+            "runtimeArtifactAbsenceProved": (
+                container_state["inspectable"] and container_state["exists"] is False
+            ),
+            "priorRestorationProved": False,
+            "proofComplete": proof_complete,
+        })
+        return evidence
+
+    if mode != "restored" or expected_prior_image is None:
+        raise BrokerError("rollback proof mode must be absent or restored with expectedPriorImage")
+    if not isinstance(image_env, str) or not image_env:
+        raise BrokerError(f"service {service} has no image environment binding")
+
+    approved_image_path = CONFIG_DIR / "approved-image"
+    runtime_env_path = CONFIG_DIR / "runtime.env"
+    approved_image = (
+        approved_image_path.read_text(encoding="utf-8").strip()
+        if approved_image_path.exists()
+        else None
+    )
+    runtime_image = _runtime_env_value(runtime_env_path, image_env)
+    front_door = _front_door_health(service)
+    image_binding = _image_binding_evidence(
+        container,
+        expected_prior_image,
+        container_state=container_state,
+    )
+    image_matches = {
+        "approvedImage": approved_image == expected_prior_image,
+        "runtimeImage": runtime_image == expected_prior_image,
+        "containerConfiguredImage": image_binding["configuredReferenceMatches"],
+        "containerImmutableImageId": image_binding["immutableImageIdMatches"],
+        "expectedRepoDigest": image_binding["expectedDigestPresent"],
+    }
+    proof_complete = (
+        service_state["active"]
+        and listeners["inspectable"]
+        and set(ports).issubset(set(listeners["presentPorts"]))
+        and image_binding["proofComplete"]
+        and all(image_matches.values())
+        and front_door["healthy"]
+    )
+    evidence.update({
+        "expectedPriorImage": expected_prior_image,
+        "imageMatches": image_matches,
+        "imageBinding": image_binding,
+        "frontDoorHealth": front_door,
+        "listenerAbsenceProved": False,
+        "runtimeArtifactAbsenceProved": False,
+        "priorRestorationProved": proof_complete,
+        "proofComplete": proof_complete,
+    })
+    return evidence
+
+
+def _safe_rollback_terminal_evidence(
+    service: str,
+    expected_prior_image: str,
+    rollback_restart_code: int,
+) -> dict[str, Any]:
+    if rollback_restart_code != 0:
+        return {
+            "schemaVersion": "gloops.rollback-proof.v1",
+            "service": service,
+            "mode": "restored",
+            "proofComplete": False,
+            "error": "rollback restart failed before terminal proof",
+        }
+    try:
+        return _rollback_terminal_evidence(service, "restored", expected_prior_image)
+    except BrokerError as error:
+        return {
+            "schemaVersion": "gloops.rollback-proof.v1",
+            "service": service,
+            "mode": "restored",
+            "proofComplete": False,
+            "error": str(error)[:500],
+        }
+
+
+def op_rollback_proof(params: dict[str, Any], connection: sqlite3.Connection,
+                      actor: str, idempotency_key: str) -> Any:
+    service = params.get("service")
+    if not isinstance(service, str) or not SERVICE_NAME_PATTERN.match(service):
+        raise BrokerError("service must be a valid systemd unit name ending in .service")
+    if service not in allowed_service_names():
+        raise BrokerError(f"service {service} is not in the allowlist")
+    mode = params.get("mode")
+    if mode not in {"absent", "restored"}:
+        raise BrokerError("mode must be absent or restored")
+    expected_prior_image = params.get("expectedPriorImage")
+    if mode == "restored":
+        if not isinstance(expected_prior_image, str) or not IMAGE_DIGEST_PATTERN.match(expected_prior_image):
+            raise BrokerError("expectedPriorImage must be a pinned digest in restored mode")
+    elif expected_prior_image is not None:
+        raise BrokerError("expectedPriorImage is only valid in restored mode")
+
+    target = f"{service}:{mode}"
+    receipt_id = derive_receipt_id("prove_rollback_terminal_state", target, idempotency_key)
+    receipt = create_receipt(
+        connection, receipt_id, "rollback-proof", target,
+        idempotency_key, actor, "prove_rollback_terminal_state",
+    )
+    if receipt["state"] != "initiated":
+        if receipt["state"] != "completed":
+            raise BrokerError(
+                f"previous rollback-proof receipt is {receipt['state']}; "
+                f"receiptId={receipt['receiptId']}"
+            )
+        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+
+    evidence = _rollback_terminal_evidence(service, mode, expected_prior_image)
+    if not evidence["proofComplete"]:
+        complete_receipt(connection, receipt_id, "failed", evidence, "failure")
+        raise BrokerError(f"rollback terminal proof failed; receiptId={receipt_id}")
     complete_receipt(connection, receipt_id, "completed", evidence, "success")
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
 
@@ -879,6 +1406,8 @@ def process_request(
             data = op_deploy_pinned_image(request, connection, actor, idempotency_key)
         elif operation == "rollback-rehearsal":
             data = op_rollback_rehearsal(request, connection, actor, idempotency_key)
+        elif operation == "rollback-proof":
+            data = op_rollback_proof(request, connection, actor, idempotency_key)
         else:
             raise BrokerError(f"unhandled mutating operation: {operation}")
     else:
@@ -886,6 +1415,8 @@ def process_request(
             data = op_service_status(request)
         elif operation == "service-health":
             data = op_service_health(request)
+        elif operation == "front-door-health":
+            data = op_front_door_health(request)
         elif operation == "disk-usage":
             data = op_disk_usage(request)
         elif operation == "memory-usage":

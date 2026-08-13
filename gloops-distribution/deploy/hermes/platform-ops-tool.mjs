@@ -11,6 +11,7 @@
  * Operations (read-only):
  *   service-status   --service <unit.service>
  *   service-health   --service <unit.service>
+ *   front-door-health --service <unit.service>
  *   disk-usage       [--path /]
  *   memory-usage
  *   cpu-usage
@@ -23,6 +24,8 @@
  *   cache-reclaim        --cache <name> --actor <id> --idempotencyKey <key>
  *   deploy-pinned-image  --service <unit.service> --image <digest> --actor <id> --idempotencyKey <key>
  *   rollback-rehearsal   --service <unit.service> --actor <id> --idempotencyKey <key>
+ *   rollback-proof       --service <unit.service> --mode <absent|restored>
+ *                        [--expectedPriorImage <digest>] --actor <id> --idempotencyKey <key>
  *
  * Output is bounded JSON to stdout and never includes credentials.
  */
@@ -39,6 +42,7 @@ const MUTATING_TIMEOUT_MS = 180_000;
 const ALLOWED_OPERATIONS = new Set([
   "service-status",
   "service-health",
+  "front-door-health",
   "service-restart",
   "disk-usage",
   "memory-usage",
@@ -47,6 +51,7 @@ const ALLOWED_OPERATIONS = new Set([
   "cache-reclaim",
   "deploy-pinned-image",
   "rollback-rehearsal",
+  "rollback-proof",
   "list-receipts",
   "get-receipt",
 ]);
@@ -56,6 +61,7 @@ const MUTATING_OPERATIONS = new Set([
   "cache-reclaim",
   "deploy-pinned-image",
   "rollback-rehearsal",
+  "rollback-proof",
 ]);
 
 export function requestTimeoutMs(request) {
@@ -103,10 +109,29 @@ function buildRequest(args) {
   switch (operation) {
     case "service-status":
     case "service-health":
+    case "front-door-health":
     case "service-restart":
     case "rollback-rehearsal": {
       if (!args["--service"]) fail("--service is required");
       request.service = args["--service"];
+      break;
+    }
+    case "rollback-proof": {
+      if (!args["--service"]) fail("--service is required");
+      request.service = args["--service"];
+      const mode = args["--mode"];
+      if (mode !== "absent" && mode !== "restored") {
+        fail("--mode must be absent or restored for rollback-proof");
+      }
+      request.mode = mode;
+      if (mode === "restored") {
+        if (!args["--expectedPriorImage"]) {
+          fail("--expectedPriorImage is required for restored rollback-proof");
+        }
+        request.expectedPriorImage = args["--expectedPriorImage"];
+      } else if (args["--expectedPriorImage"]) {
+        fail("--expectedPriorImage is only valid for restored rollback-proof");
+      }
       break;
     }
     case "deploy-pinned-image": {
@@ -230,7 +255,11 @@ async function main() {
   try {
     const response = await sendRequest(request);
     process.stdout.write(JSON.stringify(response, null, 2) + "\n");
-    if (response.ok === false) {
+    if (
+      response.ok === false ||
+      response?.data?.healthy === false ||
+      response?.data?.state === "failed"
+    ) {
       process.exit(1);
     }
   } catch (error) {

@@ -58,12 +58,22 @@ root-owned, mode 0555).
 
 ```json
 {
-  "schemaVersion": "gloops.platform-ops-allowlist.v1",
+  "schemaVersion": "gloops.platform-ops-allowlist.v2",
   "allowedServices": {
     "<unit.service>": {
       "healthUrl": "http://... or null",
       "container": "docker-name or null",
-      "imageEnv": "ENV_VAR or null"
+      "imageEnv": "ENV_VAR or null",
+      "frontDoorHealth": {
+        "publicUrl": "https://.../",
+        "publicBodyContains": "<div id=\"root\"></div>",
+        "apiHealthUrl": "https://.../api/health",
+        "protectedUrl": "https://.../api/companies",
+        "websocketUrl": "https://.../api/companies/<probe-id>/events/ws"
+      },
+      "rollbackProof": {
+        "listenerPorts": [3100]
+      }
     }
   },
   "allowedCachePaths": {
@@ -82,6 +92,7 @@ root-owned, mode 0555).
 |---|---|---|
 | `service-status` | `service` | systemctl show for one allowed unit |
 | `service-health` | `service` | active state + optional HTTP health |
+| `front-door-health` | `service` | fail-closed public browser, API JSON, protected-route, and websocket-upgrade matrix |
 | `disk-usage` | `path` (optional, default `/`) | df for allowed paths only |
 | `memory-usage` | none | free -m |
 | `cpu-usage` | none | uptime |
@@ -97,6 +108,29 @@ root-owned, mode 0555).
 | `cache-reclaim` | `cache` | find -delete on cache contents + before/after size |
 | `deploy-pinned-image` | `service`, `image` | docker pull + systemctl restart |
 | `rollback-rehearsal` | `service` | verify rollback script and backups exist |
+| `rollback-proof` | `service`, `mode`, optional `expectedPriorImage` | durable terminal proof: listener/container absence or exact prior image + front-door restoration |
+
+`service-status` and `service-health` remain narrow diagnostics. They are not
+deployment acceptance. `front-door-health` is the credential-free release gate:
+the browser route must return HTML containing its allowlisted application-root
+marker, `/api/health` must return JSON with
+`status=ok`, the representative protected route must reject an anonymous caller,
+and the websocket route must either upgrade (`101`) or reach its authentication
+boundary (`401`/`403`). A generic 200 page cannot satisfy the API probe.
+The client exits nonzero when a health response has `healthy=false` or a
+receipt is failed, so shell and agent gates cannot mistake inspectable failure
+evidence for success.
+
+`rollback-proof --mode absent` succeeds only when the unit is inactive, every
+allowlisted listener is absent, and the named runtime container artifact is
+absent. `rollback-proof --mode restored` requires the expected prior pinned
+image in `approved-image` and `runtime.env`; the running container's configured
+reference must match it; and Docker must resolve that pinned reference to the
+same immutable image ID as the running container, with the reference present in
+`RepoDigests`. The listener and full front-door matrix must also pass. Candidate
+deploy acceptance applies the same configured-reference, immutable-image-ID,
+and `RepoDigests` binding. Failed proofs are retained as failed, hash-chained
+receipts; an uninspectable listener, container, or image reference fails closed.
 
 Read-only calls have a 30-second client deadline. Mutating calls allow 180
 seconds so image pulls, migrations, and post-restart health checks can settle
@@ -109,6 +143,7 @@ never terminates the broker process.
 ```sh
 # Read-only
 node /opt/data/bin/platform-ops-tool.mjs --operation service-status --service paperclip-gloops.service
+node /opt/data/bin/platform-ops-tool.mjs --operation front-door-health --service paperclip-gloops.service
 node /opt/data/bin/platform-ops-tool.mjs --operation disk-usage --path /
 node /opt/data/bin/platform-ops-tool.mjs --operation cache-inspect --cache hermes-cache
 
@@ -120,6 +155,11 @@ node /opt/data/bin/platform-ops-tool.mjs --operation deploy-pinned-image \
   --service paperclip-gloops.service \
   --image ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
   --actor wren-agent --idempotencyKey deploy-001
+
+node /opt/data/bin/platform-ops-tool.mjs --operation rollback-proof \
+  --service paperclip-gloops.service --mode restored \
+  --expectedPriorImage ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
+  --actor wren-agent --idempotencyKey rollback-proof-001
 ```
 
 ## Verification

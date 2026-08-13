@@ -223,6 +223,14 @@ function formatDuration(start: string | Date | null | undefined, end: string | D
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
+function truthStageLabel(stage: NonNullable<RunForIssue["truth"]>["stage"]) {
+  return stage.replaceAll("_", " ");
+}
+
+function shortOid(oid: string | null | undefined) {
+  return oid ? oid.slice(0, 10) : null;
+}
+
 function toIsoString(value: string | Date | null | undefined) {
   if (!value) return null;
   return value instanceof Date ? value.toISOString() : value;
@@ -829,6 +837,64 @@ export function IssueRunLedgerContent({
                         >
                           {retryState.retryOfRunId.slice(0, 8)}
                         </Link>
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {run.truth ? (
+                  <div
+                    className="rounded-md border border-border/70 bg-accent/20 px-2 py-2 text-xs leading-5 text-muted-foreground"
+                    data-testid={`run-truth-${run.runId}`}
+                  >
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span>
+                        <span className="font-medium text-foreground">Stage:</span>{" "}
+                        <span className="capitalize">{truthStageLabel(run.truth.stage)}</span>
+                      </span>
+                      <span>
+                        <span className="font-medium text-foreground">Retry epoch:</span>{" "}
+                        {run.truth.retryEpoch}
+                      </span>
+                      {run.truth.review ? (
+                        <span>
+                          <span className="font-medium text-foreground">Review:</span>{" "}
+                          {run.truth.review.status ?? "recorded"}
+                          {shortOid(run.truth.review.headSha) ? ` @ ${shortOid(run.truth.review.headSha)}` : ""}
+                        </span>
+                      ) : null}
+                      {run.truth.exactOids?.remoteNew ? (
+                        <span>
+                          <span className="font-medium text-foreground">Published head:</span>{" "}
+                          <span className="font-mono">{shortOid(run.truth.exactOids.remoteNew)}</span>
+                        </span>
+                      ) : null}
+                      {run.truth.deployment ? (
+                        <span>
+                          <span className="font-medium text-foreground">Deploy:</span>{" "}
+                          {run.truth.deployment.status ?? run.truth.deployment.action}
+                        </span>
+                      ) : null}
+                      {run.truth.rollback ? (
+                        <span>
+                          <span className="font-medium text-foreground">Rollback:</span>{" "}
+                          {run.truth.rollback.status ?? run.truth.rollback.action}
+                        </span>
+                      ) : null}
+                      {run.truth.terminalReceipt ? (
+                        <span>
+                          <span className="font-medium text-foreground">Receipt:</span>{" "}
+                          <span className="font-mono">{run.truth.terminalReceipt.id.slice(0, 8)}</span>
+                        </span>
+                      ) : null}
+                    </div>
+                    {run.truth.recoveryOwner ? (
+                      <p className="mt-1">
+                        <span className="font-medium text-foreground">Recovery owner:</span>{" "}
+                        {run.truth.recoveryOwner.agentId
+                          ? agentMap.get(run.truth.recoveryOwner.agentId)?.name ?? run.truth.recoveryOwner.agentId.slice(0, 8)
+                          : run.truth.recoveryOwner.userId ?? "unassigned"}
+                        {` · ${run.truth.recoveryOwner.nextAction}`}
                       </p>
                     ) : null}
                   </div>

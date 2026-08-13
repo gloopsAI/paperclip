@@ -31,14 +31,33 @@ assert SPEC and SPEC.loader
 broker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(broker)
 
+VERIFY_MODULE_PATH = Path(__file__).with_name("verify-platform-ops-broker.py")
+VERIFY_SPEC = importlib.util.spec_from_file_location("verify_platform_ops_broker", VERIFY_MODULE_PATH)
+assert VERIFY_SPEC and VERIFY_SPEC.loader
+verify_broker = importlib.util.module_from_spec(VERIFY_SPEC)
+VERIFY_SPEC.loader.exec_module(verify_broker)
+
 # Default test allowlist used by most tests
 TEST_ALLOWLIST = {
-    "schemaVersion": "gloops.platform-ops-allowlist.v1",
+    "schemaVersion": "gloops.platform-ops-allowlist.v2",
     "allowedServices": {
         "paperclip-gloops.service": {
             "healthUrl": "http://127.0.0.1:3100/api/health",
             "container": "paperclip-gloops",
             "imageEnv": "PAPERCLIP_IMAGE",
+            "frontDoorHealth": {
+                "publicUrl": "https://paperclip.gloops.ai/",
+                "publicBodyContains": "<div id=\"root\"></div>",
+                "apiHealthUrl": "https://paperclip.gloops.ai/api/health",
+                "protectedUrl": "https://paperclip.gloops.ai/api/companies",
+                "websocketUrl": (
+                    "https://paperclip.gloops.ai/api/companies/"
+                    "00000000-0000-0000-0000-000000000000/events/ws"
+                ),
+            },
+            "rollbackProof": {
+                "listenerPorts": [3100],
+            },
         },
         "paperclip-hermes-execution.service": {
             "healthUrl": None,
@@ -177,6 +196,18 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["activeState"], "active")
 
+    def test_allowlist_verifier_accepts_complete_front_door_and_rollback_profiles(self):
+        self.assertEqual(verify_broker.verify_allowlist(self.config), [])
+
+    def test_allowlist_verifier_fails_closed_on_incomplete_front_door_profile(self):
+        allowlist = json.loads(self.allowlist_path.read_text())
+        del allowlist["allowedServices"]["paperclip-gloops.service"]["frontDoorHealth"][
+            "websocketUrl"
+        ]
+        self.allowlist_path.write_text(json.dumps(allowlist))
+        errors = verify_broker.verify_allowlist(self.config)
+        self.assertTrue(any("websocketUrl" in error for error in errors), errors)
+
     # -------------------------------------------------------------------------
     # Read-only diagnostic operations
     # -------------------------------------------------------------------------
@@ -223,6 +254,66 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["data"]["healthy"])
         self.assertNotIn("httpStatus", result["data"])
+
+    def test_front_door_health_requires_the_full_route_matrix(self):
+        with self.paths():
+            mock_results = [
+                (0, "active\n", ""),
+                (0, '<!doctype html><div id="root"></div>\n__PAPERCLIP_HTTP_PROBE__200\ttext/html; charset=utf-8', ""),
+                (0, '{"status":"ok"}\n__PAPERCLIP_HTTP_PROBE__200\tapplication/json', ""),
+                (0, '{"error":"board access required"}\n__PAPERCLIP_HTTP_PROBE__403\tapplication/json', ""),
+                (0, "\n__PAPERCLIP_HTTP_PROBE__403\ttext/plain", ""),
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results) as run:
+                broker.process_request({
+                    "operation": "front-door-health",
+                    "service": "paperclip-gloops.service",
+                })
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(any("https://paperclip.gloops.ai/" in command for command in commands))
+        self.assertTrue(any("/api/health" in " ".join(command) for command in commands))
+        self.assertTrue(any("/api/companies" in " ".join(command) for command in commands))
+        self.assertTrue(any("Upgrade: websocket" in command for command in commands))
+
+    def test_front_door_health_rejects_a_vacuous_api_200(self):
+        with self.paths():
+            mock_results = [
+                (0, "active\n", ""),
+                (0, '<!doctype html><div id="root"></div>\n__PAPERCLIP_HTTP_PROBE__200\ttext/html', ""),
+                (0, '<!doctype html>\n__PAPERCLIP_HTTP_PROBE__200\ttext/html', ""),
+                (0, '{}\n__PAPERCLIP_HTTP_PROBE__403\tapplication/json', ""),
+                (0, "\n__PAPERCLIP_HTTP_PROBE__403\ttext/plain", ""),
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                result = broker.process_request({
+                    "operation": "front-door-health",
+                    "service": "paperclip-gloops.service",
+                })
+        self.assertFalse(result["data"]["healthy"])
+        api_probe = next(
+            probe for probe in result["data"]["probes"]
+            if probe["name"] == "api-health"
+        )
+        self.assertFalse(api_probe["passed"])
+        self.assertIsNone(api_probe["jsonStatus"])
+
+    def test_websocket_probe_accepts_upgrade_before_bounded_disconnect(self):
+        with self.paths():
+            with patch.object(
+                broker,
+                "run_command",
+                return_value=(
+                    28,
+                    "\n__PAPERCLIP_HTTP_PROBE__101\t",
+                    "curl: (28) bounded websocket probe elapsed",
+                ),
+            ):
+                result = broker._websocket_probe(
+                    TEST_ALLOWLIST["allowedServices"]["paperclip-gloops.service"]
+                    ["frontDoorHealth"]["websocketUrl"]
+                )
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["transportSucceeded"])
 
     def test_disk_usage_calls_df_correctly(self):
         with self.paths():
@@ -415,13 +506,24 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 (0, "active\n", ""),  # post-health
             ]
             with patch.object(broker, "run_command", side_effect=mock_results):
-                result = broker.process_request({
-                    "operation": "deploy-pinned-image",
-                    "service": "paperclip-gloops.service",
-                    "image": image,
-                    "actor": "wren-agent",
-                    "idempotencyKey": "deploy-002",
-                }, connection=connection)
+                with patch.object(
+                    broker, "_front_door_health",
+                    return_value={"healthy": True, "probes": []},
+                ):
+                    with patch.object(
+                        broker, "_image_binding_evidence",
+                        return_value={
+                            "proofComplete": True,
+                            "immutableImageIdMatches": True,
+                        },
+                    ):
+                        result = broker.process_request({
+                            "operation": "deploy-pinned-image",
+                            "service": "paperclip-gloops.service",
+                            "image": image,
+                            "actor": "wren-agent",
+                            "idempotencyKey": "deploy-002",
+                        }, connection=connection)
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["state"], "completed")
         self.assertEqual(
@@ -429,7 +531,101 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             f"PAPERCLIP_IMAGE={image}\n",
         )
         self.assertEqual((self.config / "approved-image").read_text(), image + "\n")
+        self.assertTrue(result["data"]["evidence"]["comprehensiveHealthPassed"])
         connection.close()
+
+    def test_deploy_front_door_failure_restores_and_proves_previous_release(self):
+        with self.paths():
+            connection = broker.connect_database()
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            previous_env = (self.config / "runtime.env").read_text()
+            previous_pin = (self.config / "approved-image").read_text()
+            mock_results = [
+                (0, "", ""),          # docker pull
+                (0, "", ""),          # restart candidate
+                (0, "active\n", ""),  # candidate systemctl health
+                (0, "", ""),          # rollback restart
+                (0, "active\n", ""),  # rollback systemctl health
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with patch.object(
+                    broker, "_front_door_health",
+                    return_value={
+                        "healthy": False,
+                        "probes": [{"name": "public-browser", "passed": False}],
+                    },
+                ):
+                    with patch.object(
+                        broker, "_image_binding_evidence",
+                        return_value={"proofComplete": True},
+                    ):
+                        with patch.object(
+                            broker, "_safe_rollback_terminal_evidence",
+                            return_value={"proofComplete": True, "schemaVersion": "gloops.rollback-proof.v1"},
+                        ):
+                            with self.assertRaisesRegex(
+                                broker.BrokerError,
+                                "failed comprehensive health",
+                            ):
+                                broker.process_request({
+                                    "operation": "deploy-pinned-image",
+                                    "service": "paperclip-gloops.service",
+                                    "image": image,
+                                    "actor": "wren-agent",
+                                    "idempotencyKey": "deploy-front-door-rollback-001",
+                                }, connection=connection)
+            self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+            self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
+            receipts = broker.list_receipts(connection)
+            self.assertEqual(receipts[0]["state"], "failed")
+            self.assertTrue(receipts[0]["evidence"]["priorRestorationProved"])
+            connection.close()
+
+    def test_deploy_rejects_matching_config_with_mismatched_immutable_id(self):
+        with self.paths():
+            connection = broker.connect_database()
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            running_id = "sha256:" + "b" * 64
+            expected_id = "sha256:" + "c" * 64
+            mock_results = [
+                (0, "", ""),  # docker pull
+                (0, "", ""),  # restart candidate
+                (0, "active\n", ""),  # candidate systemctl health
+                (0, f"true\t{image}\t{running_id}\n", ""),  # container inspect
+                (0, f'{expected_id}\t["{image}"]\n', ""),  # image inspect
+                (0, "", ""),  # rollback restart
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with patch.object(
+                    broker, "_front_door_health",
+                    return_value={"healthy": True, "probes": []},
+                ):
+                    with patch.object(
+                        broker, "_safe_rollback_terminal_evidence",
+                        return_value={
+                            "proofComplete": True,
+                            "schemaVersion": "gloops.rollback-proof.v1",
+                        },
+                    ):
+                        with self.assertRaisesRegex(
+                            broker.BrokerError,
+                            "failed comprehensive health",
+                        ):
+                            broker.process_request({
+                                "operation": "deploy-pinned-image",
+                                "service": "paperclip-gloops.service",
+                                "image": image,
+                                "actor": "wren-agent",
+                                "idempotencyKey": "deploy-wrong-id-001",
+                            }, connection=connection)
+            receipt = broker.list_receipts(connection)[0]
+            image_binding = receipt["evidence"]["postImageBinding"]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertTrue(image_binding["configuredReferenceMatches"])
+            self.assertFalse(image_binding["immutableImageIdMatches"])
+            self.assertFalse(image_binding["proofComplete"])
+            self.assertTrue(receipt["evidence"]["priorRestorationProved"])
+            connection.close()
 
     def test_deploy_restart_failure_restores_previous_release_pin(self):
         with self.paths():
@@ -443,17 +639,21 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 (0, "", ""),  # rollback restart
             ]
             with patch.object(broker, "run_command", side_effect=mock_results):
-                with self.assertRaisesRegex(
-                    broker.BrokerError,
-                    "service restart after deploy failed",
+                with patch.object(
+                    broker, "_safe_rollback_terminal_evidence",
+                    return_value={"proofComplete": True, "schemaVersion": "gloops.rollback-proof.v1"},
                 ):
-                    broker.process_request({
-                        "operation": "deploy-pinned-image",
-                        "service": "paperclip-gloops.service",
-                        "image": image,
-                        "actor": "wren-agent",
-                        "idempotencyKey": "deploy-rollback-001",
-                    }, connection=connection)
+                    with self.assertRaisesRegex(
+                        broker.BrokerError,
+                        "service restart after deploy failed",
+                    ):
+                        broker.process_request({
+                            "operation": "deploy-pinned-image",
+                            "service": "paperclip-gloops.service",
+                            "image": image,
+                            "actor": "wren-agent",
+                            "idempotencyKey": "deploy-rollback-001",
+                        }, connection=connection)
         self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
         self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
         connection.close()
@@ -491,6 +691,126 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertTrue(result["data"]["evidence"]["rollbackScriptExists"])
         self.assertTrue(result["data"]["evidence"]["rollbackScriptExecutable"])
         connection.close()
+
+    def test_rollback_absence_proof_receipts_listener_and_artifact_absence(self):
+        with self.paths():
+            connection = broker.connect_database()
+            mock_results = [
+                (3, "inactive\n", ""),
+                (0, "", ""),
+                (1, "", "Error: No such container: paperclip-gloops"),
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                result = broker.process_request({
+                    "operation": "rollback-proof",
+                    "service": "paperclip-gloops.service",
+                    "mode": "absent",
+                    "actor": "wren-agent",
+                    "idempotencyKey": "rollback-absence-001",
+                }, connection=connection)
+        evidence = result["data"]["evidence"]
+        self.assertTrue(evidence["proofComplete"])
+        self.assertTrue(evidence["listenerAbsenceProved"])
+        self.assertTrue(evidence["runtimeArtifactAbsenceProved"])
+        connection.close()
+
+    def test_rollback_absence_proof_fails_closed_when_listener_remains(self):
+        with self.paths():
+            connection = broker.connect_database()
+            mock_results = [
+                (3, "inactive\n", ""),
+                (0, "LISTEN 0 4096 127.0.0.1:3100 0.0.0.0:*\n", ""),
+                (1, "", "Error: No such container: paperclip-gloops"),
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with self.assertRaisesRegex(broker.BrokerError, "terminal proof failed"):
+                    broker.process_request({
+                        "operation": "rollback-proof",
+                        "service": "paperclip-gloops.service",
+                        "mode": "absent",
+                        "actor": "wren-agent",
+                        "idempotencyKey": "rollback-absence-listener-001",
+                    }, connection=connection)
+            receipt = broker.list_receipts(connection)[0]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertFalse(receipt["evidence"]["listenerAbsenceProved"])
+            with patch.object(broker, "run_command", side_effect=[]):
+                with self.assertRaisesRegex(
+                    broker.BrokerError,
+                    "previous rollback-proof receipt is failed",
+                ):
+                    broker.process_request({
+                        "operation": "rollback-proof",
+                        "service": "paperclip-gloops.service",
+                        "mode": "absent",
+                        "actor": "wren-agent",
+                        "idempotencyKey": "rollback-absence-listener-001",
+                    }, connection=connection)
+            connection.close()
+
+    def test_rollback_restoration_proof_binds_prior_image_and_front_door(self):
+        with self.paths():
+            connection = broker.connect_database()
+            previous = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "1" * 64
+            image_id = "sha256:" + "a" * 64
+            mock_results = [
+                (0, "active\n", ""),
+                (0, "LISTEN 0 4096 127.0.0.1:3100 0.0.0.0:*\n", ""),
+                (0, f"true\t{previous}\t{image_id}\n", ""),
+                (0, f'{image_id}\t["{previous}"]\n', ""),
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with patch.object(
+                    broker, "_front_door_health",
+                    return_value={"healthy": True, "probes": []},
+                ):
+                    result = broker.process_request({
+                        "operation": "rollback-proof",
+                        "service": "paperclip-gloops.service",
+                        "mode": "restored",
+                        "expectedPriorImage": previous,
+                        "actor": "wren-agent",
+                        "idempotencyKey": "rollback-restored-001",
+                    }, connection=connection)
+        evidence = result["data"]["evidence"]
+        self.assertTrue(evidence["proofComplete"])
+        self.assertTrue(evidence["priorRestorationProved"])
+        self.assertTrue(all(evidence["imageMatches"].values()))
+        connection.close()
+
+    def test_rollback_restoration_rejects_matching_config_with_mismatched_immutable_id(self):
+        with self.paths():
+            connection = broker.connect_database()
+            previous = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "1" * 64
+            configured_id = "sha256:" + "a" * 64
+            expected_id = "sha256:" + "b" * 64
+            mock_results = [
+                (0, "active\n", ""),
+                (0, "LISTEN 0 4096 127.0.0.1:3100 0.0.0.0:*\n", ""),
+                (0, f"true\t{previous}\t{configured_id}\n", ""),
+                (0, f'{expected_id}\t["{previous}"]\n', ""),
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with patch.object(
+                    broker, "_front_door_health",
+                    return_value={"healthy": True, "probes": []},
+                ):
+                    with self.assertRaisesRegex(broker.BrokerError, "terminal proof failed"):
+                        broker.process_request({
+                            "operation": "rollback-proof",
+                            "service": "paperclip-gloops.service",
+                            "mode": "restored",
+                            "expectedPriorImage": previous,
+                            "actor": "wren-agent",
+                            "idempotencyKey": "rollback-restored-wrong-id-001",
+                        }, connection=connection)
+            receipt = broker.list_receipts(connection)[0]
+            evidence = receipt["evidence"]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertTrue(evidence["imageMatches"]["containerConfiguredImage"])
+            self.assertFalse(evidence["imageMatches"]["containerImmutableImageId"])
+            self.assertFalse(evidence["proofComplete"])
+            connection.close()
 
     # -------------------------------------------------------------------------
     # Receipt queries
