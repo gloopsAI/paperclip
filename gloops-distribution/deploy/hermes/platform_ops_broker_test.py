@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -574,7 +575,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                         ):
                             with self.assertRaisesRegex(
                                 broker.BrokerError,
-                                "failed comprehensive health",
+                                "prior release restoration proved",
                             ):
                                 broker.process_request({
                                     "operation": "deploy-pinned-image",
@@ -618,7 +619,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     ):
                         with self.assertRaisesRegex(
                             broker.BrokerError,
-                            "failed comprehensive health",
+                            "prior release restoration proved",
                         ):
                             broker.process_request({
                                 "operation": "deploy-pinned-image",
@@ -654,7 +655,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(
                         broker.BrokerError,
-                        "service restart after deploy failed",
+                        "prior release restoration proved",
                     ):
                         broker.process_request({
                             "operation": "deploy-pinned-image",
@@ -698,7 +699,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             connection.close()
 
             self.assertFalse(response["ok"])
-            self.assertIn("service restart after deploy failed", response["error"])
+            self.assertIn("prior release restoration proved", response["error"])
             self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
             self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
 
@@ -720,6 +721,230 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             self.assertTrue(replay["ok"])
             self.assertTrue(replay["data"]["replayed"])
             self.assertEqual(replay["data"]["state"], "failed")
+            replay_command.assert_not_called()
+            fresh.close()
+
+    def test_socket_deploy_exceptions_after_every_mutation_boundary_compensate(self):
+        cases = [
+            ("runtime-env-written", "checkpoint"),
+            ("approved-image-written", "checkpoint"),
+            ("candidate-restart-returned", "checkpoint"),
+            ("post-service-health", "checkpoint"),
+            ("post-front-door-health", "checkpoint"),
+            ("post-image-binding", "checkpoint"),
+            ("candidate-restart-timeout", "restart-timeout"),
+            ("candidate-restart-command-missing", "restart-missing"),
+            ("post-service-health-exception", "service-health"),
+            ("post-front-door-health-exception", "front-door"),
+            ("post-image-binding-exception", "image-binding"),
+        ]
+        for index, (label, mode) in enumerate(cases):
+            with self.subTest(label=label), self.paths():
+                image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+                request = {
+                    "operation": "deploy-pinned-image",
+                    "service": "paperclip-gloops.service",
+                    "image": image,
+                    "actor": "wren-agent",
+                    "idempotencyKey": f"deploy-boundary-{index}",
+                }
+                previous_env = (self.config / "runtime.env").read_text()
+                previous_pin = (self.config / "approved-image").read_text()
+                connection = broker.connect_database()
+                command_calls: list[list[str]] = []
+
+                def command(args, timeout=broker.COMMAND_TIMEOUT_SECONDS, env=None):
+                    command_calls.append(args)
+                    if args[:2] == ["docker", "pull"]:
+                        return 0, "", ""
+                    if args[:2] == ["systemctl", "restart"] and len(command_calls) == 2:
+                        if mode == "restart-timeout":
+                            raise broker.BrokerError("command timed out")
+                        if mode == "restart-missing":
+                            raise broker.BrokerError("required command is not available")
+                    return 0, "", ""
+
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(broker, "run_command", side_effect=command))
+                    stack.enter_context(patch.object(
+                        broker,
+                        "_safe_rollback_terminal_evidence",
+                        return_value={
+                            "proofComplete": True,
+                            "schemaVersion": "gloops.rollback-proof.v1",
+                        },
+                    ))
+                    if mode == "checkpoint":
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_deploy_checkpoint",
+                            side_effect=lambda phase, target=label: (
+                                (_ for _ in ()).throw(RuntimeError("injected boundary failure"))
+                                if phase == target
+                                else None
+                            ),
+                        ))
+                    elif mode == "service-health":
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_check_service_active",
+                            side_effect=RuntimeError("injected service health failure"),
+                        ))
+                    elif mode == "front-door":
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_check_service_active",
+                            return_value={"active": True, "state": "active"},
+                        ))
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_front_door_health",
+                            side_effect=RuntimeError("injected front door failure"),
+                        ))
+                    elif mode == "image-binding":
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_check_service_active",
+                            return_value={"active": True, "state": "active"},
+                        ))
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_front_door_health",
+                            return_value={"healthy": True, "probes": []},
+                        ))
+                        stack.enter_context(patch.object(
+                            broker,
+                            "_image_binding_evidence",
+                            side_effect=RuntimeError("injected image binding failure"),
+                        ))
+                    response = self.socket_request(request, connection)
+                connection.close()
+
+                self.assertFalse(response["ok"])
+                self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+                self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
+                self.assertGreaterEqual(
+                    sum(call[:2] == ["systemctl", "restart"] for call in command_calls),
+                    1 if label in {"runtime-env-written", "approved-image-written"} else 2,
+                )
+
+                fresh = broker.connect_database()
+                receipt = broker.list_receipts(fresh)[0]
+                self.assertEqual(receipt["state"], "failed")
+                self.assertEqual(receipt["outcome"], "failure")
+                self.assertTrue(receipt["evidence"]["configurationRestored"])
+                self.assertTrue(receipt["evidence"]["rollbackRestartSucceeded"])
+                self.assertTrue(receipt["evidence"]["priorRestorationProved"])
+                self.assertEqual(
+                    [row["state"] for row in fresh.execute("SELECT state FROM journal ORDER BY sequence")],
+                    ["initiated", "failed"],
+                )
+                with patch.object(broker, "run_command") as replay_command:
+                    replay = self.socket_request(request, fresh)
+                self.assertTrue(replay["ok"])
+                self.assertTrue(replay["data"]["replayed"])
+                self.assertEqual(replay["data"]["state"], "failed")
+                replay_command.assert_not_called()
+                fresh.close()
+                self.db_path.unlink(missing_ok=True)
+                Path(str(self.db_path) + "-wal").unlink(missing_ok=True)
+                Path(str(self.db_path) + "-shm").unlink(missing_ok=True)
+
+    def test_socket_unproved_compensation_is_durable_reconciliation_required(self):
+        with self.paths():
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            request = {
+                "operation": "deploy-pinned-image",
+                "service": "paperclip-gloops.service",
+                "image": image,
+                "actor": "wren-agent",
+                "idempotencyKey": "deploy-reconciliation-required-001",
+            }
+            connection = broker.connect_database()
+            with patch.object(
+                broker,
+                "run_command",
+                side_effect=[(0, "", ""), (1, "", "candidate failed"), (1, "", "rollback failed")],
+            ), patch.object(
+                broker,
+                "_safe_rollback_terminal_evidence",
+                return_value={
+                    "proofComplete": False,
+                    "schemaVersion": "gloops.rollback-proof.v1",
+                    "error": "rollback restart failed before terminal proof",
+                },
+            ):
+                response = self.socket_request(request, connection)
+            connection.close()
+            self.assertFalse(response["ok"])
+            self.assertIn("requires reconciliation", response["error"])
+
+            fresh = broker.connect_database()
+            receipt = broker.list_receipts(fresh)[0]
+            self.assertEqual(receipt["state"], "reconciliation_required")
+            self.assertEqual(receipt["outcome"], "unknown")
+            self.assertTrue(receipt["evidence"]["configurationRestored"])
+            self.assertFalse(receipt["evidence"]["priorRestorationProved"])
+            self.assertEqual(
+                [row["state"] for row in fresh.execute("SELECT state FROM journal ORDER BY sequence")],
+                ["initiated", "reconciliation_required"],
+            )
+            with patch.object(broker, "run_command") as replay_command:
+                replay = self.socket_request(request, fresh)
+            self.assertTrue(replay["ok"])
+            self.assertEqual(replay["data"]["state"], "reconciliation_required")
+            replay_command.assert_not_called()
+            fresh.close()
+
+    def test_socket_rollback_proof_exception_requires_reconciliation(self):
+        with self.paths():
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            request = {
+                "operation": "deploy-pinned-image",
+                "service": "paperclip-gloops.service",
+                "image": image,
+                "actor": "wren-agent",
+                "idempotencyKey": "deploy-rollback-proof-exception-001",
+            }
+            previous_env = (self.config / "runtime.env").read_text()
+            previous_pin = (self.config / "approved-image").read_text()
+            connection = broker.connect_database()
+            with patch.object(
+                broker,
+                "run_command",
+                side_effect=[(0, "", ""), (1, "", "candidate failed"), (0, "", "")],
+            ), patch.object(
+                broker,
+                "_rollback_terminal_evidence",
+                side_effect=RuntimeError("injected rollback proof probe failure"),
+            ):
+                response = self.socket_request(request, connection)
+            connection.close()
+
+            self.assertFalse(response["ok"])
+            self.assertIn("requires reconciliation", response["error"])
+            self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+            self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
+
+            fresh = broker.connect_database()
+            receipt = broker.list_receipts(fresh)[0]
+            self.assertEqual(receipt["state"], "reconciliation_required")
+            self.assertEqual(receipt["outcome"], "unknown")
+            self.assertTrue(receipt["evidence"]["configurationRestored"])
+            self.assertTrue(receipt["evidence"]["rollbackRestartSucceeded"])
+            self.assertFalse(receipt["evidence"]["priorRestorationProved"])
+            self.assertEqual(
+                receipt["evidence"]["rollbackProof"]["error"],
+                "rollback proof raised RuntimeError",
+            )
+            self.assertEqual(
+                [row["state"] for row in fresh.execute("SELECT state FROM journal ORDER BY sequence")],
+                ["initiated", "reconciliation_required"],
+            )
+            with patch.object(broker, "run_command") as replay_command:
+                replay = self.socket_request(request, fresh)
+            self.assertTrue(replay["ok"])
+            self.assertEqual(replay["data"]["state"], "reconciliation_required")
             replay_command.assert_not_called()
             fresh.close()
 

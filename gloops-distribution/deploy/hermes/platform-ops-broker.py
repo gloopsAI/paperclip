@@ -440,6 +440,19 @@ def fail_receipted_operation(
     raise ReceiptedOperationError(message)
 
 
+def terminalize_receipted_operation(
+    connection: sqlite3.Connection,
+    receipt_id: str,
+    state: str,
+    evidence: dict[str, Any],
+    outcome: str,
+    message: str,
+) -> NoReturn:
+    """Commit an explicit non-success terminal state at the socket boundary."""
+    complete_receipt(connection, receipt_id, state, evidence, outcome)
+    raise ReceiptedOperationError(message)
+
+
 def replay_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     """Return an existing reservation without re-running any host effect."""
     return {
@@ -866,6 +879,79 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
 
 
+def _deploy_checkpoint(_name: str) -> None:
+    """Network-free failure-injection seam; production intentionally does nothing."""
+
+
+def _bounded_failure(error: Exception) -> dict[str, str]:
+    return {
+        "name": type(error).__name__,
+        "message": str(error)[:500] if isinstance(error, BrokerError) else "unexpected deployment exception",
+    }
+
+
+def _compensate_deploy_failure(
+    service: str,
+    env_file: Path,
+    previous_env: str,
+    approved_image_file: Path,
+    previous_approved_image: str,
+    previous_image: str,
+) -> dict[str, Any]:
+    """Best-effort restore both pins, restart the prior service, and prove it."""
+    restoration_errors: list[dict[str, str]] = []
+    for label, path, content in (
+        ("runtimeEnv", env_file, previous_env),
+        ("approvedImage", approved_image_file, previous_approved_image),
+    ):
+        try:
+            path.write_text(content, encoding="utf-8")
+            os.chmod(path, 0o600)
+        except Exception as error:
+            restoration_errors.append({"operation": label, "errorName": type(error).__name__})
+
+    configuration_restored = False
+    try:
+        configuration_restored = (
+            env_file.read_text(encoding="utf-8") == previous_env
+            and approved_image_file.read_text(encoding="utf-8") == previous_approved_image
+            and stat.S_IMODE(env_file.stat().st_mode) == 0o600
+            and stat.S_IMODE(approved_image_file.stat().st_mode) == 0o600
+        )
+    except Exception as error:
+        restoration_errors.append({"operation": "verifyConfiguration", "errorName": type(error).__name__})
+
+    rollback_code: int | None = None
+    rollback_stderr = ""
+    rollback_restart_attempted = configuration_restored
+    if configuration_restored:
+        try:
+            rollback_code, _, rollback_stderr = run_command(
+                ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
+            )
+        except Exception as error:
+            restoration_errors.append({"operation": "restartPriorService", "errorName": type(error).__name__})
+    else:
+        restoration_errors.append({
+            "operation": "restartPriorService",
+            "errorName": "UnsafeWithoutExactConfiguration",
+        })
+
+    rollback_proof = _safe_rollback_terminal_evidence(
+        service, previous_image, rollback_code,
+    )
+    prior_restoration_proved = configuration_restored and rollback_proof["proofComplete"]
+    return {
+        "configurationRestored": configuration_restored,
+        "rollbackRestartAttempted": rollback_restart_attempted,
+        "rollbackRestartSucceeded": rollback_code == 0,
+        "rollbackStderr": rollback_stderr[:500],
+        "rollbackProof": rollback_proof,
+        "priorRestorationProved": prior_restoration_proved,
+        "restorationErrors": restoration_errors,
+    }
+
+
 def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connection,
                             actor: str, idempotency_key: str) -> Any:
     service = params.get("service")
@@ -913,87 +999,90 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     previous_env = env_file.read_text(encoding="utf-8")
     previous_approved_image = approved_image_file.read_text(encoding="utf-8")
     previous_image = previous_approved_image.strip()
-    lines = previous_env.splitlines()
-    new_lines = [
-        line for line in lines if not line.startswith(f"{image_env}=")
-    ]
-    new_lines.append(f"{image_env}={image}")
-    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    os.chmod(env_file, 0o600)
-    approved_image_file.write_text(image + "\n", encoding="utf-8")
-    os.chmod(approved_image_file, 0o600)
-    returncode, stdout, stderr = run_command(
-        ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
-    )
-    if returncode != 0:
-        env_file.write_text(previous_env, encoding="utf-8")
+    post_health: dict[str, Any] | None = None
+    post_front_door: dict[str, Any] | None = None
+    post_image_binding: dict[str, Any] | None = None
+    try:
+        lines = previous_env.splitlines()
+        new_lines = [
+            line for line in lines if not line.startswith(f"{image_env}=")
+        ]
+        new_lines.append(f"{image_env}={image}")
+        env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         os.chmod(env_file, 0o600)
-        approved_image_file.write_text(previous_approved_image, encoding="utf-8")
+        _deploy_checkpoint("runtime-env-written")
+        approved_image_file.write_text(image + "\n", encoding="utf-8")
         os.chmod(approved_image_file, 0o600)
-        rollback_code, _, rollback_stderr = run_command(
+        _deploy_checkpoint("approved-image-written")
+        returncode, _, stderr = run_command(
             ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
         )
-        rollback_proof = _safe_rollback_terminal_evidence(
-            service, previous_image, rollback_code,
+        _deploy_checkpoint("candidate-restart-returned")
+        if returncode != 0:
+            raise BrokerError(f"service restart after deploy failed: {stderr}")
+        time.sleep(2)
+        post_health = _check_service_active(service)
+        _deploy_checkpoint("post-service-health")
+        post_front_door = (
+            _front_door_health(service)
+            if service_config.get("frontDoorHealth") is not None
+            else None
         )
-        fail_receipted_operation(connection, receipt_id, {
+        _deploy_checkpoint("post-front-door-health")
+        post_image_binding = _image_binding_evidence(container, image)
+        _deploy_checkpoint("post-image-binding")
+        release_healthy = (
+            post_health["active"]
+            and (post_front_door is None or post_front_door["healthy"])
+            and post_image_binding["proofComplete"]
+        )
+        if not release_healthy:
+            raise BrokerError("deployed release failed comprehensive health")
+        evidence = {
+            "service": service,
             "image": image,
             "previousImage": previous_image,
-            "stderr": stderr,
-            "configurationRestored": True,
-            "rollbackRestartSucceeded": rollback_code == 0,
-            "rollbackStderr": rollback_stderr,
-            "rollbackProof": rollback_proof,
-            "priorRestorationProved": rollback_proof["proofComplete"],
-        }, f"service restart after deploy failed: {stderr}")
-    time.sleep(2)
-    post_health = _check_service_active(service)
-    post_front_door = (
-        _front_door_health(service)
-        if service_config.get("frontDoorHealth") is not None
-        else None
-    )
-    post_image_binding = _image_binding_evidence(container, image)
-    release_healthy = (
-        post_health["active"]
-        and (post_front_door is None or post_front_door["healthy"])
-        and post_image_binding["proofComplete"]
-    )
-    if not release_healthy:
-        env_file.write_text(previous_env, encoding="utf-8")
-        os.chmod(env_file, 0o600)
-        approved_image_file.write_text(previous_approved_image, encoding="utf-8")
-        os.chmod(approved_image_file, 0o600)
-        rollback_code, _, rollback_stderr = run_command(
-            ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
-        )
-        rollback_proof = _safe_rollback_terminal_evidence(
-            service, previous_image, rollback_code,
-        )
-        fail_receipted_operation(connection, receipt_id, {
-            "image": image,
-            "previousImage": previous_image,
+            "container": container,
             "postHealth": post_health,
             "postFrontDoorHealth": post_front_door,
             "postImageBinding": post_image_binding,
-            "configurationRestored": True,
-            "rollbackRestartSucceeded": rollback_code == 0,
-            "rollbackStderr": rollback_stderr,
-            "rollbackProof": rollback_proof,
-            "priorRestorationProved": rollback_proof["proofComplete"],
-        }, "deployed release failed comprehensive health; prior release restored")
-    evidence = {
-        "service": service,
-        "image": image,
-        "previousImage": previous_image,
-        "container": container,
-        "postHealth": post_health,
-        "postFrontDoorHealth": post_front_door,
-        "postImageBinding": post_image_binding,
-        "comprehensiveHealthPassed": release_healthy,
-    }
-    complete_receipt(connection, receipt_id, "completed", evidence, "success")
-    return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
+            "comprehensiveHealthPassed": True,
+        }
+        complete_receipt(connection, receipt_id, "completed", evidence, "success")
+        return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
+    except Exception as error:
+        compensation = _compensate_deploy_failure(
+            service,
+            env_file,
+            previous_env,
+            approved_image_file,
+            previous_approved_image,
+            previous_image,
+        )
+        proved = compensation["priorRestorationProved"]
+        state = "failed" if proved else "reconciliation_required"
+        outcome = "failure" if proved else "unknown"
+        evidence = {
+            "image": image,
+            "previousImage": previous_image,
+            "candidateFailure": _bounded_failure(error),
+            "postHealth": post_health,
+            "postFrontDoorHealth": post_front_door,
+            "postImageBinding": post_image_binding,
+            **compensation,
+        }
+        terminalize_receipted_operation(
+            connection,
+            receipt_id,
+            state,
+            evidence,
+            outcome,
+            (
+                "deploy failed; prior release restoration proved"
+                if proved
+                else "deploy outcome requires reconciliation; prior release restoration was not proved"
+            ),
+        )
 
 
 def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection,
@@ -1305,7 +1394,7 @@ def _rollback_terminal_evidence(
 def _safe_rollback_terminal_evidence(
     service: str,
     expected_prior_image: str,
-    rollback_restart_code: int,
+    rollback_restart_code: int | None,
 ) -> dict[str, Any]:
     if rollback_restart_code != 0:
         return {
@@ -1317,13 +1406,17 @@ def _safe_rollback_terminal_evidence(
         }
     try:
         return _rollback_terminal_evidence(service, "restored", expected_prior_image)
-    except BrokerError as error:
+    except Exception as error:
         return {
             "schemaVersion": "gloops.rollback-proof.v1",
             "service": service,
             "mode": "restored",
             "proofComplete": False,
-            "error": str(error)[:500],
+            "error": (
+                str(error)[:500]
+                if isinstance(error, BrokerError)
+                else f"rollback proof raised {type(error).__name__}"
+            ),
         }
 
 
