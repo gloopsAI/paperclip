@@ -82,6 +82,39 @@ export type AuthorizationResource =
       originKind?: string | null;
       originId?: string | null;
       status?: string | null;
+      workMode?: string | null;
+      completionProfile?: string | null;
+      maxRunsPerTask?: number | null;
+      maxRetriesPerTask?: number | null;
+      executionClass?: string | null;
+      maxInputTokensPerTask?: number | null;
+      maxOutputTokensPerTask?: number | null;
+      maxWallMsPerTask?: number | null;
+      maxInputTokensPerInvocation?: number | null;
+      maxOutputTokensPerInvocation?: number | null;
+      maxTurnsPerInvocation?: number | null;
+      maxToolCallsPerInvocation?: number | null;
+      fixedOverheadInputTokens?: number | null;
+      commentRequired?: boolean | null;
+      goalId?: string | null;
+      projectWorkspaceId?: string | null;
+      executionWorkspaceId?: string | null;
+      priority?: string | null;
+      executionPolicyMode?: string | null;
+      executionStageCount?: number | null;
+      monitorEnabled?: boolean | null;
+      hasAssigneeAdapterOverrides?: boolean | null;
+      hasExecutionWorkspaceSettings?: boolean | null;
+      executionWorkspacePreference?: string | null;
+      harnessKind?: string | null;
+      blockedByIssueCount?: number | null;
+      watchdogEnabled?: boolean | null;
+      hasReviewPreset?: boolean | null;
+      hasAuthorizationPolicy?: boolean | null;
+      requestDepth?: number | null;
+      inheritExecutionWorkspaceFromIssueId?: string | null;
+      labelCount?: number | null;
+      hasWatchdogDiscovery?: boolean | null;
     };
 
 export type AuthorizationDecision = {
@@ -994,6 +1027,50 @@ export function authorizationService(db: Db) {
     scope: TaskBridgeAgentKeyScope,
     resource: Extract<AuthorizationResource, { type: "issue" }>,
   ) {
+    if (
+      scope.allowProjectlessConsultations === true &&
+      !resource.projectId &&
+      !resource.parentIssueId &&
+      !resource.goalId &&
+      !resource.projectWorkspaceId &&
+      !resource.executionWorkspaceId &&
+      resource.status === "todo" &&
+      resource.workMode === "ask" &&
+      resource.priority === "medium" &&
+      resource.completionProfile === "direct" &&
+      resource.maxRunsPerTask === 1 &&
+      resource.maxRetriesPerTask === 0 &&
+      resource.executionClass === "steady_state" &&
+      resource.maxInputTokensPerTask === 100_000 &&
+      resource.maxOutputTokensPerTask === 10_000 &&
+      resource.maxWallMsPerTask === 300_000 &&
+      resource.maxInputTokensPerInvocation === 100_000 &&
+      resource.maxOutputTokensPerInvocation === 10_000 &&
+      resource.maxTurnsPerInvocation === 4 &&
+      resource.maxToolCallsPerInvocation === 5 &&
+      resource.fixedOverheadInputTokens == null &&
+      resource.commentRequired === true &&
+      resource.executionPolicyMode === "normal" &&
+      resource.executionStageCount === 0 &&
+      resource.monitorEnabled === false &&
+      resource.hasAssigneeAdapterOverrides === false &&
+      resource.hasExecutionWorkspaceSettings === false &&
+      !resource.executionWorkspacePreference &&
+      !resource.harnessKind &&
+      resource.blockedByIssueCount === 0 &&
+      resource.watchdogEnabled === false &&
+      resource.hasReviewPreset === false &&
+      resource.hasAuthorizationPolicy === false &&
+      resource.requestDepth === 0 &&
+      !resource.inheritExecutionWorkspaceFromIssueId &&
+      resource.labelCount === 0 &&
+      resource.hasWatchdogDiscovery === false &&
+      !resource.assigneeUserId &&
+      typeof resource.assigneeAgentId === "string" &&
+      (scope.allowedAssigneeAgentIds ?? []).includes(resource.assigneeAgentId)
+    ) {
+      return true;
+    }
     const allowedProjectIds = taskBridgeScopeIds(scope, "projectId", "projectIds");
     const allowedParentIssueIds = taskBridgeScopeIds(scope, "parentIssueId", "parentIssueIds");
     if (resource.projectId && allowedProjectIds.includes(resource.projectId)) return true;
@@ -1078,13 +1155,21 @@ export function authorizationService(db: Db) {
       if (input.resource.type !== "issue") {
         return denyBridge("Task bridge issue access requires an issue resource.");
       }
-      return await issueMatchesTaskBridgeWriteBoundary({
+      const withinWriteBoundary = await issueMatchesTaskBridgeWriteBoundary({
         actorAgentId: input.actorAgentId,
         keyId: input.keyId,
         resource: input.resource,
-      })
-        ? allowBridge("Allowed for bridge-created or assigned issue.")
-        : denyBridge("Task bridge key can only access assigned or bridge-created issues.");
+      });
+      if (!withinWriteBoundary) {
+        return denyBridge("Task bridge key can only access assigned or bridge-created issues.");
+      }
+      if (
+        input.scope.allowProjectlessConsultations === true &&
+        input.action !== "issue:read"
+      ) {
+        return denyBridge("Projectless consultation keys are create-and-read only; the assignee owns issue writes.");
+      }
+      return allowBridge("Allowed for bridge-created or assigned issue.");
     }
 
     return denyBridge("Task bridge key cannot use this API action.");

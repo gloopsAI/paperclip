@@ -3249,6 +3249,40 @@ export function issueRoutes(
     parentIssueId?: string | null;
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
+    status?: string | null;
+    workMode?: string | null;
+    completionProfile?: string | null;
+    maxRunsPerTask?: number | null;
+    maxRetriesPerTask?: number | null;
+    executionClass?: string | null;
+    maxInputTokensPerTask?: number | null;
+    maxOutputTokensPerTask?: number | null;
+    maxWallMsPerTask?: number | null;
+    maxInputTokensPerInvocation?: number | null;
+    maxOutputTokensPerInvocation?: number | null;
+    maxTurnsPerInvocation?: number | null;
+    maxToolCallsPerInvocation?: number | null;
+    fixedOverheadInputTokens?: number | null;
+    commentRequired?: boolean | null;
+    goalId?: string | null;
+    projectWorkspaceId?: string | null;
+    executionWorkspaceId?: string | null;
+    priority?: string | null;
+    executionPolicyMode?: string | null;
+    executionStageCount?: number | null;
+    monitorEnabled?: boolean | null;
+    hasAssigneeAdapterOverrides?: boolean | null;
+    hasExecutionWorkspaceSettings?: boolean | null;
+    executionWorkspacePreference?: string | null;
+    harnessKind?: string | null;
+    blockedByIssueCount?: number | null;
+    watchdogEnabled?: boolean | null;
+    hasReviewPreset?: boolean | null;
+    hasAuthorizationPolicy?: boolean | null;
+    requestDepth?: number | null;
+    inheritExecutionWorkspaceFromIssueId?: string | null;
+    labelCount?: number | null;
+    hasWatchdogDiscovery?: boolean | null;
   };
 
   async function resolveAssignmentProjectId(input: {
@@ -3280,6 +3314,40 @@ export function issueRoutes(
         parentIssueId: assignmentScope?.parentIssueId ?? null,
         assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
         assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+        status: assignmentScope?.status ?? null,
+        workMode: assignmentScope?.workMode ?? null,
+        completionProfile: assignmentScope?.completionProfile ?? null,
+        maxRunsPerTask: assignmentScope?.maxRunsPerTask ?? null,
+        maxRetriesPerTask: assignmentScope?.maxRetriesPerTask ?? null,
+        executionClass: assignmentScope?.executionClass ?? null,
+        maxInputTokensPerTask: assignmentScope?.maxInputTokensPerTask ?? null,
+        maxOutputTokensPerTask: assignmentScope?.maxOutputTokensPerTask ?? null,
+        maxWallMsPerTask: assignmentScope?.maxWallMsPerTask ?? null,
+        maxInputTokensPerInvocation: assignmentScope?.maxInputTokensPerInvocation ?? null,
+        maxOutputTokensPerInvocation: assignmentScope?.maxOutputTokensPerInvocation ?? null,
+        maxTurnsPerInvocation: assignmentScope?.maxTurnsPerInvocation ?? null,
+        maxToolCallsPerInvocation: assignmentScope?.maxToolCallsPerInvocation ?? null,
+        fixedOverheadInputTokens: assignmentScope?.fixedOverheadInputTokens ?? null,
+        commentRequired: assignmentScope?.commentRequired ?? null,
+        goalId: assignmentScope?.goalId ?? null,
+        projectWorkspaceId: assignmentScope?.projectWorkspaceId ?? null,
+        executionWorkspaceId: assignmentScope?.executionWorkspaceId ?? null,
+        priority: assignmentScope?.priority ?? null,
+        executionPolicyMode: assignmentScope?.executionPolicyMode ?? null,
+        executionStageCount: assignmentScope?.executionStageCount ?? null,
+        monitorEnabled: assignmentScope?.monitorEnabled ?? null,
+        hasAssigneeAdapterOverrides: assignmentScope?.hasAssigneeAdapterOverrides ?? null,
+        hasExecutionWorkspaceSettings: assignmentScope?.hasExecutionWorkspaceSettings ?? null,
+        executionWorkspacePreference: assignmentScope?.executionWorkspacePreference ?? null,
+        harnessKind: assignmentScope?.harnessKind ?? null,
+        blockedByIssueCount: assignmentScope?.blockedByIssueCount ?? null,
+        watchdogEnabled: assignmentScope?.watchdogEnabled ?? null,
+        hasReviewPreset: assignmentScope?.hasReviewPreset ?? null,
+        hasAuthorizationPolicy: assignmentScope?.hasAuthorizationPolicy ?? null,
+        requestDepth: assignmentScope?.requestDepth ?? null,
+        inheritExecutionWorkspaceFromIssueId: assignmentScope?.inheritExecutionWorkspaceFromIssueId ?? null,
+        labelCount: assignmentScope?.labelCount ?? null,
+        hasWatchdogDiscovery: assignmentScope?.hasWatchdogDiscovery ?? null,
       },
       scope: assignmentScope ?? null,
     });
@@ -7111,6 +7179,10 @@ export function issueRoutes(
       authorizedIntake = { workspaceId: intake.workspace.id, exactHeadSha: intake.exactHeadSha };
     }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
+    const executionPolicy = applyActorMonitorScheduledBy(
+      normalizeIssueExecutionPolicy(createBody.executionPolicy),
+      actor.actorType,
+    );
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
         companyId,
@@ -7120,6 +7192,42 @@ export function issueRoutes(
       parentIssueId: createBody.parentId ?? null,
       assigneeAgentId: createBody.assigneeAgentId ?? null,
       assigneeUserId: rawCreateBody.assigneeUserId ?? null,
+      status: createBody.status ?? null,
+      workMode: createBody.workMode ?? null,
+      completionProfile: executionPolicy?.completionProfile ?? null,
+      maxRunsPerTask: executionPolicy?.resourceBudget?.maxRunsPerTask ?? null,
+      maxRetriesPerTask: executionPolicy?.resourceBudget?.maxRetriesPerTask ?? null,
+      executionClass: executionPolicy?.resourceBudget?.executionClass ?? null,
+      maxInputTokensPerTask: executionPolicy?.resourceBudget?.maxInputTokensPerTask ?? null,
+      maxOutputTokensPerTask: executionPolicy?.resourceBudget?.maxOutputTokensPerTask ?? null,
+      maxWallMsPerTask: executionPolicy?.resourceBudget?.maxWallMsPerTask ?? null,
+      maxInputTokensPerInvocation: executionPolicy?.resourceBudget?.maxInputTokensPerInvocation ?? null,
+      maxOutputTokensPerInvocation: executionPolicy?.resourceBudget?.maxOutputTokensPerInvocation ?? null,
+      maxTurnsPerInvocation: executionPolicy?.resourceBudget?.maxTurnsPerInvocation ?? null,
+      maxToolCallsPerInvocation: executionPolicy?.resourceBudget?.maxToolCallsPerInvocation ?? null,
+      fixedOverheadInputTokens: executionPolicy?.resourceBudget?.fixedOverheadInputTokens ?? null,
+      commentRequired: executionPolicy?.commentRequired ?? null,
+      goalId: createBody.goalId ?? null,
+      projectWorkspaceId: createBody.projectWorkspaceId ?? null,
+      executionWorkspaceId: createBody.executionWorkspaceId ?? null,
+      priority: createBody.priority ?? null,
+      executionPolicyMode: executionPolicy?.mode ?? null,
+      executionStageCount: executionPolicy?.stages.length ?? null,
+      monitorEnabled: Boolean(executionPolicy?.monitor),
+      hasAssigneeAdapterOverrides: Boolean(createBody.assigneeAdapterOverrides),
+      hasExecutionWorkspaceSettings: Boolean(createBody.executionWorkspaceSettings),
+      executionWorkspacePreference: createBody.executionWorkspacePreference ?? null,
+      harnessKind: createBody.harnessKind ?? null,
+      blockedByIssueCount: Array.isArray(createBody.blockedByIssueIds)
+        ? createBody.blockedByIssueIds.length
+        : 0,
+      watchdogEnabled: Boolean(createBody.watchdog),
+      hasReviewPreset: Boolean(executionPolicy?.reviewPreset),
+      hasAuthorizationPolicy: Boolean(executionPolicy?.authorizationPolicy),
+      requestDepth: createBody.requestDepth ?? null,
+      inheritExecutionWorkspaceFromIssueId: createBody.inheritExecutionWorkspaceFromIssueId ?? null,
+      labelCount: Array.isArray(createBody.labelIds) ? createBody.labelIds.length : 0,
+      hasWatchdogDiscovery: Boolean(rawWatchdogDiscovery),
     };
     await assertTaskBridgeCreateAllowed(req, companyId, createAssignmentScope);
     if (rawCreateBody.assigneeAgentId || rawCreateBody.assigneeUserId) {
@@ -7127,10 +7235,6 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
-    const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(createBody.executionPolicy),
-      actor.actorType,
-    );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
 
     // S2 — Induct SDLC create gate (fail-closed for Induct implement targets).

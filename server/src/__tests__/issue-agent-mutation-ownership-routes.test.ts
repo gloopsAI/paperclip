@@ -1360,6 +1360,101 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("binds the projectless Buzz consultation shape into task-bridge assignment authorization and origin", async () => {
+    const keyId = "99999999-9999-4999-8999-999999999999";
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(ownerAgentId),
+    });
+    const app = await createApp(peerActor({
+      keyId,
+      keyScope: {
+        kind: "task_bridge",
+        allowProjectlessConsultations: true,
+        allowedAssigneeAgentIds: [ownerAgentId],
+      },
+    }));
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Bounded Buzz consult",
+        status: "todo",
+        workMode: "ask",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy: {
+          completionProfile: "direct",
+          resourceBudget: {
+            executionClass: "steady_state",
+            maxRunsPerTask: 1,
+            maxRetriesPerTask: 0,
+            maxInputTokensPerTask: 100_000,
+            maxOutputTokensPerTask: 10_000,
+            maxWallMsPerTask: 300_000,
+            maxInputTokensPerInvocation: 100_000,
+            maxOutputTokensPerInvocation: 10_000,
+            maxTurnsPerInvocation: 4,
+            maxToolCallsPerInvocation: 5,
+          },
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        type: "issue",
+        companyId,
+        projectId: null,
+        parentIssueId: null,
+        goalId: null,
+        projectWorkspaceId: null,
+        executionWorkspaceId: null,
+        assigneeAgentId: ownerAgentId,
+        assigneeUserId: null,
+        status: "todo",
+        workMode: "ask",
+        completionProfile: "direct",
+        maxRunsPerTask: 1,
+        maxRetriesPerTask: 0,
+        executionClass: "steady_state",
+        maxInputTokensPerTask: 100_000,
+        maxOutputTokensPerTask: 10_000,
+        maxWallMsPerTask: 300_000,
+        maxInputTokensPerInvocation: 100_000,
+        maxOutputTokensPerInvocation: 10_000,
+        maxTurnsPerInvocation: 4,
+        maxToolCallsPerInvocation: 5,
+        fixedOverheadInputTokens: null,
+        commentRequired: true,
+        priority: "medium",
+        executionPolicyMode: "normal",
+        executionStageCount: 0,
+        monitorEnabled: false,
+        hasAssigneeAdapterOverrides: false,
+        hasExecutionWorkspaceSettings: false,
+        executionWorkspacePreference: null,
+        hasReviewPreset: false,
+        hasAuthorizationPolicy: false,
+        requestDepth: 0,
+        inheritExecutionWorkspaceFromIssueId: null,
+        labelCount: 0,
+        hasWatchdogDiscovery: false,
+        harnessKind: null,
+        blockedByIssueCount: 0,
+        watchdogEnabled: false,
+      }),
+    }));
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Bounded Buzz consult",
+        originKind: "task_bridge",
+        originId: keyId,
+      }),
+    );
+  });
+
   it("preserves explicit workspace choices on agent-created root issues", async () => {
     const app = await createApp(
       ownerActor(),

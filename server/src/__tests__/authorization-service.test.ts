@@ -1718,6 +1718,141 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("admits only an exact projectless one-run consultation for the dedicated task bridge scope", async () => {
+    const company = await createCompany(db, "BuzzConsultBridge");
+    const bridgeAgent = await createAgent(db, company.id);
+    const allowedTarget = await createAgent(db, company.id);
+    const deniedTarget = await createAgent(db, company.id);
+    const actor = {
+      type: "agent" as const,
+      agentId: bridgeAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyId: randomUUID(),
+      keyScope: {
+        kind: "task_bridge" as const,
+        allowProjectlessConsultations: true as const,
+        allowedAssigneeAgentIds: [allowedTarget.id],
+      },
+    };
+    const authz = authorizationService(db);
+    const exactConsult = {
+      type: "issue" as const,
+      companyId: company.id,
+      projectId: null,
+      parentIssueId: null,
+      goalId: null,
+      projectWorkspaceId: null,
+      executionWorkspaceId: null,
+      assigneeAgentId: allowedTarget.id,
+      assigneeUserId: null,
+      status: "todo",
+      workMode: "ask",
+      completionProfile: "direct",
+      maxRunsPerTask: 1,
+      maxRetriesPerTask: 0,
+      executionClass: "steady_state",
+      maxInputTokensPerTask: 100_000,
+      maxOutputTokensPerTask: 10_000,
+      maxWallMsPerTask: 300_000,
+      maxInputTokensPerInvocation: 100_000,
+      maxOutputTokensPerInvocation: 10_000,
+      maxTurnsPerInvocation: 4,
+      maxToolCallsPerInvocation: 5,
+      fixedOverheadInputTokens: null,
+      commentRequired: true,
+      priority: "medium",
+      executionPolicyMode: "normal",
+      executionStageCount: 0,
+      monitorEnabled: false,
+      hasAssigneeAdapterOverrides: false,
+      hasExecutionWorkspaceSettings: false,
+      executionWorkspacePreference: null,
+      harnessKind: null,
+      blockedByIssueCount: 0,
+      watchdogEnabled: false,
+      hasReviewPreset: false,
+      hasAuthorizationPolicy: false,
+      requestDepth: 0,
+      inheritExecutionWorkspaceFromIssueId: null,
+      labelCount: 0,
+      hasWatchdogDiscovery: false,
+    };
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: exactConsult,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
+
+    for (const changed of [
+      { workMode: "standard" },
+      { completionProfile: "structured" },
+      { maxRunsPerTask: 2 },
+      { maxRetriesPerTask: 1 },
+      { executionClass: "burst" },
+      { maxInputTokensPerTask: 100_001 },
+      { maxOutputTokensPerTask: 10_001 },
+      { maxWallMsPerTask: 300_001 },
+      { maxInputTokensPerInvocation: 100_001 },
+      { maxOutputTokensPerInvocation: 10_001 },
+      { maxTurnsPerInvocation: 5 },
+      { maxToolCallsPerInvocation: 6 },
+      { fixedOverheadInputTokens: 1 },
+      { commentRequired: false },
+      { projectId: randomUUID() },
+      { parentIssueId: randomUUID() },
+      { projectWorkspaceId: randomUUID() },
+      { executionWorkspaceId: randomUUID() },
+      { goalId: randomUUID() },
+      { status: "backlog" },
+      { priority: "high" },
+      { executionPolicyMode: "aggressive" },
+      { executionStageCount: 1 },
+      { monitorEnabled: true },
+      { hasAssigneeAdapterOverrides: true },
+      { hasExecutionWorkspaceSettings: true },
+      { executionWorkspacePreference: "create_new" },
+      { harnessKind: "codex" },
+      { blockedByIssueCount: 1 },
+      { watchdogEnabled: true },
+      { hasReviewPreset: true },
+      { hasAuthorizationPolicy: true },
+      { requestDepth: 1 },
+      { inheritExecutionWorkspaceFromIssueId: randomUUID() },
+      { labelCount: 1 },
+      { hasWatchdogDiscovery: true },
+      { assigneeAgentId: null },
+      { assigneeAgentId: bridgeAgent.id },
+      { assigneeAgentId: deniedTarget.id },
+      { assigneeUserId: randomUUID() },
+    ]) {
+      await expect(authz.decide({
+        actor,
+        action: "tasks:assign",
+        resource: { ...exactConsult, ...changed },
+      })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    }
+
+    const consultation = await createIssue(db, company.id, {
+      assigneeAgentId: allowedTarget.id,
+      originKind: "task_bridge",
+      originId: actor.keyId,
+    });
+    await expect(authz.decide({
+      actor,
+      action: "issue:read",
+      resource: { type: "issue", companyId: company.id, issueId: consultation.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authz.decide({
+        actor,
+        action,
+        resource: { type: "issue", companyId: company.id, issueId: consultation.id },
+      })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    }
+  });
+
   it("scopes skill-test keys to their own issue only", async () => {
     const company = await createCompany(db, "SkillTest");
     const skillTestAgent = await createAgent(db, company.id);

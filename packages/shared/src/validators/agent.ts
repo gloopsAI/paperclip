@@ -139,14 +139,30 @@ export const taskBridgeAgentKeyScopeSchema = z.object({
   parentIssueId: z.string().uuid().optional().nullable(),
   parentIssueIds: z.array(z.string().uuid()).max(50).optional(),
   allowedAssigneeAgentIds: z.array(z.string().uuid()).max(50).optional(),
+  allowProjectlessConsultations: z.literal(true).optional(),
 }).strict().superRefine((value, ctx) => {
   const hasProjectBoundary = Boolean(value.projectId) || Boolean(value.projectIds?.length);
   const hasParentBoundary = Boolean(value.parentIssueId) || Boolean(value.parentIssueIds?.length);
-  if (!hasProjectBoundary && !hasParentBoundary) {
+  const hasProjectlessConsultationBoundary = value.allowProjectlessConsultations === true;
+  if (!hasProjectBoundary && !hasParentBoundary && !hasProjectlessConsultationBoundary) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "task_bridge keys require at least one project or parent issue boundary",
+      message: "task_bridge keys require a project, parent issue, or projectless consultation boundary",
       path: ["projectId"],
+    });
+  }
+  if (hasProjectlessConsultationBoundary && (hasProjectBoundary || hasParentBoundary)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "projectless consultation task_bridge keys cannot also carry project or parent boundaries",
+      path: ["allowProjectlessConsultations"],
+    });
+  }
+  if (hasProjectlessConsultationBoundary && !value.allowedAssigneeAgentIds?.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "projectless consultation task_bridge keys require at least one allowed assignee",
+      path: ["allowedAssigneeAgentIds"],
     });
   }
 });
