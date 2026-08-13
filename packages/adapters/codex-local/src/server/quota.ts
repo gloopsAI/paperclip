@@ -161,8 +161,8 @@ export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthIn
   };
 }
 
-export async function readCodexToken(): Promise<{ token: string; accountId: string | null } | null> {
-  const auth = await readCodexAuthInfo();
+export async function readCodexToken(codexHome?: string): Promise<{ token: string; accountId: string | null } | null> {
+  const auth = await readCodexAuthInfo(codexHome);
   if (!auth) return null;
   return { token: auth.accessToken, accountId: auth.accountId };
 }
@@ -407,18 +407,22 @@ type PendingRequest = {
 };
 
 class CodexRpcClient {
-  private proc = spawn(
-    "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
-  );
+  private proc;
 
   private nextId = 1;
   private buffer = "";
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
 
-  constructor() {
+  constructor(codexHome?: string) {
+    this.proc = spawn(
+      "codex",
+      ["-s", "read-only", "-a", "untrusted", "app-server"],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env,
+      },
+    );
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
@@ -511,8 +515,8 @@ class CodexRpcClient {
   }
 }
 
-export async function fetchCodexRpcQuota(): Promise<CodexRpcQuotaSnapshot> {
-  const client = new CodexRpcClient();
+export async function fetchCodexRpcQuota(codexHome?: string): Promise<CodexRpcQuotaSnapshot> {
+  const client = new CodexRpcClient(codexHome);
   try {
     await client.initialize();
     const [limits, account] = await Promise.all([
@@ -530,11 +534,11 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+export async function getQuotaWindows(codexHome?: string): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
 
   try {
-    const rpc = await fetchCodexRpcQuota();
+    const rpc = await fetchCodexRpcQuota(codexHome);
     if (rpc.windows.length > 0) {
       return { provider: "openai", source: CODEX_USAGE_SOURCE_RPC, ok: true, windows: rpc.windows };
     }
@@ -542,7 +546,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     errors.push(formatProviderError("Codex app-server", error));
   }
 
-  const auth = await readCodexToken();
+  const auth = await readCodexToken(codexHome);
   if (auth) {
     try {
       const windows = await fetchCodexQuota(auth.token, auth.accountId);

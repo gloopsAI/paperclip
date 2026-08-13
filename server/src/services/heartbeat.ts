@@ -1062,6 +1062,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // resolution so a per-agent OPENAI_API_KEY (plain or resolved secret) counts
   // as satisfying the credential. It shares the exact readiness predicate the
   // adapter uses at execute time, so the two cannot drift.
+  let quotaCredentialHome: string | null = null;
   if ((input.adapterType ?? null) === "codex_local") {
     const resolvedEnv = parseObject(resolvedConfig.env);
     const readiness = await evaluateCodexCredentialReadiness({
@@ -1070,6 +1071,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       configuredCodexHome: readNonEmptyString(resolvedEnv.CODEX_HOME),
       configuredApiKey: readNonEmptyString(resolvedEnv.OPENAI_API_KEY),
     });
+    quotaCredentialHome = readiness.effectiveHome;
     if (readiness.managed && !readiness.ready) {
       throw new ConfigurationIncompleteFailure(
         `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
@@ -1095,6 +1097,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   return {
     resolvedConfig,
     secretKeys,
+    quotaContext: quotaCredentialHome ? { credentialHome: quotaCredentialHome } : undefined,
     secretManifest: [
       ...(environmentEnvResolution.manifest ?? []),
       ...(manifest ?? []),
@@ -14837,7 +14840,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId,
       explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
     });
-    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
+    const { resolvedConfig, secretKeys, secretManifest, quotaContext } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
       adapterType: agent.adapterType,
@@ -16337,7 +16340,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workforceRoute.lane !== "unsupported"
         ? await probeWorkforceCapacity(
             String(workforceRoute.provider),
-            adapter.getQuotaWindows ? () => adapter.getQuotaWindows!() : null,
+            adapter.getQuotaWindows ? () => adapter.getQuotaWindows!(quotaContext) : null,
           )
         : null;
       const workforceCapacity = assessWorkforceCapacity({
