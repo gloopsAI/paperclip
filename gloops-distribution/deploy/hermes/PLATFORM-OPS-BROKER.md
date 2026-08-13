@@ -161,6 +161,9 @@ still performs no host effect and the command-line client exits nonzero.
 The full canonical action digest is stored with the receipt and initiated
 journal entry; reuse of a key with any action drift is rejected before host
 effects, including deploy-image and rollback `expectedPriorImage` drift.
+Receipts created before action digests existed remain durable but explicitly
+legacy-unbound: reuse of their keys is rejected for manual reconciliation and
+never re-executes a host effect.
 
 ## Client Usage
 

@@ -374,6 +374,10 @@ def create_receipt(
         (idempotency_key,),
     ).fetchone()
     if existing:
+        if existing["action_digest"] is None:
+            raise BrokerError(
+                "idempotency key belongs to a legacy unbound receipt; manual reconciliation required"
+            )
         if (
             existing["receipt_id"] != receipt_id
             or existing["action_digest"] != action_digest
@@ -413,6 +417,10 @@ def create_receipt(
         ).fetchone()
         if existing is None:
             raise BrokerError("idempotency reservation conflict could not be resolved")
+        if existing["action_digest"] is None:
+            raise BrokerError(
+                "idempotency key belongs to a legacy unbound receipt; manual reconciliation required"
+            )
         if (
             existing["receipt_id"] != receipt_id
             or existing["action_digest"] != action_digest

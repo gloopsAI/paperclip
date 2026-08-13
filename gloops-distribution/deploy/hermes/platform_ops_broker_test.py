@@ -129,6 +129,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         deploy_end_to_end_tests = {
             "test_socket_deploy_end_to_end_restoration_proof",
             "test_socket_deploy_end_to_end_rejects_live_identity_drift",
+            "test_socket_deploy_exceptions_after_every_mutation_boundary_compensate",
         }
         uses_deploy = "deploy" in self._testMethodName or self._testMethodName in {
             "test_socket_unproved_compensation_is_durable_reconciliation_required",
@@ -241,6 +242,52 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 ))
             yield evidence
 
+    def real_release_command(self, state, *, restart_failure=None):
+        """Network-free command boundary for real release capture/proof code."""
+        prior_id = "sha256:" + "c" * 64
+        candidate_id = "sha256:" + "a" * 64
+
+        def command(args, timeout=broker.COMMAND_TIMEOUT_SECONDS, env=None):
+            state["calls"].append(args)
+            if args[:2] == ["systemctl", "is-active"]:
+                return 0, "active\n", ""
+            if args[:2] == ["systemctl", "restart"]:
+                state["restartCount"] += 1
+                approved = (self.config / "approved-image").read_text().strip()
+                if approved.endswith("a" * 64) and not state.get("candidateRestartFailed"):
+                    state["candidateRestartFailed"] = True
+                    if restart_failure == "timeout":
+                        raise broker.BrokerError("command timed out")
+                    if restart_failure == "missing":
+                        raise broker.BrokerError("required command is not available")
+                return 0, "", ""
+            if args[0] == "ss":
+                return 0, "LISTEN 0 4096 127.0.0.1:3100 0.0.0.0:*\n", ""
+            if args[:3] == ["docker", "container", "inspect"]:
+                bound = (self.config / "approved-image").read_text().strip()
+                image_id = candidate_id if bound.endswith("a" * 64) else prior_id
+                return 0, f"true\t{bound}\t{image_id}\n", ""
+            if args[:3] == ["docker", "image", "inspect"]:
+                reference = args[-1]
+                image_id = candidate_id if reference.endswith("a" * 64) else prior_id
+                return 0, f'{image_id}\t["{reference}"]\n', ""
+            if args[:2] == ["docker", "pull"]:
+                return 0, "", ""
+            if args[0] == "curl":
+                url = args[-1]
+                if "events/ws" in url:
+                    body, status, content_type = "", 401, "application/json"
+                elif url.endswith("/api/health"):
+                    body, status, content_type = '{"status":"ok"}', 200, "application/json"
+                elif url.endswith("/api/companies"):
+                    body, status, content_type = "{}", 401, "application/json"
+                else:
+                    body, status, content_type = '<div id="root"></div>', 200, "text/html"
+                return 0, f"{body}\n{broker.HTTP_PROBE_MARKER}{status}\t{content_type}", ""
+            raise AssertionError(f"unexpected command: {args}")
+
+        return command
+
     # -------------------------------------------------------------------------
     # Allowlist enforcement
     # -------------------------------------------------------------------------
@@ -265,6 +312,27 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             )
             """
         )
+        legacy.execute(
+            """
+            INSERT INTO receipts
+              (receipt_id, operation, target, idempotency_key, state, actor,
+               command_class, evidence_json, outcome, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-receipt-001",
+                "service-restart",
+                "paperclip-gloops.service",
+                "legacy-restart-key-001",
+                "completed",
+                "wren-agent",
+                "restart_named_service",
+                "{}",
+                "success",
+                "2026-08-13T00:00:00Z",
+                "2026-08-13T00:00:01Z",
+            ),
+        )
         legacy.commit()
         legacy.close()
         with self.paths():
@@ -273,6 +341,20 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             row["name"] for row in migrated.execute("PRAGMA table_info(receipts)")
         }
         self.assertIn("action_digest", columns)
+        with self.paths(), patch.object(broker, "run_command") as effects:
+            rejected = self.socket_request({
+                "operation": "service-restart",
+                "service": "paperclip-gloops.service",
+                "actor": "wren-agent",
+                "idempotencyKey": "legacy-restart-key-001",
+            }, migrated)
+        self.assertFalse(rejected["ok"])
+        self.assertIn("legacy unbound receipt", rejected["error"])
+        effects.assert_not_called()
+        receipt = broker.list_receipts(migrated)[0]
+        self.assertEqual(receipt["receiptId"], "legacy-receipt-001")
+        self.assertEqual(receipt["state"], "completed")
+        self.assertIsNone(receipt["actionDigest"])
         migrated.close()
 
     def test_rejects_non_allowlisted_service_for_status(self):
@@ -1061,26 +1143,50 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 previous_env = (self.config / "runtime.env").read_text()
                 previous_pin = (self.config / "approved-image").read_text()
                 connection = broker.connect_database()
-                command_calls: list[list[str]] = []
+                state = {"calls": [], "restartCount": 0}
+                restart_failure = {
+                    "restart-timeout": "timeout",
+                    "restart-missing": "missing",
+                }.get(mode)
+                command = self.real_release_command(
+                    state, restart_failure=restart_failure,
+                )
+                original_service_health = broker._check_service_active
+                original_front_door = broker._front_door_health
+                original_image_binding = broker._image_binding_evidence
 
-                def command(args, timeout=broker.COMMAND_TIMEOUT_SECONDS, env=None):
-                    command_calls.append(args)
-                    if args[:2] == ["docker", "pull"]:
-                        return 0, "", ""
-                    if args[:2] == ["systemctl", "restart"] and len(command_calls) == 2:
-                        if mode == "restart-timeout":
-                            raise broker.BrokerError("command timed out")
-                        if mode == "restart-missing":
-                            raise broker.BrokerError("required command is not available")
-                    return 0, "", ""
+                def service_health(service):
+                    if (
+                        mode == "service-health"
+                        and (self.config / "approved-image").read_text().strip().endswith("a" * 64)
+                        and not state.get("serviceHealthFailed")
+                    ):
+                        state["serviceHealthFailed"] = True
+                        raise RuntimeError("injected service health failure")
+                    return original_service_health(service)
+
+                def front_door(service):
+                    if (
+                        mode == "front-door"
+                        and (self.config / "approved-image").read_text().strip().endswith("a" * 64)
+                        and not state.get("frontDoorFailed")
+                    ):
+                        state["frontDoorFailed"] = True
+                        raise RuntimeError("injected front door failure")
+                    return original_front_door(service)
+
+                def image_binding(container, expected_image, **kwargs):
+                    if (
+                        mode == "image-binding"
+                        and expected_image.endswith("a" * 64)
+                        and not state.get("imageBindingFailed")
+                    ):
+                        state["imageBindingFailed"] = True
+                        raise RuntimeError("injected image binding failure")
+                    return original_image_binding(container, expected_image, **kwargs)
 
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(broker, "run_command", side_effect=command))
-                    stack.enter_context(patch.object(
-                        broker,
-                        "_safe_rollback_terminal_evidence",
-                        return_value=self.release_proof(),
-                    ))
                     if mode == "checkpoint":
                         stack.enter_context(patch.object(
                             broker,
@@ -1095,34 +1201,19 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                         stack.enter_context(patch.object(
                             broker,
                             "_check_service_active",
-                            side_effect=RuntimeError("injected service health failure"),
+                            side_effect=service_health,
                         ))
                     elif mode == "front-door":
                         stack.enter_context(patch.object(
                             broker,
-                            "_check_service_active",
-                            return_value={"active": True, "state": "active"},
-                        ))
-                        stack.enter_context(patch.object(
-                            broker,
                             "_front_door_health",
-                            side_effect=RuntimeError("injected front door failure"),
+                            side_effect=front_door,
                         ))
                     elif mode == "image-binding":
                         stack.enter_context(patch.object(
                             broker,
-                            "_check_service_active",
-                            return_value={"active": True, "state": "active"},
-                        ))
-                        stack.enter_context(patch.object(
-                            broker,
-                            "_front_door_health",
-                            return_value={"healthy": True, "probes": []},
-                        ))
-                        stack.enter_context(patch.object(
-                            broker,
                             "_image_binding_evidence",
-                            side_effect=RuntimeError("injected image binding failure"),
+                            side_effect=image_binding,
                         ))
                     response = self.socket_request(request, connection)
                 connection.close()
@@ -1130,8 +1221,8 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 self.assertFalse(response["ok"])
                 self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
                 self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
-                self.assertGreaterEqual(
-                    sum(call[:2] == ["systemctl", "restart"] for call in command_calls),
+                self.assertEqual(
+                    state["restartCount"],
                     1 if label in {"runtime-env-written", "approved-image-written"} else 2,
                 )
 
@@ -1141,6 +1232,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 self.assertEqual(receipt["outcome"], "failure")
                 self.assertTrue(receipt["evidence"]["configurationRestored"])
                 self.assertTrue(receipt["evidence"]["rollbackRestartSucceeded"])
+                self.assertTrue(receipt["evidence"]["priorReleaseMatches"])
                 self.assertTrue(receipt["evidence"]["priorRestorationProved"])
                 self.assertEqual(
                     [row["state"] for row in fresh.execute("SELECT state FROM journal ORDER BY sequence")],
