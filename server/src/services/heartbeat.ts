@@ -476,6 +476,15 @@ const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
+const WORKFORCE_CAPACITY_RACE_RECOVERY_REASONS = new Set([
+  "assignment_recovery",
+  "issue_assignment_recovery",
+  "issue_continuation_needed",
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+  "missing_issue_comment",
+  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON,
+  MAX_TURN_CONTINUATION_WAKE_REASON,
+]);
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
 type CodexTransientFallbackMode =
   | "same_session"
@@ -18040,23 +18049,49 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
         // pre-provider execution path for this issue in the same transaction as
         // the terminal block. Never cancel a run that crossed its invocation
         // fence; such a run is outside this admission-denial lifecycle.
-        const racedRuns = await tx
-          .update(heartbeatRuns)
-          .set({
-            status: "cancelled",
-            finishedAt: new Date(),
-            errorCode: "workforce_capacity.raced_recovery_cancelled",
-            error: "Automatic recovery cancelled because workforce capacity admission failed before provider invocation",
-            updatedAt: new Date(),
+        const racedRunCandidates = await tx
+          .select({
+            id: heartbeatRuns.id,
+            wakeupRequestId: heartbeatRuns.wakeupRequestId,
+            retryOfRunId: heartbeatRuns.retryOfRunId,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
           })
+          .from(heartbeatRuns)
           .where(and(
             eq(heartbeatRuns.companyId, run.companyId),
             sql`${heartbeatRuns.id} <> ${run.id}`,
+            eq(heartbeatRuns.invocationSource, "automation"),
             inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-            sql`coalesce(${heartbeatRuns.resultJson} -> 'provider_invocation' ->> 'attempted', 'false') <> 'true'`,
-          ))
-          .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId });
+          ));
+        const racedRunIds = racedRunCandidates.filter((candidate) => {
+          const candidateContext = parseObject(candidate.contextSnapshot);
+          const directAncestor = candidate.retryOfRunId === run.id ||
+            readNonEmptyString(candidateContext.retryOfRunId) === run.id;
+          const recoveryReason = readNonEmptyString(candidateContext.retryReason) ??
+            readNonEmptyString(candidateContext.wakeReason);
+          return directAncestor && Boolean(
+            recoveryReason && WORKFORCE_CAPACITY_RACE_RECOVERY_REASONS.has(recoveryReason),
+          );
+        }).map((candidate) => candidate.id);
+        const racedRuns = racedRunIds.length > 0
+          ? await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              errorCode: "workforce_capacity.raced_recovery_cancelled",
+              error: "Automatic recovery cancelled because workforce capacity admission failed before provider invocation",
+              updatedAt: new Date(),
+            })
+            .where(and(
+              inArray(heartbeatRuns.id, racedRunIds),
+              eq(heartbeatRuns.invocationSource, "automation"),
+              inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+              sql`coalesce(${heartbeatRuns.resultJson} -> 'provider_invocation' ->> 'attempted', 'false') <> 'true'`,
+            ))
+            .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+          : [];
         const racedWakeupIds = racedRuns
           .map((racedRun) => racedRun.wakeupRequestId)
           .filter((id): id is string => Boolean(id));
@@ -18071,23 +18106,10 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
             })
             .where(and(
               inArray(agentWakeupRequests.id, racedWakeupIds),
+              eq(agentWakeupRequests.source, "automation"),
               inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
             ));
         }
-        await tx
-          .update(agentWakeupRequests)
-          .set({
-            status: "cancelled",
-            finishedAt: new Date(),
-            error: "Automatic recovery cancelled by terminal workforce capacity block",
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(agentWakeupRequests.companyId, run.companyId),
-            eq(agentWakeupRequests.source, "automation"),
-            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
-          ));
         const blockedIssue = await tx
           .update(issues)
           .set({

@@ -2737,11 +2737,128 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       createdAt: new Date("2026-03-19T00:00:01.000Z"),
       updatedAt: new Date("2026-03-19T00:00:01.000Z"),
     });
+    const preservedAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: preservedAgentId,
+      companyId,
+      name: "PreservedWorker",
+      role: "engineer",
+      status: "paused",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const onDemandWakeupId = randomUUID();
+    const onDemandRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: onDemandWakeupId,
+      companyId,
+      agentId: preservedAgentId,
+      source: "on_demand",
+      triggerDetail: "user",
+      reason: "manual_followup",
+      payload: { issueId },
+      status: "queued",
+      runId: onDemandRunId,
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+      requestedAt: new Date("2026-03-19T00:00:02.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:02.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: onDemandRunId,
+      companyId,
+      agentId: preservedAgentId,
+      invocationSource: "on_demand",
+      triggerDetail: "user",
+      status: "queued",
+      wakeupRequestId: onDemandWakeupId,
+      contextSnapshot: { issueId, wakeReason: "manual_followup" },
+      responsibleUserId: "responsible-user",
+      createdAt: new Date("2026-03-19T00:00:02.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:02.000Z"),
+    });
+    const fencedWakeupId = randomUUID();
+    const fencedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: fencedWakeupId,
+      companyId,
+      agentId: preservedAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId, retryOfRunId: runId },
+      status: "claimed",
+      runId: fencedRunId,
+      claimedAt: new Date("2026-03-19T00:00:03.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:03.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: fencedRunId,
+      companyId,
+      agentId: preservedAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: fencedWakeupId,
+      contextSnapshot: { issueId, retryOfRunId: runId, wakeReason: "issue_continuation_needed" },
+      resultJson: { provider_invocation: { attempted: true } },
+      responsibleUserId: "responsible-user",
+      retryOfRunId: runId,
+      startedAt: new Date("2026-03-19T00:00:03.000Z"),
+      createdAt: new Date("2026-03-19T00:00:03.000Z"),
+      updatedAt: new Date(),
+    });
+    const unrelatedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: unrelatedIssueId,
+      companyId,
+      title: "Unrelated automatic recovery",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: preservedAgentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+    });
+    const unrelatedWakeupId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: unrelatedWakeupId,
+      companyId,
+      agentId: preservedAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId: unrelatedIssueId, retryOfRunId: runId },
+      status: "queued",
+      runId: unrelatedRunId,
+      updatedAt: new Date("2026-03-19T00:00:04.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId: preservedAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: unrelatedWakeupId,
+      contextSnapshot: {
+        issueId: unrelatedIssueId,
+        retryOfRunId: runId,
+        wakeReason: "issue_continuation_needed",
+      },
+      responsibleUserId: "responsible-user",
+      retryOfRunId: runId,
+      updatedAt: new Date("2026-03-19T00:00:04.000Z"),
+    });
 
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
-    await waitForHeartbeatIdle(db, 5_000);
+    await waitForValue(async () => db.select().from(issues).where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.status === "blocked" ? rows[0] : null));
 
     const failedRun = await db
       .select()
@@ -2778,28 +2895,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId)))
       .resolves.toHaveLength(0);
-    await expect(db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, companyId),
-        inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
-      )))
-      .resolves.toHaveLength(0);
     const racedRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, racedRunId))
       .then((rows) => rows[0] ?? null);
     expect(racedRun).toMatchObject({
       status: "cancelled",
       errorCode: "workforce_capacity.raced_recovery_cancelled",
     });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, onDemandRunId))
+      .then((rows) => rows[0]?.status)).toBe("queued");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fencedRunId))
+      .then((rows) => rows[0]?.status)).toBe("running");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelatedRunId))
+      .then((rows) => rows[0]?.status)).toBe("queued");
     const wakeups = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.companyId, companyId));
-    expect(wakeups).toHaveLength(2);
+    expect(wakeups).toHaveLength(5);
     expect(wakeups.find((wakeup) => wakeup.id === wakeupRequestId)?.status).toBe("failed");
     expect(wakeups.find((wakeup) => wakeup.id === racedWakeupId)?.status).toBe("cancelled");
-    expect(wakeups.some((wakeup) => wakeup.status === "queued" || wakeup.status === "claimed")).toBe(false);
+    expect(wakeups.find((wakeup) => wakeup.id === onDemandWakeupId)?.status).toBe("queued");
+    expect(wakeups.find((wakeup) => wakeup.id === fencedWakeupId)?.status).toBe("claimed");
+    expect(wakeups.find((wakeup) => wakeup.id === unrelatedWakeupId)?.status).toBe("queued");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments.map((comment) => comment.body)).toContainEqual(
