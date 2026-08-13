@@ -29,9 +29,12 @@
 
 import net from "node:net";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_SOCKET = "/run/paperclip-platform-ops-broker/broker.sock";
 const MAX_RESPONSE_BYTES = 128 * 1024;
+const READ_ONLY_TIMEOUT_MS = 30_000;
+const MUTATING_TIMEOUT_MS = 180_000;
 
 const ALLOWED_OPERATIONS = new Set([
   "service-status",
@@ -54,6 +57,12 @@ const MUTATING_OPERATIONS = new Set([
   "deploy-pinned-image",
   "rollback-rehearsal",
 ]);
+
+export function requestTimeoutMs(request) {
+  return MUTATING_OPERATIONS.has(request?.operation)
+    ? MUTATING_TIMEOUT_MS
+    : READ_ONLY_TIMEOUT_MS;
+}
 
 function fail(message) {
   process.stderr.write(`platform-ops-tool: ${message}\n`);
@@ -210,7 +219,7 @@ function sendRequest(request) {
         socket.destroy();
         reject(new Error("broker request timed out"));
       }
-    }, 30000);
+    }, requestTimeoutMs(request));
   });
 }
 
@@ -229,4 +238,6 @@ async function main() {
   }
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

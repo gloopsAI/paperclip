@@ -644,6 +644,21 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             with self.assertRaisesRegex(broker.BrokerError, "JSON object"):
                 broker.read_request(mock_socket)
 
+    def test_disconnected_client_does_not_crash_broker_after_response(self):
+        """A caller timeout must not kill the long-lived broker process."""
+        with self.paths():
+            connection = broker.connect_database()
+            mock_socket = MagicMock()
+            mock_socket.recv = lambda _size: b'{"operation":"memory-usage"}\n'
+            mock_socket.sendall.side_effect = BrokenPipeError("caller timed out")
+            with patch.object(
+                broker,
+                "op_memory_usage",
+                return_value={"totalBytes": 1, "availableBytes": 1},
+            ):
+                broker.handle_connection(mock_socket, connection)
+            connection.close()
+
     # -------------------------------------------------------------------------
     # No generic shell/SSH/sudo/path/service/image-tag injection
     # -------------------------------------------------------------------------
