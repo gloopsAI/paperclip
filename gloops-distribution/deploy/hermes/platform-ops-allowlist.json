@@ -1,15 +1,35 @@
 {
-  "schemaVersion": "gloops.platform-ops-allowlist.v1",
+  "schemaVersion": "gloops.platform-ops-allowlist.v2",
   "allowedServices": {
     "paperclip-gloops.service": {
       "healthUrl": "http://127.0.0.1:3100/api/health",
       "container": "paperclip-gloops",
-      "imageEnv": "PAPERCLIP_IMAGE"
+      "imageEnv": "PAPERCLIP_IMAGE",
+      "frontDoorHealth": {
+        "publicUrl": "https://paperclip.gloops.ai/",
+        "publicBodyContains": "<div id=\"root\"></div>",
+        "apiHealthUrl": "https://paperclip.gloops.ai/api/health",
+        "protectedUrl": "https://paperclip.gloops.ai/api/companies",
+        "websocketUrl": "https://paperclip.gloops.ai/api/companies/00000000-0000-0000-0000-000000000000/events/ws"
+      },
+      "rollbackProof": {
+        "listenerPorts": [3100]
+      }
     },
     "paperclip-controlled-swarm.service": {
       "healthUrl": "http://127.0.0.1:3100/api/health",
       "container": "paperclip-gloops",
-      "imageEnv": "PAPERCLIP_IMAGE"
+      "imageEnv": "PAPERCLIP_IMAGE",
+      "frontDoorHealth": {
+        "publicUrl": "https://paperclip.gloops.ai/",
+        "publicBodyContains": "<div id=\"root\"></div>",
+        "apiHealthUrl": "https://paperclip.gloops.ai/api/health",
+        "protectedUrl": "https://paperclip.gloops.ai/api/companies",
+        "websocketUrl": "https://paperclip.gloops.ai/api/companies/00000000-0000-0000-0000-000000000000/events/ws"
+      },
+      "rollbackProof": {
+        "listenerPorts": [3100]
+      }
     },
     "paperclip-hermes-execution.service": {
       "healthUrl": null,

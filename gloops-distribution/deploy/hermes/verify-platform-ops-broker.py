@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 SCRIPT_DIR = Path(__file__).parent
 MODULE_PATH = SCRIPT_DIR / "platform-ops-broker.py"
@@ -44,6 +45,8 @@ def verify_allowlist(config_dir: Path) -> list[str]:
     if not isinstance(allowlist, dict):
         errors.append("allowlist must be a JSON object")
         return errors
+    if allowlist.get("schemaVersion") != "gloops.platform-ops-allowlist.v2":
+        errors.append("allowlist.schemaVersion must be gloops.platform-ops-allowlist.v2")
     for key in ("allowedServices", "allowedCachePaths"):
         if key not in allowlist:
             errors.append(f"allowlist missing required key: {key}")
@@ -55,6 +58,48 @@ def verify_allowlist(config_dir: Path) -> list[str]:
                 errors.append(f"invalid service name in allowlist: {service_name}")
             if not isinstance(service_config, dict):
                 errors.append(f"service config for {service_name} must be a JSON object")
+                continue
+            front_door = service_config.get("frontDoorHealth")
+            if front_door is not None:
+                if not isinstance(front_door, dict):
+                    errors.append(f"frontDoorHealth for {service_name} must be a JSON object")
+                else:
+                    body_marker = front_door.get("publicBodyContains")
+                    if not isinstance(body_marker, str) or not body_marker:
+                        errors.append(
+                            f"frontDoorHealth.publicBodyContains for {service_name} must be non-empty"
+                        )
+                    for key in ("publicUrl", "apiHealthUrl", "protectedUrl", "websocketUrl"):
+                        value = front_door.get(key)
+                        parsed = urlparse(value) if isinstance(value, str) else None
+                        if parsed is None or parsed.scheme != "https" or not parsed.netloc:
+                            errors.append(
+                                f"frontDoorHealth.{key} for {service_name} must be an absolute https URL"
+                            )
+            rollback_proof = service_config.get("rollbackProof")
+            if rollback_proof is not None:
+                if not isinstance(rollback_proof, dict):
+                    errors.append(f"rollbackProof for {service_name} must be a JSON object")
+                else:
+                    ports = rollback_proof.get("listenerPorts")
+                    if (
+                        not isinstance(ports, list)
+                        or not ports
+                        or any(
+                            not isinstance(port, int)
+                            or isinstance(port, bool)
+                            or port < 1
+                            or port > 65535
+                            for port in ports
+                        )
+                    ):
+                        errors.append(
+                            f"rollbackProof.listenerPorts for {service_name} must be non-empty valid ports"
+                        )
+                    if not service_config.get("container") or not service_config.get("imageEnv"):
+                        errors.append(
+                            f"rollbackProof for {service_name} requires container and imageEnv"
+                        )
     if "allowedCachePaths" in allowlist and isinstance(allowlist["allowedCachePaths"], dict):
         for cache_name, cache_path in allowlist["allowedCachePaths"].items():
             if not isinstance(cache_path, str) or not cache_path.startswith("/"):
