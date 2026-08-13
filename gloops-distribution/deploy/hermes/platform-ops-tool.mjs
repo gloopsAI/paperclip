@@ -164,61 +164,61 @@ function sendRequest(request) {
     const chunks = [];
     let totalBytes = 0;
     let settled = false;
+    let deadline;
+
+    const settle = (callback, destroySocket = false) => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      if (destroySocket) socket.destroy();
+      callback();
+    };
 
     socket.on("data", (chunk) => {
       totalBytes += chunk.length;
       if (totalBytes > MAX_RESPONSE_BYTES) {
-        if (!settled) {
-          settled = true;
-          socket.destroy();
-          reject(new Error("response exceeds the bounded-response ceiling"));
-        }
+        settle(
+          () => reject(new Error("response exceeds the bounded-response ceiling")),
+          true,
+        );
         return;
       }
       chunks.push(chunk);
       const combined = Buffer.concat(chunks);
       const newlineIndex = combined.indexOf(0x0a);
       if (newlineIndex >= 0) {
-        settled = true;
-        socket.destroy();
         const line = combined.slice(0, newlineIndex).toString("utf8");
         try {
-          resolve(JSON.parse(line));
+          const response = JSON.parse(line);
+          settle(() => resolve(response), true);
         } catch {
-          reject(new Error("broker returned malformed JSON"));
+          settle(() => reject(new Error("broker returned malformed JSON")), true);
         }
       }
     });
 
     socket.on("error", (error) => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`socket error: ${error.message}`));
-      }
+      settle(() => reject(new Error(`socket error: ${error.message}`)));
     });
 
     socket.on("close", () => {
       if (!settled) {
-        settled = true;
         if (chunks.length === 0) {
-          reject(new Error("broker connection closed without response"));
+          settle(() => reject(new Error("broker connection closed without response")));
         } else {
           const line = Buffer.concat(chunks).toString("utf8").trim();
           try {
-            resolve(JSON.parse(line));
+            const response = JSON.parse(line);
+            settle(() => resolve(response));
           } catch {
-            reject(new Error("broker returned malformed JSON"));
+            settle(() => reject(new Error("broker returned malformed JSON")));
           }
         }
       }
     });
 
-    setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        socket.destroy();
-        reject(new Error("broker request timed out"));
-      }
+    deadline = setTimeout(() => {
+      settle(() => reject(new Error("broker request timed out")), true);
     }, requestTimeoutMs(request));
   });
 }
