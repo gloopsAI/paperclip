@@ -18044,6 +18044,7 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
+        const capacityIssue = issue;
         // A recovery wake may race terminalization after the capacity decision
         // but before this issue lock is acquired. Invalidate every automatic,
         // pre-provider execution path for this issue in the same transaction as
@@ -18054,25 +18055,37 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
             id: heartbeatRuns.id,
             wakeupRequestId: heartbeatRuns.wakeupRequestId,
             retryOfRunId: heartbeatRuns.retryOfRunId,
-            contextSnapshot: heartbeatRuns.contextSnapshot,
+            wakeupId: agentWakeupRequests.id,
+            wakeupSource: agentWakeupRequests.source,
+            wakeupRunId: agentWakeupRequests.runId,
+            wakeupReason: agentWakeupRequests.reason,
+            wakeupPayload: agentWakeupRequests.payload,
           })
           .from(heartbeatRuns)
+          .innerJoin(
+            agentWakeupRequests,
+            eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+          )
           .where(and(
             eq(heartbeatRuns.companyId, run.companyId),
             sql`${heartbeatRuns.id} <> ${run.id}`,
             eq(heartbeatRuns.invocationSource, "automation"),
             inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-          ));
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${capacityIssue.id}`,
+          ))
+          .for("update");
         const racedRunIds = racedRunCandidates.filter((candidate) => {
-          const candidateContext = parseObject(candidate.contextSnapshot);
-          const directAncestor = candidate.retryOfRunId === run.id ||
-            readNonEmptyString(candidateContext.retryOfRunId) === run.id;
-          const recoveryReason = readNonEmptyString(candidateContext.retryReason) ??
-            readNonEmptyString(candidateContext.wakeReason);
-          return directAncestor && Boolean(
-            recoveryReason && WORKFORCE_CAPACITY_RACE_RECOVERY_REASONS.has(recoveryReason),
-          );
+          const wakeupPayload = parseObject(candidate.wakeupPayload);
+          return candidate.wakeupRequestId === candidate.wakeupId &&
+            candidate.wakeupSource === "automation" &&
+            candidate.wakeupRunId === candidate.id &&
+            candidate.retryOfRunId === run.id &&
+            readNonEmptyString(wakeupPayload.issueId) === capacityIssue.id &&
+            readNonEmptyString(wakeupPayload.retryOfRunId) === run.id &&
+            Boolean(
+              candidate.wakeupReason &&
+              WORKFORCE_CAPACITY_RACE_RECOVERY_REASONS.has(candidate.wakeupReason),
+            );
         }).map((candidate) => candidate.id);
         const racedRuns = racedRunIds.length > 0
           ? await tx
@@ -18107,6 +18120,7 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
             .where(and(
               inArray(agentWakeupRequests.id, racedWakeupIds),
               eq(agentWakeupRequests.source, "automation"),
+              inArray(agentWakeupRequests.runId, racedRuns.map((racedRun) => racedRun.id)),
               inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
             ));
         }
@@ -18120,8 +18134,8 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
             updatedAt: new Date(),
           })
           .where(and(
-            eq(issues.id, issue.id),
-            eq(issues.companyId, issue.companyId),
+            eq(issues.id, capacityIssue.id),
+            eq(issues.companyId, capacityIssue.companyId),
             eq(issues.assigneeAgentId, run.agentId),
             isNull(issues.assigneeUserId),
             inArray(issues.status, ["todo", "in_progress"]),

@@ -2853,6 +2853,76 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryOfRunId: runId,
       updatedAt: new Date("2026-03-19T00:00:04.000Z"),
     });
+    const missingWakeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: missingWakeRunId,
+      companyId,
+      agentId: preservedAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: null,
+      contextSnapshot: { issueId, retryOfRunId: runId, wakeReason: "issue_continuation_needed" },
+      responsibleUserId: "responsible-user",
+      retryOfRunId: runId,
+      updatedAt: new Date("2026-03-19T00:00:05.000Z"),
+    });
+    const nonAutomaticWakeupId = randomUUID();
+    const nonAutomaticLinkedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: nonAutomaticWakeupId,
+      companyId,
+      agentId: preservedAgentId,
+      source: "on_demand",
+      triggerDetail: "user",
+      reason: "issue_continuation_needed",
+      payload: { issueId, retryOfRunId: runId },
+      status: "queued",
+      runId: nonAutomaticLinkedRunId,
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+      updatedAt: new Date("2026-03-19T00:00:06.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: nonAutomaticLinkedRunId,
+      companyId,
+      agentId: preservedAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: nonAutomaticWakeupId,
+      contextSnapshot: { issueId, retryOfRunId: runId, wakeReason: "issue_continuation_needed" },
+      responsibleUserId: "responsible-user",
+      retryOfRunId: runId,
+      updatedAt: new Date("2026-03-19T00:00:06.000Z"),
+    });
+    const contextOnlyWakeupId = randomUUID();
+    const contextOnlyRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: contextOnlyWakeupId,
+      companyId,
+      agentId: preservedAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId, retryOfRunId: runId },
+      status: "queued",
+      runId: contextOnlyRunId,
+      updatedAt: new Date("2026-03-19T00:00:07.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: contextOnlyRunId,
+      companyId,
+      agentId: preservedAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: contextOnlyWakeupId,
+      contextSnapshot: { issueId, retryOfRunId: runId, wakeReason: "issue_continuation_needed" },
+      responsibleUserId: "responsible-user",
+      retryOfRunId: null,
+      updatedAt: new Date("2026-03-19T00:00:07.000Z"),
+    });
 
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
@@ -2907,16 +2977,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0]?.status)).toBe("running");
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelatedRunId))
       .then((rows) => rows[0]?.status)).toBe("queued");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, missingWakeRunId))
+      .then((rows) => rows[0]?.status)).toBe("queued");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, nonAutomaticLinkedRunId))
+      .then((rows) => rows[0]?.status)).toBe("queued");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, contextOnlyRunId))
+      .then((rows) => rows[0]?.status)).toBe("queued");
     const wakeups = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.companyId, companyId));
-    expect(wakeups).toHaveLength(5);
+    expect(wakeups).toHaveLength(7);
     expect(wakeups.find((wakeup) => wakeup.id === wakeupRequestId)?.status).toBe("failed");
     expect(wakeups.find((wakeup) => wakeup.id === racedWakeupId)?.status).toBe("cancelled");
     expect(wakeups.find((wakeup) => wakeup.id === onDemandWakeupId)?.status).toBe("queued");
     expect(wakeups.find((wakeup) => wakeup.id === fencedWakeupId)?.status).toBe("claimed");
     expect(wakeups.find((wakeup) => wakeup.id === unrelatedWakeupId)?.status).toBe("queued");
+    expect(wakeups.find((wakeup) => wakeup.id === nonAutomaticWakeupId)?.status).toBe("queued");
+    expect(wakeups.find((wakeup) => wakeup.id === contextOnlyWakeupId)?.status).toBe("queued");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments.map((comment) => comment.body)).toContainEqual(
