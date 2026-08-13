@@ -5,6 +5,23 @@
 - `verify-hermes-self-heal-canary.sh` proves the pinned image carries self-heal / route-evidence surfaces (no LLM).
 - Signed **outbound** lifecycle webhooks (`hooks.outbound`) POST to `hermes-lifecycle-sink` on `paperclip-execution`; see `HERMES-LIFECYCLE-SINK.md`.
 
+### Provider environment drift repair
+
+The Ollama Cloud endpoint is pinned in the root-owned execution profile
+`auth.json`; `OLLAMA_BASE_URL` is not part of the accepted sidecar environment.
+If profile preflight reports that override, inspect only the environment keyset
+and file hashes, then run the explicit repair while the sidecar is inactive:
+
+```bash
+sudo /usr/local/lib/paperclip-gloops/reconcile-hermes-execution-provider-env.py
+sudo /usr/local/lib/paperclip-gloops/reconcile-hermes-execution-provider-env.py --apply
+sudo /usr/local/lib/paperclip-gloops/verify-hermes-execution-profile.sh --source
+```
+
+The first command is a non-mutating check. The apply step atomically removes
+only the undeclared endpoint key, preserves all other assignments byte-for-byte,
+and never prints configuration values.
+
 # Hermes dark deployment envelope
 
 ## Board-authorized Induct intake

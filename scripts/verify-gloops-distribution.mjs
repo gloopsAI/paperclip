@@ -186,6 +186,10 @@ const prepareHermesExecutionPath = new URL(
   "../gloops-distribution/deploy/hermes/prepare-hermes-execution-profile.sh",
   import.meta.url,
 );
+const reconcileHermesExecutionProviderEnvPath = new URL(
+  "../gloops-distribution/deploy/hermes/reconcile-hermes-execution-provider-env.py",
+  import.meta.url,
+);
 const verifyHermesExecutionPath = new URL(
   "../gloops-distribution/deploy/hermes/verify-hermes-execution-profile.sh",
   import.meta.url,
@@ -507,6 +511,10 @@ const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const githubPushBroker = readFileSync(githubPushBrokerPath, "utf8");
 const githubPushBrokerService = readFileSync(githubPushBrokerServicePath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
+const reconcileHermesExecutionProviderEnv = readFileSync(
+  reconcileHermesExecutionProviderEnvPath,
+  "utf8",
+);
 const verifyHermesExecution = readFileSync(verifyHermesExecutionPath, "utf8");
 const hermesHandshakeConfig = readFileSync(hermesHandshakeConfigPath, "utf8");
 const hermesHandshakePolicy = JSON.parse(readFileSync(hermesHandshakePolicyPath, "utf8"));
@@ -1439,6 +1447,22 @@ if (
 ) {
   fail("Hermes profile preparation must remove legacy GitHub credential and config projections");
 }
+for (const required of [
+  'UNDECLARED_PROVIDER_KEY = b"OLLAMA_BASE_URL"',
+  "os.replace(temporary, path)",
+  "return content, False",
+]) {
+  if (!reconcileHermesExecutionProviderEnv.includes(required)) {
+    fail(`Hermes provider environment reconciliation is missing ${required}`);
+  }
+}
+if (
+  !verifyHermesExecution.includes(
+    "undeclared Ollama endpoint override is present; run reconcile-hermes-execution-provider-env.py --apply before retrying activation",
+  )
+) {
+  fail("Hermes execution preflight does not identify endpoint override drift");
+}
 if (
   hermesExecutionPolicy.grok?.mode !== "host-cli-only" ||
   hermesExecutionPolicy.grok?.apiEnvironmentAllowed !== false
@@ -2033,6 +2057,7 @@ for (const forbidden of [
 }
 for (const required of [
   "prepare-hermes-execution-profile.sh",
+  "reconcile-hermes-execution-provider-env.py",
   "verify-hermes-execution-profile.sh",
   "verify-hermes-command-security-image.sh",
   "load-hermes-execution-image.sh",
