@@ -56,7 +56,7 @@ export type ExecutionInvocationBudget = {
   phasePlan?: ExecutionPhaseBudgetPlan;
 };
 
-export type SubscriptionRouteProvider = "ollama" | "grok" | "codex";
+export type SubscriptionRouteProvider = "ollama" | "luna" | "terra" | "grok" | "codex";
 export type SubscriptionRouteAttemptEvidence = {
   provider: Exclude<SubscriptionRouteProvider, "codex">;
   transport: "cli" | "subscription_cli";
@@ -136,7 +136,7 @@ export function readSubscriptionRouteEvidence(value: unknown, now: string | Date
     const observedAt = isRecord(raw) && typeof raw.observedAt === "string"
       ? Date.parse(raw.observedAt)
       : Number.NaN;
-    if (!isRecord(raw) || (raw.provider !== "ollama" && raw.provider !== "grok") ||
+    if (!isRecord(raw) || !["ollama", "luna", "terra", "grok"].includes(String(raw.provider)) ||
         (raw.transport !== "cli" && raw.transport !== "subscription_cli") ||
         (raw.disposition !== "attempted_failed" && raw.disposition !== "ineligible") ||
         !["quota_exhausted", "provider_unavailable", "capability_floor", "quality_failure"].includes(String(raw.reason)) ||
@@ -159,10 +159,21 @@ export function evaluateSubscriptionRouteAdmission(
   adapterType: string,
   context: Record<string, unknown>,
   now: string | Date = new Date(),
+  model?: string | null,
 ): SubscriptionRouteAdmission {
   const normalizedAdapterType = adapterType.trim().toLowerCase();
+  const normalizedModel = model?.trim().toLowerCase() ?? "";
+  const durableCodexProvider: SubscriptionRouteProvider | null = normalizedAdapterType === "codex_local"
+    ? normalizedModel === "gpt-5.6-luna"
+      ? "luna"
+      : normalizedModel === "gpt-5.6-terra"
+        ? "terra"
+        : null
+    : null;
   const provider: SubscriptionRouteProvider | null = normalizedAdapterType === "hermes_gateway" || normalizedAdapterType === "hermes_local"
     ? "ollama"
+    : durableCodexProvider
+      ? durableCodexProvider
     : normalizedAdapterType === "grok_local"
       ? "grok"
       : normalizedAdapterType === "codex_local"
@@ -174,29 +185,37 @@ export function evaluateSubscriptionRouteAdmission(
       return {
         allowed: false,
         provider: null,
-        reason: `${adapterType} denied: autonomous model adapter is outside Ollama > Grok CLI > Codex`,
+        reason: `${adapterType} denied: autonomous model adapter is outside the durable Luna/Terra bench and bounded Grok/Codex burst lanes`,
       };
     }
     return { allowed: true, provider: null, reason: "non-model adapter is outside the subscription route chain" };
   }
   if (provider === "ollama") {
-    return { allowed: true, provider, reason: "Ollama is the mandatory first route" };
+    return { allowed: true, provider, reason: "Ollama/Hermes is optional supplemental capacity, not a prerequisite" };
+  }
+  if (provider === "luna" || provider === "terra") {
+    return { allowed: true, provider, reason: `${provider} is durable workforce capacity` };
   }
   const currentTime = typeof now === "string" ? Date.parse(now) : now.getTime();
   const evidence = Number.isFinite(currentTime)
     ? readSubscriptionRouteEvidence(context[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY], currentTime)
     : null;
-  const required = provider === "grok" ? ["ollama"] : ["ollama", "grok"];
-  const missing = required.filter((requiredProvider) =>
-    !evidence?.attempts.some((attempt) => attempt.provider === requiredProvider));
-  if (missing.length > 0) {
+  const contextIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+  const durableAttempt = evidence?.attempts.find((attempt) =>
+    (!contextIssueId || attempt.issueId === contextIssueId) &&
+    (attempt.provider === "luna" || attempt.provider === "terra" || attempt.provider === "ollama"));
+  if (!durableAttempt) {
     return {
       allowed: false,
       provider,
-      reason: `${provider} denied: missing typed terminal route receipt for ${missing.join(", ")}`,
+      reason: `${provider} burst denied: missing typed terminal route receipt from Luna, Terra, or supplemental Ollama capacity`,
     };
   }
-  return { allowed: true, provider, reason: `${provider} admitted after typed ${required.join(" and ")} route evidence` };
+  return {
+    allowed: true,
+    provider,
+    reason: `${provider} burst admitted after typed ${durableAttempt.provider} terminal route evidence`,
+  };
 }
 
 function splitPhaseTotal(total: number): Record<ExecutionBudgetPhase, number> {

@@ -160,6 +160,7 @@ Invariant: every business record belongs to exactly one company.
 - `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, `hermes_local`, `hermes_gateway`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
+- GLoops workforce routing enforces capacity admission by default for Luna/Terra durable agents; non-durable routes may opt in with `paperclipWorkforceCapacityRequired: true`. Hermes/Ollama is optional supplemental capacity, and Grok/other Codex models are issue-bound burst lanes admitted only with typed durable-lane evidence and a just-in-time capacity lease. See `doc/WORKFORCE-ROUTING.md`.
 - `default_environment_id` uuid fk `environments.id` null
 - `context_mode` enum: `thin | fat` default `thin`
 - `budget_monthly_cents` int not null default 0

@@ -271,6 +271,14 @@ import {
   resolveWorkPreparationCapabilities,
 } from "./work-preparation.js";
 import {
+  WORKFORCE_CAPACITY_CONTEXT_KEY,
+  WORKFORCE_CAPACITY_DENIED_CODE,
+  assessWorkforceCapacity,
+  classifyWorkforceRoute,
+  probeWorkforceCapacity,
+  workforceCapacityRequiredForRoute,
+} from "./workforce-capacity.js";
+import {
   buildOperationsImprovementStewardWake,
   classifyOperationsAnomaly,
   projectOperationsImprovementProposal,
@@ -1637,6 +1645,12 @@ export function isWorkspaceNotWritableFailedRun(
   return run?.errorCode === WORKSPACE_NOT_WRITABLE_FAILURE_CODE;
 }
 
+export function isWorkforceCapacityFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === WORKFORCE_CAPACITY_DENIED_CODE;
+}
+
 /**
  * A run becomes `running` before its adapter/provider call begins. Reassignment
  * may safely release that narrow pre-provider holder, but must not clobber a
@@ -2993,24 +3007,39 @@ type SubscriptionRouteAdvance = {
   transport: "cli" | "subscription_cli";
   reason: SubscriptionRouteAdvanceReason;
   targetAdapterType: "grok_local" | "codex_local";
+  targetLane: "durable_bench" | "grok_burst" | "codex_burst";
 };
 
-function subscriptionProviderForAdapter(adapterType: string): SubscriptionRouteProvider | null {
+function subscriptionProviderForAdapter(
+  adapterType: string,
+  model?: string | null,
+): SubscriptionRouteProvider | null {
   const normalized = adapterType.trim().toLowerCase();
+  const normalizedModel = model?.trim().toLowerCase() ?? "";
   if (normalized === "hermes_gateway" || normalized === "hermes_local") return "ollama";
   if (normalized === "grok_local") return "grok";
+  if (normalized === "codex_local" && normalizedModel === "gpt-5.6-luna") return "luna";
+  if (normalized === "codex_local" && normalizedModel === "gpt-5.6-terra") return "terra";
   if (normalized === "codex_local") return "codex";
   return null;
 }
 
 export function subscriptionRouteAdvanceForRun(
   adapterType: string,
-  run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "error" | "errorCode" | "resultJson">,
+  model: string | null | undefined,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "error" | "errorCode" | "resultJson" | "usageJson">,
 ): SubscriptionRouteAdvance | null {
   if (run.status !== "failed" && run.status !== "timed_out") return null;
-  const provider = subscriptionProviderForAdapter(adapterType);
+  const provider = subscriptionProviderForAdapter(adapterType, model);
   if (!provider || provider === "codex") return null;
   const resultJson = parseObject(run.resultJson);
+  const usageJson = parseObject(run.usageJson);
+  const providerInvocationAttempted = resultJson.providerInvocationAttempted ??
+    usageJson.providerInvocationAttempted ??
+    parseObject(resultJson.provider_invocation).attempted;
+  const admissionDenied = /^(?:campaign_deadman|execution_admission|execution_route|work_preparation|workforce_capacity)\./
+    .test(run.errorCode ?? "");
+  if (providerInvocationAttempted === false || admissionDenied) return null;
   const explicit = readNonEmptyString(parseObject(resultJson.subscriptionRouteAdvance).reason);
   const explicitReason = ["quota_exhausted", "provider_unavailable", "capability_floor", "quality_failure"]
     .includes(explicit ?? "")
@@ -3029,7 +3058,8 @@ export function subscriptionRouteAdvanceForRun(
     provider,
     transport: provider === "grok" ? "cli" : "subscription_cli",
     reason,
-    targetAdapterType: provider === "ollama" ? "grok_local" : "codex_local",
+    targetAdapterType: provider === "ollama" ? "codex_local" : provider === "grok" ? "codex_local" : "grok_local",
+    targetLane: provider === "ollama" ? "durable_bench" : provider === "grok" ? "codex_burst" : "grok_burst",
   };
 }
 
@@ -16188,7 +16218,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       let adapterInvocationAttempted = false;
-      const subscriptionRouteAdmission = evaluateSubscriptionRouteAdmission(agent.adapterType, context);
+      const subscriptionRouteAdmission = evaluateSubscriptionRouteAdmission(
+        agent.adapterType,
+        context,
+        new Date(),
+        configuredModel,
+      );
       let invocationBudget = executionInvocationBudgetFromEnvelope(
         parseObject(run.contextSnapshot)[EXECUTION_ADMISSION_CONTEXT_KEY],
       );
@@ -16280,6 +16315,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       context[WORK_PREPARATION_CONTEXT_KEY] = workPreparation;
+      const workforceRoute = classifyWorkforceRoute(agent.adapterType, configuredModel);
+      const workforceCapacityRequired = Boolean(issueRef) && workforceCapacityRequiredForRoute({
+        route: workforceRoute,
+        runtimeRequired: runtimeConfig.paperclipWorkforceCapacityRequired,
+        issueRequired: issueAssigneeOverrides?.adapterConfig?.paperclipWorkforceCapacityRequired,
+      });
+      const workforceQuota = workforceCapacityRequired &&
+          workPreparation.decision === "ready" &&
+          subscriptionRouteAdmission.allowed &&
+          workforceRoute.lane !== "non_model" &&
+          workforceRoute.lane !== "unsupported"
+        ? await probeWorkforceCapacity(
+            String(workforceRoute.provider),
+            adapter.getQuotaWindows ? () => adapter.getQuotaWindows!() : null,
+          )
+        : null;
+      const workforceCapacity = assessWorkforceCapacity({
+        runId: run.id,
+        issueId: issueRef?.id ?? null,
+        agentId: agent.id,
+        adapterType: agent.adapterType,
+        model: configuredModel,
+        invocationBudget,
+        context,
+        quota: workforceQuota,
+        required: workforceCapacityRequired,
+        queuedAt: run.createdAt,
+      });
+      context[WORKFORCE_CAPACITY_CONTEXT_KEY] = workforceCapacity;
       await db
         .update(heartbeatRuns)
         .set({
@@ -16314,6 +16378,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           clearSession: true,
           providerInvocationAttempted: false,
           resultJson: { workPreparation },
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else if (workforceCapacity.decision === "denied") {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: WORKFORCE_CAPACITY_DENIED_CODE,
+          errorMessage: `Workforce capacity denied provider execution: ${workforceCapacity.reasons.join(", ")}`,
+          clearSession: true,
+          providerInvocationAttempted: false,
+          resultJson: { workforceCapacity },
         };
         await recordWorkspaceFinalize("succeeded");
       } else if (!subscriptionRouteAdmission.allowed) {
@@ -16819,6 +16895,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             mergeAdapterRecoveryMetadata({
               resultJson: {
                 ...parseObject(adapterResult.resultJson),
+                providerInvocationAttempted: effectiveProviderInvocationAttempted,
                 configFreshness: configFreshnessResultMetadata,
                 workPreparation,
               },
@@ -17089,7 +17166,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         const livenessRun = finalizedRun;
-        const subscriptionRouteAdvance = subscriptionRouteAdvanceForRun(agent.adapterType, livenessRun);
+        const subscriptionRouteAdvance = subscriptionRouteAdvanceForRun(
+          agent.adapterType,
+          configuredModel,
+          livenessRun,
+        );
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
@@ -17145,14 +17226,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           });
         }
-        const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
+        const issueCommentPolicyResult = isWorkforceCapacityFailedRun(livenessRun)
+          ? { outcome: "not_applicable" as const, queuedRun: null }
+          : await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun, {
           suppressImmediateRecovery: Boolean(subscriptionRouteAdvance),
         });
         const subscriptionRouteAdvanced = subscriptionRouteAdvance
           ? await advanceSubscriptionRoute(livenessRun, agent, subscriptionRouteAdvance)
           : false;
-        if (!subscriptionRouteAdvanced) {
+        if (!subscriptionRouteAdvanced && !isWorkforceCapacityFailedRun(livenessRun)) {
           await handleRunLivenessContinuation(livenessRun);
           await handleSuccessfulRunHandoff(
             issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
@@ -17673,7 +17756,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
-  function buildExecutionReviewParticipantRecoveryComment(input: {
+function buildExecutionReviewParticipantRecoveryComment(input: {
     latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
   }) {
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
@@ -17682,6 +17765,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       `or live reviewer run.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
       "restore the review stage, or record an intentional manual resolution."
+    );
+  }
+
+  function buildWorkforceCapacityBlockedComment(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode">,
+  ) {
+    const failureSummary = summarizeRunFailureForIssueComment(run);
+    return (
+      "Paperclip blocked this task because durable workforce capacity admission failed before provider invocation." +
+      `${failureSummary ?? ""} No provider-attempt receipt was minted and no automatic reassignment, wake, or retry was created. ` +
+      "Resume only after a fresh capacity snapshot can support a new issue-bound lease."
     );
   }
 
@@ -17711,19 +17805,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return false;
     }
 
-    const targetAgent = await db
-      .select({ id: agents.id, name: agents.name })
+    const targetAdapterTypes = advance.targetLane === "grok_burst"
+      ? ["grok_local", "codex_local"]
+      : [advance.targetAdapterType];
+    const targetCandidates = await db
+      .select({ id: agents.id, name: agents.name, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents)
       .where(and(
         eq(agents.companyId, sourceAgent.companyId),
-        eq(agents.adapterType, advance.targetAdapterType),
+        inArray(agents.adapterType, targetAdapterTypes),
         inArray(agents.status, ["active", "idle", "running", "error"]),
       ))
       .orderBy(asc(agents.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .limit(100);
+    const routeForCandidate = (candidate: (typeof targetCandidates)[number]) => classifyWorkforceRoute(
+      candidate.adapterType,
+      readNonEmptyString(parseObject(candidate.adapterConfig).model),
+    );
+    const matchesLane = (
+      candidate: (typeof targetCandidates)[number],
+      lane: SubscriptionRouteAdvance["targetLane"],
+    ) => {
+      const route = routeForCandidate(candidate);
+      return lane === "durable_bench"
+        ? route.lane === "durable_bench"
+        : lane === "grok_burst"
+          ? route.lane === "burst" && route.provider === "grok"
+          : route.lane === "burst" && route.provider === "codex";
+    };
+    const targetAgent = targetCandidates.find((candidate) => matchesLane(candidate, advance.targetLane))
+      ?? (advance.targetLane === "grok_burst"
+        ? targetCandidates.find((candidate) => matchesLane(candidate, "codex_burst"))
+        : null);
+    const selectedTargetLane: SubscriptionRouteAdvance["targetLane"] | null = targetAgent
+      ? (() => {
+          const route = routeForCandidate(targetAgent);
+          if (route.lane === "durable_bench") return "durable_bench";
+          return route.provider === "grok" ? "grok_burst" : "codex_burst";
+        })()
+      : null;
     if (!targetAgent) {
-      logger.warn({ runId: run.id, issueId, targetAdapterType: advance.targetAdapterType }, "subscription route advance blocked because the next provider agent is unavailable");
+      logger.warn(
+        { runId: run.id, issueId, targetAdapterType: advance.targetAdapterType, targetLane: advance.targetLane },
+        "subscription route advance blocked because the next workforce lane is unavailable",
+      );
       return false;
     }
 
@@ -17778,8 +17903,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       entityId: issueId,
       details: {
         fromProvider: advance.provider,
-        toAdapterType: advance.targetAdapterType,
+        toAdapterType: targetAgent.adapterType,
         targetAgentId: targetAgent.id,
+        targetLane: selectedTargetLane,
         reason: advance.reason,
         receiptDigest: attempt.receiptDigest,
       },
@@ -18449,8 +18575,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
         isWorkspaceNotWritableFailedRun(run) ||
+        isWorkforceCapacityFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
+        if (isWorkforceCapacityFailedRun(run)) {
+          const blockedIssue = await tx
+            .update(issues)
+            .set({
+              status: "blocked",
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(issues.id, issue.id),
+              eq(issues.companyId, issue.companyId),
+              eq(issues.assigneeAgentId, run.agentId),
+              isNull(issues.assigneeUserId),
+              inArray(issues.status, ["todo", "in_progress"]),
+            ))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return blockedIssue
+            ? {
+                kind: "capacity_blocked" as const,
+                issue: blockedIssue,
+                comment: buildWorkforceCapacityBlockedComment(run),
+              }
+            : { kind: "released" as const };
+        }
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
         const workspaceNotWritableFailure = isWorkspaceNotWritableFailedRun(run);
@@ -18585,6 +18739,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { runId: run.id },
         { authorType: "system" },
       );
+      return;
+    }
+
+    if (promotionResult?.kind === "capacity_blocked") {
+      await issuesSvc.addComment(
+        promotionResult.issue.id,
+        promotionResult.comment,
+        { runId: run.id },
+        { authorType: "system" },
+      );
+      await logActivity(db, {
+        companyId: promotionResult.issue.companyId,
+        actorType: "system",
+        actorId: "workforce-capacity-governor",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "issue.workforce_capacity_blocked",
+        entityType: "issue",
+        entityId: promotionResult.issue.id,
+        details: {
+          errorCode: run.errorCode,
+          providerInvocationAttempted: false,
+        },
+      });
       return;
     }
 

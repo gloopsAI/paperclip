@@ -2699,6 +2699,78 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(configurationComment).toBeTruthy();
   });
 
+  it("terminally blocks a durable capacity denial without recovery, reassignment, or wake", async () => {
+    mockAdapterExecute.mockClear();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "codex_local",
+    });
+    await db
+      .update(agents)
+      .set({ adapterConfig: { model: "gpt-5.6-luna" } })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "workforce_capacity.denied",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(failedRun?.resultJson).toMatchObject({
+      providerInvocationAttempted: false,
+      workforceCapacity: {
+        decision: "denied",
+      },
+    });
+    expect((failedRun?.resultJson as { workforceCapacity?: { reasons?: string[] } })
+      ?.workforceCapacity?.reasons).toContain("capacity_snapshot_missing");
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+      executionRunId: null,
+    });
+
+    await expect(db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId)))
+      .resolves.toHaveLength(0);
+    await expect(db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId)))
+      .resolves.toHaveLength(1);
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.id).toBe(wakeupRequestId);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.map((comment) => comment.body)).toContainEqual(
+      expect.stringContaining("durable workforce capacity admission failed before provider invocation"),
+    );
+    expect(comments.every((comment) => !comment.body.includes("workspace failed validation"))).toBe(true);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.workforce_capacity_blocked")).toBe(true);
+  });
+
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
