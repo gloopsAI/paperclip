@@ -101,6 +101,7 @@ describe("backlog-bankruptcy admission", () => {
       executionAdmissionEnabled: true,
       hasExplicitResourceBudget: true,
       trustedTaskBridgeConsult: true,
+      trustedTaskBridgeBudgetIsOneRun: true,
     })).toEqual({ admitted: true, reason: "trusted_task_bridge_consult" });
     expect(evaluateBacklogBankruptcyAdmission(policy, {
       companyId: COMPANY_ID,
@@ -108,6 +109,18 @@ describe("backlog-bankruptcy admission", () => {
       executionAdmissionEnabled: true,
       hasExplicitResourceBudget: false,
       trustedTaskBridgeConsult: true,
+      trustedTaskBridgeBudgetIsOneRun: false,
+    })).toMatchObject({
+      admitted: false,
+      errorCode: BACKLOG_BANKRUPTCY_ADMISSION_ERROR.READMIT_BUDGET_REQUIRED,
+    });
+    expect(evaluateBacklogBankruptcyAdmission(policy, {
+      companyId: COMPANY_ID,
+      issueId: READMIT_ISSUE_ID,
+      executionAdmissionEnabled: true,
+      hasExplicitResourceBudget: true,
+      trustedTaskBridgeConsult: true,
+      trustedTaskBridgeBudgetIsOneRun: false,
     })).toMatchObject({
       admitted: false,
       errorCode: BACKLOG_BANKRUPTCY_ADMISSION_ERROR.READMIT_BUDGET_REQUIRED,

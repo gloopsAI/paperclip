@@ -59,19 +59,25 @@ export function evaluateBacklogBankruptcyAdmission(
     issueId: string | null;
     executionAdmissionEnabled: boolean;
     hasExplicitResourceBudget: boolean;
-    /** Server-derived from immutable issue origin/work-mode fields, never caller text. */
+    /** Server-derived from immutable origin plus the issue's current governed execution shape. */
     trustedTaskBridgeConsult?: boolean;
+    /** Exact one-run/zero-retry floor for the trusted consultation exception. */
+    trustedTaskBridgeBudgetIsOneRun?: boolean;
   },
 ): BacklogBankruptcyAdmissionDecision {
   if (!policy.frozenCompanyIds.has(input.companyId.toLowerCase())) {
     return { admitted: true, reason: "company_not_frozen" };
   }
   if (input.trustedTaskBridgeConsult) {
-    if (!input.executionAdmissionEnabled || !input.hasExplicitResourceBudget) {
+    if (
+      !input.executionAdmissionEnabled ||
+      !input.hasExplicitResourceBudget ||
+      !input.trustedTaskBridgeBudgetIsOneRun
+    ) {
       return {
         admitted: false,
         errorCode: BACKLOG_BANKRUPTCY_ADMISSION_ERROR.READMIT_BUDGET_REQUIRED,
-        reason: "Cancelled before adapter invocation because the trusted task-bridge consultation lacks a resource budget envelope",
+        reason: "Cancelled before adapter invocation because the trusted task-bridge consultation lacks an exact one-run, zero-retry resource budget envelope",
       };
     }
     return { admitted: true, reason: "trusted_task_bridge_consult" };

@@ -11930,6 +11930,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           normalizedBankruptcyExecutionPolicy?.resourceBudget,
         ),
         trustedTaskBridgeConsult,
+        trustedTaskBridgeBudgetIsOneRun: Boolean(
+          normalizedBankruptcyExecutionPolicy?.resourceBudget?.maxRunsPerTask === 1 &&
+          normalizedBankruptcyExecutionPolicy.resourceBudget.maxRetriesPerTask === 0,
+        ),
       },
     );
     if (!bankruptcyAdmission.admitted) {
