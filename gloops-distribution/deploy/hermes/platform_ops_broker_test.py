@@ -19,11 +19,12 @@ import importlib.util
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -125,6 +126,27 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         broker._allowlist_cache = None
         with self.paths():
             broker.load_allowlist()
+        deploy_end_to_end_tests = {
+            "test_socket_deploy_end_to_end_restoration_proof",
+            "test_socket_deploy_end_to_end_rejects_live_identity_drift",
+        }
+        uses_deploy = "deploy" in self._testMethodName or self._testMethodName in {
+            "test_socket_unproved_compensation_is_durable_reconciliation_required",
+            "test_socket_rollback_proof_exception_requires_reconciliation",
+        }
+        if uses_deploy and self._testMethodName not in deploy_end_to_end_tests:
+            prior_release = self.release_proof()
+            prior_patcher = patch.object(
+                broker, "_capture_prior_release_state", return_value=prior_release,
+            )
+            prior_patcher.start()
+            self.addCleanup(prior_patcher.stop)
+            if self._testMethodName != "test_socket_rollback_proof_exception_requires_reconciliation":
+                rollback_patcher = patch.object(
+                    broker, "_safe_rollback_terminal_evidence", return_value=prior_release,
+                )
+                rollback_patcher.start()
+                self.addCleanup(rollback_patcher.stop)
 
     def tearDown(self):
         broker._allowlist_cache = None
@@ -151,9 +173,107 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             broker.handle_connection(server, connection)
             return json.loads(client.recv(broker.MAX_RESPONSE_BYTES).decode("utf-8"))
 
+    def release_proof(self, image=None, *, proof_complete=True):
+        image = image or (self.config / "approved-image").read_text().strip()
+        image_id = "sha256:" + "d" * 64
+        evidence = {
+            "schemaVersion": "gloops.rollback-proof.v1",
+            "service": "paperclip-gloops.service",
+            "mode": "restored",
+            "serviceState": {"active": True, "state": "active"},
+            "listeners": {
+                "inspectable": True,
+                "configuredPorts": [3100],
+                "presentPorts": [3100],
+                "error": "",
+            },
+            "containerArtifact": {
+                "inspectable": True,
+                "exists": True,
+                "running": True,
+                "configuredImage": image,
+                "imageId": image_id,
+                "error": "",
+            },
+            "expectedPriorImage": image,
+            "imageBinding": {
+                "configuredReferenceMatches": True,
+                "immutableImageIdMatches": True,
+                "expectedDigestPresent": True,
+                "container": {
+                    "inspectable": True,
+                    "exists": True,
+                    "running": True,
+                    "configuredImage": image,
+                    "imageId": image_id,
+                    "error": "",
+                },
+                "expectedImage": {
+                    "inspectable": True,
+                    "reference": image,
+                    "imageId": image_id,
+                    "repoDigests": [image],
+                    "error": "",
+                },
+                "proofComplete": proof_complete,
+            },
+            "frontDoorHealth": {
+                "service": "paperclip-gloops.service",
+                "healthy": proof_complete,
+                "systemctl": {"active": proof_complete, "state": "active"},
+                "probes": [],
+            },
+            "proofComplete": proof_complete,
+        }
+        evidence["releaseIdentity"] = broker._release_identity(evidence)
+        return evidence
+
+    @contextmanager
+    def mocked_prior_release(self, *, safe_rollback=True):
+        evidence = self.release_proof()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                broker, "_capture_prior_release_state", return_value=evidence,
+            ))
+            if safe_rollback:
+                stack.enter_context(patch.object(
+                    broker, "_safe_rollback_terminal_evidence", return_value=evidence,
+                ))
+            yield evidence
+
     # -------------------------------------------------------------------------
     # Allowlist enforcement
     # -------------------------------------------------------------------------
+
+    def test_database_migrates_existing_receipts_to_action_digest(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        legacy = sqlite3.connect(self.db_path)
+        legacy.execute(
+            """
+            CREATE TABLE receipts (
+              receipt_id TEXT PRIMARY KEY,
+              operation TEXT NOT NULL,
+              target TEXT NOT NULL,
+              idempotency_key TEXT NOT NULL UNIQUE,
+              state TEXT NOT NULL,
+              actor TEXT NOT NULL,
+              command_class TEXT NOT NULL,
+              evidence_json TEXT NOT NULL,
+              outcome TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+            """
+        )
+        legacy.commit()
+        legacy.close()
+        with self.paths():
+            migrated = broker.connect_database()
+        columns = {
+            row["name"] for row in migrated.execute("PRAGMA table_info(receipts)")
+        }
+        self.assertIn("action_digest", columns)
+        migrated.close()
 
     def test_rejects_non_allowlisted_service_for_status(self):
         with self.paths():
@@ -544,6 +664,202 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertTrue(result["data"]["evidence"]["comprehensiveHealthPassed"])
         connection.close()
 
+    def test_socket_deploy_same_key_payload_drift_has_zero_effects(self):
+        with self.paths():
+            first_image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            second_image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "b" * 64
+            first = {
+                "operation": "deploy-pinned-image",
+                "service": "paperclip-gloops.service",
+                "image": first_image,
+                "actor": "wren-agent",
+                "idempotencyKey": "deploy-payload-drift-001",
+            }
+            drifted = {**first, "image": second_image}
+            connection = broker.connect_database()
+            with patch.object(broker, "run_command", side_effect=[
+                (0, "", ""),
+                (0, "", ""),
+                (0, "active\n", ""),
+            ]), patch.object(
+                broker, "_front_door_health", return_value={"healthy": True, "probes": []},
+            ), patch.object(
+                broker,
+                "_image_binding_evidence",
+                return_value={"proofComplete": True, "immutableImageIdMatches": True},
+            ):
+                successful = self.socket_request(first, connection)
+            self.assertTrue(successful["ok"])
+
+            with patch.object(broker, "run_command") as effects:
+                rejected = self.socket_request(drifted, connection)
+            self.assertFalse(rejected["ok"])
+            self.assertIn("different action", rejected["error"])
+            effects.assert_not_called()
+            receipt = broker.list_receipts(connection)[0]
+            self.assertEqual(receipt["state"], "completed")
+            connection.close()
+
+    def test_socket_deploy_concurrent_same_key_executes_once(self):
+        import threading
+
+        with self.paths():
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            request = {
+                "operation": "deploy-pinned-image",
+                "service": "paperclip-gloops.service",
+                "image": image,
+                "actor": "wren-agent",
+                "idempotencyKey": "deploy-concurrent-001",
+            }
+            second_connection = broker.connect_database()
+            entered = threading.Event()
+            release = threading.Event()
+            command_calls: list[list[str]] = []
+
+            def command(args, timeout=broker.COMMAND_TIMEOUT_SECONDS, env=None):
+                command_calls.append(args)
+                if args[:2] == ["docker", "pull"]:
+                    entered.set()
+                    self.assertTrue(release.wait(5))
+                if args[:2] == ["systemctl", "is-active"]:
+                    return 0, "active\n", ""
+                return 0, "", ""
+
+            responses: list[dict[str, object]] = []
+            errors: list[BaseException] = []
+
+            def first_request():
+                first_connection = broker.connect_database()
+                try:
+                    responses.append(self.socket_request(request, first_connection))
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    first_connection.close()
+
+            with patch.object(broker, "run_command", side_effect=command), patch.object(
+                broker, "_front_door_health", return_value={"healthy": True, "probes": []},
+            ), patch.object(
+                broker,
+                "_image_binding_evidence",
+                return_value={"proofComplete": True, "immutableImageIdMatches": True},
+            ):
+                thread = threading.Thread(target=first_request)
+                thread.start()
+                self.assertTrue(entered.wait(5))
+                replay = self.socket_request(request, second_connection)
+                release.set()
+                thread.join(5)
+
+            self.assertFalse(errors)
+            self.assertEqual(len(responses), 1)
+            self.assertTrue(responses[0]["ok"])
+            self.assertTrue(replay["ok"])
+            self.assertTrue(replay["data"]["replayed"])
+            self.assertEqual(replay["data"]["state"], "initiated")
+            self.assertEqual(sum(call[:2] == ["docker", "pull"] for call in command_calls), 1)
+            self.assertEqual(sum(call[:2] == ["systemctl", "restart"] for call in command_calls), 1)
+            second_connection.close()
+
+    def test_socket_deploy_end_to_end_restoration_proof(self):
+        self._assert_end_to_end_restoration_identity(drift_after_restart=False)
+
+    def test_socket_deploy_end_to_end_rejects_live_identity_drift(self):
+        self._assert_end_to_end_restoration_identity(drift_after_restart=True)
+
+    def _assert_end_to_end_restoration_identity(self, *, drift_after_restart):
+        with self.paths():
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            request = {
+                "operation": "deploy-pinned-image",
+                "service": "paperclip-gloops.service",
+                "image": image,
+                "actor": "wren-agent",
+                "idempotencyKey": f"deploy-e2e-proof-{drift_after_restart}",
+            }
+            runtime_path = self.config / "runtime.env"
+            approved_path = self.config / "approved-image"
+            os.chmod(runtime_path, 0o640)
+            os.chmod(approved_path, 0o644)
+            before = {
+                path.name: (path.read_bytes(), path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777)
+                for path in (runtime_path, approved_path)
+            }
+            restart_count = 0
+            prior_id = "sha256:" + "c" * 64
+            drift_id = "sha256:" + "e" * 64
+
+            def command(args, timeout=broker.COMMAND_TIMEOUT_SECONDS, env=None):
+                nonlocal restart_count
+                if args[:2] == ["systemctl", "is-active"]:
+                    return 0, "active\n", ""
+                if args[:2] == ["systemctl", "restart"]:
+                    restart_count += 1
+                    return 0, "", ""
+                if args[0] == "ss":
+                    return 0, "LISTEN 0 4096 127.0.0.1:3100 0.0.0.0:*\n", ""
+                if args[:3] == ["docker", "container", "inspect"]:
+                    bound = approved_path.read_text().strip()
+                    immutable = drift_id if drift_after_restart and restart_count else prior_id
+                    return 0, f"true\t{bound}\t{immutable}\n", ""
+                if args[:3] == ["docker", "image", "inspect"]:
+                    reference = args[-1]
+                    immutable = drift_id if drift_after_restart and restart_count else prior_id
+                    return 0, f'{immutable}\t["{reference}"]\n', ""
+                if args[:2] == ["docker", "pull"]:
+                    return 0, "", ""
+                if args[0] == "curl":
+                    url = args[-1]
+                    if "events/ws" in url:
+                        body, status, content_type = "", 401, "application/json"
+                    elif url.endswith("/api/health"):
+                        body, status, content_type = '{"status":"ok"}', 200, "application/json"
+                    elif url.endswith("/api/companies"):
+                        body, status, content_type = "{}", 401, "application/json"
+                    else:
+                        body, status, content_type = '<div id="root"></div>', 200, "text/html"
+                    return 0, f"{body}\n{broker.HTTP_PROBE_MARKER}{status}\t{content_type}", ""
+                raise AssertionError(f"unexpected command: {args}")
+
+            connection = broker.connect_database()
+            with patch.object(broker, "run_command", side_effect=command), patch.object(
+                broker,
+                "_deploy_checkpoint",
+                side_effect=lambda phase: (
+                    (_ for _ in ()).throw(RuntimeError("injected after first pin"))
+                    if phase == "runtime-env-written"
+                    else None
+                ),
+            ):
+                response = self.socket_request(request, connection)
+            connection.close()
+
+            self.assertFalse(response["ok"])
+            fresh = broker.connect_database()
+            receipt = broker.list_receipts(fresh)[0]
+            expected_state = "reconciliation_required" if drift_after_restart else "failed"
+            self.assertEqual(receipt["state"], expected_state)
+            self.assertTrue(receipt["evidence"]["configurationRestored"])
+            self.assertEqual(
+                receipt["evidence"]["priorReleaseMatches"], not drift_after_restart,
+            )
+            self.assertEqual(
+                receipt["evidence"]["priorRestorationProved"], not drift_after_restart,
+            )
+            self.assertEqual(restart_count, 1)
+            for path in (runtime_path, approved_path):
+                self.assertEqual(
+                    (path.read_bytes(), path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777),
+                    before[path.name],
+                )
+            with patch.object(broker, "run_command") as replay_effects:
+                replay = self.socket_request(request, fresh)
+            self.assertTrue(replay["ok"])
+            self.assertTrue(replay["data"]["replayed"])
+            replay_effects.assert_not_called()
+            fresh.close()
+
     def test_deploy_front_door_failure_restores_and_proves_previous_release(self):
         with self.paths():
             connection = broker.connect_database()
@@ -571,7 +887,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     ):
                         with patch.object(
                             broker, "_safe_rollback_terminal_evidence",
-                            return_value={"proofComplete": True, "schemaVersion": "gloops.rollback-proof.v1"},
+                            return_value=self.release_proof(),
                         ):
                             with self.assertRaisesRegex(
                                 broker.BrokerError,
@@ -612,10 +928,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 ):
                     with patch.object(
                         broker, "_safe_rollback_terminal_evidence",
-                        return_value={
-                            "proofComplete": True,
-                            "schemaVersion": "gloops.rollback-proof.v1",
-                        },
+                        return_value=self.release_proof(),
                     ):
                         with self.assertRaisesRegex(
                             broker.BrokerError,
@@ -651,7 +964,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             with patch.object(broker, "run_command", side_effect=mock_results):
                 with patch.object(
                     broker, "_safe_rollback_terminal_evidence",
-                    return_value={"proofComplete": True, "schemaVersion": "gloops.rollback-proof.v1"},
+                    return_value=self.release_proof(),
                 ):
                     with self.assertRaisesRegex(
                         broker.BrokerError,
@@ -690,10 +1003,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 with patch.object(
                     broker,
                     "_safe_rollback_terminal_evidence",
-                    return_value={
-                        "proofComplete": True,
-                        "schemaVersion": "gloops.rollback-proof.v1",
-                    },
+                    return_value=self.release_proof(),
                 ):
                     response = self.socket_request(request, connection)
             connection.close()
@@ -769,10 +1079,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     stack.enter_context(patch.object(
                         broker,
                         "_safe_rollback_terminal_evidence",
-                        return_value={
-                            "proofComplete": True,
-                            "schemaVersion": "gloops.rollback-proof.v1",
-                        },
+                        return_value=self.release_proof(),
                     ))
                     if mode == "checkpoint":
                         stack.enter_context(patch.object(
@@ -1104,6 +1411,43 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertTrue(evidence["priorRestorationProved"])
         self.assertTrue(all(evidence["imageMatches"].values()))
         connection.close()
+
+    def test_rollback_proof_same_key_rejects_expected_image_drift_without_effects(self):
+        with self.paths():
+            connection = broker.connect_database()
+            previous = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "1" * 64
+            drifted = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "2" * 64
+            image_id = "sha256:" + "a" * 64
+            request = {
+                "operation": "rollback-proof",
+                "service": "paperclip-gloops.service",
+                "mode": "restored",
+                "expectedPriorImage": previous,
+                "actor": "wren-agent",
+                "idempotencyKey": "rollback-expected-drift-001",
+            }
+            with patch.object(broker, "run_command", side_effect=[
+                (0, "active\n", ""),
+                (0, "LISTEN 0 4096 127.0.0.1:3100 0.0.0.0:*\n", ""),
+                (0, f"true\t{previous}\t{image_id}\n", ""),
+                (0, f'{image_id}\t["{previous}"]\n', ""),
+            ]), patch.object(
+                broker, "_front_door_health", return_value={"healthy": True, "probes": []},
+            ):
+                first = self.socket_request(request, connection)
+            self.assertTrue(first["ok"])
+
+            with patch.object(broker, "run_command") as effects, patch.object(
+                broker, "_front_door_health",
+            ) as front_door_effects:
+                rejected = self.socket_request(
+                    {**request, "expectedPriorImage": drifted}, connection,
+                )
+            self.assertFalse(rejected["ok"])
+            self.assertIn("different action", rejected["error"])
+            effects.assert_not_called()
+            front_door_effects.assert_not_called()
+            connection.close()
 
     def test_rollback_restoration_rejects_matching_config_with_mismatched_immutable_id(self):
         with self.paths():

@@ -147,11 +147,20 @@ their `failed` receipt and journal entry; unexpected faults retain the durable
 the effect is safe to repeat.
 
 Once either deployment pin is changed, every exception enters joint
-compensation. The broker restores both exact prior pin files, restarts the old
-service only after those files are byte- and mode-verified, and runs the full
-rollback proof. It records `failed` only when restoration is proved. Otherwise
+compensation. Before mutation, the broker binds the idempotency key to the full
+canonical request, captures both pin files through no-follow descriptors with
+their exact bytes, inode, owner, group, and mode, and snapshots the healthy
+service/front-door/container immutable state. It recaptures that state after
+the candidate image pull and refuses mutation if it changed. The broker
+restores both exact prior pins, restarts the old service only after those files
+are descriptor-, byte-, and metadata-verified, and requires the full rollback
+proof to match the pre-effect release identity. It records `failed` only when
+that exact restoration is proved. Otherwise
 the durable state is `reconciliation_required` with outcome `unknown`; replay
 still performs no host effect and the command-line client exits nonzero.
+The full canonical action digest is stored with the receipt and initiated
+journal entry; reuse of a key with any action drift is rejected before host
+effects, including deploy-image and rollback `expectedPriorImage` drift.
 
 ## Client Usage
 
