@@ -160,6 +160,22 @@ Independent of review stages, every issue-bound agent run must leave a comment. 
 
 This prevents silent completions where an agent finishes work but leaves no trace of what happened.
 
+### Trusted task-bridge consultations
+
+A server-authenticated `task_bridge` may create a repository-free, depth-zero
+`ask` issue with `completionProfile: "direct"` and an explicit resource budget.
+When a company backlog freeze is active, only that exact combination receives
+the narrow `trusted_task_bridge_consult` admission; ordinary API issues,
+repository/project-bound work, child requests, and unbudgeted asks remain
+frozen. Origin trust is stamped from the authenticated task-bridge key and
+cannot be supplied in issue text.
+
+The ask agent must end its response with `Final answer:`. Paperclip stores only
+the final section as the run-authored issue comment, persists that comment
+before projecting the issue to `done`, and refuses direct terminal
+reconciliation if the durable answer comment is missing. The one-run budget
+means a failed consult remains visible rather than silently retrying.
+
 ### Run-level tracking fields
 
 | Field | Description |

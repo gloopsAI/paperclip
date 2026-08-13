@@ -63,6 +63,12 @@ describe("buildHeartbeatRunIssueComment", () => {
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
+
+  it("projects only the last sanitized final-answer section for ask work", () => {
+    expect(buildHeartbeatRunIssueComment({
+      summary: "Planning note\nAnswer: draft\nFinal answer: Buzz-facing\u0007 answer",
+    }, { workMode: "ask" })).toBe("Buzz-facing answer");
+  });
 });
 
 describe("mergeHeartbeatRunResultJson", () => {

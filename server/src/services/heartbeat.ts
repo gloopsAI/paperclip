@@ -5102,6 +5102,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "",
         "Ask mode directive:",
         "Answer the question directly in the issue thread. Do not write implementation code, and do not produce an implementation plan. Use tools only for investigation or temporary scratch work when needed; the deliverable is the answer.",
+        "End with a `Final answer:` section containing only the Buzz-facing answer. Do not put planning, progress, or tool narration in that section.",
       );
     } else if (issue.workMode === "planning") {
       let directive = "Make the plan only. Do not write code or perform implementation work.";
@@ -5806,6 +5807,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     budgetExceeded: string[];
     routePathIds: string[];
     executionWorkspaceMode?: string | null;
+    directAnswerCommentPersisted?: boolean;
   }) {
     if (!input.issueId) return { changed: false, status: null, reason: "missing_issue" };
     const workspaceHeadSha = await readTerminalWorkspaceHeadSha(input.workspaceCwd);
@@ -5890,6 +5892,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         routePathIds: input.routePathIds,
         executionWorkspaceMode: input.executionWorkspaceMode,
         hasOpenChildren: openChildrenCount > 0,
+        requireDirectAnswerComment: currentIssue.workMode === "ask",
+        directAnswerCommentPersisted: input.directAnswerCommentPersisted,
       });
       if (decision.kind === "preserve") {
         // WG-PLAT-010: when the run genuinely succeeded but reconciliation
@@ -9268,6 +9272,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function ensureRunIssueComment(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string | null;
+    workMode: string | null | undefined;
+    resultJson: Record<string, unknown> | null;
+    agentId: string;
+  }) {
+    if (!input.issueId || input.run.status !== "succeeded") return false;
+    const context = parseObject(input.run.contextSnapshot);
+    if (context.skipIssueComment === true) return false;
+    const existing = await findRunIssueComment(input.run.id, input.run.companyId, input.issueId);
+    if (existing) return true;
+    const body = buildHeartbeatRunIssueComment(input.resultJson, { workMode: input.workMode });
+    if (!body) return false;
+    await issuesSvc.addComment(input.issueId, body, { agentId: input.agentId, runId: input.run.id });
+    return true;
+  }
+
   async function refreshContinuationSummaryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -11870,11 +11892,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const bankruptcyIssue = bankruptcyCompanyFrozen && issueId
       ? await db
-          .select({ executionPolicy: issues.executionPolicy })
+          .select({
+            executionPolicy: issues.executionPolicy,
+            originKind: issues.originKind,
+            originId: issues.originId,
+            requestDepth: issues.requestDepth,
+            workMode: issues.workMode,
+            projectId: issues.projectId,
+            projectWorkspaceId: issues.projectWorkspaceId,
+            executionWorkspaceId: issues.executionWorkspaceId,
+          })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const normalizedBankruptcyExecutionPolicy = normalizeIssueExecutionPolicy(
+      bankruptcyIssue?.executionPolicy ?? null,
+    );
+    const trustedTaskBridgeConsult = Boolean(
+      bankruptcyIssue &&
+      bankruptcyIssue.originKind === "task_bridge" &&
+      readNonEmptyString(bankruptcyIssue.originId) &&
+      bankruptcyIssue.requestDepth === 0 &&
+      bankruptcyIssue.workMode === "ask" &&
+      bankruptcyIssue.projectId === null &&
+      bankruptcyIssue.projectWorkspaceId === null &&
+      bankruptcyIssue.executionWorkspaceId === null &&
+      normalizedBankruptcyExecutionPolicy?.completionProfile === "direct",
+    );
     const bankruptcyAdmission = evaluateBacklogBankruptcyAdmission(
       backlogBankruptcyAdmissionPolicy,
       {
@@ -11882,7 +11927,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId,
         executionAdmissionEnabled: executionAdmissionPolicy.enabled,
         hasExplicitResourceBudget: Boolean(
-          normalizeIssueExecutionPolicy(bankruptcyIssue?.executionPolicy ?? null)?.resourceBudget,
+          normalizedBankruptcyExecutionPolicy?.resourceBudget,
+        ),
+        trustedTaskBridgeConsult,
+        trustedTaskBridgeBudgetIsOneRun: Boolean(
+          normalizedBankruptcyExecutionPolicy?.resourceBudget?.maxRunsPerTask === 1 &&
+          normalizedBankruptcyExecutionPolicy.resourceBudget.maxRetriesPerTask === 0,
         ),
       },
     );
@@ -11914,6 +11964,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : { kind: "lost_race" };
     }
+    const contextWithBacklogAdmission = bankruptcyAdmission.reason === "trusted_task_bridge_consult"
+      ? {
+          ...context,
+          backlogBankruptcyAdmission: {
+            schemaVersion: "gloops.backlog-bankruptcy-admission.v1",
+            disposition: "admitted",
+            reason: bankruptcyAdmission.reason,
+            issueId,
+            originKind: bankruptcyIssue?.originKind ?? null,
+            originId: bankruptcyIssue?.originId ?? null,
+            evaluatedAt: claimedAt.toISOString(),
+          },
+        }
+      : context;
     if (!executionAdmissionPolicy.enabled) {
       return db.transaction(async (tx) => {
         const limit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
@@ -11945,7 +12009,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { companyId: run.companyId, runId: run.id },
           campaignDeadmanAdmission,
         );
-        const boundContext = bindExecutionCampaignContext(context, campaignPolicy);
+        const boundContext = bindExecutionCampaignContext(contextWithBacklogAdmission, campaignPolicy);
         const nextContext = campaignEpoch
           ? {
               ...boundContext,
@@ -12232,7 +12296,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         decision,
         evaluatedAt: claimedAt,
       });
-      const nextContext = { ...context, [EXECUTION_ADMISSION_CONTEXT_KEY]: envelope };
+      const nextContext = {
+        ...contextWithBacklogAdmission,
+        [EXECUTION_ADMISSION_CONTEXT_KEY]: envelope,
+      };
 
       if (!decision.allowed) {
         const admissionReason: ExecutionAdmissionReason = decision.reason!;
@@ -17025,6 +17092,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           adapterResult.providerIoTerminalEvidence?.terminalEvidence.resolvedProvider,
         ),
       ].filter((value): value is string => Boolean(value));
+      let directAnswerCommentPersisted = false;
+      if (persistedRun && outcome === "succeeded" && issueRef?.workMode === "ask") {
+        directAnswerCommentPersisted = await ensureRunIssueComment({
+          run: persistedRun,
+          issueId,
+          workMode: issueRef.workMode,
+          resultJson: persistedResultJson,
+          agentId: agent.id,
+        }).catch(async (err) => {
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to persist direct answer before terminal reconciliation: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          return false;
+        });
+      }
       const terminalIssueReconciliation = persistedRun
         ? await reconcileTerminalIssueFromTrustedEvidence({
             run: persistedRun,
@@ -17038,6 +17121,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionWorkspaceMode: persistedExecutionWorkspace
               ? issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode)
               : null,
+            directAnswerCommentPersisted,
           })
         : { changed: false, status: null, reason: "missing_terminal_run" };
 
@@ -17053,7 +17137,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun &&
         persistedRun.status === "succeeded" &&
         issueId &&
-        !terminalIssueReconciliation.changed
+        !terminalIssueReconciliation.changed &&
+        !(issueRef?.workMode === "ask" && !directAnswerCommentPersisted)
       ) {
         terminalMismatchReconciliation = await terminalReconciliationService(db)
           .reconcileSucceededRun({
@@ -17187,13 +17272,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
           try {
-            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
-            if (!existingRunComment) {
-              const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
-              if (issueComment) {
-                await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
-              }
-            }
+            await ensureRunIssueComment({
+              run: livenessRun,
+              issueId,
+              workMode: issueRef?.workMode,
+              resultJson: persistedResultJson,
+              agentId: agent.id,
+            });
           } catch (err) {
             await onLog(
               "stderr",
