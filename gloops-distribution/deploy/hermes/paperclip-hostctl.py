@@ -48,7 +48,12 @@ TRACKED_KEYS = (
     "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED",
 )
 ALLOWED_KEYS = frozenset(
-    (*TRACKED_KEYS, "PAPERCLIP_IMAGE", "PAPERCLIP_ALLOWED_HOSTNAMES")
+    (
+        *TRACKED_KEYS,
+        "PAPERCLIP_IMAGE",
+        "PAPERCLIP_ALLOWED_HOSTNAMES",
+        "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS",
+    )
 )
 ALLOWED_ACTIONS = frozenset(("start", "stop", "restart", "mask", "unmask", "reset-failed"))
 ALLOWED_UNITS = frozenset(

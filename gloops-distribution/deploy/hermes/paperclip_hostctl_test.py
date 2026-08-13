@@ -24,6 +24,7 @@ class PaperclipHostctlTest(unittest.TestCase):
                     "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
                     "HEARTBEAT_SCHEDULER_ENABLED=false",
                     "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false",
+                    "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=",
                     "PAPERCLIP_ALLOWED_HOSTNAMES=ubuntu-hermes-nyc1.taild219d6.ts.net,127.0.0.1,localhost",
                     "PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64,
                     "",
@@ -230,6 +231,20 @@ raise SystemExit(0)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("runtime.env contains duplicate key", result.stderr)
         self.assertEqual(self.runtime.read_text(encoding="utf-8"), before)
+
+    def test_a8_reconciled_local_adapters_are_an_allowlisted_receipted_mutation(self) -> None:
+        self.reconcile()
+        result = self.command(
+            "apply", *self.identity(), "--intent", "activate reconciled local adapters",
+            "--set", "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local",
+            check=True,
+        )
+        self.assertTrue(json.loads(result.stdout)["ok"])
+        self.assertIn(
+            "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local",
+            self.runtime.read_text(encoding="utf-8"),
+        )
+        self.assertEqual([entry["event"] for entry in self.journal()][-2:], ["pre", "post"])
 
 
 if __name__ == "__main__":
