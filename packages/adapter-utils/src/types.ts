@@ -422,6 +422,17 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+/**
+ * Per-execution credential context for provider quota probes.
+ *
+ * The server resolves this from the same effective adapter configuration used
+ * for execution. Adapters must treat it as a read-only path hint; it is not an
+ * authority to seed, migrate, or otherwise mutate provider credentials.
+ */
+export interface ProviderQuotaContext {
+  credentialHome?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter config schema — declarative UI config for external adapters
 // ---------------------------------------------------------------------------
@@ -513,7 +524,7 @@ export interface ServerAdapterModule {
    * Returns a ProviderQuotaResult so the server can aggregate across adapters
    * without knowing provider-specific credential paths or API shapes.
    */
-  getQuotaWindows?: () => Promise<ProviderQuotaResult>;
+  getQuotaWindows?: (context?: ProviderQuotaContext) => Promise<ProviderQuotaResult>;
   /**
    * Optional: detect the currently configured model from local config files.
    * Returns the detected model/provider and the config source, or null if
