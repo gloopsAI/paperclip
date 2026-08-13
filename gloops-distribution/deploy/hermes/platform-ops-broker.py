@@ -37,7 +37,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -114,6 +114,10 @@ READONLY_OPERATIONS = ALLOWED_OPERATIONS - MUTATING_OPERATIONS
 
 class BrokerError(RuntimeError):
     pass
+
+
+class ReceiptedOperationError(BrokerError):
+    """A terminal operation failure whose receipt transaction must commit."""
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +277,7 @@ def connect_database() -> sqlite3.Connection:
           state TEXT NOT NULL,
           actor TEXT NOT NULL,
           command_class TEXT NOT NULL,
+          action_digest TEXT,
           evidence_json TEXT NOT NULL,
           outcome TEXT NOT NULL,
           created_at TEXT NOT NULL,
@@ -291,6 +296,11 @@ def connect_database() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_receipts_state ON receipts(state);
         """
     )
+    receipt_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(receipts)")
+    }
+    if "action_digest" not in receipt_columns:
+        connection.execute("ALTER TABLE receipts ADD COLUMN action_digest TEXT")
     connection.commit()
     os.chmod(DATABASE, 0o600)
     return connection
@@ -350,17 +360,30 @@ def create_receipt(
     idempotency_key: str,
     actor: str,
     command_class: str,
-) -> dict[str, Any]:
-    """Create a new idempotent receipt.  Raises if the idempotency key already
-    exists with a different receipt_id."""
+    action: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Durably reserve an idempotency key before any external host effect.
+
+    The boolean result is true only for the request that created the durable
+    reservation.  Every existing state, including ``initiated``, is a replay
+    and must never authorize the caller to execute the host operation again.
+    """
+    action_digest = digest("gloops.platform-ops-action.v1", action)
     existing = connection.execute(
         "SELECT * FROM receipts WHERE idempotency_key = ?",
         (idempotency_key,),
     ).fetchone()
     if existing:
-        if existing["receipt_id"] != receipt_id:
+        if existing["action_digest"] is None:
+            raise BrokerError(
+                "idempotency key belongs to a legacy unbound receipt; manual reconciliation required"
+            )
+        if (
+            existing["receipt_id"] != receipt_id
+            or existing["action_digest"] != action_digest
+        ):
             raise BrokerError("idempotency key is already consumed by a different action")
-        return _to_receipt_dict(existing)
+        return _to_receipt_dict(existing), False
     now = timestamp()
     receipt = {
         "receiptId": receipt_id,
@@ -370,26 +393,51 @@ def create_receipt(
         "state": "initiated",
         "actor": actor,
         "commandClass": command_class,
+        "actionDigest": action_digest,
         "evidence": {},
         "outcome": "pending",
         "createdAt": now,
         "updatedAt": now,
     }
-    connection.execute(
+    inserted = connection.execute(
         """
         INSERT INTO receipts
           (receipt_id, operation, target, idempotency_key, state, actor,
-           command_class, evidence_json, outcome, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           command_class, action_digest, evidence_json, outcome, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(idempotency_key) DO NOTHING
         """,
         (receipt_id, operation, target, idempotency_key, "initiated",
-         actor, command_class, "{}", "pending", now, now),
+         actor, command_class, action_digest, "{}", "pending", now, now),
     )
+    if inserted.rowcount == 0:
+        existing = connection.execute(
+            "SELECT * FROM receipts WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if existing is None:
+            raise BrokerError("idempotency reservation conflict could not be resolved")
+        if existing["action_digest"] is None:
+            raise BrokerError(
+                "idempotency key belongs to a legacy unbound receipt; manual reconciliation required"
+            )
+        if (
+            existing["receipt_id"] != receipt_id
+            or existing["action_digest"] != action_digest
+        ):
+            raise BrokerError("idempotency key is already consumed by a different action")
+        return _to_receipt_dict(existing), False
     append_journal(connection, receipt_id, "initiated", {
         "operation": operation, "target": target, "actor": actor,
         "commandClass": command_class,
+        "action": action,
+        "actionDigest": action_digest,
     })
-    return receipt
+    # This is intentionally a separate durability boundary.  A broker crash or
+    # unexpected exception after this point leaves an inspectable ``initiated``
+    # reservation rather than allowing the same key to repeat a host effect.
+    connection.commit()
+    return receipt, True
 
 
 def complete_receipt(
@@ -417,12 +465,47 @@ def complete_receipt(
     return _to_receipt_dict(row)
 
 
+def fail_receipted_operation(
+    connection: sqlite3.Connection,
+    receipt_id: str,
+    evidence: dict[str, Any],
+    message: str,
+) -> NoReturn:
+    """Record a terminal failure and signal the socket boundary to commit it."""
+    complete_receipt(connection, receipt_id, "failed", evidence, "failure")
+    raise ReceiptedOperationError(message)
+
+
+def terminalize_receipted_operation(
+    connection: sqlite3.Connection,
+    receipt_id: str,
+    state: str,
+    evidence: dict[str, Any],
+    outcome: str,
+    message: str,
+) -> NoReturn:
+    """Commit an explicit non-success terminal state at the socket boundary."""
+    complete_receipt(connection, receipt_id, state, evidence, outcome)
+    raise ReceiptedOperationError(message)
+
+
+def replay_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Return an existing reservation without re-running any host effect."""
+    return {
+        "receiptId": receipt["receiptId"],
+        "state": receipt["state"],
+        "outcome": receipt["outcome"],
+        "replayed": True,
+    }
+
+
 def _to_receipt_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     result["evidence"] = json.loads(result.pop("evidence_json", "{}"))
     result["receiptId"] = result.pop("receipt_id")
     result["idempotencyKey"] = result.pop("idempotency_key")
     result["commandClass"] = result.pop("command_class")
+    result["actionDigest"] = result.pop("action_digest", None)
     result["createdAt"] = result.pop("created_at")
     result["updatedAt"] = result.pop("updated_at")
     return result
@@ -652,10 +735,23 @@ def op_front_door_health(params: dict[str, Any]) -> Any:
     return _front_door_health(service)
 
 
-def derive_receipt_id(command_class: str, target: str, idempotency_key: str) -> str:
-    """Return a deterministic receipt id from command class, target and key."""
-    base = f"{command_class}:{target}:{idempotency_key}"
-    return hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
+def canonical_action(
+    command_class: str,
+    target: str,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind an idempotency reservation to the complete canonical request."""
+    return {
+        "schemaVersion": "gloops.platform-ops-action.v1",
+        "commandClass": command_class,
+        "target": target,
+        "request": request,
+    }
+
+
+def derive_receipt_id(action: dict[str, Any]) -> str:
+    """Return a deterministic receipt id from the full canonical action."""
+    return hashlib.sha256(canonical_json(action).encode("utf-8")).hexdigest()[:32]
 
 
 def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
@@ -665,14 +761,14 @@ def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
         raise BrokerError("service must be a valid systemd unit name ending in .service")
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
-    receipt_id = derive_receipt_id("restart_named_service", service, idempotency_key)
-    receipt = create_receipt(
+    action = canonical_action("restart_named_service", service, params)
+    receipt_id = derive_receipt_id(action)
+    receipt, reserved = create_receipt(
         connection, receipt_id, "service-restart", service,
-        idempotency_key, actor, "restart_named_service",
+        idempotency_key, actor, "restart_named_service", action,
     )
-    if receipt["state"] != "initiated":
-        # Idempotent replay
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # Pre-restart health
     pre_health = _check_service_active(service)
     # Execute restart
@@ -680,10 +776,9 @@ def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
         ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
     )
     if returncode != 0:
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "preHealth": pre_health, "stderr": stderr,
-        }, "failure")
-        raise BrokerError(f"systemctl restart failed: {stderr}")
+        }, f"systemctl restart failed: {stderr}")
     # Wait for service to be active again
     time.sleep(2)
     post_health = _check_service_active(service)
@@ -800,13 +895,14 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
         )
         if returncode == 0 and stdout.strip():
             pre_size = int(stdout.strip().split()[0])
-    receipt_id = derive_receipt_id("reclaim_disposable_cache", cache_name, idempotency_key)
-    receipt = create_receipt(
+    action = canonical_action("reclaim_disposable_cache", cache_name, params)
+    receipt_id = derive_receipt_id(action)
+    receipt, reserved = create_receipt(
         connection, receipt_id, "cache-reclaim", cache_name,
-        idempotency_key, actor, "reclaim_disposable_cache",
+        idempotency_key, actor, "reclaim_disposable_cache", action,
     )
-    if receipt["state"] != "initiated":
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # Reclaim: remove contents but not the directory itself
     if cache_path.exists():
         returncode, stdout, stderr = run_command(
@@ -814,10 +910,9 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
             timeout=COMMAND_TIMEOUT_SECONDS,
         )
         if returncode != 0:
-            complete_receipt(connection, receipt_id, "failed", {
+            fail_receipted_operation(connection, receipt_id, {
                 "preSizeBytes": pre_size, "stderr": stderr,
-            }, "failure")
-            raise BrokerError(f"cache reclaim failed: {stderr}")
+            }, f"cache reclaim failed: {stderr}")
     # Post-reclaim size
     post_size = 0
     if cache_path.exists():
@@ -834,6 +929,233 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
     }
     complete_receipt(connection, receipt_id, "completed", evidence, "success")
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
+
+
+def _deploy_checkpoint(_name: str) -> None:
+    """Network-free failure-injection seam; production intentionally does nothing."""
+
+
+def _bounded_failure(error: Exception) -> dict[str, str]:
+    return {
+        "name": type(error).__name__,
+        "message": str(error)[:500] if isinstance(error, BrokerError) else "unexpected deployment exception",
+    }
+
+
+def _capture_pin_snapshot(path: Path) -> dict[str, Any]:
+    """Read a pin from a no-follow descriptor and bind bytes plus metadata."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise BrokerError(f"unable to open deployment pin {path.name}: {type(error).__name__}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise BrokerError(f"deployment pin {path.name} is not a regular file")
+        if metadata.st_size > MAX_REQUEST_BYTES:
+            raise BrokerError(f"deployment pin {path.name} exceeds the bounded size")
+        chunks: list[bytes] = []
+        remaining = metadata.st_size
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                raise BrokerError(f"deployment pin {path.name} changed while being read")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        final_metadata = os.fstat(descriptor)
+        if (
+            final_metadata.st_size != metadata.st_size
+            or final_metadata.st_mtime_ns != metadata.st_mtime_ns
+            or final_metadata.st_ctime_ns != metadata.st_ctime_ns
+        ):
+            raise BrokerError(f"deployment pin {path.name} changed while being read")
+    finally:
+        os.close(descriptor)
+    current = os.lstat(path)
+    if not stat.S_ISREG(current.st_mode) or current.st_size != metadata.st_size or (
+        current.st_dev,
+        current.st_ino,
+    ) != (metadata.st_dev, metadata.st_ino):
+        raise BrokerError(f"deployment pin {path.name} changed during capture")
+    return {
+        "path": path,
+        "content": content,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+        "mode": stat.S_IMODE(metadata.st_mode),
+    }
+
+
+def _pin_snapshot_evidence(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": snapshot["path"].name,
+        "contentDigest": "sha256:" + hashlib.sha256(snapshot["content"]).hexdigest(),
+        "size": len(snapshot["content"]),
+        "device": snapshot["device"],
+        "inode": snapshot["inode"],
+        "uid": snapshot["uid"],
+        "gid": snapshot["gid"],
+        "mode": snapshot["mode"],
+    }
+
+
+def _pin_snapshot_matches(snapshot: dict[str, Any]) -> bool:
+    try:
+        current = _capture_pin_snapshot(snapshot["path"])
+    except (BrokerError, OSError):
+        return False
+    return all(
+        current[key] == snapshot[key]
+        for key in ("content", "device", "inode", "uid", "gid", "mode")
+    )
+
+
+def _write_bound_pin(
+    snapshot: dict[str, Any],
+    content: bytes,
+    *,
+    expected_current: bytes | None = None,
+) -> None:
+    """Write the captured inode without truncating an unverified replacement."""
+    path = snapshot["path"]
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        current = os.fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode) or (
+            current.st_dev,
+            current.st_ino,
+        ) != (snapshot["device"], snapshot["inode"]) or (
+            current.st_uid,
+            current.st_gid,
+            stat.S_IMODE(current.st_mode),
+        ) != (snapshot["uid"], snapshot["gid"], snapshot["mode"]):
+            raise BrokerError(f"deployment pin {path.name} identity changed before write")
+        if expected_current is not None:
+            if current.st_size != len(expected_current):
+                raise BrokerError(f"deployment pin {path.name} content changed before write")
+            observed = b""
+            while len(observed) < current.st_size:
+                chunk = os.read(descriptor, current.st_size - len(observed))
+                if not chunk:
+                    break
+                observed += chunk
+            if observed != expected_current:
+                raise BrokerError(f"deployment pin {path.name} content changed before write")
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise BrokerError(f"deployment pin {path.name} write was incomplete")
+            view = view[written:]
+        if (current.st_uid, current.st_gid) != (snapshot["uid"], snapshot["gid"]):
+            os.fchown(descriptor, snapshot["uid"], snapshot["gid"])
+        os.fchmod(descriptor, snapshot["mode"])
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    current = _capture_pin_snapshot(path)
+    if any(
+        current[key] != snapshot[key]
+        for key in ("device", "inode", "uid", "gid", "mode")
+    ) or current["content"] != content:
+        raise BrokerError(f"deployment pin {path.name} write could not be proved")
+
+
+def _release_identity(evidence: dict[str, Any]) -> str:
+    projection = {
+        key: evidence.get(key)
+        for key in (
+            "serviceState",
+            "listeners",
+            "containerArtifact",
+            "expectedPriorImage",
+            "imageBinding",
+            "frontDoorHealth",
+        )
+    }
+    return digest("gloops.prior-release-identity.v1", projection)
+
+
+def _capture_prior_release_state(service: str, previous_image: str) -> dict[str, Any]:
+    evidence = _rollback_terminal_evidence(service, "restored", previous_image)
+    evidence["releaseIdentity"] = _release_identity(evidence)
+    return evidence
+
+
+def _compensate_deploy_failure(
+    service: str,
+    runtime_pin: dict[str, Any],
+    approved_pin: dict[str, Any],
+    previous_image: str,
+    prior_release: dict[str, Any],
+) -> dict[str, Any]:
+    """Best-effort restore both pins, restart the prior service, and prove it."""
+    restoration_errors: list[dict[str, str]] = []
+    for label, snapshot in (
+        ("runtimeEnv", runtime_pin),
+        ("approvedImage", approved_pin),
+    ):
+        try:
+            _write_bound_pin(snapshot, snapshot["content"])
+        except Exception as error:
+            restoration_errors.append({"operation": label, "errorName": type(error).__name__})
+
+    configuration_restored = (
+        _pin_snapshot_matches(runtime_pin)
+        and _pin_snapshot_matches(approved_pin)
+    )
+
+    rollback_code: int | None = None
+    rollback_stderr = ""
+    rollback_restart_attempted = configuration_restored
+    if configuration_restored:
+        try:
+            rollback_code, _, rollback_stderr = run_command(
+                ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
+            )
+        except Exception as error:
+            restoration_errors.append({"operation": "restartPriorService", "errorName": type(error).__name__})
+    else:
+        restoration_errors.append({
+            "operation": "restartPriorService",
+            "errorName": "UnsafeWithoutExactConfiguration",
+        })
+
+    rollback_proof = _safe_rollback_terminal_evidence(
+        service, previous_image, rollback_code,
+    )
+    prior_release_matches = (
+        rollback_proof.get("proofComplete") is True
+        and _release_identity(rollback_proof) == prior_release["releaseIdentity"]
+    )
+    prior_restoration_proved = configuration_restored and prior_release_matches
+    return {
+        "configurationRestored": configuration_restored,
+        "restoredPins": [
+            _pin_snapshot_evidence(runtime_pin),
+            _pin_snapshot_evidence(approved_pin),
+        ],
+        "rollbackRestartAttempted": rollback_restart_attempted,
+        "rollbackRestartSucceeded": rollback_code == 0,
+        "rollbackStderr": rollback_stderr[:500],
+        "rollbackProof": rollback_proof,
+        "priorReleaseIdentity": prior_release["releaseIdentity"],
+        "restoredReleaseIdentity": (
+            _release_identity(rollback_proof)
+            if rollback_proof.get("proofComplete") is True
+            else None
+        ),
+        "priorReleaseMatches": prior_release_matches,
+        "priorRestorationProved": prior_restoration_proved,
+        "restorationErrors": restoration_errors,
+    }
 
 
 def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connection,
@@ -856,118 +1178,184 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     container = service_config.get("container")
     if not container:
         raise BrokerError(f"service {service} has no container for deployment")
-    receipt_id = derive_receipt_id("deploy_pinned_image", service, idempotency_key)
-    receipt = create_receipt(
+    action = canonical_action("deploy_pinned_image", service, params)
+    receipt_id = derive_receipt_id(action)
+    receipt, reserved = create_receipt(
         connection, receipt_id, "deploy-pinned-image", service,
-        idempotency_key, actor, "deploy_pinned_image",
+        idempotency_key, actor, "deploy_pinned_image", action,
     )
-    if receipt["state"] != "initiated":
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
-    # Pull the pinned image
-    returncode, stdout, stderr = run_command(
-        ["docker", "pull", image], timeout=COMMAND_TIMEOUT_SECONDS,
-    )
-    if returncode != 0:
-        complete_receipt(connection, receipt_id, "failed", {
-            "image": image, "stderr": stderr,
-        }, "failure")
-        raise BrokerError(f"docker pull failed: {stderr}")
-    # Bind both the service environment and the preflight release pin before
-    # restart. Both files are restored if the new release cannot start.
+    if not reserved:
+        return replay_receipt(receipt)
     env_file = CONFIG_DIR / "runtime.env"
     approved_image_file = CONFIG_DIR / "approved-image"
     if not env_file.exists() or not approved_image_file.exists():
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "image": image,
             "configurationComplete": False,
-        }, "failure")
-        raise BrokerError("runtime.env and approved-image must exist before deployment")
-    previous_env = env_file.read_text(encoding="utf-8")
-    previous_approved_image = approved_image_file.read_text(encoding="utf-8")
-    previous_image = previous_approved_image.strip()
-    lines = previous_env.splitlines()
-    new_lines = [
-        line for line in lines if not line.startswith(f"{image_env}=")
-    ]
-    new_lines.append(f"{image_env}={image}")
-    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    os.chmod(env_file, 0o600)
-    approved_image_file.write_text(image + "\n", encoding="utf-8")
-    os.chmod(approved_image_file, 0o600)
-    returncode, stdout, stderr = run_command(
-        ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
+        }, "runtime.env and approved-image must exist before deployment")
+    try:
+        runtime_pin = _capture_pin_snapshot(env_file)
+        approved_pin = _capture_pin_snapshot(approved_image_file)
+        if (runtime_pin["device"], runtime_pin["inode"]) == (
+            approved_pin["device"], approved_pin["inode"],
+        ):
+            raise BrokerError("deployment pins must be distinct regular files")
+        previous_env = runtime_pin["content"].decode("utf-8")
+        previous_approved_image = approved_pin["content"].decode("utf-8")
+        previous_image = previous_approved_image.strip()
+        if not IMAGE_DIGEST_PATTERN.match(previous_image):
+            raise BrokerError("approved-image does not contain a prior pinned digest")
+        if _runtime_env_value_from_text(previous_env, image_env) != previous_image:
+            raise BrokerError("runtime.env and approved-image do not bind the same prior image")
+        prior_release = _capture_prior_release_state(service, previous_image)
+        if not prior_release.get("proofComplete"):
+            fail_receipted_operation(connection, receipt_id, {
+                "image": image,
+                "priorPins": [
+                    _pin_snapshot_evidence(runtime_pin),
+                    _pin_snapshot_evidence(approved_pin),
+                ],
+                "priorRelease": prior_release,
+                "priorReleaseInspectable": False,
+            }, "prior release state could not be proved before deployment")
+        if not _pin_snapshot_matches(runtime_pin) or not _pin_snapshot_matches(approved_pin):
+            raise BrokerError("deployment pins changed during prior-state capture")
+    except ReceiptedOperationError:
+        raise
+    except Exception as error:
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image,
+            "priorStateCaptureFailure": _bounded_failure(error),
+        }, "prior deployment state could not be captured safely")
+
+    # Pull only after the exact prior configuration and live release are bound.
+    returncode, _, stderr = run_command(
+        ["docker", "pull", image], timeout=COMMAND_TIMEOUT_SECONDS,
     )
     if returncode != 0:
-        env_file.write_text(previous_env, encoding="utf-8")
-        os.chmod(env_file, 0o600)
-        approved_image_file.write_text(previous_approved_image, encoding="utf-8")
-        os.chmod(approved_image_file, 0o600)
-        rollback_code, _, rollback_stderr = run_command(
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image, "stderr": stderr,
+        }, f"docker pull failed: {stderr}")
+    if not _pin_snapshot_matches(runtime_pin) or not _pin_snapshot_matches(approved_pin):
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image,
+            "priorPins": [
+                _pin_snapshot_evidence(runtime_pin),
+                _pin_snapshot_evidence(approved_pin),
+            ],
+        }, "deployment pins changed before candidate mutation")
+    try:
+        pre_mutation_release = _capture_prior_release_state(service, previous_image)
+    except Exception as error:
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image,
+            "priorReleaseIdentity": prior_release["releaseIdentity"],
+            "preMutationCaptureFailure": _bounded_failure(error),
+        }, "live prior release could not be recaptured before candidate mutation")
+    if (
+        not pre_mutation_release.get("proofComplete")
+        or pre_mutation_release["releaseIdentity"] != prior_release["releaseIdentity"]
+    ):
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image,
+            "priorReleaseIdentity": prior_release["releaseIdentity"],
+            "preMutationRelease": pre_mutation_release,
+        }, "live prior release changed before candidate mutation")
+
+    post_health: dict[str, Any] | None = None
+    post_front_door: dict[str, Any] | None = None
+    post_image_binding: dict[str, Any] | None = None
+    try:
+        lines = previous_env.splitlines()
+        new_lines = [
+            line for line in lines if not line.startswith(f"{image_env}=")
+        ]
+        new_lines.append(f"{image_env}={image}")
+        _write_bound_pin(
+            runtime_pin,
+            ("\n".join(new_lines) + "\n").encode("utf-8"),
+            expected_current=runtime_pin["content"],
+        )
+        _deploy_checkpoint("runtime-env-written")
+        _write_bound_pin(
+            approved_pin,
+            (image + "\n").encode("utf-8"),
+            expected_current=approved_pin["content"],
+        )
+        _deploy_checkpoint("approved-image-written")
+        returncode, _, stderr = run_command(
             ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
         )
-        rollback_proof = _safe_rollback_terminal_evidence(
-            service, previous_image, rollback_code,
+        _deploy_checkpoint("candidate-restart-returned")
+        if returncode != 0:
+            raise BrokerError(f"service restart after deploy failed: {stderr}")
+        time.sleep(2)
+        post_health = _check_service_active(service)
+        _deploy_checkpoint("post-service-health")
+        post_front_door = (
+            _front_door_health(service)
+            if service_config.get("frontDoorHealth") is not None
+            else None
         )
-        complete_receipt(connection, receipt_id, "failed", {
+        _deploy_checkpoint("post-front-door-health")
+        post_image_binding = _image_binding_evidence(container, image)
+        _deploy_checkpoint("post-image-binding")
+        release_healthy = (
+            post_health["active"]
+            and (post_front_door is None or post_front_door["healthy"])
+            and post_image_binding["proofComplete"]
+        )
+        if not release_healthy:
+            raise BrokerError("deployed release failed comprehensive health")
+        evidence = {
+            "service": service,
             "image": image,
             "previousImage": previous_image,
-            "stderr": stderr,
-            "configurationRestored": True,
-            "rollbackRestartSucceeded": rollback_code == 0,
-            "rollbackStderr": rollback_stderr,
-            "rollbackProof": rollback_proof,
-            "priorRestorationProved": rollback_proof["proofComplete"],
-        }, "failure")
-        raise BrokerError(f"service restart after deploy failed: {stderr}")
-    time.sleep(2)
-    post_health = _check_service_active(service)
-    post_front_door = (
-        _front_door_health(service)
-        if service_config.get("frontDoorHealth") is not None
-        else None
-    )
-    post_image_binding = _image_binding_evidence(container, image)
-    release_healthy = (
-        post_health["active"]
-        and (post_front_door is None or post_front_door["healthy"])
-        and post_image_binding["proofComplete"]
-    )
-    if not release_healthy:
-        env_file.write_text(previous_env, encoding="utf-8")
-        os.chmod(env_file, 0o600)
-        approved_image_file.write_text(previous_approved_image, encoding="utf-8")
-        os.chmod(approved_image_file, 0o600)
-        rollback_code, _, rollback_stderr = run_command(
-            ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
-        )
-        rollback_proof = _safe_rollback_terminal_evidence(
-            service, previous_image, rollback_code,
-        )
-        complete_receipt(connection, receipt_id, "failed", {
-            "image": image,
-            "previousImage": previous_image,
+            "container": container,
+            "priorPins": [
+                _pin_snapshot_evidence(runtime_pin),
+                _pin_snapshot_evidence(approved_pin),
+            ],
+            "priorRelease": prior_release,
             "postHealth": post_health,
             "postFrontDoorHealth": post_front_door,
             "postImageBinding": post_image_binding,
-            "configurationRestored": True,
-            "rollbackRestartSucceeded": rollback_code == 0,
-            "rollbackStderr": rollback_stderr,
-            "rollbackProof": rollback_proof,
-            "priorRestorationProved": rollback_proof["proofComplete"],
-        }, "failure")
-        raise BrokerError("deployed release failed comprehensive health; prior release restored")
-    evidence = {
-        "service": service,
-        "image": image,
-        "previousImage": previous_image,
-        "container": container,
-        "postHealth": post_health,
-        "postFrontDoorHealth": post_front_door,
-        "postImageBinding": post_image_binding,
-        "comprehensiveHealthPassed": release_healthy,
-    }
-    complete_receipt(connection, receipt_id, "completed", evidence, "success")
-    return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
+            "comprehensiveHealthPassed": True,
+        }
+        complete_receipt(connection, receipt_id, "completed", evidence, "success")
+        return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
+    except Exception as error:
+        compensation = _compensate_deploy_failure(
+            service,
+            runtime_pin,
+            approved_pin,
+            previous_image,
+            prior_release,
+        )
+        proved = compensation["priorRestorationProved"]
+        state = "failed" if proved else "reconciliation_required"
+        outcome = "failure" if proved else "unknown"
+        evidence = {
+            "image": image,
+            "previousImage": previous_image,
+            "candidateFailure": _bounded_failure(error),
+            "postHealth": post_health,
+            "postFrontDoorHealth": post_front_door,
+            "postImageBinding": post_image_binding,
+            **compensation,
+        }
+        terminalize_receipted_operation(
+            connection,
+            receipt_id,
+            state,
+            evidence,
+            outcome,
+            (
+                "deploy failed; prior release restoration proved"
+                if proved
+                else "deploy outcome requires reconciliation; prior release restoration was not proved"
+            ),
+        )
 
 
 def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection,
@@ -977,13 +1365,14 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
         raise BrokerError("service must be a valid systemd unit name ending in .service")
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
-    receipt_id = derive_receipt_id("rollback_rehearsal", service, idempotency_key)
-    receipt = create_receipt(
+    action = canonical_action("rollback_rehearsal", service, params)
+    receipt_id = derive_receipt_id(action)
+    receipt, reserved = create_receipt(
         connection, receipt_id, "rollback-rehearsal", service,
-        idempotency_key, actor, "rollback_rehearsal",
+        idempotency_key, actor, "rollback_rehearsal", action,
     )
-    if receipt["state"] != "initiated":
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # A rollback rehearsal only checks that the backup exists and the
     # rollback script is executable.  It does not perform the actual rollback.
     rollback_script = ROLLBACK_SCRIPT
@@ -1006,17 +1395,21 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
 
 
-def _runtime_env_value(path: Path, key: str) -> str | None:
-    if not path.exists():
-        return None
+def _runtime_env_value_from_text(content: str, key: str) -> str | None:
     matches = [
         line.split("=", 1)[1]
-        for line in path.read_text(encoding="utf-8").splitlines()
+        for line in content.splitlines()
         if line.startswith(f"{key}=")
     ]
     if len(matches) != 1:
         return None
     return matches[0].strip()
+
+
+def _runtime_env_value(path: Path, key: str) -> str | None:
+    if not path.exists():
+        return None
+    return _runtime_env_value_from_text(path.read_text(encoding="utf-8"), key)
 
 
 def _inspect_listener_ports(ports: list[int]) -> dict[str, Any]:
@@ -1279,7 +1672,7 @@ def _rollback_terminal_evidence(
 def _safe_rollback_terminal_evidence(
     service: str,
     expected_prior_image: str,
-    rollback_restart_code: int,
+    rollback_restart_code: int | None,
 ) -> dict[str, Any]:
     if rollback_restart_code != 0:
         return {
@@ -1291,13 +1684,17 @@ def _safe_rollback_terminal_evidence(
         }
     try:
         return _rollback_terminal_evidence(service, "restored", expected_prior_image)
-    except BrokerError as error:
+    except Exception as error:
         return {
             "schemaVersion": "gloops.rollback-proof.v1",
             "service": service,
             "mode": "restored",
             "proofComplete": False,
-            "error": str(error)[:500],
+            "error": (
+                str(error)[:500]
+                if isinstance(error, BrokerError)
+                else f"rollback proof raised {type(error).__name__}"
+            ),
         }
 
 
@@ -1319,23 +1716,23 @@ def op_rollback_proof(params: dict[str, Any], connection: sqlite3.Connection,
         raise BrokerError("expectedPriorImage is only valid in restored mode")
 
     target = f"{service}:{mode}"
-    receipt_id = derive_receipt_id("prove_rollback_terminal_state", target, idempotency_key)
-    receipt = create_receipt(
+    action = canonical_action("prove_rollback_terminal_state", target, params)
+    receipt_id = derive_receipt_id(action)
+    receipt, reserved = create_receipt(
         connection, receipt_id, "rollback-proof", target,
-        idempotency_key, actor, "prove_rollback_terminal_state",
+        idempotency_key, actor, "prove_rollback_terminal_state", action,
     )
-    if receipt["state"] != "initiated":
-        if receipt["state"] != "completed":
-            raise BrokerError(
-                f"previous rollback-proof receipt is {receipt['state']}; "
-                f"receiptId={receipt['receiptId']}"
-            )
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
 
     evidence = _rollback_terminal_evidence(service, mode, expected_prior_image)
     if not evidence["proofComplete"]:
-        complete_receipt(connection, receipt_id, "failed", evidence, "failure")
-        raise BrokerError(f"rollback terminal proof failed; receiptId={receipt_id}")
+        fail_receipted_operation(
+            connection,
+            receipt_id,
+            evidence,
+            f"rollback terminal proof failed; receiptId={receipt_id}",
+        )
     complete_receipt(connection, receipt_id, "completed", evidence, "success")
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
 
@@ -1487,6 +1884,12 @@ def handle_connection(client: socket.socket, connection: sqlite3.Connection) -> 
         request = read_request(client)
         response = process_request(request, connection)
         connection.commit()
+    except ReceiptedOperationError as error:
+        # Only an operation that has already written a terminal failed receipt
+        # may cross this commit boundary.  Validation and unreceipted failures
+        # continue to roll back below.
+        connection.commit()
+        response = {"ok": False, "error": str(error)[:500]}
     except BrokerError as error:
         response = {"ok": False, "error": str(error)[:500]}
         connection.rollback()

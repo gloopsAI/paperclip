@@ -131,3 +131,36 @@ test("an unhealthy front-door response exits nonzero", async () => {
     await rm(tempDirectory, { recursive: true, force: true });
   }
 });
+
+for (const state of ["initiated", "failed", "reconciliation_required"]) {
+  test(`a replayed ${state} mutation receipt exits nonzero`, async () => {
+    const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "platform-ops-tool-replay-"));
+    const socketPath = path.join(tempDirectory, "broker.sock");
+    const server = net.createServer((socket) => {
+      socket.once("data", () => {
+        socket.end(`${JSON.stringify({ ok: true, data: { state, replayed: true } })}\n`);
+      });
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      const child = spawn(process.execPath, [
+        scriptPath,
+        "--operation", "rollback-rehearsal",
+        "--service", "paperclip-gloops.service",
+        "--actor", "wren-agent",
+        "--idempotencyKey", `replay-${state}`,
+      ], {
+        env: { ...process.env, PLATFORM_OPS_BROKER_SOCKET: socketPath },
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      const code = await new Promise((resolve) => child.once("exit", resolve));
+      assert.equal(code, 1);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  });
+}

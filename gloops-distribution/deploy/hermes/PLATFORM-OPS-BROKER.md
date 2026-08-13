@@ -138,6 +138,33 @@ and return their durable receipt. If a caller disconnects after an operation
 commits, the broker retains the receipt and continues serving; a lost response
 never terminates the broker process.
 
+For every mutating call, the broker commits the `initiated` receipt and
+idempotency-key reservation before its first external host effect. Replaying an
+existing `initiated`, `completed`, or `failed` receipt returns the existing
+state and never repeats the effect. Expected terminal operation failures commit
+their `failed` receipt and journal entry; unexpected faults retain the durable
+`initiated` reservation for explicit reconciliation rather than guessing that
+the effect is safe to repeat.
+
+Once either deployment pin is changed, every exception enters joint
+compensation. Before mutation, the broker binds the idempotency key to the full
+canonical request, captures both pin files through no-follow descriptors with
+their exact bytes, inode, owner, group, and mode, and snapshots the healthy
+service/front-door/container immutable state. It recaptures that state after
+the candidate image pull and refuses mutation if it changed. The broker
+restores both exact prior pins, restarts the old service only after those files
+are descriptor-, byte-, and metadata-verified, and requires the full rollback
+proof to match the pre-effect release identity. It records `failed` only when
+that exact restoration is proved. Otherwise
+the durable state is `reconciliation_required` with outcome `unknown`; replay
+still performs no host effect and the command-line client exits nonzero.
+The full canonical action digest is stored with the receipt and initiated
+journal entry; reuse of a key with any action drift is rejected before host
+effects, including deploy-image and rollback `expectedPriorImage` drift.
+Receipts created before action digests existed remain durable but explicitly
+legacy-unbound: reuse of their keys is rejected for manual reconciliation and
+never re-executes a host effect.
+
 ## Client Usage
 
 ```sh

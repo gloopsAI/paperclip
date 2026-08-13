@@ -258,7 +258,7 @@ async function main() {
     if (
       response.ok === false ||
       response?.data?.healthy === false ||
-      response?.data?.state === "failed"
+      ["failed", "initiated", "reconciliation_required"].includes(response?.data?.state)
     ) {
       process.exit(1);
     }
