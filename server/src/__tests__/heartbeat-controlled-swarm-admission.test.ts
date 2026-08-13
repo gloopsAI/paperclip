@@ -262,6 +262,103 @@ describeEmbeddedPostgres("heartbeat controlled-swarm admission", () => {
     expect(adapterState.startedAgentIds).toEqual([open.agentIds[0]]);
   });
 
+  it("admits only a bounded trusted task-bridge ask through a company freeze", async () => {
+    adapterExecute.mockClear();
+    adapterState.startedAgentIds = [];
+    const trusted = await seedCompany(1);
+    const ordinary = await seedCompany(1);
+    const cases = [
+      { ...trusted, originKind: "task_bridge", originId: "bridge-key-1", expected: "succeeded" },
+      { ...ordinary, originKind: "manual", originId: null, expected: "cancelled" },
+    ] as const;
+    const runIds: string[] = [];
+    for (const entry of cases) {
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      runIds.push(runId);
+      await db.insert(issues).values({
+        id: issueId,
+        companyId: entry.companyId,
+        title: "Bounded Buzz consultation",
+        status: "todo",
+        workMode: "ask",
+        originKind: entry.originKind,
+        originId: entry.originId,
+        requestDepth: 0,
+        priority: "medium",
+        responsibleUserId: "operator",
+        assigneeAgentId: entry.agentIds[0],
+        issueNumber: 1,
+        identifier: `BUZZ-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          completionProfile: "direct",
+          resourceBudget: {
+            maxRunsPerTask: 1,
+            maxRetriesPerTask: 0,
+            maxTurnsPerInvocation: 4,
+            maxToolCallsPerInvocation: 5,
+          },
+        },
+      });
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId: entry.companyId,
+        agentId: entry.agentIds[0]!,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "buzz_consult",
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: "task_bridge",
+        runId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: entry.companyId,
+        agentId: entry.agentIds[0]!,
+        status: "queued",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        wakeupRequestId,
+        responsibleUserId: "operator",
+        contextSnapshot: { issueId },
+      });
+    }
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        ...executionAdmissionEnv,
+        PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS: cases.map((entry) => entry.companyId).join(","),
+      },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await waitForTerminalRuns(db, runIds);
+    for (const runId of runIds) await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect(await heartbeat.getRun(runIds[0]!)).toMatchObject({
+      status: "succeeded",
+      contextSnapshot: {
+        backlogBankruptcyAdmission: {
+          schemaVersion: "gloops.backlog-bankruptcy-admission.v1",
+          disposition: "admitted",
+          reason: "trusted_task_bridge_consult",
+          originKind: "task_bridge",
+          originId: "bridge-key-1",
+        },
+      },
+    });
+    expect(await heartbeat.getRun(runIds[1]!)).toMatchObject({
+      status: "cancelled",
+      errorCode: "backlog_bankruptcy.company_frozen",
+    });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterState.startedAgentIds).toEqual([trusted.agentIds[0]]);
+  });
+
   it("gives each queued agent one claim before another agent can consume another company slot", async () => {
     adapterState.active = 0;
     adapterState.maxActive = 0;

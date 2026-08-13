@@ -65,6 +65,7 @@ const mockAdapterState = vi.hoisted(() => ({
   resultOverride: null as Record<string, unknown> | null,
   throwOverride: null as Error | null,
   providerTerminalEvidence: false,
+  summaryOverride: null as string | null,
 }));
 const mockAdapterExecute = vi.hoisted(() => vi.fn(async (ctx: {
   runId: string;
@@ -88,7 +89,7 @@ const mockAdapterExecute = vi.hoisted(() => vi.fn(async (ctx: {
       timedOut: false,
       errorMessage: null,
       providerInvocationAttempted: true,
-      summary: "Trusted terminal evidence integration run.",
+      summary: mockAdapterState.summaryOverride ?? "Trusted terminal evidence integration run.",
       provider: "ollama",
       model: "test-model",
       usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 2 },
@@ -225,6 +226,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     mockAdapterState.resultOverride = null;
     mockAdapterState.throwOverride = null;
     mockAdapterState.providerTerminalEvidence = false;
+    mockAdapterState.summaryOverride = null;
     mockWorkspaceRuntimeState.setupFailure = null;
     mockAdapterExecute.mockClear();
   });
@@ -908,6 +910,49 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
     expect(await db.select().from(issues).where(eq(issues.id, parentIssueId)).then((rows) => rows[0]))
       .toMatchObject({ status: "in_progress" });
+  });
+
+  it("persists the sanitized ask answer before projecting the issue done", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      workMode: "ask",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        completionProfile: "direct",
+      },
+    }).where(eq(issues.id, issueId));
+    mockAdapterState.providerTerminalEvidence = true;
+    mockAdapterState.summaryOverride = "Planning and tool narration.\nAnswer: draft\nFinal answer: Durable Buzz answer.";
+
+    const heartbeat = heartbeatService(db, {
+      terminalIssueReconciliationHooks: {
+        afterDecisionBeforeProjection: async ({ issueId: projectedIssueId, targetStatus }) => {
+          if (projectedIssueId !== issueId || targetStatus !== "done") return;
+          const comments = await db.select().from(issueComments)
+            .where(eq(issueComments.issueId, issueId));
+          expect(comments).toHaveLength(1);
+          expect(comments[0]).toMatchObject({ body: "Durable Buzz answer." });
+        },
+      },
+    });
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]))
+      .toMatchObject({ status: "done", executionRunId: null });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId)))
+      .toMatchObject([{ body: "Durable Buzz answer.", createdByRunId: run!.id }]);
   });
 
   async function seedIssueBudgetHistory(input: {

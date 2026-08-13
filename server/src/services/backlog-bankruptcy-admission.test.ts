@@ -90,4 +90,43 @@ describe("backlog-bankruptcy admission", () => {
       hasExplicitResourceBudget: true,
     })).toEqual({ admitted: true, reason: "budgeted_readmit" });
   });
+
+  it("admits a server-derived task-bridge consultation only with an explicit budget", () => {
+    const policy = parseBacklogBankruptcyAdmissionPolicy({
+      PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS: COMPANY_ID,
+    });
+    expect(evaluateBacklogBankruptcyAdmission(policy, {
+      companyId: COMPANY_ID,
+      issueId: READMIT_ISSUE_ID,
+      executionAdmissionEnabled: true,
+      hasExplicitResourceBudget: true,
+      trustedTaskBridgeConsult: true,
+    })).toEqual({ admitted: true, reason: "trusted_task_bridge_consult" });
+    expect(evaluateBacklogBankruptcyAdmission(policy, {
+      companyId: COMPANY_ID,
+      issueId: READMIT_ISSUE_ID,
+      executionAdmissionEnabled: true,
+      hasExplicitResourceBudget: false,
+      trustedTaskBridgeConsult: true,
+    })).toMatchObject({
+      admitted: false,
+      errorCode: BACKLOG_BANKRUPTCY_ADMISSION_ERROR.READMIT_BUDGET_REQUIRED,
+    });
+  });
+
+  it("does not trust an ordinary frozen-company issue merely because it has a budget", () => {
+    const policy = parseBacklogBankruptcyAdmissionPolicy({
+      PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS: COMPANY_ID,
+    });
+    expect(evaluateBacklogBankruptcyAdmission(policy, {
+      companyId: COMPANY_ID,
+      issueId: READMIT_ISSUE_ID,
+      executionAdmissionEnabled: true,
+      hasExplicitResourceBudget: true,
+      trustedTaskBridgeConsult: false,
+    })).toMatchObject({
+      admitted: false,
+      errorCode: BACKLOG_BANKRUPTCY_ADMISSION_ERROR.COMPANY_FROZEN,
+    });
+  });
 });

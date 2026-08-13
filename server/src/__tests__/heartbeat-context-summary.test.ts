@@ -88,6 +88,8 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(assignment).toContain("Answer the question directly in the issue thread.");
     expect(assignment).toContain("Do not write implementation code");
     expect(assignment).toContain("do not produce an implementation plan");
+    expect(assignment).toContain("End with a `Final answer:` section");
+    expect(assignment).toContain("only the Buzz-facing answer");
   });
 
   it("adds dry-run containment guidance for skill-test issues", () => {

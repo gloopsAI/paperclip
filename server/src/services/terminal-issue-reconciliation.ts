@@ -37,6 +37,7 @@ export type TerminalIssueReconciliationDecision =
         | "terminal_issue_cancelled"
         | "terminal_issue_blocked"
         | "missing_execution_truth"
+        | "missing_direct_answer_comment"
         | "execution_truth_rejected"
         | "children_not_done";
     };
@@ -324,6 +325,8 @@ export function decideTerminalIssueReconciliation(input: {
    * otherwise justify it.
    */
   hasOpenChildren?: boolean;
+  requireDirectAnswerComment?: boolean;
+  directAnswerCommentPersisted?: boolean;
 }): TerminalIssueReconciliationDecision {
   const decision = decideTerminalIssueReconciliationEvidence(input);
   if (decision.kind === "project" && decision.status === "done" && input.hasOpenChildren) {
@@ -344,6 +347,8 @@ function decideTerminalIssueReconciliationEvidence(input: {
   executionWorkspaceMode?: string | null;
   budgetExceeded: string[];
   routePathIds: string[];
+  requireDirectAnswerComment?: boolean;
+  directAnswerCommentPersisted?: boolean;
 }): TerminalIssueReconciliationDecision {
   const terminalReceipt = input.terminalReceipt ?? null;
   const supportedCompletionProfile =
@@ -485,6 +490,10 @@ function decideTerminalIssueReconciliationEvidence(input: {
       };
     }
     return { kind: "preserve", reason: "execution_truth_rejected" };
+  }
+
+  if (input.requireDirectAnswerComment && !input.directAnswerCommentPersisted) {
+    return { kind: "preserve", reason: "missing_direct_answer_comment" };
   }
 
   if (input.budgetExceeded.length > 0) {
@@ -662,6 +671,7 @@ const TERMINAL_RECONCILIATION_PRESERVE_REASONS = new Set<TerminalIssueReconcilia
   "terminal_issue_cancelled",
   "terminal_issue_blocked",
   "missing_execution_truth",
+  "missing_direct_answer_comment",
   "execution_truth_rejected",
   "children_not_done",
 ]);

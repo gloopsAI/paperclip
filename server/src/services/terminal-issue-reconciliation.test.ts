@@ -153,6 +153,17 @@ describe("decideTerminalIssueReconciliation", () => {
     );
   });
 
+  it("requires the durable answer comment before completing an ask-mode direct run", () => {
+    expect(decideTerminalIssueReconciliation(input({
+      requireDirectAnswerComment: true,
+      directAnswerCommentPersisted: false,
+    }))).toEqual({ kind: "preserve", reason: "missing_direct_answer_comment" });
+    expect(decideTerminalIssueReconciliation(input({
+      requireDirectAnswerComment: true,
+      directAnswerCommentPersisted: true,
+    }))).toMatchObject({ kind: "project", status: "done" });
+  });
+
   it("lets an explicit operations receipt complete an otherwise unprofiled direct task", () => {
     expect(decideTerminalIssueReconciliation(input({
       completionProfile: null,
