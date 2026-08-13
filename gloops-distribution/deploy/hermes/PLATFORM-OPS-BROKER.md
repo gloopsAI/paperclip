@@ -138,6 +138,14 @@ and return their durable receipt. If a caller disconnects after an operation
 commits, the broker retains the receipt and continues serving; a lost response
 never terminates the broker process.
 
+For every mutating call, the broker commits the `initiated` receipt and
+idempotency-key reservation before its first external host effect. Replaying an
+existing `initiated`, `completed`, or `failed` receipt returns the existing
+state and never repeats the effect. Expected terminal operation failures commit
+their `failed` receipt and journal entry; unexpected faults retain the durable
+`initiated` reservation for explicit reconciliation rather than guessing that
+the effect is safe to repeat.
+
 ## Client Usage
 
 ```sh

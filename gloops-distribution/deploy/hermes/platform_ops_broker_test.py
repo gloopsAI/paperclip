@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -140,6 +141,14 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             DATABASE=self.db_path,
             TEST_MODE=True,
         )
+
+    def socket_request(self, request, connection):
+        """Exercise the production transaction boundary over a real socket."""
+        client, server = socket.socketpair()
+        with client, server:
+            client.sendall(json.dumps(request).encode("utf-8") + b"\n")
+            broker.handle_connection(server, connection)
+            return json.loads(client.recv(broker.MAX_RESPONSE_BYTES).decode("utf-8"))
 
     # -------------------------------------------------------------------------
     # Allowlist enforcement
@@ -658,6 +667,100 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
         connection.close()
 
+    def test_socket_deploy_failure_commits_receipt_and_replay_has_no_effects(self):
+        with self.paths():
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            request = {
+                "operation": "deploy-pinned-image",
+                "service": "paperclip-gloops.service",
+                "image": image,
+                "actor": "wren-agent",
+                "idempotencyKey": "deploy-socket-durable-failure-001",
+            }
+            previous_env = (self.config / "runtime.env").read_text()
+            previous_pin = (self.config / "approved-image").read_text()
+            connection = broker.connect_database()
+            mock_results = [
+                (0, "", ""),  # docker pull
+                (1, "", "new release failed"),  # candidate restart
+                (0, "", ""),  # rollback restart
+            ]
+            with patch.object(broker, "run_command", side_effect=mock_results):
+                with patch.object(
+                    broker,
+                    "_safe_rollback_terminal_evidence",
+                    return_value={
+                        "proofComplete": True,
+                        "schemaVersion": "gloops.rollback-proof.v1",
+                    },
+                ):
+                    response = self.socket_request(request, connection)
+            connection.close()
+
+            self.assertFalse(response["ok"])
+            self.assertIn("service restart after deploy failed", response["error"])
+            self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+            self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
+
+            fresh = broker.connect_database()
+            receipts = broker.list_receipts(fresh)
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0]["state"], "failed")
+            self.assertEqual(receipts[0]["idempotencyKey"], request["idempotencyKey"])
+            self.assertTrue(receipts[0]["evidence"]["priorRestorationProved"])
+            states = [
+                row["state"]
+                for row in fresh.execute("SELECT state FROM journal ORDER BY sequence")
+            ]
+            self.assertEqual(states, ["initiated", "failed"])
+            broker.verify_journal(fresh)
+
+            with patch.object(broker, "run_command") as replay_command:
+                replay = self.socket_request(request, fresh)
+            self.assertTrue(replay["ok"])
+            self.assertTrue(replay["data"]["replayed"])
+            self.assertEqual(replay["data"]["state"], "failed")
+            replay_command.assert_not_called()
+            fresh.close()
+
+    def test_socket_unexpected_fault_retains_initiated_reservation_after_restart(self):
+        with self.paths():
+            request = {
+                "operation": "service-restart",
+                "service": "paperclip-gloops.service",
+                "actor": "wren-agent",
+                "idempotencyKey": "restart-crash-reservation-001",
+            }
+            connection = broker.connect_database()
+            with patch.object(
+                broker,
+                "run_command",
+                side_effect=[(0, "active\n", ""), RuntimeError("simulated crash")],
+            ):
+                response = self.socket_request(request, connection)
+            connection.close()
+
+            self.assertFalse(response["ok"])
+            self.assertIn("internal error", response["error"])
+
+            fresh = broker.connect_database()
+            receipts = broker.list_receipts(fresh)
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0]["state"], "initiated")
+            states = [
+                row["state"]
+                for row in fresh.execute("SELECT state FROM journal ORDER BY sequence")
+            ]
+            self.assertEqual(states, ["initiated"])
+
+            with patch.object(broker, "run_command") as replay_command:
+                replay = self.socket_request(request, fresh)
+            self.assertTrue(replay["ok"])
+            self.assertTrue(replay["data"]["replayed"])
+            self.assertEqual(replay["data"]["state"], "initiated")
+            replay_command.assert_not_called()
+            fresh.close()
+
     def test_deploy_pinned_image_rejects_service_without_image_env(self):
         with self.paths():
             connection = broker.connect_database()
@@ -735,17 +838,16 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             self.assertEqual(receipt["state"], "failed")
             self.assertFalse(receipt["evidence"]["listenerAbsenceProved"])
             with patch.object(broker, "run_command", side_effect=[]):
-                with self.assertRaisesRegex(
-                    broker.BrokerError,
-                    "previous rollback-proof receipt is failed",
-                ):
-                    broker.process_request({
-                        "operation": "rollback-proof",
-                        "service": "paperclip-gloops.service",
-                        "mode": "absent",
-                        "actor": "wren-agent",
-                        "idempotencyKey": "rollback-absence-listener-001",
-                    }, connection=connection)
+                replay = broker.process_request({
+                    "operation": "rollback-proof",
+                    "service": "paperclip-gloops.service",
+                    "mode": "absent",
+                    "actor": "wren-agent",
+                    "idempotencyKey": "rollback-absence-listener-001",
+                }, connection=connection)
+            self.assertTrue(replay["ok"])
+            self.assertTrue(replay["data"]["replayed"])
+            self.assertEqual(replay["data"]["state"], "failed")
             connection.close()
 
     def test_rollback_restoration_proof_binds_prior_image_and_front_door(self):

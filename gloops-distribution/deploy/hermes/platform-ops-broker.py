@@ -37,7 +37,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -114,6 +114,10 @@ READONLY_OPERATIONS = ALLOWED_OPERATIONS - MUTATING_OPERATIONS
 
 class BrokerError(RuntimeError):
     pass
+
+
+class ReceiptedOperationError(BrokerError):
+    """A terminal operation failure whose receipt transaction must commit."""
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +354,13 @@ def create_receipt(
     idempotency_key: str,
     actor: str,
     command_class: str,
-) -> dict[str, Any]:
-    """Create a new idempotent receipt.  Raises if the idempotency key already
-    exists with a different receipt_id."""
+) -> tuple[dict[str, Any], bool]:
+    """Durably reserve an idempotency key before any external host effect.
+
+    The boolean result is true only for the request that created the durable
+    reservation.  Every existing state, including ``initiated``, is a replay
+    and must never authorize the caller to execute the host operation again.
+    """
     existing = connection.execute(
         "SELECT * FROM receipts WHERE idempotency_key = ?",
         (idempotency_key,),
@@ -360,7 +368,7 @@ def create_receipt(
     if existing:
         if existing["receipt_id"] != receipt_id:
             raise BrokerError("idempotency key is already consumed by a different action")
-        return _to_receipt_dict(existing)
+        return _to_receipt_dict(existing), False
     now = timestamp()
     receipt = {
         "receiptId": receipt_id,
@@ -389,7 +397,11 @@ def create_receipt(
         "operation": operation, "target": target, "actor": actor,
         "commandClass": command_class,
     })
-    return receipt
+    # This is intentionally a separate durability boundary.  A broker crash or
+    # unexpected exception after this point leaves an inspectable ``initiated``
+    # reservation rather than allowing the same key to repeat a host effect.
+    connection.commit()
+    return receipt, True
 
 
 def complete_receipt(
@@ -415,6 +427,27 @@ def complete_receipt(
         "SELECT * FROM receipts WHERE receipt_id = ?", (receipt_id,)
     ).fetchone()
     return _to_receipt_dict(row)
+
+
+def fail_receipted_operation(
+    connection: sqlite3.Connection,
+    receipt_id: str,
+    evidence: dict[str, Any],
+    message: str,
+) -> NoReturn:
+    """Record a terminal failure and signal the socket boundary to commit it."""
+    complete_receipt(connection, receipt_id, "failed", evidence, "failure")
+    raise ReceiptedOperationError(message)
+
+
+def replay_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Return an existing reservation without re-running any host effect."""
+    return {
+        "receiptId": receipt["receiptId"],
+        "state": receipt["state"],
+        "outcome": receipt["outcome"],
+        "replayed": True,
+    }
 
 
 def _to_receipt_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -666,13 +699,12 @@ def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
     receipt_id = derive_receipt_id("restart_named_service", service, idempotency_key)
-    receipt = create_receipt(
+    receipt, reserved = create_receipt(
         connection, receipt_id, "service-restart", service,
         idempotency_key, actor, "restart_named_service",
     )
-    if receipt["state"] != "initiated":
-        # Idempotent replay
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # Pre-restart health
     pre_health = _check_service_active(service)
     # Execute restart
@@ -680,10 +712,9 @@ def op_service_restart(params: dict[str, Any], connection: sqlite3.Connection,
         ["systemctl", "restart", service], timeout=COMMAND_TIMEOUT_SECONDS,
     )
     if returncode != 0:
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "preHealth": pre_health, "stderr": stderr,
-        }, "failure")
-        raise BrokerError(f"systemctl restart failed: {stderr}")
+        }, f"systemctl restart failed: {stderr}")
     # Wait for service to be active again
     time.sleep(2)
     post_health = _check_service_active(service)
@@ -801,12 +832,12 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
         if returncode == 0 and stdout.strip():
             pre_size = int(stdout.strip().split()[0])
     receipt_id = derive_receipt_id("reclaim_disposable_cache", cache_name, idempotency_key)
-    receipt = create_receipt(
+    receipt, reserved = create_receipt(
         connection, receipt_id, "cache-reclaim", cache_name,
         idempotency_key, actor, "reclaim_disposable_cache",
     )
-    if receipt["state"] != "initiated":
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # Reclaim: remove contents but not the directory itself
     if cache_path.exists():
         returncode, stdout, stderr = run_command(
@@ -814,10 +845,9 @@ def op_cache_reclaim(params: dict[str, Any], connection: sqlite3.Connection,
             timeout=COMMAND_TIMEOUT_SECONDS,
         )
         if returncode != 0:
-            complete_receipt(connection, receipt_id, "failed", {
+            fail_receipted_operation(connection, receipt_id, {
                 "preSizeBytes": pre_size, "stderr": stderr,
-            }, "failure")
-            raise BrokerError(f"cache reclaim failed: {stderr}")
+            }, f"cache reclaim failed: {stderr}")
     # Post-reclaim size
     post_size = 0
     if cache_path.exists():
@@ -857,31 +887,29 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     if not container:
         raise BrokerError(f"service {service} has no container for deployment")
     receipt_id = derive_receipt_id("deploy_pinned_image", service, idempotency_key)
-    receipt = create_receipt(
+    receipt, reserved = create_receipt(
         connection, receipt_id, "deploy-pinned-image", service,
         idempotency_key, actor, "deploy_pinned_image",
     )
-    if receipt["state"] != "initiated":
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # Pull the pinned image
     returncode, stdout, stderr = run_command(
         ["docker", "pull", image], timeout=COMMAND_TIMEOUT_SECONDS,
     )
     if returncode != 0:
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "image": image, "stderr": stderr,
-        }, "failure")
-        raise BrokerError(f"docker pull failed: {stderr}")
+        }, f"docker pull failed: {stderr}")
     # Bind both the service environment and the preflight release pin before
     # restart. Both files are restored if the new release cannot start.
     env_file = CONFIG_DIR / "runtime.env"
     approved_image_file = CONFIG_DIR / "approved-image"
     if not env_file.exists() or not approved_image_file.exists():
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "image": image,
             "configurationComplete": False,
-        }, "failure")
-        raise BrokerError("runtime.env and approved-image must exist before deployment")
+        }, "runtime.env and approved-image must exist before deployment")
     previous_env = env_file.read_text(encoding="utf-8")
     previous_approved_image = approved_image_file.read_text(encoding="utf-8")
     previous_image = previous_approved_image.strip()
@@ -908,7 +936,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
         rollback_proof = _safe_rollback_terminal_evidence(
             service, previous_image, rollback_code,
         )
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "image": image,
             "previousImage": previous_image,
             "stderr": stderr,
@@ -917,8 +945,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "rollbackStderr": rollback_stderr,
             "rollbackProof": rollback_proof,
             "priorRestorationProved": rollback_proof["proofComplete"],
-        }, "failure")
-        raise BrokerError(f"service restart after deploy failed: {stderr}")
+        }, f"service restart after deploy failed: {stderr}")
     time.sleep(2)
     post_health = _check_service_active(service)
     post_front_door = (
@@ -943,7 +970,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
         rollback_proof = _safe_rollback_terminal_evidence(
             service, previous_image, rollback_code,
         )
-        complete_receipt(connection, receipt_id, "failed", {
+        fail_receipted_operation(connection, receipt_id, {
             "image": image,
             "previousImage": previous_image,
             "postHealth": post_health,
@@ -954,8 +981,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "rollbackStderr": rollback_stderr,
             "rollbackProof": rollback_proof,
             "priorRestorationProved": rollback_proof["proofComplete"],
-        }, "failure")
-        raise BrokerError("deployed release failed comprehensive health; prior release restored")
+        }, "deployed release failed comprehensive health; prior release restored")
     evidence = {
         "service": service,
         "image": image,
@@ -978,12 +1004,12 @@ def op_rollback_rehearsal(params: dict[str, Any], connection: sqlite3.Connection
     if service not in allowed_service_names():
         raise BrokerError(f"service {service} is not in the allowlist")
     receipt_id = derive_receipt_id("rollback_rehearsal", service, idempotency_key)
-    receipt = create_receipt(
+    receipt, reserved = create_receipt(
         connection, receipt_id, "rollback-rehearsal", service,
         idempotency_key, actor, "rollback_rehearsal",
     )
-    if receipt["state"] != "initiated":
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
     # A rollback rehearsal only checks that the backup exists and the
     # rollback script is executable.  It does not perform the actual rollback.
     rollback_script = ROLLBACK_SCRIPT
@@ -1320,22 +1346,21 @@ def op_rollback_proof(params: dict[str, Any], connection: sqlite3.Connection,
 
     target = f"{service}:{mode}"
     receipt_id = derive_receipt_id("prove_rollback_terminal_state", target, idempotency_key)
-    receipt = create_receipt(
+    receipt, reserved = create_receipt(
         connection, receipt_id, "rollback-proof", target,
         idempotency_key, actor, "prove_rollback_terminal_state",
     )
-    if receipt["state"] != "initiated":
-        if receipt["state"] != "completed":
-            raise BrokerError(
-                f"previous rollback-proof receipt is {receipt['state']}; "
-                f"receiptId={receipt['receiptId']}"
-            )
-        return {"receiptId": receipt["receiptId"], "state": receipt["state"], "replayed": True}
+    if not reserved:
+        return replay_receipt(receipt)
 
     evidence = _rollback_terminal_evidence(service, mode, expected_prior_image)
     if not evidence["proofComplete"]:
-        complete_receipt(connection, receipt_id, "failed", evidence, "failure")
-        raise BrokerError(f"rollback terminal proof failed; receiptId={receipt_id}")
+        fail_receipted_operation(
+            connection,
+            receipt_id,
+            evidence,
+            f"rollback terminal proof failed; receiptId={receipt_id}",
+        )
     complete_receipt(connection, receipt_id, "completed", evidence, "success")
     return {"receiptId": receipt_id, "state": "completed", "evidence": evidence}
 
@@ -1487,6 +1512,12 @@ def handle_connection(client: socket.socket, connection: sqlite3.Connection) -> 
         request = read_request(client)
         response = process_request(request, connection)
         connection.commit()
+    except ReceiptedOperationError as error:
+        # Only an operation that has already written a terminal failed receipt
+        # may cross this commit boundary.  Validation and unreceipted failures
+        # continue to roll back below.
+        connection.commit()
+        response = {"ok": False, "error": str(error)[:500]}
     except BrokerError as error:
         response = {"ok": False, "error": str(error)[:500]}
         connection.rollback()
