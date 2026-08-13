@@ -18029,6 +18029,91 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
           : candidateIssues[0]) ?? null;
 
       if (!issue) return null;
+      if (
+        isWorkforceCapacityFailedRun(run) &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        // A recovery wake may race terminalization after the capacity decision
+        // but before this issue lock is acquired. Invalidate every automatic,
+        // pre-provider execution path for this issue in the same transaction as
+        // the terminal block. Never cancel a run that crossed its invocation
+        // fence; such a run is outside this admission-denial lifecycle.
+        const racedRuns = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            errorCode: "workforce_capacity.raced_recovery_cancelled",
+            error: "Automatic recovery cancelled because workforce capacity admission failed before provider invocation",
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            sql`${heartbeatRuns.id} <> ${run.id}`,
+            inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            sql`coalesce(${heartbeatRuns.resultJson} -> 'provider_invocation' ->> 'attempted', 'false') <> 'true'`,
+          ))
+          .returning({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId });
+        const racedWakeupIds = racedRuns
+          .map((racedRun) => racedRun.wakeupRequestId)
+          .filter((id): id is string => Boolean(id));
+        if (racedWakeupIds.length > 0) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Automatic recovery cancelled by terminal workforce capacity block",
+              updatedAt: new Date(),
+            })
+            .where(and(
+              inArray(agentWakeupRequests.id, racedWakeupIds),
+              inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+            ));
+        }
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            error: "Automatic recovery cancelled by terminal workforce capacity block",
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(agentWakeupRequests.companyId, run.companyId),
+            eq(agentWakeupRequests.source, "automation"),
+            inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+          ));
+        const blockedIssue = await tx
+          .update(issues)
+          .set({
+            status: "blocked",
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+            eq(issues.assigneeAgentId, run.agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, ["todo", "in_progress"]),
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return blockedIssue
+          ? {
+              kind: "capacity_blocked" as const,
+              issue: blockedIssue,
+              comment: buildWorkforceCapacityBlockedComment(run),
+            }
+          : { kind: "released" as const };
+      }
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
       const automaticRecoveryCreationAllowed = await allowsAutomaticRecoveryForContext(
         parseObject(run.contextSnapshot),
@@ -18578,33 +18663,6 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
         isWorkforceCapacityFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
-        if (isWorkforceCapacityFailedRun(run)) {
-          const blockedIssue = await tx
-            .update(issues)
-            .set({
-              status: "blocked",
-              executionRunId: null,
-              executionAgentNameKey: null,
-              executionLockedAt: null,
-              updatedAt: new Date(),
-            })
-            .where(and(
-              eq(issues.id, issue.id),
-              eq(issues.companyId, issue.companyId),
-              eq(issues.assigneeAgentId, run.agentId),
-              isNull(issues.assigneeUserId),
-              inArray(issues.status, ["todo", "in_progress"]),
-            ))
-            .returning()
-            .then((rows) => rows[0] ?? null);
-          return blockedIssue
-            ? {
-                kind: "capacity_blocked" as const,
-                issue: blockedIssue,
-                comment: buildWorkforceCapacityBlockedComment(run),
-              }
-            : { kind: "released" as const };
-        }
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
         const workspaceNotWritableFailure = isWorkspaceNotWritableFailedRun(run);

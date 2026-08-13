@@ -2708,6 +2708,35 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .update(agents)
       .set({ adapterConfig: { model: "gpt-5.6-luna" } })
       .where(eq(agents.id, agentId));
+    const racedWakeupId = randomUUID();
+    const racedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: racedWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId, retryOfRunId: runId },
+      status: "queued",
+      runId: racedRunId,
+      requestedAt: new Date("2026-03-19T00:00:01.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:01.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: racedRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: racedWakeupId,
+      contextSnapshot: { issueId, retryOfRunId: runId, wakeReason: "issue_continuation_needed" },
+      responsibleUserId: "responsible-user",
+      retryOfRunId: runId,
+      createdAt: new Date("2026-03-19T00:00:01.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:01.000Z"),
+    });
 
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
@@ -2752,14 +2781,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await expect(db
       .select()
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.companyId, companyId)))
-      .resolves.toHaveLength(1);
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+      )))
+      .resolves.toHaveLength(0);
+    const racedRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, racedRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(racedRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "workforce_capacity.raced_recovery_cancelled",
+    });
     const wakeups = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.companyId, companyId));
-    expect(wakeups).toHaveLength(1);
-    expect(wakeups[0]?.id).toBe(wakeupRequestId);
+    expect(wakeups).toHaveLength(2);
+    expect(wakeups.find((wakeup) => wakeup.id === wakeupRequestId)?.status).toBe("failed");
+    expect(wakeups.find((wakeup) => wakeup.id === racedWakeupId)?.status).toBe("cancelled");
+    expect(wakeups.some((wakeup) => wakeup.status === "queued" || wakeup.status === "claimed")).toBe(false);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments.map((comment) => comment.body)).toContainEqual(
