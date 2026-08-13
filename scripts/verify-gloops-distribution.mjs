@@ -982,6 +982,9 @@ if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5
 if (!/^PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=$/m.test(runtimeEnv)) {
   fail("release distribution must not readmit any issue without a separately reviewed resource budget");
 }
+if (!/^PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local$/m.test(runtimeEnv)) {
+  fail("release distribution must enable reconciled budget accounting for the governed local burst adapters");
+}
 if (!/^PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=$/m.test(runtimeEnv)) {
   fail("release distribution must not readmit any controlled-swarm work item by default");
 }
@@ -2410,6 +2413,7 @@ for (const required of [
   "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
   "PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089",
   "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
+  "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);
