@@ -48,6 +48,7 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  workspaceAutoCleanupService,
 } from "./services/index.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
@@ -120,7 +121,7 @@ export async function startServer(): Promise<StartedServer> {
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
-  
+
   type MigrationSummary =
     | "skipped"
     | "already applied"
@@ -840,6 +841,7 @@ export async function startServer(): Promise<StartedServer> {
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   let executionRecoveryDriverInterval: ReturnType<typeof setInterval> | null = null;
+  let workspaceAutoCleanupInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1169,6 +1171,32 @@ export async function startServer(): Promise<StartedServer> {
       }
     }, config.executionRecoveryDriverIntervalMs);
   }
+
+  // Destructive workspace cleanup is independent of provider scheduling, but
+  // copied worktree instances must never clean paths from their source
+  // instance. The service itself remains fail-closed on exact-head publication,
+  // merge state, dirty files and artifact salvage.
+  if (process.env.PAPERCLIP_IN_WORKTREE !== "true") {
+    const autoCleanup = workspaceAutoCleanupService(db as any, { pluginWorkerManager });
+    const runWorkspaceAutoCleanup = async (phase: "startup" | "periodic") => {
+      const result = await autoCleanup.runDue();
+      if (result.scheduled > 0 || result.cleaned > 0 || result.blocked > 0 || result.failed > 0) {
+        logger.info({ phase, ...result }, "automatic workspace salvage and cleanup cycle complete");
+      }
+    };
+    await runWorkspaceAutoCleanup("startup").catch((err) => {
+      logger.error({ err }, "startup automatic workspace cleanup failed");
+    });
+    workspaceAutoCleanupInterval = setInterval(() => {
+      trackHeartbeatSchedulerWork(
+        runWorkspaceAutoCleanup("periodic").catch((err) => {
+          logger.error({ err }, "periodic automatic workspace cleanup failed");
+        }),
+      );
+    }, Math.max(config.heartbeatSchedulerIntervalMs, 5 * 60 * 1000));
+  } else {
+    logger.info("automatic workspace cleanup-after-salvage suppressed for linked worktree instance");
+  }
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
@@ -1277,6 +1305,10 @@ export async function startServer(): Promise<StartedServer> {
       if (executionRecoveryDriverInterval) {
         clearInterval(executionRecoveryDriverInterval);
         executionRecoveryDriverInterval = null;
+      }
+      if (workspaceAutoCleanupInterval) {
+        clearInterval(workspaceAutoCleanupInterval);
+        workspaceAutoCleanupInterval = null;
       }
       await waitForHeartbeatSchedulerIdle();
 

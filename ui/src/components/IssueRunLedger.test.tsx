@@ -170,6 +170,74 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
 }
 
 describe("IssueRunLedger", () => {
+  it("renders one execution-truth summary with owners, exact head, deployment, rollback, and receipt", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          truth: {
+            stage: "rolled_back",
+            intendedOwner: { agentId: "agent-1", userId: null },
+            currentOwner: { agentId: "agent-1", userId: null },
+            recoveryOwner: {
+              agentId: "agent-recovery",
+              userId: null,
+              status: "active",
+              attempt: 1,
+              nextAction: "Verify the restored route",
+            },
+            retryEpoch: 2,
+            retryOfRunId: "run-prior",
+            workspaceId: "workspace-1",
+            review: { status: "accepted", headSha: "b".repeat(40) },
+            exactOids: {
+              expectedOld: "a".repeat(40),
+              expectedNew: "b".repeat(40),
+              remoteOld: "a".repeat(40),
+              remoteNew: "b".repeat(40),
+            },
+            publication: {
+              receiptId: "publication-1",
+              state: "reconciled_success",
+              brokerReceiptDigest: "sha256:publication",
+              terminalAt: "2026-04-18T19:58:30.000Z",
+            },
+            deployment: {
+              action: "deployment.completed",
+              status: "healthy",
+              at: "2026-04-18T19:58:40.000Z",
+            },
+            rollback: {
+              action: "rollback.completed",
+              status: "restored",
+              at: "2026-04-18T19:58:50.000Z",
+            },
+            terminalReceipt: {
+              id: "receipt-terminal",
+              schemaVersion: "gloops.heartbeat-run-settlement.v1",
+              terminalStatus: "succeeded",
+              mutationDisposition: "pushed",
+              brokerReceiptDigest: "sha256:terminal",
+              settledAt: "2026-04-18T19:59:00.000Z",
+            },
+          },
+        }),
+      ],
+      agentMap: new Map([
+        ["agent-1", { name: "Wren" }],
+        ["agent-recovery", { name: "Argus" }],
+      ]),
+    });
+
+    expect(container.textContent).toContain("Stage: rolled back");
+    expect(container.textContent).toContain("Retry epoch: 2");
+    expect(container.textContent).toContain("Review: accepted @ bbbbbbbbbb");
+    expect(container.textContent).toContain("Published head: bbbbbbbbbb");
+    expect(container.textContent).toContain("Deploy: healthy");
+    expect(container.textContent).toContain("Rollback: restored");
+    expect(container.textContent).toContain("Receipt: receipt-");
+    expect(container.textContent).toContain("Recovery owner: Argus · Verify the restored route");
+  });
+
   it("renders every liveness state with exhausted continuation context", () => {
     const states: RunLivenessState[] = [
       "advanced",

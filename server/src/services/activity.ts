@@ -7,17 +7,21 @@ import {
   environmentLeases,
   environments,
   heartbeatRunEvents,
+  heartbeatRunSettlements,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRecoveryActions,
   issues,
   issueWorkProducts,
+  repositoryMutationReceipts,
   workspaceOperations,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { buildRunTimelineTruth, type RunTimelineEvidenceEvent } from "./run-timeline-truth.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -397,11 +401,13 @@ export function activityService(db: Db) {
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
           scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
           scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+          processLossRetryCount: heartbeatRuns.processLossRetryCount,
           livenessState: heartbeatRuns.livenessState,
           livenessReason: heartbeatRuns.livenessReason,
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -454,6 +460,85 @@ export function activityService(db: Db) {
         retryExhaustedReasonByRunId.set(row.runId, row.message);
       }
 
+      const mutationRows = await db
+        .select({
+          id: repositoryMutationReceipts.id,
+          heartbeatRunId: repositoryMutationReceipts.heartbeatRunId,
+          state: repositoryMutationReceipts.state,
+          expectedOldOid: repositoryMutationReceipts.expectedOldOid,
+          expectedNewOid: repositoryMutationReceipts.expectedNewOid,
+          remoteOldOid: repositoryMutationReceipts.remoteOldOid,
+          remoteNewOid: repositoryMutationReceipts.remoteNewOid,
+          brokerReceiptDigest: repositoryMutationReceipts.brokerReceiptDigest,
+          terminalAt: repositoryMutationReceipts.terminalAt,
+        })
+        .from(repositoryMutationReceipts)
+        .where(and(
+          eq(repositoryMutationReceipts.companyId, companyId),
+          inArray(repositoryMutationReceipts.heartbeatRunId, runIds),
+        ));
+      const mutationByRunId = new Map(mutationRows.map((row) => [row.heartbeatRunId, row]));
+
+      const settlementRows = await db
+        .select({
+          id: heartbeatRunSettlements.id,
+          heartbeatRunId: heartbeatRunSettlements.heartbeatRunId,
+          schemaVersion: heartbeatRunSettlements.schemaVersion,
+          terminalStatus: heartbeatRunSettlements.terminalStatus,
+          mutationDisposition: heartbeatRunSettlements.mutationDisposition,
+          brokerReceiptDigest: heartbeatRunSettlements.brokerReceiptDigest,
+          remoteOldOid: heartbeatRunSettlements.remoteOldOid,
+          remoteNewOid: heartbeatRunSettlements.remoteNewOid,
+          settledAt: heartbeatRunSettlements.settledAt,
+        })
+        .from(heartbeatRunSettlements)
+        .where(and(
+          eq(heartbeatRunSettlements.companyId, companyId),
+          inArray(heartbeatRunSettlements.heartbeatRunId, runIds),
+        ));
+      const settlementByRunId = new Map(settlementRows.map((row) => [row.heartbeatRunId, row]));
+
+      const recoveryAction = await db
+        .select({
+          ownerAgentId: issueRecoveryActions.ownerAgentId,
+          ownerUserId: issueRecoveryActions.ownerUserId,
+          status: issueRecoveryActions.status,
+          attemptCount: issueRecoveryActions.attemptCount,
+          nextAction: issueRecoveryActions.nextAction,
+        })
+        .from(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ))
+        .orderBy(desc(issueRecoveryActions.updatedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      const evidenceRows = await db
+        .select({
+          runId: activityLog.runId,
+          action: activityLog.action,
+          details: activityLog.details,
+          createdAt: activityLog.createdAt,
+        })
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, companyId), inArray(activityLog.runId, runIds)))
+        .orderBy(desc(activityLog.createdAt));
+      const deploymentByRunId = new Map<string, RunTimelineEvidenceEvent>();
+      const rollbackByRunId = new Map<string, RunTimelineEvidenceEvent>();
+      for (const row of evidenceRows) {
+        if (!row.runId) continue;
+        const action = row.action.toLowerCase();
+        const status = typeof row.details?.status === "string" ? row.details.status : null;
+        if (action.includes("rollback") && !rollbackByRunId.has(row.runId)) {
+          rollbackByRunId.set(row.runId, { action: row.action, status, at: row.createdAt });
+        } else if (action.includes("deploy") && !deploymentByRunId.has(row.runId)) {
+          deploymentByRunId.set(row.runId, { action: row.action, status, at: row.createdAt });
+        }
+      }
+
       const leaseRows = await db
         .select({
           lease: environmentLeases,
@@ -481,6 +566,7 @@ export function activityService(db: Db) {
       }
 
       return runs.map((run) => {
+        const { contextSnapshot, processLossRetryCount: _processLossRetryCount, ...publicRun } = run;
         const leaseRow = leaseByRunId.get(run.runId);
         const leaseMetadata = leaseRow?.lease.metadata ?? null;
         const workspacePath =
@@ -490,7 +576,15 @@ export function activityService(db: Db) {
               ? leaseMetadata.remoteWorkspacePath
               : null;
         return {
-          ...run,
+          ...publicRun,
+          truth: buildRunTimelineTruth({
+            run: { ...run, contextSnapshot },
+            recoveryAction,
+            mutationReceipt: mutationByRunId.get(run.runId) ?? null,
+            settlement: settlementByRunId.get(run.runId) ?? null,
+            deployment: deploymentByRunId.get(run.runId) ?? null,
+            rollback: rollbackByRunId.get(run.runId) ?? null,
+          }),
           environment: leaseRow
             ? {
                 id: leaseRow.environment.id,

@@ -28,6 +28,44 @@ export interface RunForIssue {
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
+  truth?: {
+    stage: "queued" | "executing" | "retry_wait" | "recovery" | "review" | "publication" | "deployed" | "rolled_back" | "settled" | "failed";
+    intendedOwner: { agentId: string | null; userId: string | null };
+    currentOwner: { agentId: string | null; userId: string | null };
+    recoveryOwner: {
+      agentId: string | null;
+      userId: string | null;
+      status: string;
+      attempt: number;
+      nextAction: string;
+    } | null;
+    retryEpoch: number;
+    retryOfRunId: string | null;
+    workspaceId: string | null;
+    review: { status: string | null; headSha: string | null } | null;
+    exactOids: {
+      expectedOld: string | null;
+      expectedNew: string | null;
+      remoteOld: string | null;
+      remoteNew: string | null;
+    } | null;
+    publication: {
+      receiptId: string;
+      state: string;
+      brokerReceiptDigest: string | null;
+      terminalAt: string | Date | null;
+    } | null;
+    deployment: { action: string; status: string | null; at: string | Date } | null;
+    rollback: { action: string; status: string | null; at: string | Date } | null;
+    terminalReceipt: {
+      id: string;
+      schemaVersion: string;
+      terminalStatus: string;
+      mutationDisposition: string;
+      brokerReceiptDigest: string | null;
+      settledAt: string | Date;
+    } | null;
+  };
   environment?: {
     id: string;
     name: string;

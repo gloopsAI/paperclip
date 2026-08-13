@@ -146,6 +146,7 @@ export {
 } from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
+export { workspaceAutoCleanupService } from "./workspace-auto-cleanup-service.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
