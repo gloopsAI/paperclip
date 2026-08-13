@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "gloops.durable-buzz-roster@1",
+  "routes": {
+    "Argus": { "paperclipAgentId": "843c62bc-6f32-420e-9b62-7a2d6a34846f", "buzzPubkey": "c0aa49beda85bf387fb4f16fb41281460dae816a563a5b32f5f3ae5355a6cd20", "model": "gpt-5.6-luna", "reasoning": "high" },
+    "Atlas": { "paperclipAgentId": "5768cc30-f8b9-4b20-871e-badf7d574b9b", "buzzPubkey": "0dd35b5a2c01542bbd4db1364551811adae91ef09917d99d04d5d6cbcd137ec2", "model": "gpt-5.6-luna", "reasoning": "high" },
+    "Context Steward": { "paperclipAgentId": "81a870b3-a474-44be-95e7-1151a9532832", "buzzPubkey": "13a8e94bb56bfc2daf7c7e5f1e5cb0de0c4d185208f5af28d843d2a91afda222", "model": "gpt-5.6-luna", "reasoning": "medium" },
+    "Harbor": { "paperclipAgentId": "a3a1cb4c-390a-4d40-9a88-8609183ed012", "buzzPubkey": "150817c706cfd72da8b277854897eac9f610a5721a30325f0a435f535a27c08e", "model": "gpt-5.6-terra", "reasoning": "medium" },
+    "Mason": { "paperclipAgentId": "76a090e6-1523-4086-be5f-2a7dd7a37238", "buzzPubkey": "0e609a9adb87f3200f4075ecbfb44dcfca9b1c7dbc9e566362e101c17b072ad2", "model": "gpt-5.6-terra", "reasoning": "medium" },
+    "Sage": { "paperclipAgentId": "e3ea4310-39ac-4458-8cf1-522c63a4da39", "buzzPubkey": "fdd5c8e83493871ced66b9116abf10cc3f1a2317de8901da8de4f199966a1e34", "model": "gpt-5.6-terra", "reasoning": "medium" },
+    "Scout": { "paperclipAgentId": "a89f54cc-3f1b-4157-b25b-c6c7a4fdcc1a", "buzzPubkey": "92bc36fc4854a43ba5bb7eab87cf2ebe9590577b28ceab6cd8a729bd98d0c44e", "model": "gpt-5.6-luna", "reasoning": "medium" },
+    "Wren": { "paperclipAgentId": "3298054f-0fc5-4ff9-8c53-b1382b3046d3", "buzzPubkey": "6d8c77862ca6454a81905b7b1a965d4ef5938458203d574a4fb10f197b86d321", "model": "gpt-5.6-terra", "reasoning": "medium" }
+  }
+}
