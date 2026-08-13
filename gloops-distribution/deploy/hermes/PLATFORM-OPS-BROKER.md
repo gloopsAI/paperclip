@@ -98,6 +98,12 @@ root-owned, mode 0555).
 | `deploy-pinned-image` | `service`, `image` | docker pull + systemctl restart |
 | `rollback-rehearsal` | `service` | verify rollback script and backups exist |
 
+Read-only calls have a 30-second client deadline. Mutating calls allow 180
+seconds so image pulls, migrations, and post-restart health checks can settle
+and return their durable receipt. If a caller disconnects after an operation
+commits, the broker retains the receipt and continues serving; a lost response
+never terminates the broker process.
+
 ## Client Usage
 
 ```sh
@@ -111,7 +117,7 @@ node /opt/data/bin/platform-ops-tool.mjs --operation service-restart \
   --service paperclip-gloops.service --actor wren-agent --idempotencyKey restart-001
 
 node /opt/data/bin/platform-ops-tool.mjs --operation deploy-pinned-image \
-  --service paperclip-glops.service \
+  --service paperclip-gloops.service \
   --image ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
   --actor wren-agent --idempotencyKey deploy-001
 ```
@@ -122,8 +128,9 @@ node /opt/data/bin/platform-ops-tool.mjs --operation deploy-pinned-image \
 # Verify broker configuration
 python3 /usr/local/lib/paperclip-gloops/verify-platform-ops-broker.py
 
-# Run focused tests
-python3 /usr/local/lib/paperclip-gloops/platform_ops_broker_test.py
+# Run focused tests from this source directory
+python3 platform_ops_broker_test.py
+node --test platform_ops_tool_test.mjs
 ```
 
 ## Security Boundary

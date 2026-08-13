@@ -963,7 +963,13 @@ def handle_connection(client: socket.socket, connection: sqlite3.Connection) -> 
         response = {"ok": False, "error": f"internal error: {type(error).__name__}"}
         connection.rollback()
     payload = bound_output(response)
-    client.sendall(payload + b"\n")
+    try:
+        client.sendall(payload + b"\n")
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        # The operation and receipt are already committed. A caller may have
+        # reached its own bounded wait while a deploy was still health-checking;
+        # losing that response must not terminate the long-lived broker.
+        return
 
 
 def serve() -> None:
