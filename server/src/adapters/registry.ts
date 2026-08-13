@@ -281,7 +281,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getConfigSchema: getCodexConfigSchema,
-  getQuotaWindows: codexGetQuotaWindows,
+  getQuotaWindows: (context) => codexGetQuotaWindows(context?.credentialHome ?? undefined),
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {

@@ -600,6 +600,41 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
       } as any,
     });
     expect(result.resolvedConfig.command).toBe("codex");
+    expect(result.quotaContext).toEqual({ credentialHome: managedAgentHome });
+  });
+
+  it("binds quota probes to the default company-managed home when CODEX_HOME is not configured", async () => {
+    const { root } = await stubManagedCodexEnv({ seedSharedAuth: true });
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { command: "codex", env: { OPENAI_API_KEY: "" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "codex_local",
+      executionRunConfig: { command: "codex", env: { OPENAI_API_KEY: "" } },
+      projectEnv: null,
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings: vi.fn(),
+        collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    expect(result.quotaContext).toEqual({
+      credentialHome: path.join(
+        root,
+        "paperclip-home",
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "codex-home",
+      ),
+    });
   });
 
   it("does not gate non-codex adapters", async () => {
@@ -623,6 +658,7 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
       } as any,
     });
     expect(result.resolvedConfig.command).toBe("claude");
+    expect(result.quotaContext).toBeUndefined();
   });
 });
 

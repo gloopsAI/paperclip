@@ -51,6 +51,7 @@ describe("CodexRpcClient spawn failures", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     if (isolatedCodexHome) {
       try {
         fs.rmSync(isolatedCodexHome, { recursive: true, force: true });
@@ -81,5 +82,43 @@ describe("CodexRpcClient spawn failures", () => {
     expect(result.windows).toEqual([]);
     expect(result.error).toContain("Codex app-server");
     expect(result.error).toContain("spawn codex ENOENT");
+  });
+
+  it("uses an explicit managed credential home for both RPC and token fallback", async () => {
+    const managedHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-managed-codex-home-"));
+    isolatedCodexHome = isolatedCodexHome ?? managedHome;
+    fs.writeFileSync(
+      path.join(managedHome, "auth.json"),
+      JSON.stringify({ accessToken: "managed-token", accountId: "managed-account" }),
+      { mode: 0o600 },
+    );
+    const enoent = Object.assign(new Error("spawn codex ENOENT"), { code: "ENOENT" });
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(enoent));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      rate_limit: {
+        primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: null },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getQuotaWindows(managedHome);
+
+    expect(result).toMatchObject({ provider: "openai", source: "codex-wham", ok: true });
+    expect(result.windows).toHaveLength(1);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "codex",
+      ["-s", "read-only", "-a", "untrusted", "app-server"],
+      expect.objectContaining({ env: expect.objectContaining({ CODEX_HOME: managedHome }) }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://chatgpt.com/backend-api/wham/usage",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer managed-token",
+          "ChatGPT-Account-Id": "managed-account",
+        }),
+      }),
+    );
+    fs.rmSync(managedHome, { recursive: true, force: true });
   });
 });
