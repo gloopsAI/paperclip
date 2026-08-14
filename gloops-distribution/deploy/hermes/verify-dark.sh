@@ -547,6 +547,7 @@ if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloop
   && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_ISSUE_PACKET_DOR=enforce' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-18T23:12:22.000Z' /etc/paperclip-gloops/runtime.env \

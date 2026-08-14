@@ -261,6 +261,7 @@ import {
   evaluateSubscriptionRouteAdmission,
   readBoundExecutionContext,
   readSubscriptionRouteEvidence,
+  subscriptionBillingPool,
   type SubscriptionRouteProvider,
 } from "@paperclipai/adapter-utils/execution-envelope";
 import {
@@ -17973,8 +17974,10 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
     const existingEvidence = rawEvidence === undefined
       ? { schemaVersion: "gloops.subscription-route-evidence.v1" as const, attempts: [] }
       : readSubscriptionRouteEvidence(rawEvidence);
-    if (!existingEvidence || existingEvidence.attempts.some((attempt) => attempt.provider === advance.provider)) {
-      logger.warn({ runId: run.id, issueId, provider: advance.provider }, "subscription route advance refused because prior evidence is invalid or duplicated");
+    if (!existingEvidence || existingEvidence.attempts.some((attempt) =>
+      subscriptionBillingPool(attempt.provider) === subscriptionBillingPool(advance.provider)
+    )) {
+      logger.warn({ runId: run.id, issueId, provider: advance.provider, billingPool: subscriptionBillingPool(advance.provider) }, "subscription route advance refused because prior billing-pool evidence is invalid or duplicated");
       return false;
     }
 

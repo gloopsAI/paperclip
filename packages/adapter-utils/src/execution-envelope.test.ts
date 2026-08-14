@@ -255,7 +255,15 @@ describe("execution envelope", () => {
     }, "2026-07-22T10:02:00Z", "gpt-5.6-sol")).toMatchObject({ allowed: true, provider: "codex" });
     expect(evaluateSubscriptionRouteAdmission("codex_local", {
       gloopsProviderRouteEvidence: { schemaVersion: "gloops.subscription-route-evidence.v1", attempts: [luna, grok] },
-    }, "2026-07-22T10:02:00Z", "gpt-5.6-sol")).toMatchObject({ allowed: true, provider: "codex" });
+    }, "2026-07-22T10:02:00Z", "gpt-5.6-sol")).toMatchObject({ allowed: false, provider: "codex" });
+    expect(evaluateSubscriptionRouteAdmission("codex_local", {
+      issueId: "issue-1",
+      gloopsProviderRouteEvidence: { schemaVersion: "gloops.subscription-route-evidence.v1", attempts: [luna] },
+    }, "2026-07-22T10:02:00Z", "gpt-5.6-terra")).toMatchObject({
+      allowed: false,
+      provider: "terra",
+      reason: expect.stringContaining("codex_subscription"),
+    });
     for (const observedAt of ["2026-07-22T03:59:59Z", "2026-07-22T10:08:00Z"]) {
       const attempt = buildSubscriptionRouteAttemptEvidence({
         provider: "ollama",

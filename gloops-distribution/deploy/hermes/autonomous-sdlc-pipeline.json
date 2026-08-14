@@ -1,0 +1,94 @@
+{
+  "key": "gloops-autonomous-sdlc-v1",
+  "name": "GLoops autonomous SDLC",
+  "description": "Event-driven product delivery using Paperclip cases for visibility and existing issue execution for authority. This pipeline is not a second execution ledger.",
+  "enforceTransitions": true,
+  "stages": [
+    {
+      "key": "admitted",
+      "name": "Admitted",
+      "kind": "working",
+      "position": 0,
+      "config": {
+        "whatHappensHere": "The issue has a verified repository/workspace admission packet and bounded definition of ready."
+      }
+    },
+    {
+      "key": "implementation",
+      "name": "Implementation",
+      "kind": "working",
+      "position": 1,
+      "config": {
+        "whatHappensHere": "The assigned implementation agent owns code, tests, commit, push, and the exact-head pull request."
+      }
+    },
+    {
+      "key": "independent_review",
+      "name": "Independent review",
+      "kind": "review",
+      "position": 2,
+      "config": {
+        "requireApproval": true,
+        "approver": {
+          "kind": "agent",
+          "id": "843c62bc-6f32-420e-9b62-7a2d6a34846f"
+        },
+        "whatHappensHere": "The configured Argus agent reviews the exact PR head. Pipeline exit and the implementation handoff both require the designated independent reviewer; canonical server-issued provenance enforces the three-round ceiling.",
+        "approveToStageKey": "ci_merge",
+        "requestChangesToStageKey": "implementation",
+        "rejectToStageKey": "blocked",
+        "requireRejectReason": true,
+        "requireRequestChangesReason": true
+      }
+    },
+    {
+      "key": "ci_merge",
+      "name": "CI to merge",
+      "kind": "working",
+      "position": 3,
+      "config": {
+        "whatHappensHere": "The existing prcheckloop observes required checks, verifies the approved head, merges without a human stage transition, and records the merge commit."
+      }
+    },
+    {
+      "key": "deployment",
+      "name": "Publication and deployment",
+      "kind": "working",
+      "position": 4,
+      "config": {
+        "whatHappensHere": "The broker binds merge commit to immutable artifact digest, gates health, and writes deployment or rollback receipts."
+      }
+    },
+    {
+      "key": "done",
+      "name": "Done",
+      "kind": "done",
+      "position": 5,
+      "config": {
+        "whatHappensHere": "Merged, deployed when operational, receipted, and workspace cleanup eligibility proved."
+      }
+    },
+    {
+      "key": "blocked",
+      "name": "Blocked",
+      "kind": "cancelled",
+      "position": 6,
+      "config": {
+        "whatHappensHere": "A terminal bounded failure with evidence; no autonomous retry or reviewer loop remains active."
+      }
+    }
+  ],
+  "transitions": [
+    { "fromStageKey": "admitted", "toStageKey": "implementation", "label": "admission passed" },
+    { "fromStageKey": "admitted", "toStageKey": "blocked", "label": "admission failed" },
+    { "fromStageKey": "implementation", "toStageKey": "independent_review", "label": "exact head ready" },
+    { "fromStageKey": "implementation", "toStageKey": "blocked", "label": "implementation terminal" },
+    { "fromStageKey": "independent_review", "toStageKey": "implementation", "label": "changes requested" },
+    { "fromStageKey": "independent_review", "toStageKey": "ci_merge", "label": "approved exact head" },
+    { "fromStageKey": "independent_review", "toStageKey": "blocked", "label": "rejected or review ceiling" },
+    { "fromStageKey": "ci_merge", "toStageKey": "deployment", "label": "merged" },
+    { "fromStageKey": "ci_merge", "toStageKey": "blocked", "label": "CI or merge terminal" },
+    { "fromStageKey": "deployment", "toStageKey": "done", "label": "deployment receipted" },
+    { "fromStageKey": "deployment", "toStageKey": "blocked", "label": "rollback or reconciliation required" }
+  ]
+}

@@ -106,7 +106,7 @@ root-owned, mode 0555).
 |---|---|---|
 | `service-restart` | `service` | systemctl restart + pre/post health receipt |
 | `cache-reclaim` | `cache` | find -delete on cache contents + before/after size |
-| `deploy-pinned-image` | `service`, `image` | docker pull + systemctl restart |
+| `deploy-pinned-image` | `service`, `image`, `sourceCommit` | authoritative GitHub merged-PR proof + docker pull + exact merge-commit/image binding + systemctl restart |
 | `rollback-rehearsal` | `service` | verify rollback script and backups exist |
 | `rollback-proof` | `service`, `mode`, optional `expectedPriorImage` | durable terminal proof: listener/container absence or exact prior image + front-door restoration |
 
@@ -181,6 +181,7 @@ node /opt/data/bin/platform-ops-tool.mjs --operation service-restart \
 node /opt/data/bin/platform-ops-tool.mjs --operation deploy-pinned-image \
   --service paperclip-gloops.service \
   --image ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
+  --sourceCommit 0123456789abcdef0123456789abcdef01234567 \
   --actor wren-agent --idempotencyKey deploy-001
 
 node /opt/data/bin/platform-ops-tool.mjs --operation rollback-proof \
@@ -188,6 +189,13 @@ node /opt/data/bin/platform-ops-tool.mjs --operation rollback-proof \
   --expectedPriorImage ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
   --actor wren-agent --idempotencyKey rollback-proof-001
 ```
+
+Before pulling or mutating either image pin, deployment queries GitHub's
+public, TLS-authenticated commit-to-pull-request record for
+`gloopsAI/paperclip`. It requires exactly one closed, merged PR to
+`gloops/stable` whose `merge_commit_sha` is the supplied `sourceCommit`. The
+image must then carry the same commit in its OCI revision label and the
+requested immutable RepoDigest. This operation reads no GitHub credential.
 
 ## Verification
 
