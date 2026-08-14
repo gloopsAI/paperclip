@@ -2069,7 +2069,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         await turn.cancel({ reason });
       };
       for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
+        // ACP exposes model reasoning and assistant output through the same
+        // text-delta event. Keep both in the observable transcript, but only
+        // assistant-output deltas may become the run summary / issue answer.
+        // Folding thought text into summary leaks progress narration into the
+        // durable comment and can turn a correct direct answer into a noisy one.
+        if (event.type === "text_delta" && event.stream !== "thought") {
+          textParts.push(event.text);
+        }
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;

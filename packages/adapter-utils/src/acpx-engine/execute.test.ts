@@ -253,6 +253,65 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("keeps ACP thought deltas in the transcript but excludes them from the run summary", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "**Planning exact answer**",
+              stream: "thought",
+              tag: "agent_thought_chunk",
+            };
+            yield {
+              type: "text_delta",
+              text: "BUZZ_FACING_ANSWER",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-output-only-summary",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("BUZZ_FACING_ANSWER");
+    expect(logs).toContainEqual({
+      stream: "stdout",
+      text: `${JSON.stringify({
+        type: "acpx.text_delta",
+        text: "**Planning exact answer**",
+        channel: "thought",
+        tag: "agent_thought_chunk",
+      })}\n`,
+    });
+  });
+
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
