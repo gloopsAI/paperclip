@@ -26,6 +26,8 @@ SERVICE = "paperclip-github-webhook-receiver.service"
 MARKER = "# BEGIN GLOOPS PAPERCLIP GITHUB WEBHOOK"
 MAX_FILE_BYTES = 8 * 1024 * 1024
 HMAC_SECRET_RE = re.compile(rb"^[A-Za-z0-9._~+/=-]{32,256}$")
+PLUGIN_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+PLUGIN_ID_PLACEHOLDER = b"__PAPERCLIP_PLUGIN_ID__"
 
 
 def sha256(value: bytes) -> str:
@@ -252,6 +254,14 @@ def patch_caddy(current: bytes, route: bytes) -> bytes:
     return (text[:opening + 1] + replacement + text[closing:]).encode()
 
 
+def render_unit(template: bytes, plugin_id: str) -> bytes:
+    if PLUGIN_ID_RE.fullmatch(plugin_id) is None:
+        raise RuntimeError("Paperclip plugin id is invalid")
+    if template.count(PLUGIN_ID_PLACEHOLDER) != 1:
+        raise RuntimeError("receiver unit must contain exactly one plugin id placeholder")
+    return template.replace(PLUGIN_ID_PLACEHOLDER, plugin_id.encode("ascii"))
+
+
 def run(*command: str) -> None:
     result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
@@ -298,7 +308,8 @@ def ensure_root() -> None:
 def install(args: argparse.Namespace) -> None:
     ensure_root()
     receiver = read_regular(pathlib.Path(args.receiver_source))
-    unit = read_regular(pathlib.Path(args.unit_source))
+    unit_template = read_regular(pathlib.Path(args.unit_source))
+    unit = render_unit(unit_template, args.plugin_id)
     route = read_regular(pathlib.Path(args.route_source))
     secret = sys.stdin.buffer.read(4097)
     if secret.endswith(b"\n"):
@@ -322,6 +333,7 @@ def install(args: argparse.Namespace) -> None:
             "unitSha256": sha256(unit),
             "caddySha256": sha256(candidate_caddy),
             "secretSha256": sha256(secret),
+            "pluginId": args.plugin_id,
         },
     }
     write_json(tx / "backup.json", backup)
@@ -436,6 +448,7 @@ def main() -> None:
     install_parser.add_argument("--receiver-source", required=True)
     install_parser.add_argument("--unit-source", required=True)
     install_parser.add_argument("--route-source", required=True)
+    install_parser.add_argument("--plugin-id", required=True)
     rollback_parser = sub.add_parser("rollback")
     rollback_parser.add_argument("--transaction-id", required=True)
     args = parser.parse_args()

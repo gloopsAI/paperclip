@@ -106,7 +106,7 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     return companyId;
   }
 
-  it("serializes concurrent duplicate dispatch and persists one terminal row", async () => {
+  it("keeps concurrent transport at-least-once while the plugin applies one logical effect", async () => {
     const pluginId = await seedPlugin();
     const startedAt = new Date();
     const input = {
@@ -118,18 +118,39 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       startedAt,
     };
 
-    const requestIds: string[] = [];
-    const initial = await Promise.all([
-      processPluginWebhookDelivery(db, input, async ({ requestId }) => {
-        requestIds.push(requestId);
-      }),
-      processPluginWebhookDelivery(db, input, async ({ requestId }) => {
-        requestIds.push(requestId);
-      }),
-    ]);
-    expect(initial.filter((entry) => !entry.duplicate)).toHaveLength(1);
+    let workerInvocations = 0;
+    let effectApplications = 0;
+    const completedClaims = new Set<string>();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted!: () => void;
+    const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+    let secondStarted!: () => void;
+    const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve; });
+    const dispatch = async ({ requestId }: { requestId: string }) => {
+      workerInvocations += 1;
+      if (!completedClaims.has(requestId)) {
+        completedClaims.add(requestId);
+        effectApplications += 1;
+      }
+      if (workerInvocations === 1) {
+        firstStarted();
+        await firstGate;
+      } else {
+        secondStarted();
+      }
+    };
+
+    const first = processPluginWebhookDelivery(db, input, dispatch);
+    await firstStartedPromise;
+    const second = processPluginWebhookDelivery(db, input, dispatch);
+    await secondStartedPromise;
+    releaseFirst();
+    const initial = await Promise.all([first, second]);
+    expect(workerInvocations).toBe(2);
+    expect(effectApplications).toBe(1);
     expect(new Set(initial.map((entry) => entry.deliveryId)).size).toBe(1);
-    expect(requestIds).toEqual(["delivery-123"]);
+    expect(completedClaims).toEqual(new Set(["delivery-123"]));
     const rows = await db.select().from(pluginWebhookDeliveries);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ externalId: "delivery-123", status: "success" });
@@ -150,24 +171,34 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       throw new Error("injected");
     });
     expect(failed.status).toBe("failed");
-    let calls = 0;
+    let workerInvocations = 0;
+    let effectApplications = 0;
+    const completedClaims = new Set<string>();
     const retried = await Promise.all([
-      processPluginWebhookDelivery(db, input, async () => {
-        calls += 1;
+      processPluginWebhookDelivery(db, input, async ({ requestId }) => {
+        workerInvocations += 1;
+        if (!completedClaims.has(requestId)) {
+          completedClaims.add(requestId);
+          effectApplications += 1;
+        }
       }),
-      processPluginWebhookDelivery(db, input, async () => {
-        calls += 1;
+      processPluginWebhookDelivery(db, input, async ({ requestId }) => {
+        workerInvocations += 1;
+        if (!completedClaims.has(requestId)) {
+          completedClaims.add(requestId);
+          effectApplications += 1;
+        }
       }),
     ]);
-    expect(calls).toBe(1);
-    expect(retried.filter((entry) => !entry.duplicate)).toHaveLength(1);
+    expect(workerInvocations).toBeGreaterThanOrEqual(1);
+    expect(effectApplications).toBe(1);
     expect(new Set(retried.map((entry) => entry.deliveryId))).toEqual(new Set([failed.deliveryId]));
     const rows = await db.select().from(pluginWebhookDeliveries);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: "success", error: null });
   });
 
-  it("rolls back an unreceipted worker success and reuses the stable plugin idempotency key", async () => {
+  it("recovers an unreceipted worker success with one plugin effect and a stable key", async () => {
     const pluginId = await seedPlugin();
     const input = {
       pluginId,
@@ -177,11 +208,18 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       headers: { "x-github-delivery": "delivery-bookkeeping" },
       startedAt: new Date(),
     };
-    const logicalEffects = new Set<string>();
+    let workerInvocations = 0;
+    let effectApplications = 0;
+    const completedClaims = new Set<string>();
     const dispatch = async ({ requestId }: { requestId: string }) => {
+      workerInvocations += 1;
       const visibleRows = await db.select().from(pluginWebhookDeliveries);
-      expect(visibleRows).toHaveLength(0);
-      logicalEffects.add(requestId);
+      expect(visibleRows).toHaveLength(1);
+      expect(visibleRows[0]).toMatchObject({ externalId: requestId, status: "pending" });
+      if (!completedClaims.has(requestId)) {
+        completedClaims.add(requestId);
+        effectApplications += 1;
+      }
     };
 
     await db.execute(sql.raw(`
@@ -214,10 +252,14 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
       await db.execute(sql.raw("DROP FUNCTION IF EXISTS test_reject_webhook_success()"));
     }
 
-    expect(await db.select().from(pluginWebhookDeliveries)).toHaveLength(0);
+    expect(await db.select().from(pluginWebhookDeliveries)).toMatchObject([
+      { externalId: "delivery-bookkeeping", status: "pending" },
+    ]);
     const recovered = await processPluginWebhookDelivery(db, input, dispatch);
     expect(recovered).toMatchObject({ duplicate: false, status: "success" });
-    expect(logicalEffects).toEqual(new Set(["delivery-bookkeeping"]));
+    expect(workerInvocations).toBe(2);
+    expect(effectApplications).toBe(1);
+    expect(completedClaims).toEqual(new Set(["delivery-bookkeeping"]));
     const rows = await db.select().from(pluginWebhookDeliveries);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ externalId: "delivery-bookkeeping", status: "success" });

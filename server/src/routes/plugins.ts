@@ -2701,9 +2701,9 @@ export function pluginRoutes(
       return;
     }
 
-    // Steps 6-8 form one bounded transaction. The pending claim remains
-    // invisible until the worker call has a terminal receipt, so a process
-    // crash cannot leave a committed tombstone that suppresses redelivery.
+    // The host audit is recoverable at-least-once transport. No database
+    // transaction spans the worker RPC; the plugin atomically claims the
+    // stable provider delivery ID before applying any logical side effect.
     const startedAt = new Date();
     const delivery = await processPluginWebhookDelivery(
       db,

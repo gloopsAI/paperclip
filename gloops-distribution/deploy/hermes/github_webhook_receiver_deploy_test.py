@@ -65,13 +65,18 @@ class DeployTest(unittest.TestCase):
         unit_source = sources / "receiver.service"
         route_source = sources / "route.txt"
         receiver_source.write_text("print('receiver')\n")
-        unit_source.write_text("[Service]\nExecStart=/receiver\n")
+        unit_source.write_text(
+            "[Service]\nExecStart=/receiver\n"
+            "Environment=PAPERCLIP_PLUGIN_WEBHOOK_URL=http://127.0.0.1:3100/api/plugins/"
+            "__PAPERCLIP_PLUGIN_ID__/webhooks/github-checks\n"
+        )
         route_source.write_bytes(ROUTE)
         args = SimpleNamespace(
             transaction_id="tx-20260814T120000Z-test",
             receiver_source=str(receiver_source),
             unit_source=str(unit_source),
             route_source=str(route_source),
+            plugin_id="eeb2d7a2-298e-4a59-8ee5-ca8b16de4bd4",
         )
         patches = mock.patch.multiple(
             MODULE,
@@ -135,6 +140,31 @@ class DeployTest(unittest.TestCase):
         self.assertFalse(MODULE.re_full_transaction("../escape"))
         self.assertFalse(MODULE.re_full_transaction("tx-20260814T120000Z-UPPER"))
 
+    def test_unit_render_binds_one_valid_provisioned_plugin_id(self):
+        template = b"url=/api/plugins/__PAPERCLIP_PLUGIN_ID__/webhooks/github-checks\n"
+        plugin_id = "eeb2d7a2-298e-4a59-8ee5-ca8b16de4bd4"
+        rendered = MODULE.render_unit(template, plugin_id)
+        self.assertEqual(rendered, f"url=/api/plugins/{plugin_id}/webhooks/github-checks\n".encode())
+        self.assertNotIn(MODULE.PLUGIN_ID_PLACEHOLDER, rendered)
+        with self.assertRaisesRegex(RuntimeError, "plugin id is invalid"):
+            MODULE.render_unit(template, "not-a-uuid")
+        with self.assertRaisesRegex(RuntimeError, "exactly one"):
+            MODULE.render_unit(b"url=/api/plugins/no-placeholder\n", plugin_id)
+
+    def test_invalid_plugin_id_fails_before_transaction_or_host_effects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.deployment_fixture(pathlib.Path(temporary))
+            args, patches, receiver, unit, secret, _caddy, transactions = fixture
+            args.plugin_id = "not-a-uuid"
+            with patches, \
+                 mock.patch.object(MODULE, "ensure_root"), \
+                 self.assertRaisesRegex(RuntimeError, "plugin id is invalid"):
+                MODULE.install(args)
+            self.assertEqual(list(transactions.iterdir()), [])
+            self.assertFalse(receiver.exists())
+            self.assertFalse(unit.exists())
+            self.assertFalse(secret.exists())
+
     def test_network_free_install_and_explicit_rollback_restore_exact_prior_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             fixture = self.deployment_fixture(pathlib.Path(temporary))
@@ -153,8 +183,14 @@ class DeployTest(unittest.TestCase):
                 MODULE.install(args)
                 self.assertTrue(receiver.exists())
                 self.assertTrue(unit.exists())
+                self.assertIn(args.plugin_id.encode(), unit.read_bytes())
+                self.assertNotIn(MODULE.PLUGIN_ID_PLACEHOLDER, unit.read_bytes())
                 self.assertEqual(secret.read_bytes(), b"s" * 32)
                 self.assertIn(MODULE.MARKER.encode(), caddy.read_bytes())
+                deployment = json.loads(
+                    (transactions / args.transaction_id / "receipt.json").read_text()
+                )
+                self.assertEqual(deployment["pluginId"], args.plugin_id)
                 MODULE.rollback(SimpleNamespace(transaction_id=args.transaction_id))
 
             self.assertFalse(receiver.exists())

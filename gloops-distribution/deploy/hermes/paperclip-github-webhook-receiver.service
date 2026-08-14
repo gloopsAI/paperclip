@@ -9,7 +9,7 @@ Type=simple
 DynamicUser=yes
 ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/github-webhook-receiver.py
 Environment=WEBHOOK_RECEIVER_PORT=8766
-Environment=PAPERCLIP_PLUGIN_WEBHOOK_URL=http://127.0.0.1:3100/api/plugins/eeb2d7a2-298e-4a59-8ee5-ca8b16de4bd4/webhooks/github-checks
+Environment=PAPERCLIP_PLUGIN_WEBHOOK_URL=http://127.0.0.1:3100/api/plugins/__PAPERCLIP_PLUGIN_ID__/webhooks/github-checks
 LoadCredential=github_webhook_hmac:/etc/paperclip-gloops/github-webhook-hmac
 Restart=on-failure
 RestartSec=5s

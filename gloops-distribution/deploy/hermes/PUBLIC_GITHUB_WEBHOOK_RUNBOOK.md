@@ -8,14 +8,13 @@ request body with GitHub's `X-Hub-Signature-256` HMAC, rejects empty, malformed,
 non-completed, or structurally invalid check-suite payloads before Paperclip
 persistence, and forwards only to the allowlisted local Paperclip plugin
 webhook. Paperclip persists `X-GitHub-Delivery` under a unique
-plugin/endpoint/delivery boundary. Its pending claim, bounded worker RPC, and
-terminal audit update share one database transaction: concurrent duplicates
-serialize behind the unique key, while a crash rolls the uncommitted pending
-claim back instead of leaving a tombstone. Successful duplicates return the
-existing audit row without a second worker dispatch; one failed row may be
-atomically reclaimed for provider redelivery. `X-GitHub-Delivery` is also the
-stable plugin `requestId`, so the plugin's atomic delivery claim suppresses a
-replayed side effect if the worker completed immediately before a host crash.
+plugin/endpoint/delivery boundary as a recoverable at-least-once audit. No
+database transaction spans the worker RPC. Pending and failed host audits may
+be redispatched with the same stable `requestId`; the installed autonomic
+plugin's durable atomic delivery claim is the authoritative duplicate-effect
+boundary. A crash or host bookkeeping failure therefore remains retryable
+without applying the logical plugin effect twice. Successful host audits are
+terminal and return without redispatch.
 
 ## Authority and secrets
 
@@ -47,18 +46,23 @@ temporary files on the pilot, then run:
 ```sh
 umask 077
 read -r -s WEBHOOK_HMAC
+PLUGIN_ID='<read-only UUID of the provisioned autonomic policy plugin>'
 printf '%s' "$WEBHOOK_HMAC" | sudo python3 github-webhook-receiver-deploy.py install \
   --transaction-id "tx-$(date -u +%Y%m%dT%H%M%SZ)-public-webhook" \
   --receiver-source ./github-webhook-receiver.py \
   --unit-source ./paperclip-github-webhook-receiver.service \
-  --route-source ./github-webhook-caddy-route.txt
-unset WEBHOOK_HMAC
+  --route-source ./github-webhook-caddy-route.txt \
+  --plugin-id "$PLUGIN_ID"
+unset WEBHOOK_HMAC PLUGIN_ID
 ```
 
 The deployer validates the complete Caddy candidate before effects, durably
 captures exact bytes and metadata before service mutation, starts and checks the
 localhost receiver, reloads Caddy, and writes a root-only receipt beneath
 `/var/lib/paperclip-gloops/webhook-receiver-transactions/`.
+The source unit contains no environment-specific plugin UUID: the deployer
+validates and renders the read-only provisioned UUID exactly once, and binds it
+and the rendered unit hash in the receipt before service mutation.
 
 ## Acceptance
 
