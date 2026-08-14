@@ -23,6 +23,7 @@ import {
   environments,
   executionWorkspaces,
   heartbeatRunEvents,
+  heartbeatRunIssueProjections,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -446,6 +447,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationThreads);
     await db.delete(issueWorkProducts);
+    await db.delete(heartbeatRunIssueProjections);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -2610,6 +2612,108 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return rows.find((comment) => comment.body.includes("workspace failed validation")) ?? null;
     });
     expect(validationComment).toBeTruthy();
+  });
+
+  it("atomically cancels a workspace-unready run and publishes one complete readiness report without provider or recovery work", async () => {
+    mockAdapterExecute.mockClear();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const missingCwd = `/tmp/paperclip-workspace-readiness-${randomUUID()}`;
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Atomic readiness project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Missing exact workspace",
+      sourceType: "local_path",
+      cwd: missingCwd,
+      repoUrl: "https://github.com/gloopsAI/paperclip",
+      isPrimary: true,
+    });
+    await db.update(issues)
+      .set({
+        projectId,
+        projectWorkspaceId,
+        title: "Implement atomic workspace readiness",
+        description: [
+          "## Scope",
+          "Implement the workspace readiness transaction.",
+          "",
+          "## Acceptance",
+          "Provider invocation remains zero and one complete report is durable.",
+          "",
+          "Exact head: `not-a-full-sha`",
+        ].join("\n"),
+      })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        NODE_ENV: "test",
+        PAPERCLIP_WORKSPACE_ADMIT: "enforce",
+      },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: "workspace_admit.expected_head_not_full_sha",
+    });
+    expect(run?.resultJson).toMatchObject({
+      providerInvocationAttempted: false,
+      workspaceAdmit: {
+        schemaVersion: "gloops.workspace-readiness-report.v1",
+        admitted: false,
+        reasonCodes: expect.arrayContaining([
+          "workspace_admit.expected_head_not_full_sha",
+          "workspace_admit.cwd_missing",
+        ]),
+      },
+    });
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.executionRunId).toBeNull();
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+      ))).toMatchObject([
+      expect.objectContaining({ id: wakeupRequestId, status: "skipped" }),
+    ]);
+
+    const projections = await db.select().from(heartbeatRunIssueProjections)
+      .where(eq(heartbeatRunIssueProjections.heartbeatRunId, runId));
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toMatchObject({
+      kind: "workspace_readiness",
+      status: "delivered",
+      attemptCount: 1,
+    });
+    expect(projections[0]?.body).toContain("workspace_admit.expected_head_not_full_sha");
+    expect(projections[0]?.body).toContain("workspace_admit.cwd_missing");
+    expect(projections[0]?.body).toContain("readinessReportDigest: `sha256:");
+
+    const comments = await db.select().from(issueComments)
+      .where(eq(issueComments.createdByRunId, runId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.id).toBe(projections[0]?.deliveredCommentId);
   });
 
   it("blocks before dispatch when a declared secret ref has no binding instead of emitting an opaque setup failure", async () => {

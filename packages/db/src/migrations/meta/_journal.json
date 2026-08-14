@@ -1065,6 +1065,13 @@
       "when": 1786721580000,
       "tag": "0153_plugin_webhook_delivery_external_id",
       "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1786723200000,
+      "tag": "0154_heartbeat_run_issue_projection_outbox",
+      "breakpoints": true
     }
   ]
 }
