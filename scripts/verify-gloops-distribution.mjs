@@ -298,6 +298,34 @@ const registeredPublishPathTestPath = new URL(
   "../gloops-distribution/deploy/hermes/registered_publish_path_test.py",
   import.meta.url,
 );
+const githubWebhookReceiverPath = new URL(
+  "../gloops-distribution/deploy/hermes/github-webhook-receiver.py",
+  import.meta.url,
+);
+const githubWebhookReceiverDeployPath = new URL(
+  "../gloops-distribution/deploy/hermes/github-webhook-receiver-deploy.py",
+  import.meta.url,
+);
+const githubWebhookReceiverTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/github_webhook_receiver_test.py",
+  import.meta.url,
+);
+const githubWebhookReceiverDeployTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/github_webhook_receiver_deploy_test.py",
+  import.meta.url,
+);
+const githubWebhookReceiverServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-github-webhook-receiver.service",
+  import.meta.url,
+);
+const githubWebhookCaddyRoutePath = new URL(
+  "../gloops-distribution/deploy/hermes/github-webhook-caddy-route.txt",
+  import.meta.url,
+);
+const publicGithubWebhookRunbookPath = new URL(
+  "../gloops-distribution/deploy/hermes/PUBLIC_GITHUB_WEBHOOK_RUNBOOK.md",
+  import.meta.url,
+);
 const githubPushBrokerServicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-github-push-broker.service",
   import.meta.url,
@@ -504,12 +532,31 @@ try {
 } catch {
   fail("GitHub push broker contract tests failed");
 }
+try {
+  execFileSync(
+    "python3",
+    [
+      "-m",
+      "unittest",
+      githubWebhookReceiverTestPath.pathname,
+      githubWebhookReceiverDeployTestPath.pathname,
+    ],
+    { stdio: "inherit" },
+  );
+} catch {
+  fail("public GitHub webhook receiver contract tests failed");
+}
 const hermesExecutionConfig = readFileSync(hermesExecutionConfigPath, "utf8");
 const hermesExecutionPolicy = JSON.parse(readFileSync(hermesExecutionPolicyPath, "utf8"));
 const hermesExecutionGhConfig = readFileSync(hermesExecutionGhConfigPath, "utf8");
 const hermesExecutionService = readFileSync(hermesExecutionServicePath, "utf8");
 const githubPushBroker = readFileSync(githubPushBrokerPath, "utf8");
 const githubPushBrokerService = readFileSync(githubPushBrokerServicePath, "utf8");
+const githubWebhookReceiver = readFileSync(githubWebhookReceiverPath, "utf8");
+const githubWebhookReceiverDeploy = readFileSync(githubWebhookReceiverDeployPath, "utf8");
+const githubWebhookReceiverService = readFileSync(githubWebhookReceiverServicePath, "utf8");
+const githubWebhookCaddyRoute = readFileSync(githubWebhookCaddyRoutePath, "utf8");
+const publicGithubWebhookRunbook = readFileSync(publicGithubWebhookRunbookPath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
 const reconcileHermesExecutionProviderEnv = readFileSync(
   reconcileHermesExecutionProviderEnvPath,
@@ -1975,6 +2022,57 @@ for (const required of [
 ]) {
   if (!githubPushBroker.includes(required)) {
     fail(`root GitHub push broker is missing ${required}`);
+  }
+}
+for (const required of [
+  'LISTEN_HOST = "127.0.0.1"',
+  'WEBHOOK_PATH = "/github-webhooks/paperclip-check-suite"',
+  'event != "check_suite"',
+  "verify_signature(receiver.secret, body, signature)",
+  "MAX_BODY_BYTES = 1_048_576",
+  "UPSTREAM_RE.fullmatch(upstream_url)",
+]) {
+  if (!githubWebhookReceiver.includes(required)) {
+    fail(`public GitHub webhook receiver is missing ${required}`);
+  }
+}
+for (const required of [
+  "trusted_root_directory(path.parent)",
+  "write_json(tx / \"backup.json\", backup)",
+  '"status": "rollback_failed"',
+  '"secretSha256": sha256(secret)',
+  "restoration proof failed",
+]) {
+  if (!githubWebhookReceiverDeploy.includes(required)) {
+    fail(`public GitHub webhook deploy transaction is missing ${required}`);
+  }
+}
+for (const required of [
+  "DynamicUser=yes",
+  "LoadCredential=github_webhook_hmac:",
+  "IPAddressDeny=any",
+  "IPAddressAllow=localhost",
+  "ProtectSystem=strict",
+]) {
+  if (!githubWebhookReceiverService.includes(required)) {
+    fail(`public GitHub webhook receiver service is missing ${required}`);
+  }
+}
+for (const required of [
+  "path /github-webhooks/paperclip-check-suite",
+  "reverse_proxy 127.0.0.1:8766",
+]) {
+  if (!githubWebhookCaddyRoute.includes(required)) {
+    fail(`public GitHub webhook Caddy route is missing ${required}`);
+  }
+}
+for (const required of [
+  "genuine GitHub `check_suite` delivery",
+  "does not replace",
+  "exact prior bytes, uid, gid, and mode",
+]) {
+  if (!publicGithubWebhookRunbook.includes(required)) {
+    fail(`public GitHub webhook runbook is missing ${required}`);
   }
 }
 for (const path of ["cache", "logs", "memories", "sessions"]) {

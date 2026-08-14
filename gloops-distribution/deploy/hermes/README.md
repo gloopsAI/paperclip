@@ -22,6 +22,14 @@ The first command is a non-mutating check. The apply step atomically removes
 only the undeclared endpoint key, preserves all other assignments byte-for-byte,
 and never prints configuration values.
 
+### Public GitHub check-suite ingress
+
+The one-path, signed public ingress used by the autonomic policy plugin is
+documented in [PUBLIC_GITHUB_WEBHOOK_RUNBOOK.md](./PUBLIC_GITHUB_WEBHOOK_RUNBOOK.md).
+It does not expose Paperclip or the Hermes dashboard: Caddy admits only the exact
+GitHub webhook path to a localhost HMAC receiver, while all other public routes
+retain the existing Basic Auth boundary.
+
 # Hermes dark deployment envelope
 
 ## Board-authorized Induct intake

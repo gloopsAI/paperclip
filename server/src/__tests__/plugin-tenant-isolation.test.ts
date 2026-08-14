@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { readFile } from "node:fs/promises";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
@@ -13,6 +14,10 @@ import {
 } from "@paperclipai/db";
 import { buildHostServices, flushPluginLogBuffer } from "../services/plugin-host-services.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import {
+  parsePluginWebhookExternalId,
+  processPluginWebhookDelivery,
+} from "../services/plugin-webhook-deliveries.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -101,6 +106,243 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     });
     return companyId;
   }
+
+  it("keeps concurrent transport at-least-once while the plugin applies one logical effect", async () => {
+    const pluginId = await seedPlugin();
+    const startedAt = new Date();
+    const input = {
+      pluginId,
+      webhookKey: "github-checks",
+      externalId: "delivery-123",
+      payload: { action: "completed" },
+      headers: { "x-github-delivery": "delivery-123" },
+      startedAt,
+    };
+
+    let workerInvocations = 0;
+    let effectApplications = 0;
+    const completedClaims = new Set<string>();
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted!: () => void;
+    const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+    let secondStarted!: () => void;
+    const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve; });
+    const dispatch = async ({ requestId }: { requestId: string }) => {
+      workerInvocations += 1;
+      if (!completedClaims.has(requestId)) {
+        completedClaims.add(requestId);
+        effectApplications += 1;
+      }
+      if (workerInvocations === 1) {
+        firstStarted();
+        await firstGate;
+      } else {
+        secondStarted();
+      }
+    };
+
+    const first = processPluginWebhookDelivery(db, input, dispatch);
+    await firstStartedPromise;
+    const second = processPluginWebhookDelivery(db, input, dispatch);
+    await secondStartedPromise;
+    releaseFirst();
+    const initial = await Promise.all([first, second]);
+    expect(workerInvocations).toBe(2);
+    expect(effectApplications).toBe(1);
+    expect(new Set(initial.map((entry) => entry.deliveryId)).size).toBe(1);
+    expect(completedClaims).toEqual(new Set(["delivery-123"]));
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ externalId: "delivery-123", status: "success" });
+  });
+
+  it("retries a failed worker once without creating a second audit row", async () => {
+    const pluginId = await seedPlugin();
+    const input = {
+      pluginId,
+      webhookKey: "github-checks",
+      externalId: "delivery-retry",
+      payload: { action: "completed" },
+      headers: { "x-github-delivery": "delivery-retry" },
+      startedAt: new Date(),
+    };
+
+    const failed = await processPluginWebhookDelivery(db, input, async () => {
+      throw new Error("injected");
+    });
+    expect(failed.status).toBe("failed");
+    let workerInvocations = 0;
+    let effectApplications = 0;
+    const completedClaims = new Set<string>();
+    const retried = await Promise.all([
+      processPluginWebhookDelivery(db, input, async ({ requestId }) => {
+        workerInvocations += 1;
+        if (!completedClaims.has(requestId)) {
+          completedClaims.add(requestId);
+          effectApplications += 1;
+        }
+      }),
+      processPluginWebhookDelivery(db, input, async ({ requestId }) => {
+        workerInvocations += 1;
+        if (!completedClaims.has(requestId)) {
+          completedClaims.add(requestId);
+          effectApplications += 1;
+        }
+      }),
+    ]);
+    expect(workerInvocations).toBeGreaterThanOrEqual(1);
+    expect(effectApplications).toBe(1);
+    expect(new Set(retried.map((entry) => entry.deliveryId))).toEqual(new Set([failed.deliveryId]));
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "success", error: null });
+  });
+
+  it("recovers an unreceipted worker success with one plugin effect and a stable key", async () => {
+    const pluginId = await seedPlugin();
+    const input = {
+      pluginId,
+      webhookKey: "github-checks",
+      externalId: "delivery-bookkeeping",
+      payload: { action: "completed" },
+      headers: { "x-github-delivery": "delivery-bookkeeping" },
+      startedAt: new Date(),
+    };
+    let workerInvocations = 0;
+    let effectApplications = 0;
+    const completedClaims = new Set<string>();
+    const dispatch = async ({ requestId }: { requestId: string }) => {
+      workerInvocations += 1;
+      const visibleRows = await db.select().from(pluginWebhookDeliveries);
+      expect(visibleRows).toHaveLength(1);
+      expect(visibleRows[0]).toMatchObject({ externalId: requestId, status: "pending" });
+      if (!completedClaims.has(requestId)) {
+        completedClaims.add(requestId);
+        effectApplications += 1;
+      }
+    };
+
+    await db.execute(sql.raw(`
+      CREATE FUNCTION test_reject_webhook_success() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.status = 'success' THEN
+          RAISE EXCEPTION 'injected success bookkeeping failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `));
+    await db.execute(sql.raw(`
+      CREATE TRIGGER test_reject_webhook_success_trigger
+      BEFORE UPDATE ON plugin_webhook_deliveries
+      FOR EACH ROW EXECUTE FUNCTION test_reject_webhook_success()
+    `));
+    try {
+      const bookkeepingError = await processPluginWebhookDelivery(db, input, dispatch)
+        .then(() => null, (error: unknown) => error);
+      expect(bookkeepingError).toBeInstanceOf(Error);
+      const cause = (bookkeepingError as Error & { cause?: unknown }).cause;
+      expect(`${(bookkeepingError as Error).message} ${String(cause)}`).toContain(
+        "injected success bookkeeping failure",
+      );
+    } finally {
+      await db.execute(sql.raw(
+        "DROP TRIGGER IF EXISTS test_reject_webhook_success_trigger ON plugin_webhook_deliveries",
+      ));
+      await db.execute(sql.raw("DROP FUNCTION IF EXISTS test_reject_webhook_success()"));
+    }
+
+    expect(await db.select().from(pluginWebhookDeliveries)).toMatchObject([
+      { externalId: "delivery-bookkeeping", status: "pending" },
+    ]);
+    const recovered = await processPluginWebhookDelivery(db, input, dispatch);
+    expect(recovered).toMatchObject({ duplicate: false, status: "success" });
+    expect(workerInvocations).toBe(2);
+    expect(effectApplications).toBe(1);
+    expect(completedClaims).toEqual(new Set(["delivery-bookkeeping"]));
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ externalId: "delivery-bookkeeping", status: "success" });
+  });
+
+  it("validates bounded external delivery identifiers", () => {
+    expect(parsePluginWebhookExternalId(undefined)).toBeNull();
+    expect(parsePluginWebhookExternalId("delivery-123")).toBe("delivery-123");
+    expect(() => parsePluginWebhookExternalId(["a", "b"])).toThrow("ambiguous");
+    expect(() => parsePluginWebhookExternalId("bad delivery")).toThrow("invalid");
+    expect(() => parsePluginWebhookExternalId("x".repeat(129))).toThrow("invalid");
+  });
+
+  it("migrates historical duplicate external delivery IDs without losing their audit rows", async () => {
+    const pluginId = await seedPlugin();
+    const externalId = "historical-duplicate";
+    const failedId = randomUUID();
+    const succeededId = randomUUID();
+
+    await db.execute(sql.raw(
+      'DROP INDEX "plugin_webhook_deliveries_external_id_uq"',
+    ));
+    await db.insert(pluginWebhookDeliveries).values([
+      {
+        id: failedId,
+        pluginId,
+        webhookKey: "github-checks",
+        externalId,
+        status: "failed",
+        error: "historical failure",
+        payload: { audit: "failed" },
+        headers: { "x-original": "failed" },
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        id: succeededId,
+        pluginId,
+        webhookKey: "github-checks",
+        externalId,
+        status: "success",
+        payload: { audit: "success" },
+        headers: { "x-original": "success" },
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      },
+    ]);
+
+    const migration = await readFile(
+      new URL(
+        "../../../packages/db/src/migrations/0153_plugin_webhook_delivery_external_id.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    await db.execute(sql.raw(migration));
+
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === succeededId)).toMatchObject({
+      externalId,
+      status: "success",
+      payload: { audit: "success" },
+      headers: { "x-original": "success" },
+    });
+    expect(rows.find((row) => row.id === failedId)).toMatchObject({
+      externalId: null,
+      status: "failed",
+      error: "historical failure",
+      payload: { audit: "failed" },
+      headers: {
+        "x-original": "failed",
+        [`paperclip-migration-0153-duplicate-${failedId}`]:
+          `${externalId};canonical_delivery_id=${succeededId}`,
+      },
+    });
+    await expect(db.insert(pluginWebhookDeliveries).values({
+      pluginId,
+      webhookKey: "github-checks",
+      externalId,
+      status: "pending",
+      payload: { audit: "new duplicate" },
+    })).rejects.toThrow();
+  });
 
   it("allows NULL company_id on plugin_logs (instance-scope rows behave as before)", async () => {
     const pluginId = await seedPlugin();

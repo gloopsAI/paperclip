@@ -21,7 +21,6 @@
 
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -85,6 +84,10 @@ import {
 } from "../services/plugin-secrets-handler.js";
 import { isUuidSecretRef } from "../services/json-schema-secret-refs.js";
 import { secretService } from "../services/secrets.js";
+import {
+  parsePluginWebhookExternalId,
+  processPluginWebhookDelivery,
+} from "../services/plugin-webhook-deliveries.js";
 import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -2666,7 +2669,6 @@ export function pluginRoutes(
     }
 
     // Step 5: Extract request data
-    const requestId = randomUUID();
     const rawHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(req.headers)) {
       if (typeof value === "string") {
@@ -2680,72 +2682,72 @@ export function pluginRoutes(
     // This preserves the exact bytes the provider signed, whereas
     // JSON.stringify(req.body) would re-serialize and break HMAC verification.
     const stashedRaw = (req as unknown as { rawBody?: Buffer }).rawBody;
+    if (!stashedRaw || stashedRaw.length === 0) {
+      res.status(400).json({ error: "Webhook body must be a non-empty JSON object" });
+      return;
+    }
     const rawBody = stashedRaw ? stashedRaw.toString("utf-8") : "";
     const parsedBody = req.body as unknown;
-    const payload = (req.body as Record<string, unknown> | undefined) ?? {};
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      res.status(400).json({ error: "Webhook body must be a non-empty JSON object" });
+      return;
+    }
+    const payload = parsedBody as Record<string, unknown>;
+    let externalId: string | null;
+    try {
+      externalId = parsePluginWebhookExternalId(req.headers["x-github-delivery"]);
+    } catch {
+      res.status(422).json({ error: "Webhook external delivery id is invalid" });
+      return;
+    }
 
-    // Step 6: Record the delivery in the database
+    // The host audit is recoverable at-least-once transport. No database
+    // transaction spans the worker RPC; the plugin atomically claims the
+    // stable provider delivery ID before applying any logical side effect.
     const startedAt = new Date();
-    const [delivery] = await db
-      .insert(pluginWebhookDeliveries)
-      .values({
+    const delivery = await processPluginWebhookDelivery(
+      db,
+      {
         pluginId: plugin.id,
         webhookKey: endpointKey,
-        status: "pending",
+        externalId,
         payload,
         headers: rawHeaders,
         startedAt,
-      })
-      .returning({ id: pluginWebhookDeliveries.id });
+      },
+      async ({ requestId }) => {
+        await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
+          endpointKey,
+          headers: req.headers as Record<string, string | string[]>,
+          rawBody,
+          parsedBody,
+          requestId,
+        });
+      },
+    );
 
-    // Step 7: Dispatch to the worker via handleWebhook RPC
-    try {
-      await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
-        endpointKey,
-        headers: req.headers as Record<string, string | string[]>,
-        rawBody,
-        parsedBody,
-        requestId,
-      });
-
-      // Step 8: Update delivery record to success
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
-      await db
-        .update(pluginWebhookDeliveries)
-        .set({
-          status: "success",
-          durationMs,
-          finishedAt,
-        })
-        .where(eq(pluginWebhookDeliveries.id, delivery.id));
-
+    if (delivery.duplicate) {
       res.status(200).json({
-        deliveryId: delivery.id,
-        status: "success",
+        deliveryId: delivery.deliveryId,
+        status: delivery.status,
+        duplicate: true,
       });
-    } catch (err) {
-      // Step 8 (error): Update delivery record to failed
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
-      const errorMessage = err instanceof Error ? err.message : String(err);
-
-      await db
-        .update(pluginWebhookDeliveries)
-        .set({
-          status: "failed",
-          durationMs,
-          error: errorMessage,
-          finishedAt,
-        })
-        .where(eq(pluginWebhookDeliveries.id, delivery.id));
-
-      res.status(502).json({
-        deliveryId: delivery.id,
-        status: "failed",
-        error: errorMessage,
-      });
+      return;
     }
+
+    if (delivery.status === "failed") {
+      res.status(502).json({
+        deliveryId: delivery.deliveryId,
+        status: "failed",
+        error: delivery.error,
+      });
+      return;
+    }
+
+    res.status(200).json({
+      deliveryId: delivery.deliveryId,
+      status: "success",
+    });
   });
 
   // ===========================================================================
@@ -2995,6 +2997,7 @@ export function pluginRoutes(
     let recentWebhookDeliveries: Array<{
       id: string;
       webhookKey: string;
+      externalId: string | null;
       status: string;
       durationMs: number | null;
       error: string | null;
@@ -3008,6 +3011,7 @@ export function pluginRoutes(
         .select({
           id: pluginWebhookDeliveries.id,
           webhookKey: pluginWebhookDeliveries.webhookKey,
+          externalId: pluginWebhookDeliveries.externalId,
           status: pluginWebhookDeliveries.status,
           durationMs: pluginWebhookDeliveries.durationMs,
           error: pluginWebhookDeliveries.error,
@@ -3023,6 +3027,7 @@ export function pluginRoutes(
       recentWebhookDeliveries = deliveries.map((d) => ({
         id: d.id,
         webhookKey: d.webhookKey,
+        externalId: d.externalId,
         status: d.status,
         durationMs: d.durationMs,
         error: d.error,
