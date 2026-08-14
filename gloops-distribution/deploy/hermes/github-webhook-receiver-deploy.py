@@ -262,22 +262,36 @@ def patch_caddy(current: bytes, route: bytes) -> bytes:
     if closing < 0:
         raise RuntimeError("public Hermes site is malformed")
     site_body = text[opening + 1:closing]
-    auth = site_body.find("\n\tbasicauth /* {")
-    if auth < 0:
-        raise RuntimeError("public Hermes protection block not found")
-    prefix = site_body[:auth].rstrip("\n")
-    protected = site_body[auth:].strip("\n")
-    if "reverse_proxy 127.0.0.1:3100" not in protected:
-        raise RuntimeError("public Hermes upstream not found")
-    indented = "\n".join("\t" + line if line else line for line in protected.splitlines())
-    replacement = (
-        prefix
-        + "\n\n"
-        + route_text
-        + "\n\n\thandle {\n"
-        + indented
-        + "\n\t}\n"
-    )
+    protected_handle = site_body.find("\n\thandle {\n\t\tbasicauth /* {")
+    if protected_handle >= 0:
+        prefix = site_body[:protected_handle].rstrip("\n")
+        protected = site_body[protected_handle:].strip("\n")
+        if not any(
+            upstream in protected
+            for upstream in (
+                "reverse_proxy 127.0.0.1:3100",
+                "reverse_proxy 127.0.0.1:9119",
+            )
+        ):
+            raise RuntimeError("public Hermes upstream not found")
+        replacement = prefix + "\n\n" + route_text + "\n" + protected + "\n"
+    else:
+        auth = site_body.find("\n\tbasicauth /* {")
+        if auth < 0:
+            raise RuntimeError("public Hermes protection block not found")
+        prefix = site_body[:auth].rstrip("\n")
+        protected = site_body[auth:].strip("\n")
+        if "reverse_proxy 127.0.0.1:3100" not in protected:
+            raise RuntimeError("public Hermes upstream not found")
+        indented = "\n".join("\t" + line if line else line for line in protected.splitlines())
+        replacement = (
+            prefix
+            + "\n\n"
+            + route_text
+            + "\n\n\thandle {\n"
+            + indented
+            + "\n\t}\n"
+        )
     return (text[:opening + 1] + replacement + text[closing:]).encode()
 
 
