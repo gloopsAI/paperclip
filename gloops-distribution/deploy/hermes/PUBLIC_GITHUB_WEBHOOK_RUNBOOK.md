@@ -56,9 +56,17 @@ printf '%s' "$WEBHOOK_HMAC" | sudo python3 github-webhook-receiver-deploy.py ins
 unset WEBHOOK_HMAC PLUGIN_ID
 ```
 
-The deployer validates the complete Caddy candidate before effects, durably
-captures exact bytes and metadata before service mutation, starts and checks the
-localhost receiver, reloads Caddy, and writes a root-only receipt beneath
+The deployer resolves the one effective Caddy `--config` path from systemd and
+accepts only the source-controlled `/etc/caddy/Caddyfile` or
+`/etc/caddy/Caddyfile.tailnet` host shapes. It validates the complete Caddy
+candidate before effects and requires the selected leaf's exact path-specific
+root-owned, non-writable group, and mode contract (`root:root 0644` for the
+default file; `root:caddy 0640` for the tailnet file). It durably captures exact bytes and metadata before
+service mutation, starts the localhost receiver, and applies a bounded 30 by
+250 ms readiness gate over the exact health response. It restarts Caddy when
+the effective config declares `admin off` (reload would be unavailable),
+otherwise reloads it, verifies the service remains active, and writes a
+root-only receipt beneath
 `/var/lib/paperclip-gloops/webhook-receiver-transactions/`.
 The source unit contains no environment-specific plugin UUID: the deployer
 validates and renders the read-only provisioned UUID exactly once, and binds it
@@ -90,9 +98,11 @@ sudo python3 github-webhook-receiver-deploy.py rollback \
 ```
 
 The rollback claim is exclusive and durable before effects. Rollback restores
-or removes every receiver, unit, secret, and Caddy artifact with its exact prior bytes, uid, gid, and mode; reloads systemd and Caddy; restores prior receiver
+or removes every receiver, unit, secret, and Caddy artifact with its exact prior bytes, uid, gid, and mode; reloads systemd, re-activates Caddy with the same effective-config rule; restores prior receiver
 enablement/activity; then writes a `restored` receipt. Any mismatch produces a
-root-only `rollback_failed` receipt and blocks a success claim.
+root-only `rollback_failed` receipt and blocks a success claim. Systemd load,
+active, and enablement query errors are never interpreted as inactive or
+disabled proof.
 
 Delete the GitHub webhook and the corresponding Paperclip secret when the
 receiver is rolled back. Retain the transaction directory and the separate

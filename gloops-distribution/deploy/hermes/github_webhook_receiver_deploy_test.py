@@ -49,7 +49,13 @@ ROUTE = b'''# BEGIN GLOOPS PAPERCLIP GITHUB WEBHOOK
 class DeployTest(unittest.TestCase):
     @staticmethod
     def inactive_subprocess(command, **_kwargs):
-        return mock.Mock(returncode=1 if command[1] == "is-active" else 0)
+        if command[1:4] == ["show", MODULE.SERVICE, "-p"]:
+            return mock.Mock(returncode=0, stdout="not-found\n", stderr="")
+        if command[1] == "is-active":
+            return mock.Mock(returncode=3, stdout="inactive\n", stderr="")
+        if command[1] == "is-enabled":
+            return mock.Mock(returncode=1, stdout="disabled\n", stderr="")
+        return mock.Mock(returncode=0, stdout="", stderr="")
 
     def deployment_fixture(self, root: pathlib.Path):
         receiver = root / "installed" / "receiver.py"
@@ -151,13 +157,136 @@ class DeployTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "exactly one"):
             MODULE.render_unit(b"url=/api/plugins/no-placeholder\n", plugin_id)
 
+    def test_effective_caddy_config_is_exactly_one_allowlisted_absolute_path(self):
+        command = "{ path=/usr/bin/caddy ; argv[]=/usr/bin/caddy run --config /etc/caddy/Caddyfile.tailnet ; }\n"
+        with mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            return_value=mock.Mock(returncode=0, stdout=command, stderr=""),
+        ):
+            self.assertEqual(
+                MODULE.resolve_effective_caddy_config(),
+                pathlib.Path("/etc/caddy/Caddyfile.tailnet"),
+            )
+        for output in (
+            "caddy run\n",
+            "caddy run --config relative\n",
+            "caddy run --config /tmp/Caddyfile\n",
+            "caddy run --config /etc/caddy/Caddyfile --config /etc/caddy/Caddyfile.tailnet\n",
+        ):
+            with self.subTest(output=output), mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                return_value=mock.Mock(returncode=0, stdout=output, stderr=""),
+            ), self.assertRaises(RuntimeError):
+                MODULE.resolve_effective_caddy_config()
+
+    def test_admin_off_restarts_caddy_and_otherwise_reloads_then_proves_active(self):
+        calls = []
+        with mock.patch.object(MODULE, "run", side_effect=lambda *command: calls.append(command)):
+            self.assertEqual(MODULE.activate_caddy(CURRENT), "restart")
+            self.assertEqual(MODULE.activate_caddy(b"example.com {}\n"), "reload")
+        self.assertEqual(
+            calls,
+            [
+                ("systemctl", "restart", "caddy.service"),
+                ("systemctl", "is-active", "--quiet", "caddy.service"),
+                ("systemctl", "reload", "caddy.service"),
+                ("systemctl", "is-active", "--quiet", "caddy.service"),
+            ],
+        )
+
+    def test_caddy_leaf_requires_exact_path_specific_owner_group_and_mode(self):
+        metadata = SimpleNamespace(st_uid=0, st_gid=42, st_mode=stat.S_IFREG | 0o640)
+        with mock.patch.object(MODULE, "expected_caddy_gid", return_value=42):
+            MODULE.validate_caddy_metadata(pathlib.Path("/etc/caddy/Caddyfile.tailnet"), metadata)
+            for changed in (
+                SimpleNamespace(st_uid=1, st_gid=42, st_mode=stat.S_IFREG | 0o640),
+                SimpleNamespace(st_uid=0, st_gid=43, st_mode=stat.S_IFREG | 0o640),
+                SimpleNamespace(st_uid=0, st_gid=42, st_mode=stat.S_IFREG | 0o660),
+                SimpleNamespace(st_uid=0, st_gid=42, st_mode=stat.S_IFREG | 0o644),
+            ):
+                with self.assertRaises(RuntimeError):
+                    MODULE.validate_caddy_metadata(
+                        pathlib.Path("/etc/caddy/Caddyfile.tailnet"), changed
+                    )
+
+    def test_service_state_distinguishes_absent_inactive_and_query_failure(self):
+        absent = mock.Mock(returncode=0, stdout="not-found\n", stderr="")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=absent):
+            self.assertEqual(
+                MODULE.service_state(),
+                {"loadState": "not-found", "active": False, "enabled": False},
+            )
+
+        responses = iter(
+            (
+                mock.Mock(returncode=0, stdout="loaded\n", stderr=""),
+                mock.Mock(returncode=3, stdout="inactive\n", stderr=""),
+                mock.Mock(returncode=1, stdout="disabled\n", stderr=""),
+            )
+        )
+        with mock.patch.object(MODULE.subprocess, "run", side_effect=lambda *_args, **_kwargs: next(responses)):
+            self.assertEqual(
+                MODULE.service_state(),
+                {"loadState": "loaded", "active": False, "enabled": False},
+            )
+
+        for failed in (
+            mock.Mock(returncode=1, stdout="", stderr="transport failed"),
+            mock.Mock(returncode=0, stdout="mystery\n", stderr=""),
+        ):
+            with mock.patch.object(MODULE.subprocess, "run", return_value=failed), self.assertRaises(RuntimeError):
+                MODULE.service_state()
+
+    def test_active_state_rejects_unknown_and_command_failure(self):
+        for failed in (
+            mock.Mock(returncode=4, stdout="unknown\n", stderr=""),
+            mock.Mock(returncode=1, stdout="", stderr="transport failed"),
+            mock.Mock(returncode=0, stdout="activating\n", stderr=""),
+        ):
+            with mock.patch.object(MODULE.subprocess, "run", return_value=failed), self.assertRaises(RuntimeError):
+                MODULE.active_state()
+
+    def test_receiver_readiness_retries_transient_failure_with_safe_summary(self):
+        clock = iter((10.0, 10.2))
+        with mock.patch.object(
+            MODULE, "health", side_effect=(RuntimeError("secret detail"), None)
+        ) as health, mock.patch.object(MODULE.time, "sleep") as sleep, mock.patch.object(
+            MODULE.time, "monotonic", side_effect=lambda: next(clock)
+        ):
+            summary = MODULE.wait_for_health(max_attempts=3, interval_seconds=0.01)
+        self.assertEqual(summary, {"attempts": 2, "elapsedMs": 200, "outcome": "ready"})
+        self.assertEqual(health.call_count, 2)
+        sleep.assert_called_once_with(0.01)
+        self.assertNotIn("secret detail", str(summary))
+
+    def test_receiver_readiness_exhaustion_is_bounded_and_message_free(self):
+        clock = iter((2.0, 2.1))
+        with mock.patch.object(
+            MODULE, "health", side_effect=RuntimeError("secret detail")
+        ) as health, mock.patch.object(MODULE.time, "sleep") as sleep, mock.patch.object(
+            MODULE.time, "monotonic", side_effect=lambda: next(clock)
+        ), self.assertRaises(MODULE.ReadinessError) as raised:
+            MODULE.wait_for_health(max_attempts=2, interval_seconds=0.01)
+        self.assertEqual(
+            raised.exception.summary,
+            {"attempts": 2, "elapsedMs": 100, "outcome": "exhausted"},
+        )
+        self.assertEqual(health.call_count, 2)
+        sleep.assert_called_once_with(0.01)
+        self.assertNotIn("secret detail", str(raised.exception.summary))
+
     def test_invalid_plugin_id_fails_before_transaction_or_host_effects(self):
         with tempfile.TemporaryDirectory() as temporary:
             fixture = self.deployment_fixture(pathlib.Path(temporary))
-            args, patches, receiver, unit, secret, _caddy, transactions = fixture
+            args, patches, receiver, unit, secret, caddy, transactions = fixture
             args.plugin_id = "not-a-uuid"
             with patches, \
                  mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "resolve_effective_caddy_config", return_value=caddy), \
+                 mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy_metadata"), \
                  self.assertRaisesRegex(RuntimeError, "plugin id is invalid"):
                 MODULE.install(args)
             self.assertEqual(list(transactions.iterdir()), [])
@@ -172,10 +301,13 @@ class DeployTest(unittest.TestCase):
             stdin = io.TextIOWrapper(io.BytesIO(b"s" * 32))
             with patches, \
                  mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "resolve_effective_caddy_config", return_value=caddy), \
                  mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy_metadata"), \
                  mock.patch.object(MODULE, "validate_caddy"), \
                  mock.patch.object(MODULE, "health"), \
-                 mock.patch.object(MODULE, "service_state", return_value={"active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "service_state", return_value={"loadState": "not-found", "active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "active_state", return_value=False), \
                  mock.patch.object(MODULE, "run"), \
                  mock.patch.object(MODULE.subprocess, "run", side_effect=self.inactive_subprocess), \
                  mock.patch.object(MODULE.os, "fchown"), \
@@ -191,6 +323,9 @@ class DeployTest(unittest.TestCase):
                     (transactions / args.transaction_id / "receipt.json").read_text()
                 )
                 self.assertEqual(deployment["pluginId"], args.plugin_id)
+                self.assertEqual(deployment["caddyConfigPath"], str(caddy))
+                self.assertEqual(deployment["caddyAction"], "restart")
+                self.assertEqual(deployment["receiverReadiness"]["outcome"], "ready")
                 MODULE.rollback(SimpleNamespace(transaction_id=args.transaction_id))
 
             self.assertFalse(receiver.exists())
@@ -208,10 +343,19 @@ class DeployTest(unittest.TestCase):
             stdin = io.TextIOWrapper(io.BytesIO(b"s" * 32))
             with patches, \
                  mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "resolve_effective_caddy_config", return_value=caddy), \
                  mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy_metadata"), \
                  mock.patch.object(MODULE, "validate_caddy"), \
-                 mock.patch.object(MODULE, "health", side_effect=RuntimeError("injected")), \
-                 mock.patch.object(MODULE, "service_state", return_value={"active": False, "enabled": False}), \
+                 mock.patch.object(
+                     MODULE,
+                     "wait_for_health",
+                     side_effect=MODULE.ReadinessError(
+                         {"attempts": 30, "elapsedMs": 7250, "outcome": "exhausted"}
+                     ),
+                 ), \
+                 mock.patch.object(MODULE, "service_state", return_value={"loadState": "not-found", "active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "active_state", return_value=False), \
                  mock.patch.object(MODULE, "run"), \
                  mock.patch.object(MODULE.subprocess, "run", side_effect=self.inactive_subprocess), \
                  mock.patch.object(MODULE.os, "fchown"), \
@@ -227,8 +371,85 @@ class DeployTest(unittest.TestCase):
                 (transactions / args.transaction_id / "receipt.json").read_text()
             )
             self.assertEqual(receipt["status"], "rolled_back")
-            self.assertEqual(receipt["errorClass"], "RuntimeError")
-            self.assertNotIn("injected", str(receipt))
+            self.assertEqual(receipt["errorClass"], "ReadinessError")
+            self.assertEqual(receipt["failedPhase"], "receiver_readiness")
+            self.assertEqual(receipt["receiverReadiness"]["attempts"], 30)
+
+    def test_unprovable_stop_state_is_durable_rollback_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.deployment_fixture(pathlib.Path(temporary))
+            args, patches, _receiver, _unit, _secret, caddy, transactions = fixture
+            stdin = io.TextIOWrapper(io.BytesIO(b"s" * 32))
+            with patches, \
+                 mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "resolve_effective_caddy_config", return_value=caddy), \
+                 mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy_metadata"), \
+                 mock.patch.object(MODULE, "validate_caddy"), \
+                 mock.patch.object(MODULE, "wait_for_health", side_effect=MODULE.ReadinessError({"attempts": 2, "elapsedMs": 250, "outcome": "exhausted"})), \
+                 mock.patch.object(MODULE, "service_state", return_value={"loadState": "not-found", "active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "active_state", side_effect=RuntimeError("query failed")), \
+                 mock.patch.object(MODULE, "run"), \
+                 mock.patch.object(MODULE.os, "fchown"), \
+                 mock.patch.object(MODULE.sys, "stdin", stdin), \
+                 self.assertRaisesRegex(RuntimeError, "rollback_failed"):
+                MODULE.install(args)
+
+            receipt = json.loads(
+                (transactions / args.transaction_id / "receipt.json").read_text()
+            )
+            self.assertEqual(receipt["status"], "rollback_failed")
+            self.assertEqual(receipt["rollbackErrorClass"], "RollbackPhaseError")
+            self.assertEqual(receipt["rollbackFailedPhase"], "receiver_stop")
+            self.assertNotIn("query failed", str(receipt))
+
+    def test_caddy_restart_failure_rolls_back_tailnet_config_with_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.deployment_fixture(pathlib.Path(temporary))
+            args, patches, receiver, unit, secret, caddy, transactions = fixture
+            main_caddy = caddy.with_name("Caddyfile.main")
+            main_caddy.write_bytes(b"main config must remain untouched\n")
+            stdin = io.TextIOWrapper(io.BytesIO(b"s" * 32))
+            calls = []
+            restart_count = 0
+
+            def injected_run(*command):
+                nonlocal restart_count
+                calls.append(command)
+                if command == ("systemctl", "restart", "caddy.service"):
+                    restart_count += 1
+                    if restart_count == 1:
+                        raise RuntimeError("injected candidate restart failure")
+
+            with patches, \
+                 mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "resolve_effective_caddy_config", return_value=caddy), \
+                 mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy_metadata"), \
+                 mock.patch.object(MODULE, "validate_caddy"), \
+                 mock.patch.object(MODULE, "health"), \
+                 mock.patch.object(MODULE, "service_state", return_value={"loadState": "not-found", "active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "active_state", return_value=False), \
+                 mock.patch.object(MODULE, "run", side_effect=injected_run), \
+                 mock.patch.object(MODULE.subprocess, "run", side_effect=self.inactive_subprocess), \
+                 mock.patch.object(MODULE.os, "fchown"), \
+                 mock.patch.object(MODULE.sys, "stdin", stdin), \
+                 self.assertRaisesRegex(RuntimeError, "rolled_back"):
+                MODULE.install(args)
+
+            self.assertEqual(restart_count, 2)
+            self.assertNotIn(("systemctl", "reload", "caddy.service"), calls)
+            self.assertEqual(caddy.read_bytes(), CURRENT)
+            self.assertEqual(main_caddy.read_bytes(), b"main config must remain untouched\n")
+            self.assertFalse(receiver.exists())
+            self.assertFalse(unit.exists())
+            self.assertFalse(secret.exists())
+            receipt = json.loads(
+                (transactions / args.transaction_id / "receipt.json").read_text()
+            )
+            self.assertEqual(receipt["status"], "rolled_back")
+            self.assertEqual(receipt["failedPhase"], "caddy_activation")
+            self.assertNotIn("injected candidate restart failure", str(receipt))
 
     def test_corrupt_backup_after_durable_claim_writes_failure_receipt(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -237,10 +458,13 @@ class DeployTest(unittest.TestCase):
             stdin = io.TextIOWrapper(io.BytesIO(b"s" * 32))
             with patches, \
                  mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "resolve_effective_caddy_config", return_value=_caddy), \
                  mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy_metadata"), \
                  mock.patch.object(MODULE, "validate_caddy"), \
                  mock.patch.object(MODULE, "health"), \
-                 mock.patch.object(MODULE, "service_state", return_value={"active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "service_state", return_value={"loadState": "not-found", "active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "active_state", return_value=False), \
                  mock.patch.object(MODULE, "run"), \
                  mock.patch.object(MODULE.subprocess, "run", side_effect=self.inactive_subprocess), \
                  mock.patch.object(MODULE.os, "fchown"), \
