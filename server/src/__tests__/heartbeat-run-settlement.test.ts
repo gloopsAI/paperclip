@@ -12,7 +12,9 @@ import {
   costEvents,
   createDb,
   heartbeatRuns,
+  heartbeatRunIssueProjections,
   heartbeatRunSettlements,
+  issueComments,
   issues,
   projects,
   projectWorkspaces,
@@ -29,9 +31,48 @@ import {
   HeartbeatRunSettlementConflictError,
   heartbeatRunSettlementService,
 } from "../services/heartbeat-run-settlement.js";
+import {
+  buildReviewVerdictProjection,
+  heartbeatRunIssueProjectionService,
+} from "../services/heartbeat-run-issue-projections.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describe("terminal review verdict projection derivation", () => {
+  const exactHeadSha = "d".repeat(40);
+  const base = {
+    companyId: randomUUID(),
+    agentId: randomUUID(),
+    heartbeatRunId: randomUUID(),
+    issueId: randomUUID(),
+    terminalStatus: "succeeded",
+    exactHeadSha,
+    workMode: "review",
+  };
+
+  it("admits only a typed verdict that names the exact reviewed head", () => {
+    expect(buildReviewVerdictProjection({
+      ...base,
+      resultJson: { summary: `APPROVED exact head ${exactHeadSha}; no P0/P1 findings.` },
+    })).toMatchObject({
+      kind: "review_verdict",
+      disposition: "accepted",
+      exactHeadSha,
+    });
+  });
+
+  it("fails closed for ambiguous output or a verdict that omits the exact head", () => {
+    expect(buildReviewVerdictProjection({
+      ...base,
+      resultJson: { summary: "Looks fine to me." },
+    })).toBeNull();
+    expect(buildReviewVerdictProjection({
+      ...base,
+      resultJson: { summary: "APPROVED; no P0/P1 findings." },
+    })).toBeNull();
+  });
+});
 
 describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
   let db!: ReturnType<typeof createDb>;
@@ -47,6 +88,8 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
     await db.delete(budgetIncidents);
     await db.delete(approvals);
     await db.delete(budgetPolicies);
+    await db.delete(issueComments);
+    await db.delete(heartbeatRunIssueProjections);
     await db.delete(heartbeatRunSettlements);
     await db.delete(costEvents);
     await db.delete(providerIoTerminalEvidence);
@@ -264,6 +307,20 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
     };
   }
 
+  function reviewProjection(identity: Awaited<ReturnType<typeof seed>>) {
+    const exactHeadSha = "d".repeat(40);
+    return {
+      companyId: identity.companyId,
+      agentId: identity.agentId,
+      heartbeatRunId: identity.heartbeatRunId,
+      issueId: identity.issueId,
+      kind: "review_verdict" as const,
+      body: `APPROVE exact head ${exactHeadSha}; no P0/P1 findings.`,
+      exactHeadSha,
+      disposition: "accepted" as const,
+    };
+  }
+
   it("commits terminal run, usage, cost, provider receipt, continuation, and mutation disposition together", async () => {
     const identity = await seed();
     const result = await heartbeatRunSettlementService(db).settle(input(identity));
@@ -306,6 +363,107 @@ describeEmbeddedPostgres("atomic heartbeat run settlement", () => {
       totalCachedInputTokens: 9,
       totalOutputTokens: 17,
     });
+  });
+
+  it("commits a typed exact-head review projection in the same transaction as terminal run truth", async () => {
+    const identity = await seed();
+    const result = await heartbeatRunSettlementService(db).settle({
+      ...input(identity),
+      issueProjection: reviewProjection(identity),
+    });
+
+    expect(result.run.status).toBe("succeeded");
+    const projections = await db.select().from(heartbeatRunIssueProjections);
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toMatchObject({
+      heartbeatRunId: identity.heartbeatRunId,
+      issueId: identity.issueId,
+      kind: "review_verdict",
+      status: "pending",
+      disposition: "accepted",
+      exactHeadSha: "d".repeat(40),
+    });
+  });
+
+  it("rolls back run truth and projection together when a later settlement step fails", async () => {
+    const identity = await seed();
+    const service = heartbeatRunSettlementService(db, {
+      afterStep: (step) => {
+        if (step === "issue_projection") throw new Error("injected projection boundary failure");
+      },
+    });
+    await expect(service.settle({
+      ...input(identity),
+      issueProjection: reviewProjection(identity),
+    })).rejects.toThrow("injected projection boundary failure");
+
+    const run = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, identity.heartbeatRunId))
+      .then((rows) => rows[0]);
+    expect(run.status).toBe("running");
+    expect(await db.select().from(heartbeatRunIssueProjections)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRunSettlements)).toHaveLength(0);
+  });
+
+  it("replays a failed comment transaction from the outbox without rerunning or duplicating provider work", async () => {
+    const identity = await seed();
+    await heartbeatRunSettlementService(db).settle({
+      ...input(identity),
+      issueProjection: reviewProjection(identity),
+    });
+
+    let injectFailure = true;
+    const outbox = heartbeatRunIssueProjectionService(db, {
+      afterCommentInsert: () => {
+        if (injectFailure) throw new Error("task bridge unavailable");
+      },
+    });
+    const addComment = async (
+      projection: typeof heartbeatRunIssueProjections.$inferSelect,
+      tx: typeof db,
+    ) => tx.insert(issueComments).values({
+      companyId: projection.companyId,
+      issueId: projection.issueId,
+      authorAgentId: projection.agentId,
+      authorType: "agent",
+      createdByRunId: projection.heartbeatRunId,
+      body: projection.body,
+    }).returning({ id: issueComments.id }).then((rows) => rows[0]);
+
+    const firstAttemptAt = new Date(Date.now() + 1_000);
+    const first = await outbox.drain({
+      now: firstAttemptAt,
+      addComment,
+    });
+    expect(first).toMatchObject({ delivered: 0, failed: 1 });
+    expect(await db.select().from(issueComments)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRunIssueProjections)).toMatchObject([{
+      status: "pending",
+      attemptCount: 1,
+      lastErrorClass: "Error",
+    }]);
+    expect(await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, identity.heartbeatRunId))
+      .then((rows) => rows[0]?.status)).toBe("succeeded");
+
+    injectFailure = false;
+    const second = await outbox.drain({
+      now: new Date(firstAttemptAt.getTime() + 31_000),
+      addComment,
+    });
+    expect(second).toMatchObject({ delivered: 1, failed: 0 });
+    expect(await db.select().from(issueComments)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRunIssueProjections)).toMatchObject([{
+      status: "delivered",
+      attemptCount: 2,
+      lastErrorClass: null,
+    }]);
+    const replay = await outbox.drain({
+      now: new Date(firstAttemptAt.getTime() + 60_000),
+      addComment,
+    });
+    expect(replay).toMatchObject({ delivered: 0, failed: 0 });
+    expect(await db.select().from(issueComments)).toHaveLength(1);
   });
 
   it("replays by heartbeat run id without duplicating ledger totals or receipts", async () => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -159,6 +159,35 @@ describe("evaluateWorkspaceAdmitFilesystem", () => {
       expectedHeadSha: GOOD_SHA,
     });
     expect(result.checks[0]?.reasonCode).toBe(WORKSPACE_ADMIT_REASON.CWD_MISSING);
+    expect(result.checks.some((check) =>
+      check.reasonCode === WORKSPACE_ADMIT_REASON.EXPECTED_HEAD_NOT_FULL_SHA
+    )).toBe(false);
+  });
+
+  it("reports every independently knowable fault when both path and declared head are missing", () => {
+    const result = evaluateWorkspaceAdmitFilesystem({
+      cwd: null,
+      expectedHeadSha: null,
+    });
+    expect(result.checks.filter((check) => !check.ok).map((check) => check.reasonCode)).toEqual([
+      WORKSPACE_ADMIT_REASON.EXPECTED_HEAD_NOT_FULL_SHA,
+      WORKSPACE_ADMIT_REASON.CWD_MISSING,
+    ]);
+  });
+
+  it("fails a workspace owned by a different service uid before git invocation", () => {
+    const { cwd, head } = makeTempGitRepo();
+    const actualUid = lstatSync(cwd).uid;
+    const result = evaluateWorkspaceAdmitFilesystem({
+      cwd,
+      expectedHeadSha: head,
+      expectedOwnerUid: actualUid + 1,
+    });
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      id: "cwd_owner",
+      ok: false,
+      reasonCode: WORKSPACE_ADMIT_REASON.CWD_OWNER_MISMATCH,
+    }));
   });
 
   it("fails non-git directory", () => {
@@ -431,6 +460,19 @@ describe("formatWorkspaceAdmitFailureComment (C4)", () => {
       cwd: "/tmp/ws",
       repoUrl: "https://github.com/gloopsAI/gloops-ui.git",
       details: "dirty and mismatch",
+      receipt: {
+        schemaVersion: "gloops.workspace-readiness-report.v1",
+        admitted: false,
+        reasonCodes: [WORKSPACE_ADMIT_REASON.DIRTY_TREE, WORKSPACE_ADMIT_REASON.HEAD_MISMATCH],
+        checks: [],
+        expectedHeadSha: GOOD_SHA,
+        observedHeadSha: OTHER_SHA,
+        projectWorkspaceId: "pws-1",
+        executionWorkspaceId: null,
+        cwd: "/tmp/ws",
+        repoUrl: "https://github.com/gloopsAI/gloops-ui.git",
+        reportDigest: `sha256:${"1".repeat(64)}`,
+      },
     };
     const body = formatWorkspaceAdmitFailureComment(result);
     const primary = primaryWorkspaceAdmitErrorCode(result);
@@ -438,6 +480,7 @@ describe("formatWorkspaceAdmitFailureComment (C4)", () => {
     expect(body).toContain(`errorCode: \`${primary}\``);
     expect(body).toContain(WORKSPACE_ADMIT_REASON.DIRTY_TREE);
     expect(body).toContain(GOOD_SHA);
+    expect(body).toContain(`sha256:${"1".repeat(64)}`);
   });
 
   it("falls back to workspace_admit.not_ready when no codes", () => {
@@ -451,6 +494,19 @@ describe("formatWorkspaceAdmitFailureComment (C4)", () => {
       cwd: null,
       repoUrl: null,
       details: "unknown",
+      receipt: {
+        schemaVersion: "gloops.workspace-readiness-report.v1",
+        admitted: false,
+        reasonCodes: [],
+        checks: [],
+        expectedHeadSha: null,
+        observedHeadSha: null,
+        projectWorkspaceId: null,
+        executionWorkspaceId: null,
+        cwd: null,
+        repoUrl: null,
+        reportDigest: `sha256:${"2".repeat(64)}`,
+      },
     };
     const body = formatWorkspaceAdmitFailureComment(result);
     expect(body).toContain(`errorCode: \`${WORKSPACE_ADMIT_REASON.NOT_READY}\``);

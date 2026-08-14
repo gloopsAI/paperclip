@@ -47,6 +47,7 @@ import {
   documentRevisions,
   issueDocuments,
   executionWorkspaces,
+  heartbeatRunIssueProjections,
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
@@ -192,6 +193,11 @@ import {
   type HeartbeatRunSettlementHooks,
 } from "./heartbeat-run-settlement.js";
 import { repositoryMutationReceiptService } from "./repository-mutation-receipts.js";
+import {
+  buildReviewVerdictProjection,
+  heartbeatRunIssueProjectionService,
+  type HeartbeatRunIssueProjectionHooks,
+} from "./heartbeat-run-issue-projections.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
@@ -5453,6 +5459,7 @@ export interface HeartbeatServiceOptions {
   runtimeEnv?: Record<string, string | undefined>;
   campaignDeadmanAdmission?: typeof admitCampaignRun;
   heartbeatRunSettlementHooks?: HeartbeatRunSettlementHooks;
+  heartbeatRunIssueProjectionHooks?: HeartbeatRunIssueProjectionHooks;
   terminalIssueReconciliationHooks?: {
     /** Test/coordination seam after the read decision and before the guarded write. */
     afterDecisionBeforeProjection?: (input: {
@@ -5756,7 +5763,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     db,
     options.heartbeatRunSettlementHooks,
   );
+  const issueProjectionOutbox = heartbeatRunIssueProjectionService(
+    db,
+    options.heartbeatRunIssueProjectionHooks,
+  );
   const repositoryMutationReceipts = repositoryMutationReceiptService(db);
+
+  const drainHeartbeatRunIssueProjections = async (limit = 20) =>
+    issueProjectionOutbox.drain({
+      limit,
+      addComment: async (projection, tx) => issuesSvc.addComment(
+        projection.issueId,
+        projection.body,
+        projection.agentId
+          ? { agentId: projection.agentId, runId: projection.heartbeatRunId }
+          : { runId: projection.heartbeatRunId },
+        projection.agentId ? undefined : { authorType: "system" },
+        tx,
+      ),
+    });
 
   async function recordReviewTerminalFailure(input: {
     run: typeof heartbeatRuns.$inferSelect;
@@ -9597,6 +9622,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "satisfied" as const, queuedRun: null };
     }
 
+    const pendingProjection = await db
+      .select({ status: heartbeatRunIssueProjections.status })
+      .from(heartbeatRunIssueProjections)
+      .where(and(
+        eq(heartbeatRunIssueProjections.heartbeatRunId, run.id),
+        eq(heartbeatRunIssueProjections.kind, "review_verdict"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (pendingProjection?.status === "pending") {
+      await patchRunIssueCommentStatus(run.id, {
+        issueCommentStatus: "projection_pending",
+        issueCommentSatisfiedByCommentId: null,
+        issueCommentRetryQueuedAt: null,
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Terminal review verdict is durably queued for issue projection; provider retry suppressed",
+        payload: { issueId, projectionKind: "review_verdict" },
+      });
+      return { outcome: "projection_pending" as const, queuedRun: null };
+    }
+
     if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "retry_exhausted",
@@ -12912,7 +12961,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         // C1 workspace admit: deny claim before execution admission / Hermes work-prep.
-        const workspaceAdmitMode = getWorkspaceAdmitMode();
+        const workspaceAdmitMode = getWorkspaceAdmitMode({ ...process.env, ...runtimeEnv });
         const workspaceAdmitPacketInput = {
           title: claimIssueContext.title,
           description: claimIssueContext.description,
@@ -12960,6 +13009,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
               "claimQueuedRun: workspace admit preflight gap",
             );
+          }
+          if (workspaceAdmit.admitted || workspaceAdmitMode === "observe") {
+            context.paperclipWorkspaceReadiness = workspaceAdmit.receipt;
+            const receiptPersisted = await db.update(heartbeatRuns)
+              .set({ contextSnapshot: context, updatedAt: new Date() })
+              .where(and(
+                eq(heartbeatRuns.id, run.id),
+                eq(heartbeatRuns.companyId, run.companyId),
+                eq(heartbeatRuns.status, "queued"),
+              ))
+              .returning({ id: heartbeatRuns.id })
+              .then((rows) => rows.length === 1);
+            if (!receiptPersisted) {
+              logger.info(
+                { runId: run.id, issueId },
+                "claimQueuedRun: workspace readiness receipt lost queued-run race",
+              );
+              return null;
+            }
           }
           if (workspaceAdmitMode === "enforce" && !workspaceAdmit.admitted) {
             await cancelQueuedRunForWorkspaceAdmitNotReady(run, issueId, workspaceAdmit);
@@ -13515,52 +13583,85 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reason =
       workspaceAdmit.details ||
       "Cancelled because workspace admit preflight failed (wrong/stale/dirty lease or missing workspace)";
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: reason,
-      errorCode,
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: errorCode,
-        workspaceAdmit: {
-          admitted: workspaceAdmit.admitted,
-          reasonCodes: workspaceAdmit.reasonCodes,
-          expectedHeadSha: workspaceAdmit.expectedHeadSha,
-          observedHeadSha: workspaceAdmit.observedHeadSha,
-          projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
-          cwd: workspaceAdmit.cwd,
-          repoUrl: workspaceAdmit.repoUrl,
-          details: workspaceAdmit.details,
-          checks: workspaceAdmit.checks,
-        },
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "workspace_admit_gate",
-        timeoutFired: false,
-      },
-    });
-    if (!cancelled) return null;
+    const commentBody = formatWorkspaceAdmitFailureComment(workspaceAdmit);
+    const cancelled = await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select id from heartbeat_runs
+        where id = ${run.id} and company_id = ${run.companyId}
+        for update
+      `);
+      await tx.execute(sql`
+        select id from issues
+        where id = ${issueId} and company_id = ${run.companyId}
+        for update
+      `);
+      const terminal = await tx.update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: reason,
+          errorCode,
+          resultJson: {
+            ...parseObject(run.resultJson),
+            stopReason: errorCode,
+            workspaceAdmit: {
+              ...workspaceAdmit.receipt,
+              details: workspaceAdmit.details,
+            },
+            providerInvocationAttempted: false,
+            effectiveTimeoutSec: 0,
+            timeoutConfigured: false,
+            timeoutSource: "workspace_admit_gate",
+            timeoutFired: false,
+          },
+          updatedAt: now,
+        })
+        .where(and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "queued"),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!terminal) return null;
 
-    await setWakeupStatus(run.wakeupRequestId, "skipped", {
-      finishedAt: now,
-      error: reason,
-    });
-
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
+      if (run.wakeupRequestId) {
+        await tx.update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            finishedAt: now,
+            error: reason,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+      }
+      await tx.update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(and(
           eq(issues.companyId, run.companyId),
           eq(issues.id, issueId),
           eq(issues.executionRunId, run.id),
-        ),
-      );
+        ));
+      await heartbeatRunIssueProjectionService(tx as unknown as Db).enqueue({
+        companyId: run.companyId,
+        agentId: null,
+        heartbeatRunId: run.id,
+        issueId,
+        kind: "workspace_readiness",
+        body: commentBody,
+        exactHeadSha: workspaceAdmit.expectedHeadSha,
+        disposition: null,
+      });
+      return terminal;
+    });
+    if (!cancelled) return null;
+
+    publishRunStatusUpdate(cancelled);
 
     await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
       eventType: "lifecycle",
@@ -13598,21 +13699,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    // C4: system comment mirrors run.errorCode so board operators see the gate.
-    const commentBody = formatWorkspaceAdmitFailureComment(workspaceAdmit);
-    try {
-      await issuesSvc.addComment(
-        issueId,
-        commentBody,
-        { runId: run.id },
-        { authorType: "system" },
-      );
-    } catch (err) {
+    await drainHeartbeatRunIssueProjections(10).catch((err) => {
       logger.warn(
         { err, runId: run.id, issueId, errorCode },
-        "failed to write workspace admit failure system comment",
+        "workspace readiness report committed but issue projection remains pending",
       );
-    }
+    });
 
     return cancelled;
   }
@@ -14108,6 +14200,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileTerminalAgentTruth(opts?: { companyId?: string | null }) {
+    await drainHeartbeatRunIssueProjections(50).catch((projectionError) => {
+      logger.warn(
+        { err: projectionError, companyId: opts?.companyId ?? null },
+        "heartbeat issue projection replay pass failed",
+      );
+    });
     const candidates = await db
       .select({
         id: agents.id,
@@ -17082,6 +17180,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const atomicLedgerScope = adapterResult.providerIoTerminalEvidence
         ? await resolveLedgerScopeForRun(db, agent.companyId, run)
         : null;
+      const terminalIssueProjection = adapterResult.providerIoTerminalEvidence
+        && issueId
+        && shouldRequireIssueCommentForWake(context)
+        ? buildReviewVerdictProjection({
+            companyId: agent.companyId,
+            agentId: agent.id,
+            heartbeatRunId: run.id,
+            issueId,
+            terminalStatus: status,
+            exactHeadSha: executionWorkspace.baseRefSha ?? executionWorkspace.repoRef,
+            resultJson: persistedResultJson,
+            workMode: issueRef?.workMode,
+          })
+        : null;
       let atomicSettlement: Awaited<ReturnType<typeof heartbeatRunSettlements.settle>> | null = null;
       if (adapterResult.providerIoTerminalEvidence) {
         try {
@@ -17113,6 +17225,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
             },
             mutation: repositoryMutation,
+            issueProjection: terminalIssueProjection,
           });
         } catch (settlementError) {
           const settlementMessage = settlementError instanceof Error
@@ -17153,6 +17266,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               "atomic run settlement committed but budget policy evaluation failed",
             );
           });
+      }
+      if (atomicSettlement && terminalIssueProjection) {
+        await drainHeartbeatRunIssueProjections(10).catch((projectionError) => {
+          logger.warn(
+            { err: projectionError, runId: run.id, issueId },
+            "terminal review verdict committed but issue projection remains pending",
+          );
+        });
       }
       const persistedRunWrite = atomicSettlement
         ? {
@@ -17347,7 +17468,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
-        if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
+        if (
+          issueId
+          && outcome === "succeeded"
+          && !skipRunIssueComment
+          && !terminalIssueProjection
+        ) {
           try {
             await ensureRunIssueComment({
               run: livenessRun,

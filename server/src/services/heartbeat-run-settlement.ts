@@ -16,6 +16,10 @@ import {
 import type { PreparedProviderRequestIdentity } from "./provider-request-evidence.js";
 import { budgetService } from "./budgets.js";
 import { repositoryMutationReceiptService } from "./repository-mutation-receipts.js";
+import {
+  heartbeatRunIssueProjectionService,
+  type HeartbeatRunIssueProjectionInput,
+} from "./heartbeat-run-issue-projections.js";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -55,12 +59,14 @@ export type AtomicHeartbeatRunSettlementInput = {
     projectId?: string | null;
   };
   mutation: HeartbeatRunMutationSettlement;
+  issueProjection?: HeartbeatRunIssueProjectionInput | null;
   settledAt?: Date;
 };
 
 export type HeartbeatRunSettlementStep =
   | "provider_evidence"
   | "run"
+  | "issue_projection"
   | "cost"
   | "budget"
   | "accounting"
@@ -211,6 +217,10 @@ export function heartbeatRunSettlementService(
           .then((rows) => rows[0] ?? null);
         if (existing) {
           assertReplayMatches(existing, providerReceipt.id, input, usage);
+          await heartbeatRunIssueProjectionService(tx as unknown as Db).assertExisting(
+            input.issueProjection ?? null,
+            input.identity.heartbeatRunId,
+          );
           const [committedRun, costEvent] = await Promise.all([
             tx.select().from(heartbeatRuns)
               .where(eq(heartbeatRuns.id, input.identity.heartbeatRunId))
@@ -259,6 +269,23 @@ export function heartbeatRunSettlementService(
           );
         }
         await hooks.afterStep?.("run");
+
+        if (input.issueProjection) {
+          if (
+            input.issueProjection.companyId !== input.identity.companyId
+            || input.issueProjection.agentId !== input.identity.agentId
+            || input.issueProjection.heartbeatRunId !== input.identity.heartbeatRunId
+            || input.issueProjection.issueId !== input.identity.issueId
+          ) {
+            throw new HeartbeatRunSettlementConflictError(
+              `Issue projection identity does not match atomic settlement ${run.id}`,
+            );
+          }
+          await heartbeatRunIssueProjectionService(tx as unknown as Db).enqueue(
+            input.issueProjection,
+          );
+        }
+        await hooks.afterStep?.("issue_projection");
 
         const costEvent = await tx
           .insert(costEvents)

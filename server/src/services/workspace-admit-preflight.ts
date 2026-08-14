@@ -18,7 +18,8 @@
  * Create mode: PAPERCLIP_WORKSPACE_ADMIT_CREATE (defaults to WORKSPACE_ADMIT).
  */
 
-import { existsSync, accessSync, constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, accessSync, constants as fsConstants, lstatSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -44,6 +45,14 @@ export const WORKSPACE_ADMIT_REASON = {
   CWD_MISSING: "workspace_admit.cwd_missing",
   CWD_NOT_GIT: "workspace_admit.cwd_not_git",
   CWD_NOT_READABLE: "workspace_admit.cwd_not_readable",
+  CWD_NOT_DIRECTORY: "workspace_admit.cwd_not_directory",
+  CWD_SYMLINK: "workspace_admit.cwd_symlink",
+  CWD_OWNER_MISMATCH: "workspace_admit.cwd_owner_mismatch",
+  EXECUTION_WORKSPACE_NOT_FOUND: "workspace_admit.execution_workspace_not_found",
+  EXECUTION_WORKSPACE_NOT_ACTIVE: "workspace_admit.execution_workspace_not_active",
+  EXECUTION_WORKSPACE_NOT_ISOLATED: "workspace_admit.execution_workspace_not_isolated",
+  EXECUTION_WORKSPACE_PROJECT_MISMATCH: "workspace_admit.execution_workspace_project_mismatch",
+  EXECUTION_WORKSPACE_REPO_MISMATCH: "workspace_admit.execution_workspace_repo_mismatch",
   EXPECTED_HEAD_NOT_FULL_SHA: "workspace_admit.expected_head_not_full_sha",
   HEAD_MISMATCH: "workspace_admit.head_mismatch",
   DIRTY_TREE: "workspace_admit.dirty_tree",
@@ -76,6 +85,21 @@ export type WorkspaceAdmitPreflightResult = {
   cwd: string | null;
   repoUrl: string | null;
   details: string;
+  receipt: WorkspaceReadinessReceipt;
+};
+
+export type WorkspaceReadinessReceipt = {
+  schemaVersion: "gloops.workspace-readiness-report.v1";
+  admitted: boolean;
+  reasonCodes: WorkspaceAdmitReasonCode[];
+  checks: WorkspaceAdmitCheck[];
+  expectedHeadSha: string | null;
+  observedHeadSha: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+  cwd: string | null;
+  repoUrl: string | null;
+  reportDigest: string;
 };
 
 export type WorkspaceAdmitIssueFields = {
@@ -213,11 +237,24 @@ export function evaluateWorkspaceAdmitFilesystem(input: {
   scopePathHints?: string[];
   requireCleanTree?: boolean;
   requireExpectedHead?: boolean;
+  expectedOwnerUid?: number | null;
 }): { checks: WorkspaceAdmitCheck[]; observedHeadSha: string | null } {
   const checks: WorkspaceAdmitCheck[] = [];
   const requireClean = input.requireCleanTree !== false;
   const requireHead = input.requireExpectedHead !== false;
   let observedHeadSha: string | null = null;
+
+  // The declared head is independently knowable even when the recorded path
+  // is missing. Report it in the same pass instead of discovering it on a
+  // second wake after the path is repaired.
+  if (requireHead && !isFullSha(input.expectedHeadSha)) {
+    checks.push({
+      id: "expected_head",
+      ok: false,
+      reasonCode: WORKSPACE_ADMIT_REASON.EXPECTED_HEAD_NOT_FULL_SHA,
+      detail: `expected head must be full 40-char SHA; received ${input.expectedHeadSha ?? "(null)"}`,
+    });
+  }
 
   if (!input.cwd) {
     checks.push({
@@ -237,6 +274,50 @@ export function evaluateWorkspaceAdmitFilesystem(input: {
       detail: `cwd does not exist: ${input.cwd}`,
     });
     return { checks, observedHeadSha };
+  }
+
+  try {
+    const cwdStat = lstatSync(input.cwd);
+    if (cwdStat.isSymbolicLink()) {
+      checks.push({
+        id: "cwd_symlink",
+        ok: false,
+        reasonCode: WORKSPACE_ADMIT_REASON.CWD_SYMLINK,
+        detail: `workspace cwd must not be a symbolic link: ${input.cwd}`,
+      });
+    } else {
+      checks.push({ id: "cwd_symlink", ok: true });
+    }
+    if (!cwdStat.isDirectory()) {
+      checks.push({
+        id: "cwd_directory",
+        ok: false,
+        reasonCode: WORKSPACE_ADMIT_REASON.CWD_NOT_DIRECTORY,
+        detail: `workspace cwd is not a directory: ${input.cwd}`,
+      });
+    } else {
+      checks.push({ id: "cwd_directory", ok: true });
+    }
+    const expectedOwnerUid = input.expectedOwnerUid === undefined
+      ? (typeof process.getuid === "function" ? process.getuid() : null)
+      : input.expectedOwnerUid;
+    if (expectedOwnerUid != null && cwdStat.uid !== expectedOwnerUid) {
+      checks.push({
+        id: "cwd_owner",
+        ok: false,
+        reasonCode: WORKSPACE_ADMIT_REASON.CWD_OWNER_MISMATCH,
+        detail: `workspace cwd uid ${cwdStat.uid} does not match Paperclip service uid ${expectedOwnerUid}`,
+      });
+    } else {
+      checks.push({ id: "cwd_owner", ok: true, detail: `uid=${cwdStat.uid}` });
+    }
+  } catch (error) {
+    checks.push({
+      id: "cwd_metadata",
+      ok: false,
+      reasonCode: WORKSPACE_ADMIT_REASON.CWD_NOT_READABLE,
+      detail: `could not inspect workspace cwd metadata: ${error instanceof Error ? error.name : "unknown"}`,
+    });
   }
 
   try {
@@ -276,20 +357,13 @@ export function evaluateWorkspaceAdmitFilesystem(input: {
     checks.push({ id: "head", ok: true, detail: observedHeadSha });
   }
 
-  if (requireHead) {
-    if (!isFullSha(input.expectedHeadSha)) {
-      checks.push({
-        id: "expected_head",
-        ok: false,
-        reasonCode: WORKSPACE_ADMIT_REASON.EXPECTED_HEAD_NOT_FULL_SHA,
-        detail: `expected head must be full 40-char SHA; received ${input.expectedHeadSha ?? "(null)"}`,
-      });
-    } else if (observedHeadSha && observedHeadSha !== input.expectedHeadSha!.toLowerCase()) {
+  if (requireHead && isFullSha(input.expectedHeadSha)) {
+    if (observedHeadSha && observedHeadSha !== input.expectedHeadSha.toLowerCase()) {
       checks.push({
         id: "expected_head",
         ok: false,
         reasonCode: WORKSPACE_ADMIT_REASON.HEAD_MISMATCH,
-        detail: `HEAD ${observedHeadSha} != expected ${input.expectedHeadSha!.toLowerCase()}`,
+        detail: `HEAD ${observedHeadSha} != expected ${input.expectedHeadSha.toLowerCase()}`,
       });
     } else if (observedHeadSha) {
       checks.push({ id: "expected_head", ok: true });
@@ -432,6 +506,8 @@ export async function runWorkspaceAdmitPreflight(
   let repoUrl: string | null = null;
   let workspaceRepoRef: string | null = null;
   let workspaceDefaultRef: string | null = null;
+  const executionWorkspaceId = input.issue.executionWorkspaceId ?? null;
+  let projectWorkspaceRepoUrl: string | null = null;
 
   if (requiresWorkspace && !projectWorkspaceId && !input.issue.executionWorkspaceId) {
     checks.push({
@@ -462,24 +538,69 @@ export async function runWorkspaceAdmitPreflight(
       checks.push({ id: "project_workspace", ok: true });
       cwd = pws.cwd ?? null;
       repoUrl = pws.repoUrl ?? null;
+      projectWorkspaceRepoUrl = pws.repoUrl ?? null;
       workspaceRepoRef = pws.repoRef ?? null;
       workspaceDefaultRef = pws.defaultRef ?? null;
     }
   }
 
   // Prefer realized execution workspace cwd when present
-  if (input.issue.executionWorkspaceId) {
+  if (executionWorkspaceId) {
     const ews = await db
       .select()
       .from(executionWorkspaces)
       .where(
         and(
-          eq(executionWorkspaces.id, input.issue.executionWorkspaceId),
+          eq(executionWorkspaces.id, executionWorkspaceId),
           eq(executionWorkspaces.companyId, input.companyId),
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (ews) {
+    if (!ews) {
+      checks.push({
+        id: "execution_workspace",
+        ok: false,
+        reasonCode: WORKSPACE_ADMIT_REASON.EXECUTION_WORKSPACE_NOT_FOUND,
+        detail: `executionWorkspaceId not found: ${executionWorkspaceId}`,
+      });
+    } else {
+      checks.push({ id: "execution_workspace", ok: true, detail: `status=${ews.status}; mode=${ews.mode}` });
+      if (ews.status !== "active") {
+        checks.push({
+          id: "execution_workspace_status",
+          ok: false,
+          reasonCode: WORKSPACE_ADMIT_REASON.EXECUTION_WORKSPACE_NOT_ACTIVE,
+          detail: `execution workspace ${ews.id} is ${ews.status}, not active`,
+        });
+      }
+      if (packet.profile === "standard_review" && ews.mode !== "isolated_workspace") {
+        checks.push({
+          id: "execution_workspace_isolation",
+          ok: false,
+          reasonCode: WORKSPACE_ADMIT_REASON.EXECUTION_WORKSPACE_NOT_ISOLATED,
+          detail: `review workspace ${ews.id} must be isolated_workspace; found ${ews.mode}`,
+        });
+      }
+      if (projectWorkspaceId && ews.projectWorkspaceId !== projectWorkspaceId) {
+        checks.push({
+          id: "execution_workspace_project",
+          ok: false,
+          reasonCode: WORKSPACE_ADMIT_REASON.EXECUTION_WORKSPACE_PROJECT_MISMATCH,
+          detail: `execution workspace projectWorkspaceId ${ews.projectWorkspaceId ?? "null"} != issue projectWorkspaceId ${projectWorkspaceId}`,
+        });
+      }
+      if (
+        projectWorkspaceRepoUrl
+        && ews.repoUrl
+        && !reposMatch(normalizeRepoUrl(projectWorkspaceRepoUrl), normalizeRepoUrl(ews.repoUrl))
+      ) {
+        checks.push({
+          id: "execution_workspace_repo",
+          ok: false,
+          reasonCode: WORKSPACE_ADMIT_REASON.EXECUTION_WORKSPACE_REPO_MISMATCH,
+          detail: `execution workspace repo ${ews.repoUrl} != project workspace repo ${projectWorkspaceRepoUrl}`,
+        });
+      }
       cwd = ews.cwd ?? ews.providerRef ?? cwd;
       if (ews.repoUrl) repoUrl = ews.repoUrl;
       if (ews.baseRef && isFullSha(ews.baseRef)) {
@@ -516,6 +637,22 @@ export async function runWorkspaceAdmitPreflight(
       ? "Workspace admit preflight passed."
       : failed.map((c) => `${c.id}: ${c.detail ?? c.reasonCode}`).join("; ");
 
+  const receiptPayload = {
+    schemaVersion: "gloops.workspace-readiness-report.v1" as const,
+    admitted: failed.length === 0,
+    reasonCodes,
+    checks,
+    expectedHeadSha,
+    observedHeadSha: fsResult.observedHeadSha,
+    projectWorkspaceId,
+    executionWorkspaceId,
+    cwd,
+    repoUrl,
+  };
+  const reportDigest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(receiptPayload), "utf8")
+    .digest("hex")}`;
+
   return {
     admitted: failed.length === 0,
     checks,
@@ -526,6 +663,7 @@ export async function runWorkspaceAdmitPreflight(
     cwd,
     repoUrl,
     details,
+    receipt: { ...receiptPayload, reportDigest },
   };
 }
 
@@ -702,6 +840,11 @@ export function formatWorkspaceAdmitFailureComment(result: WorkspaceAdmitPreflig
   const allCodes = result.reasonCodes.length
     ? result.reasonCodes.join(", ")
     : WORKSPACE_ADMIT_REASON.NOT_READY;
+  const failedChecks = result.checks
+    .filter((check) => !check.ok)
+    .map((check) =>
+      `  - \`${check.id}\`: \`${check.reasonCode ?? WORKSPACE_ADMIT_REASON.NOT_READY}\` — ${check.detail ?? "failed"}`
+    );
   return [
     "Paperclip blocked execution at **workspace admit preflight** (C1).",
     "",
@@ -712,6 +855,9 @@ export function formatWorkspaceAdmitFailureComment(result: WorkspaceAdmitPreflig
     `- projectWorkspaceId: \`${result.projectWorkspaceId ?? "null"}\``,
     `- cwd: \`${result.cwd ?? "null"}\``,
     `- repoUrl: \`${result.repoUrl ?? "null"}\``,
+    `- readinessReportDigest: \`${result.receipt.reportDigest}\``,
+    "- failedChecks:",
+    ...(failedChecks.length > 0 ? failedChecks : ["  - none recorded"]),
     "",
     result.details,
     "",
