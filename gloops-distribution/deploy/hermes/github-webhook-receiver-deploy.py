@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 ROOT = pathlib.Path("/var/lib/paperclip-gloops/webhook-receiver-transactions")
@@ -22,12 +23,33 @@ RECEIVER = pathlib.Path("/usr/local/lib/paperclip-gloops/github-webhook-receiver
 UNIT = pathlib.Path("/etc/systemd/system/paperclip-github-webhook-receiver.service")
 SECRET = pathlib.Path("/etc/paperclip-gloops/github-webhook-hmac")
 CADDY = pathlib.Path("/etc/caddy/Caddyfile")
+ALLOWED_CADDY_CONFIGS = frozenset(
+    {
+        pathlib.Path("/etc/caddy/Caddyfile"),
+        pathlib.Path("/etc/caddy/Caddyfile.tailnet"),
+    }
+)
 SERVICE = "paperclip-github-webhook-receiver.service"
+CADDY_SERVICE = "caddy.service"
 MARKER = "# BEGIN GLOOPS PAPERCLIP GITHUB WEBHOOK"
 MAX_FILE_BYTES = 8 * 1024 * 1024
+HEALTH_MAX_ATTEMPTS = 30
+HEALTH_INTERVAL_SECONDS = 0.25
 HMAC_SECRET_RE = re.compile(rb"^[A-Za-z0-9._~+/=-]{32,256}$")
 PLUGIN_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 PLUGIN_ID_PLACEHOLDER = b"__PAPERCLIP_PLUGIN_ID__"
+
+
+class ReadinessError(RuntimeError):
+    def __init__(self, summary: dict[str, object]):
+        super().__init__("receiver readiness exhausted")
+        self.summary = summary
+
+
+class RollbackPhaseError(RuntimeError):
+    def __init__(self, phase: str):
+        super().__init__(f"rollback failed during {phase}")
+        self.phase = phase
 
 
 def sha256(value: bytes) -> str:
@@ -268,6 +290,35 @@ def run(*command: str) -> None:
         raise RuntimeError(f"command failed: {command[0]} ({result.returncode})")
 
 
+def resolve_effective_caddy_config() -> pathlib.Path:
+    result = subprocess.run(
+        ["systemctl", "show", CADDY_SERVICE, "-p", "ExecStart", "--value"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("effective Caddy command is unavailable")
+    matches = re.findall(r"(?:^|\s)--config(?:=|\s+)(/[^\s;]+)", result.stdout)
+    if len(matches) != 1:
+        raise RuntimeError("effective Caddy command must contain exactly one absolute config")
+    config = pathlib.Path(matches[0])
+    if config not in ALLOWED_CADDY_CONFIGS:
+        raise RuntimeError("effective Caddy config is outside the allowlist")
+    return config
+
+
+def caddy_uses_admin_off(value: bytes) -> bool:
+    return re.search(rb"(?m)^\s*admin\s+off\s*(?:#.*)?$", value) is not None
+
+
+def activate_caddy(value: bytes) -> str:
+    action = "restart" if caddy_uses_admin_off(value) else "reload"
+    run("systemctl", action, CADDY_SERVICE)
+    run("systemctl", "is-active", "--quiet", CADDY_SERVICE)
+    return action
+
+
 def service_state() -> dict[str, bool]:
     active = subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0
     enabled = subprocess.run(["systemctl", "is-enabled", "--quiet", SERVICE]).returncode == 0
@@ -297,6 +348,31 @@ def health() -> None:
             raise RuntimeError("receiver health failed")
 
 
+def wait_for_health(
+    *,
+    max_attempts: int = HEALTH_MAX_ATTEMPTS,
+    interval_seconds: float = HEALTH_INTERVAL_SECONDS,
+) -> dict[str, object]:
+    started = time.monotonic()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            health()
+            return {
+                "attempts": attempt,
+                "elapsedMs": max(0, round((time.monotonic() - started) * 1000)),
+                "outcome": "ready",
+            }
+        except Exception:
+            if attempt < max_attempts:
+                time.sleep(interval_seconds)
+    summary = {
+        "attempts": max_attempts,
+        "elapsedMs": max(0, round((time.monotonic() - started) * 1000)),
+        "outcome": "exhausted",
+    }
+    raise ReadinessError(summary)
+
+
 def ensure_root() -> None:
     if os.geteuid() != 0:
         raise SystemExit("root required")
@@ -307,6 +383,8 @@ def ensure_root() -> None:
 
 def install(args: argparse.Namespace) -> None:
     ensure_root()
+    caddy = resolve_effective_caddy_config()
+    trusted_root_directory(caddy.parent)
     receiver = read_regular(pathlib.Path(args.receiver_source))
     unit_template = read_regular(pathlib.Path(args.unit_source))
     unit = render_unit(unit_template, args.plugin_id)
@@ -317,7 +395,7 @@ def install(args: argparse.Namespace) -> None:
     if HMAC_SECRET_RE.fullmatch(secret) is None:
         raise RuntimeError("candidate secret length invalid")
     compile(receiver, str(RECEIVER), "exec")
-    current_caddy = read_regular(CADDY)
+    current_caddy = read_regular(caddy)
     candidate_caddy = patch_caddy(current_caddy, route)
     validate_caddy(candidate_caddy)
     tx = ROOT / args.transaction_id
@@ -326,8 +404,9 @@ def install(args: argparse.Namespace) -> None:
     backup = {
         "schema": "gloops.github-webhook-receiver-backup.v1",
         "transactionId": args.transaction_id,
+        "caddyConfigPath": str(caddy),
         "priorService": service_state(),
-        "artifacts": [snapshot(path) for path in (RECEIVER, UNIT, SECRET, CADDY)],
+        "artifacts": [snapshot(path) for path in (RECEIVER, UNIT, SECRET, caddy)],
         "candidate": {
             "receiverSha256": sha256(receiver),
             "unitSha256": sha256(unit),
@@ -337,31 +416,45 @@ def install(args: argparse.Namespace) -> None:
         },
     }
     write_json(tx / "backup.json", backup)
+    phase = "write_receiver"
+    readiness: dict[str, object] | None = None
     try:
         atomic_write(RECEIVER, receiver, 0o555)
+        phase = "write_unit"
         atomic_write(UNIT, unit, 0o444)
+        phase = "write_secret"
         atomic_write(SECRET, secret, 0o400)
-        caddy_entry = next(entry for entry in backup["artifacts"] if entry["path"] == str(CADDY))
+        phase = "write_caddy"
+        caddy_entry = next(entry for entry in backup["artifacts"] if entry["path"] == str(caddy))
         atomic_write(
-            CADDY,
+            caddy,
             candidate_caddy,
             int(caddy_entry["mode"]),
             int(caddy_entry["uid"]),
             int(caddy_entry["gid"]),
         )
+        phase = "systemd_reload"
         run("systemctl", "daemon-reload")
+        phase = "receiver_start"
         run("systemctl", "enable", "--now", SERVICE)
-        health()
-        run("systemctl", "reload", "caddy.service")
+        phase = "receiver_readiness"
+        readiness = wait_for_health()
+        phase = "caddy_activation"
+        caddy_action = activate_caddy(candidate_caddy)
         receipt = {
             "schema": "gloops.github-webhook-receiver-deployment-receipt.v1",
             "status": "activated",
             "transactionId": args.transaction_id,
+            "caddyConfigPath": str(caddy),
+            "caddyAction": caddy_action,
+            "receiverReadiness": readiness,
             **backup["candidate"],
         }
+        phase = "receipt_write"
         write_json(tx / "receipt.json", receipt)
         print(json.dumps({"status": "activated", "transactionDir": str(tx)}, sort_keys=True))
     except Exception as error:
+        rollback_failed_phase = None
         try:
             rollback_backup(backup)
             status = "rolled_back"
@@ -369,39 +462,58 @@ def install(args: argparse.Namespace) -> None:
         except Exception as rollback_error:
             status = "rollback_failed"
             rollback_error_class = type(rollback_error).__name__
+            if isinstance(rollback_error, RollbackPhaseError):
+                rollback_failed_phase = rollback_error.phase
         receipt = {
             "schema": "gloops.github-webhook-receiver-deployment-receipt.v1",
             "status": status,
             "transactionId": args.transaction_id,
             "errorClass": type(error).__name__,
+            "failedPhase": phase,
         }
+        if isinstance(error, ReadinessError):
+            receipt["receiverReadiness"] = error.summary
         if rollback_error_class is not None:
             receipt["rollbackErrorClass"] = rollback_error_class
+            if rollback_failed_phase is not None:
+                receipt["rollbackFailedPhase"] = rollback_failed_phase
         write_json(tx / "receipt.json", receipt)
         raise RuntimeError(f"receiver deployment {status}") from error
 
 
 def rollback_backup(backup: dict[str, object]) -> None:
-    subprocess.run(["systemctl", "stop", SERVICE], check=False, stdout=subprocess.DEVNULL)
-    if subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0:
-        raise RuntimeError("candidate receiver did not stop")
-    subprocess.run(["systemctl", "disable", SERVICE], check=False, stdout=subprocess.DEVNULL)
-    for artifact in reversed(list(backup["artifacts"])):
-        restore(artifact)
-    run("systemctl", "daemon-reload")
-    run("systemctl", "reload", "caddy.service")
-    prior = backup["priorService"]
-    if prior["enabled"]:
-        run("systemctl", "enable", SERVICE)
-    if prior["active"]:
-        run("systemctl", "start", SERVICE)
-    if service_state() != prior:
-        raise RuntimeError("prior receiver service state was not restored")
-    for expected in backup["artifacts"]:
-        actual = snapshot(pathlib.Path(str(expected["path"])))
-        for key in ("existed", "sha256", "mode", "uid", "gid"):
-            if expected.get(key) != actual.get(key):
-                raise RuntimeError(f"restoration proof failed: {expected['path']}")
+    phase = "receiver_stop"
+    try:
+        subprocess.run(["systemctl", "stop", SERVICE], check=False, stdout=subprocess.DEVNULL)
+        if subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0:
+            raise RuntimeError("candidate receiver did not stop")
+        subprocess.run(["systemctl", "disable", SERVICE], check=False, stdout=subprocess.DEVNULL)
+        phase = "artifact_restore"
+        for artifact in reversed(list(backup["artifacts"])):
+            restore(artifact)
+        phase = "systemd_reload"
+        run("systemctl", "daemon-reload")
+        phase = "caddy_restore_activation"
+        caddy_path = pathlib.Path(str(backup["caddyConfigPath"]))
+        caddy_entry = next(entry for entry in backup["artifacts"] if entry["path"] == str(caddy_path))
+        prior_caddy = base64.b64decode(str(caddy_entry["bytesBase64"]), validate=True)
+        activate_caddy(prior_caddy)
+        phase = "prior_service_restore"
+        prior = backup["priorService"]
+        if prior["enabled"]:
+            run("systemctl", "enable", SERVICE)
+        if prior["active"]:
+            run("systemctl", "start", SERVICE)
+        if service_state() != prior:
+            raise RuntimeError("prior receiver service state was not restored")
+        phase = "restoration_proof"
+        for expected in backup["artifacts"]:
+            actual = snapshot(pathlib.Path(str(expected["path"])))
+            for key in ("existed", "sha256", "mode", "uid", "gid"):
+                if expected.get(key) != actual.get(key):
+                    raise RuntimeError(f"restoration proof failed: {expected['path']}")
+    except Exception as error:
+        raise RollbackPhaseError(phase) from error
 
 
 def rollback(args: argparse.Namespace) -> None:
@@ -431,12 +543,15 @@ def rollback(args: argparse.Namespace) -> None:
         write_json(tx / "rollback-receipt.json", receipt)
         print(json.dumps({"status": "restored", "transactionDir": str(tx)}, sort_keys=True))
     except Exception as error:
-        write_json(tx / "rollback-failure-receipt.json", {
+        failure = {
             "schema": "gloops.github-webhook-receiver-rollback-receipt.v1",
             "status": "rollback_failed",
             "transactionId": args.transaction_id,
             "errorClass": type(error).__name__,
-        })
+        }
+        if isinstance(error, RollbackPhaseError):
+            failure["failedPhase"] = error.phase
+        write_json(tx / "rollback-failure-receipt.json", failure)
         raise
 
 
