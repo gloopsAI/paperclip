@@ -170,6 +170,21 @@ repository/project-bound work, child requests, and unbudgeted asks remain
 frozen. Origin trust is stamped from the authenticated task-bridge key and
 cannot be supplied in issue text.
 
+The credential must use `scope.kind: "task_bridge"` with
+`allowProjectlessConsultations: true` and a non-empty
+`allowedAssigneeAgentIds` allowlist. That mode is mutually exclusive with
+project and parent-issue boundaries. Authorization admits only a `todo`,
+projectless/parentless/workspace-free `ask` using the direct completion profile,
+required answer comment, and the source-controlled Buzz envelope (one run, no
+retry, 100k input, 10k output, 300 seconds, four turns, five tool calls); changing
+any of those fields fails closed before issue creation. The same gate also
+requires depth zero, no inherited workspace, no labels, no watchdog discovery,
+no review/authorization preset, and no user assignee.
+The consultation credential is create-and-read only after admission; it cannot
+comment on or mutate the issue it created. The allowlisted assignee owns answer
+comments and terminalization, preventing a create-time fence from becoming a
+post-create authority escape.
+
 The ask agent must end its response with `Final answer:`. Paperclip stores only
 the final section as the run-authored issue comment, persists that comment
 before projecting the issue to `done`, and refuses direct terminal
