@@ -37,6 +37,27 @@ hermes.gloops.ai {
 }
 '''
 
+CURRENT_WITH_PROTECTED_HANDLE = b'''{
+\tadmin off
+}
+
+hermes.gloops.ai {
+\tbind 157.230.55.208
+
+\thandle /api/issues* {
+\t\treverse_proxy 127.0.0.1:3100
+\t}
+
+\t# Hermes Agent dashboard
+\thandle {
+\t\tbasicauth /* {
+\t\t\thermes $2a$14$example
+\t\t}
+\t\treverse_proxy 127.0.0.1:9119
+\t}
+}
+'''
+
 ROUTE = b'''# BEGIN GLOOPS PAPERCLIP GITHUB WEBHOOK
 \t@paperclip_github_webhook path /github-webhooks/paperclip-check-suite
 \thandle @paperclip_github_webhook {
@@ -101,6 +122,14 @@ class DeployTest(unittest.TestCase):
         self.assertIn("\thandle {\n\t\tbasicauth /*", result)
         self.assertIn("\t\treverse_proxy 127.0.0.1:3100", result)
         self.assertNotIn("github_webhook_hmac", result)
+
+    def test_caddy_patch_preserves_existing_protected_handle_and_api_routes(self):
+        result = MODULE.patch_caddy(CURRENT_WITH_PROTECTED_HANDLE, ROUTE).decode()
+        self.assertEqual(result.count(MODULE.MARKER), 1)
+        self.assertEqual(result.count("\thandle {\n\t\tbasicauth /*"), 1)
+        self.assertIn("\thandle /api/issues* {", result)
+        self.assertIn("\t\treverse_proxy 127.0.0.1:9119", result)
+        self.assertLess(result.index(MODULE.MARKER), result.index("\thandle {\n\t\tbasicauth /*"))
 
     def test_caddy_patch_rejects_reapply_and_unknown_shapes(self):
         patched = MODULE.patch_caddy(CURRENT, ROUTE)
