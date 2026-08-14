@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -271,6 +272,76 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(() => parsePluginWebhookExternalId(["a", "b"])).toThrow("ambiguous");
     expect(() => parsePluginWebhookExternalId("bad delivery")).toThrow("invalid");
     expect(() => parsePluginWebhookExternalId("x".repeat(129))).toThrow("invalid");
+  });
+
+  it("migrates historical duplicate external delivery IDs without losing their audit rows", async () => {
+    const pluginId = await seedPlugin();
+    const externalId = "historical-duplicate";
+    const failedId = randomUUID();
+    const succeededId = randomUUID();
+
+    await db.execute(sql.raw(
+      'DROP INDEX "plugin_webhook_deliveries_external_id_uq"',
+    ));
+    await db.insert(pluginWebhookDeliveries).values([
+      {
+        id: failedId,
+        pluginId,
+        webhookKey: "github-checks",
+        externalId,
+        status: "failed",
+        error: "historical failure",
+        payload: { audit: "failed" },
+        headers: { "x-original": "failed" },
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        id: succeededId,
+        pluginId,
+        webhookKey: "github-checks",
+        externalId,
+        status: "success",
+        payload: { audit: "success" },
+        headers: { "x-original": "success" },
+        createdAt: new Date("2026-01-02T00:00:00.000Z"),
+      },
+    ]);
+
+    const migration = await readFile(
+      new URL(
+        "../../../packages/db/src/migrations/0153_plugin_webhook_delivery_external_id.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    await db.execute(sql.raw(migration));
+
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === succeededId)).toMatchObject({
+      externalId,
+      status: "success",
+      payload: { audit: "success" },
+      headers: { "x-original": "success" },
+    });
+    expect(rows.find((row) => row.id === failedId)).toMatchObject({
+      externalId: null,
+      status: "failed",
+      error: "historical failure",
+      payload: { audit: "failed" },
+      headers: {
+        "x-original": "failed",
+        [`paperclip-migration-0153-duplicate-${failedId}`]:
+          `${externalId};canonical_delivery_id=${succeededId}`,
+      },
+    });
+    await expect(db.insert(pluginWebhookDeliveries).values({
+      pluginId,
+      webhookKey: "github-checks",
+      externalId,
+      status: "pending",
+      payload: { audit: "new duplicate" },
+    })).rejects.toThrow();
   });
 
   it("allows NULL company_id on plugin_logs (instance-scope rows behave as before)", async () => {
