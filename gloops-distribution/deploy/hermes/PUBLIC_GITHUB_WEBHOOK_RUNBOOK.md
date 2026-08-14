@@ -59,7 +59,9 @@ unset WEBHOOK_HMAC PLUGIN_ID
 The deployer resolves the one effective Caddy `--config` path from systemd and
 accepts only the source-controlled `/etc/caddy/Caddyfile` or
 `/etc/caddy/Caddyfile.tailnet` host shapes. It validates the complete Caddy
-candidate before effects, durably captures exact bytes and metadata before
+candidate before effects and requires the selected leaf's exact path-specific
+root-owned, non-writable group, and mode contract (`root:root 0644` for the
+default file; `root:caddy 0640` for the tailnet file). It durably captures exact bytes and metadata before
 service mutation, starts the localhost receiver, and applies a bounded 30 by
 250 ms readiness gate over the exact health response. It restarts Caddy when
 the effective config declares `admin off` (reload would be unavailable),
@@ -98,7 +100,9 @@ sudo python3 github-webhook-receiver-deploy.py rollback \
 The rollback claim is exclusive and durable before effects. Rollback restores
 or removes every receiver, unit, secret, and Caddy artifact with its exact prior bytes, uid, gid, and mode; reloads systemd, re-activates Caddy with the same effective-config rule; restores prior receiver
 enablement/activity; then writes a `restored` receipt. Any mismatch produces a
-root-only `rollback_failed` receipt and blocks a success claim.
+root-only `rollback_failed` receipt and blocks a success claim. Systemd load,
+active, and enablement query errors are never interpreted as inactive or
+disabled proof.
 
 Delete the GitHub webhook and the corresponding Paperclip secret when the
 receiver is rolled back. Retain the transaction directory and the separate

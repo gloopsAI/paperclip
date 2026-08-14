@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import errno
+import grp
 import hashlib
 import json
 import os
@@ -29,6 +30,10 @@ ALLOWED_CADDY_CONFIGS = frozenset(
         pathlib.Path("/etc/caddy/Caddyfile.tailnet"),
     }
 )
+CADDY_EXPECTED_MODES = {
+    pathlib.Path("/etc/caddy/Caddyfile"): 0o644,
+    pathlib.Path("/etc/caddy/Caddyfile.tailnet"): 0o640,
+}
 SERVICE = "paperclip-github-webhook-receiver.service"
 CADDY_SERVICE = "caddy.service"
 MARKER = "# BEGIN GLOOPS PAPERCLIP GITHUB WEBHOOK"
@@ -308,6 +313,27 @@ def resolve_effective_caddy_config() -> pathlib.Path:
     return config
 
 
+def expected_caddy_gid(path: pathlib.Path) -> int:
+    if path == pathlib.Path("/etc/caddy/Caddyfile"):
+        return 0
+    if path == pathlib.Path("/etc/caddy/Caddyfile.tailnet"):
+        try:
+            return grp.getgrnam("caddy").gr_gid
+        except KeyError as error:
+            raise RuntimeError("required Caddy group is unavailable") from error
+    raise RuntimeError("effective Caddy config is outside the metadata allowlist")
+
+
+def validate_caddy_metadata(path: pathlib.Path, metadata: os.stat_result) -> None:
+    expected_mode = CADDY_EXPECTED_MODES.get(path)
+    if expected_mode is None:
+        raise RuntimeError("effective Caddy config is outside the metadata allowlist")
+    if metadata.st_uid != 0 or metadata.st_gid != expected_caddy_gid(path):
+        raise RuntimeError("effective Caddy config ownership is unsafe")
+    if stat.S_IMODE(metadata.st_mode) != expected_mode:
+        raise RuntimeError("effective Caddy config mode is unsafe")
+
+
 def caddy_uses_admin_off(value: bytes) -> bool:
     return re.search(rb"(?m)^\s*admin\s+off\s*(?:#.*)?$", value) is not None
 
@@ -319,10 +345,42 @@ def activate_caddy(value: bytes) -> str:
     return action
 
 
-def service_state() -> dict[str, bool]:
-    active = subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0
-    enabled = subprocess.run(["systemctl", "is-enabled", "--quiet", SERVICE]).returncode == 0
-    return {"active": active, "enabled": enabled}
+def systemctl_output(*command: str) -> tuple[int, str]:
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return result.returncode, result.stdout.strip()
+
+
+def active_state() -> bool:
+    returncode, output = systemctl_output("systemctl", "is-active", SERVICE)
+    if (returncode, output) == (0, "active"):
+        return True
+    if (returncode, output) == (3, "inactive"):
+        return False
+    raise RuntimeError("receiver active state is unprovable")
+
+
+def service_state() -> dict[str, object]:
+    returncode, load_state = systemctl_output(
+        "systemctl", "show", SERVICE, "-p", "LoadState", "--value"
+    )
+    if returncode != 0 or load_state not in {"loaded", "not-found"}:
+        raise RuntimeError("receiver load state is unprovable")
+    if load_state == "not-found":
+        return {"loadState": "not-found", "active": False, "enabled": False}
+    active = active_state()
+    returncode, enabled_state = systemctl_output("systemctl", "is-enabled", SERVICE)
+    if (returncode, enabled_state) == (0, "enabled"):
+        enabled = True
+    elif (returncode, enabled_state) == (1, "disabled"):
+        enabled = False
+    else:
+        raise RuntimeError("receiver enablement state is unprovable")
+    return {"loadState": "loaded", "active": active, "enabled": enabled}
 
 
 def write_json(path: pathlib.Path, value: dict[str, object]) -> None:
@@ -395,7 +453,8 @@ def install(args: argparse.Namespace) -> None:
     if HMAC_SECRET_RE.fullmatch(secret) is None:
         raise RuntimeError("candidate secret length invalid")
     compile(receiver, str(RECEIVER), "exec")
-    current_caddy = read_regular(caddy)
+    current_caddy, caddy_metadata = read_regular_with_metadata(caddy)
+    validate_caddy_metadata(caddy, caddy_metadata)
     candidate_caddy = patch_caddy(current_caddy, route)
     validate_caddy(candidate_caddy)
     tx = ROOT / args.transaction_id
@@ -484,10 +543,10 @@ def install(args: argparse.Namespace) -> None:
 def rollback_backup(backup: dict[str, object]) -> None:
     phase = "receiver_stop"
     try:
-        subprocess.run(["systemctl", "stop", SERVICE], check=False, stdout=subprocess.DEVNULL)
-        if subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0:
+        run("systemctl", "stop", SERVICE)
+        if active_state():
             raise RuntimeError("candidate receiver did not stop")
-        subprocess.run(["systemctl", "disable", SERVICE], check=False, stdout=subprocess.DEVNULL)
+        run("systemctl", "disable", SERVICE)
         phase = "artifact_restore"
         for artifact in reversed(list(backup["artifacts"])):
             restore(artifact)
