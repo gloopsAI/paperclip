@@ -57,6 +57,13 @@ export type ExecutionInvocationBudget = {
 };
 
 export type SubscriptionRouteProvider = "ollama" | "luna" | "terra" | "grok" | "codex";
+export type SubscriptionBillingPool = "ollama_cloud" | "codex_subscription" | "grok_subscription";
+
+export function subscriptionBillingPool(provider: SubscriptionRouteProvider): SubscriptionBillingPool {
+  if (provider === "ollama") return "ollama_cloud";
+  if (provider === "grok") return "grok_subscription";
+  return "codex_subscription";
+}
 export type SubscriptionRouteAttemptEvidence = {
   provider: Exclude<SubscriptionRouteProvider, "codex">;
   transport: "cli" | "subscription_cli";
@@ -190,17 +197,29 @@ export function evaluateSubscriptionRouteAdmission(
     }
     return { allowed: true, provider: null, reason: "non-model adapter is outside the subscription route chain" };
   }
+  const currentTime = typeof now === "string" ? Date.parse(now) : now.getTime();
+  const evidence = Number.isFinite(currentTime)
+    ? readSubscriptionRouteEvidence(context[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY], currentTime)
+    : null;
+  const contextIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+  const exhaustedPool = evidence?.attempts.find((attempt) =>
+    (!contextIssueId || attempt.issueId === contextIssueId)
+    && subscriptionBillingPool(attempt.provider) === subscriptionBillingPool(provider)
+    && (attempt.reason === "quota_exhausted" || attempt.reason === "provider_unavailable")
+  );
+  if (exhaustedPool) {
+    return {
+      allowed: false,
+      provider,
+      reason: `${provider} denied: billing pool ${subscriptionBillingPool(provider)} already failed via ${exhaustedPool.provider}`,
+    };
+  }
   if (provider === "ollama") {
     return { allowed: true, provider, reason: "Ollama/Hermes is optional supplemental capacity, not a prerequisite" };
   }
   if (provider === "luna" || provider === "terra") {
     return { allowed: true, provider, reason: `${provider} is durable workforce capacity` };
   }
-  const currentTime = typeof now === "string" ? Date.parse(now) : now.getTime();
-  const evidence = Number.isFinite(currentTime)
-    ? readSubscriptionRouteEvidence(context[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY], currentTime)
-    : null;
-  const contextIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
   const durableAttempt = evidence?.attempts.find((attempt) =>
     (!contextIssueId || attempt.issueId === contextIssueId) &&
     (attempt.provider === "luna" || attempt.provider === "terra" || attempt.provider === "ollama"));

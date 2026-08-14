@@ -136,6 +136,19 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             "test_socket_rollback_proof_exception_requires_reconciliation",
         }
         if uses_deploy and self._testMethodName not in deploy_end_to_end_tests:
+            if self._testMethodName != "test_deploy_rejects_unbound_source_commit_before_pin_mutation":
+                source_binding_patcher = patch.object(
+                    broker,
+                    "_image_source_binding_evidence",
+                    return_value={
+                        "sourceCommit": "d" * 40,
+                        "artifactDigest": "sha256:" + "a" * 64,
+                        "expectedImage": "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64,
+                        "proofComplete": True,
+                    },
+                )
+                source_binding_patcher.start()
+                self.addCleanup(source_binding_patcher.stop)
             prior_release = self.release_proof()
             prior_patcher = patch.object(
                 broker, "_capture_prior_release_state", return_value=prior_release,
@@ -270,7 +283,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             if args[:3] == ["docker", "image", "inspect"]:
                 reference = args[-1]
                 image_id = candidate_id if reference.endswith("a" * 64) else prior_id
-                return 0, f'{image_id}\t["{reference}"]\n', ""
+                return 0, f'{image_id}\t["{reference}"]\t{"d" * 40}\n', ""
             if args[:2] == ["docker", "pull"]:
                 return 0, "", ""
             if args[0] == "curl":
@@ -703,6 +716,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     "operation": "deploy-pinned-image",
                     "service": "paperclip-gloops.service",
                     "image": "myimage:latest",
+                    "sourceCommit": "d" * 40,
                     "actor": "wren-agent",
                     "idempotencyKey": "deploy-001",
                 }, connection=connection)
@@ -733,6 +747,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                             "operation": "deploy-pinned-image",
                             "service": "paperclip-gloops.service",
                             "image": image,
+                            "sourceCommit": "d" * 40,
                             "actor": "wren-agent",
                             "idempotencyKey": "deploy-002",
                         }, connection=connection)
@@ -746,6 +761,50 @@ class PlatformOpsBrokerTests(unittest.TestCase):
         self.assertTrue(result["data"]["evidence"]["comprehensiveHealthPassed"])
         connection.close()
 
+    def test_deploy_rejects_unbound_source_commit_before_pin_mutation(self):
+        with self.paths():
+            connection = broker.connect_database()
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            previous_env = (self.config / "runtime.env").read_text()
+            previous_pin = (self.config / "approved-image").read_text()
+            with patch.object(broker, "run_command", side_effect=[
+                (0, "", ""),
+                (0, f'sha256:{"a" * 64}\t["{image}"]\t\n', ""),
+            ]) as commands:
+                with self.assertRaisesRegex(
+                    broker.BrokerError,
+                    "does not bind an exact source commit",
+                ):
+                    broker.process_request({
+                        "operation": "deploy-pinned-image",
+                        "service": "paperclip-gloops.service",
+                        "image": image,
+                        "sourceCommit": "d" * 40,
+                        "actor": "wren-agent",
+                        "idempotencyKey": "deploy-unbound-source-001",
+                    }, connection=connection)
+            self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+            self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
+            self.assertFalse(any(call.args[0][:2] == ["systemctl", "restart"] for call in commands.call_args_list))
+            receipt = broker.list_receipts(connection)[0]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertFalse(receipt["evidence"]["candidateSourceBinding"]["proofComplete"])
+            connection.close()
+
+    def test_image_source_binding_requires_the_expected_commit_and_digest(self):
+        image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+        with patch.object(broker, "run_command", return_value=(
+            0,
+            f'sha256:{"b" * 64}\t["{image}"]\t{"c" * 40}\n',
+            "",
+        )):
+            mismatched = broker._image_source_binding_evidence(image, "d" * 40)
+            matched = broker._image_source_binding_evidence(image, "c" * 40)
+        self.assertFalse(mismatched["proofComplete"])
+        self.assertEqual(mismatched["expectedSourceCommit"], "d" * 40)
+        self.assertTrue(matched["proofComplete"])
+        self.assertEqual(matched["artifactDigest"], "sha256:" + "a" * 64)
+
     def test_socket_deploy_same_key_payload_drift_has_zero_effects(self):
         with self.paths():
             first_image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
@@ -754,6 +813,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 "operation": "deploy-pinned-image",
                 "service": "paperclip-gloops.service",
                 "image": first_image,
+                "sourceCommit": "d" * 40,
                 "actor": "wren-agent",
                 "idempotencyKey": "deploy-payload-drift-001",
             }
@@ -791,6 +851,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 "operation": "deploy-pinned-image",
                 "service": "paperclip-gloops.service",
                 "image": image,
+                "sourceCommit": "d" * 40,
                 "actor": "wren-agent",
                 "idempotencyKey": "deploy-concurrent-001",
             }
@@ -857,6 +918,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 "operation": "deploy-pinned-image",
                 "service": "paperclip-gloops.service",
                 "image": image,
+                "sourceCommit": "d" * 40,
                 "actor": "wren-agent",
                 "idempotencyKey": f"deploy-e2e-proof-{drift_after_restart}",
             }
@@ -888,7 +950,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 if args[:3] == ["docker", "image", "inspect"]:
                     reference = args[-1]
                     immutable = drift_id if drift_after_restart and restart_count else prior_id
-                    return 0, f'{immutable}\t["{reference}"]\n', ""
+                    return 0, f'{immutable}\t["{reference}"]\t{"d" * 40}\n', ""
                 if args[:2] == ["docker", "pull"]:
                     return 0, "", ""
                 if args[0] == "curl":
@@ -979,6 +1041,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                                     "operation": "deploy-pinned-image",
                                     "service": "paperclip-gloops.service",
                                     "image": image,
+                                    "sourceCommit": "d" * 40,
                                     "actor": "wren-agent",
                                     "idempotencyKey": "deploy-front-door-rollback-001",
                                 }, connection=connection)
@@ -1020,6 +1083,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                                 "operation": "deploy-pinned-image",
                                 "service": "paperclip-gloops.service",
                                 "image": image,
+                                "sourceCommit": "d" * 40,
                                 "actor": "wren-agent",
                                 "idempotencyKey": "deploy-wrong-id-001",
                             }, connection=connection)
@@ -1056,6 +1120,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                             "operation": "deploy-pinned-image",
                             "service": "paperclip-gloops.service",
                             "image": image,
+                            "sourceCommit": "d" * 40,
                             "actor": "wren-agent",
                             "idempotencyKey": "deploy-rollback-001",
                         }, connection=connection)
@@ -1070,6 +1135,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 "operation": "deploy-pinned-image",
                 "service": "paperclip-gloops.service",
                 "image": image,
+                "sourceCommit": "d" * 40,
                 "actor": "wren-agent",
                 "idempotencyKey": "deploy-socket-durable-failure-001",
             }
@@ -1137,6 +1203,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     "operation": "deploy-pinned-image",
                     "service": "paperclip-gloops.service",
                     "image": image,
+                    "sourceCommit": "d" * 40,
                     "actor": "wren-agent",
                     "idempotencyKey": f"deploy-boundary-{index}",
                 }
@@ -1256,6 +1323,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 "operation": "deploy-pinned-image",
                 "service": "paperclip-gloops.service",
                 "image": image,
+                "sourceCommit": "d" * 40,
                 "actor": "wren-agent",
                 "idempotencyKey": "deploy-reconciliation-required-001",
             }
@@ -1302,6 +1370,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                 "operation": "deploy-pinned-image",
                 "service": "paperclip-gloops.service",
                 "image": image,
+                "sourceCommit": "d" * 40,
                 "actor": "wren-agent",
                 "idempotencyKey": "deploy-rollback-proof-exception-001",
             }
@@ -1394,6 +1463,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                     "operation": "deploy-pinned-image",
                     "service": "paperclip-github-push-broker.service",
                     "image": image,
+                    "sourceCommit": "d" * 40,
                     "actor": "wren-agent",
                     "idempotencyKey": "deploy-003",
                 }, connection=connection)
@@ -1761,6 +1831,7 @@ class PlatformOpsBrokerTests(unittest.TestCase):
                         "operation": "deploy-pinned-image",
                         "service": "paperclip-gloops.service",
                         "image": bad_image,
+                        "sourceCommit": "d" * 40,
                         "actor": "wren-agent",
                         "idempotencyKey": f"inject-{bad_image[:20]}",
                     }, connection=connection)

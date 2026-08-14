@@ -65,6 +65,44 @@ test("rollback-proof emits the bounded terminal-proof request", async () => {
   }
 });
 
+test("deploy-pinned-image binds the expected merge commit", async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "platform-ops-tool-deploy-"));
+  const socketPath = path.join(tempDirectory, "broker.sock");
+  let request;
+  const server = net.createServer((socket) => {
+    socket.once("data", (chunk) => {
+      request = JSON.parse(chunk.toString("utf8"));
+      socket.end('{"ok":true,"data":{"state":"completed"}}\n');
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    const image = `ghcr.io/gloopsai/paperclip-gloops@sha256:${"a".repeat(64)}`;
+    const sourceCommit = "d".repeat(40);
+    const child = spawn(process.execPath, [
+      scriptPath,
+      "--operation", "deploy-pinned-image",
+      "--service", "paperclip-gloops.service",
+      "--image", image,
+      "--sourceCommit", sourceCommit,
+      "--actor", "wren-agent",
+      "--idempotencyKey", "deploy-source-001",
+    ], {
+      env: { ...process.env, PLATFORM_OPS_BROKER_SOCKET: socketPath },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const code = await new Promise((resolve) => child.once("exit", resolve));
+    assert.equal(code, 0);
+    assert.equal(request.sourceCommit, sourceCommit);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
 test("a successful response clears the deadline and lets the CLI exit", async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "platform-ops-tool-"));
   const socketPath = path.join(tempDirectory, "broker.sock");

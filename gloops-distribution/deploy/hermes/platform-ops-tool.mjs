@@ -22,7 +22,7 @@
  * Operations (mutating, require --actor and --idempotencyKey):
  *   service-restart      --service <unit.service> --actor <id> --idempotencyKey <key>
  *   cache-reclaim        --cache <name> --actor <id> --idempotencyKey <key>
- *   deploy-pinned-image  --service <unit.service> --image <digest> --actor <id> --idempotencyKey <key>
+ *   deploy-pinned-image  --service <unit.service> --image <digest> --sourceCommit <sha> --actor <id> --idempotencyKey <key>
  *   rollback-rehearsal   --service <unit.service> --actor <id> --idempotencyKey <key>
  *   rollback-proof       --service <unit.service> --mode <absent|restored>
  *                        [--expectedPriorImage <digest>] --actor <id> --idempotencyKey <key>
@@ -139,6 +139,8 @@ function buildRequest(args) {
       request.service = args["--service"];
       if (!args["--image"]) fail("--image is required for deploy-pinned-image");
       request.image = args["--image"];
+      if (!args["--sourceCommit"]) fail("--sourceCommit is required for deploy-pinned-image");
+      request.sourceCommit = args["--sourceCommit"];
       break;
     }
     case "disk-usage": {

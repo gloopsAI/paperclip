@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REVIEW_HANDOFF_MARKER,
+  MAX_IMPLEMENTATION_REVIEW_ROUNDS,
   buildReviewTerminalFailureComment,
   buildImplementationReviewTitle,
   buildReviewExecutionWorkspaceSettings,
@@ -112,6 +113,21 @@ describe("planImplementationReviewHandoff", () => {
       }),
     ).toEqual({ action: "skip", reason: "same_agent_reviewer" });
   });
+
+  it("stops after three review rounds instead of creating a descendant loop", () => {
+    const existingChildren = Array.from({ length: MAX_IMPLEMENTATION_REVIEW_ROUNDS }, (_, index) => ({
+      id: `child-${index}`,
+      title: `Review old head ${index} [${REVIEW_HANDOFF_MARKER}]`,
+      status: index === 0 ? "cancelled" : "done",
+    }));
+    expect(planImplementationReviewHandoff({
+      parent: { id: PARENT, projectId: PROJECT, workMode: "standard" },
+      exactHeadSha: HEAD,
+      implementerAgentId: WREN,
+      reviewerAgentId: ARGUS,
+      existingChildren,
+    })).toEqual({ action: "skip", reason: "review_rounds_exhausted" });
+  });
 });
 
 describe("pickCompanyReviewerAgent", () => {
@@ -130,7 +146,7 @@ describe("pickCompanyReviewerAgent", () => {
   });
 });
 
-describe("pickCompanyReviewerAgentDetailed (GLO-2023 reviewer-fallback)", () => {
+describe("pickCompanyReviewerAgentDetailed", () => {
   it("reports argus_name when an agent is named Argus", () => {
     expect(
       pickCompanyReviewerAgentDetailed([
@@ -149,24 +165,21 @@ describe("pickCompanyReviewerAgentDetailed (GLO-2023 reviewer-fallback)", () => 
     ).toEqual({ id: "review-bot", source: "reviewer_role" });
   });
 
-  it("falls back to any live agent when no reviewer exists (GLO-2023 reliability)", () => {
+  it("refuses a generic live agent when no qualified reviewer exists", () => {
     const pick = pickCompanyReviewerAgentDetailed([
       { id: "wren", name: "Wren", role: "engineer", status: "idle" },
       { id: "northstar", name: "Northstar", role: "manager", status: "idle" },
     ]);
-    expect(pick.source).toBe("any_live_fallback");
-    if (pick.source === "any_live_fallback") {
-      expect(["wren", "northstar"]).toContain(pick.id);
-    }
+    expect(pick).toEqual({ source: "none" });
   });
 
-  it("skips terminated and pending_approval agents before falling back", () => {
+  it("skips terminated and pending_approval reviewers", () => {
     const pick = pickCompanyReviewerAgentDetailed([
       { id: "dead", name: "Zombie", role: "qa", status: "terminated" },
       { id: "pending", name: "Tbd", role: "qa", status: "pending_approval" },
       { id: "live", name: "Wren", role: "engineer", status: "idle" },
     ]);
-    expect(pick).toEqual({ id: "live", source: "any_live_fallback" });
+    expect(pick).toEqual({ source: "none" });
   });
 
   it("returns source none when no live agent exists", () => {

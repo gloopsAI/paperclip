@@ -6,7 +6,7 @@
  * (Argus) with the exact head SHA. Does not open PRs (broker-owned) and does
  * not weaken verified_change.
  */
-import { and, eq, ne, or, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { issueReviewProvenanceSchema, type IssueReviewProvenance } from "@paperclipai/shared";
@@ -15,6 +15,7 @@ import { issueService } from "./issues.js";
 
 const SHA_RE = /^[0-9a-f]{40}$/i;
 export const REVIEW_HANDOFF_MARKER = "maw-implementation-review";
+export const MAX_IMPLEMENTATION_REVIEW_ROUNDS = 3;
 
 export type DraftPullRequestEvidence =
   | { disposition: "created"; prNumber: number; prUrl: string }
@@ -30,6 +31,7 @@ export type ImplementationReviewHandoffPlan =
         | "missing_reviewer"
         | "missing_project"
         | "duplicate_open_review"
+        | "review_rounds_exhausted"
         | "probe_work_mode"
         | "same_agent_reviewer";
     }
@@ -181,6 +183,13 @@ export function planImplementationReviewHandoff(input: {
   if (duplicate) {
     return { action: "skip", reason: "duplicate_open_review" };
   }
+  const reviewRounds = input.existingChildren.filter((child) =>
+    String(child.title ?? "").includes(REVIEW_HANDOFF_MARKER)
+    || String(child.description ?? "").includes(REVIEW_HANDOFF_MARKER)
+  ).length;
+  if (reviewRounds >= MAX_IMPLEMENTATION_REVIEW_ROUNDS) {
+    return { action: "skip", reason: "review_rounds_exhausted" };
+  }
 
   const draftPrUrl =
     input.draftPr && input.draftPr.disposition === "created" ? input.draftPr.prUrl : null;
@@ -210,7 +219,7 @@ export function planImplementationReviewHandoff(input: {
   };
 }
 
-export type ReviewerPickSource = "argus_name" | "reviewer_role" | "any_live_fallback" | "none";
+export type ReviewerPickSource = "argus_name" | "reviewer_role" | "none";
 
 export type ReviewerPick =
   | { id: string; source: Exclude<ReviewerPickSource, "none"> }
@@ -231,8 +240,8 @@ export function pickCompanyReviewerAgent(
  * Tier order:
  *  1. agent named "argus"
  *  2. agent with reviewer-style role (qa / reviewer / quality)
- *  3. ANY other live agent (degraded fallback so the handoff does not silently
- *     drop when the company has no designated reviewer)
+ * No generic live-agent fallback exists: only a designated reviewer can issue
+ * a merge-authorizing verdict.
  */
 export function pickCompanyReviewerAgentDetailed(
   companyAgents: Array<{ id: string; name?: string | null; role?: string | null; status?: string | null }>,
@@ -245,8 +254,6 @@ export function pickCompanyReviewerAgentDetailed(
     return role === "qa" || role === "reviewer" || role === "quality";
   });
   if (byRole) return { id: byRole.id, source: "reviewer_role" };
-  const anyLive = live[0];
-  if (anyLive) return { id: anyLive.id, source: "any_live_fallback" };
   return { source: "none" };
 }
 
@@ -606,7 +613,6 @@ export async function ensureImplementationReviewHandoff(
         and(
           eq(issues.companyId, input.companyId),
           eq(issues.parentId, parent.id),
-          ne(issues.status, "cancelled"),
         ),
       );
 
@@ -689,15 +695,7 @@ export async function ensureImplementationReviewHandoff(
       exactHeadSha: plan.exactHeadSha,
       reviewerPickSource: reviewerPick.source,
     };
-    if (reviewerPick.source === "any_live_fallback") {
-      logPayload.degraded = true;
-      logger.warn(
-        logPayload,
-        "implementation review handoff created via fallback reviewer (GLO-2023)",
-      );
-    } else {
-      logger.info(logPayload, "implementation review handoff created");
-    }
+    logger.info(logPayload, "implementation review handoff created");
 
     return {
       ok: true,

@@ -106,7 +106,7 @@ root-owned, mode 0555).
 |---|---|---|
 | `service-restart` | `service` | systemctl restart + pre/post health receipt |
 | `cache-reclaim` | `cache` | find -delete on cache contents + before/after size |
-| `deploy-pinned-image` | `service`, `image` | docker pull + systemctl restart |
+| `deploy-pinned-image` | `service`, `image`, `sourceCommit` | docker pull + exact merge-commit/image binding + systemctl restart |
 | `rollback-rehearsal` | `service` | verify rollback script and backups exist |
 | `rollback-proof` | `service`, `mode`, optional `expectedPriorImage` | durable terminal proof: listener/container absence or exact prior image + front-door restoration |
 
@@ -181,6 +181,7 @@ node /opt/data/bin/platform-ops-tool.mjs --operation service-restart \
 node /opt/data/bin/platform-ops-tool.mjs --operation deploy-pinned-image \
   --service paperclip-gloops.service \
   --image ghcr.io/gloopsai/paperclip-gloops@sha256:abc... \
+  --sourceCommit 0123456789abcdef0123456789abcdef01234567 \
   --actor wren-agent --idempotencyKey deploy-001
 
 node /opt/data/bin/platform-ops-tool.mjs --operation rollback-proof \

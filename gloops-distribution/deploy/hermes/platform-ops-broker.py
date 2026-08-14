@@ -67,6 +67,7 @@ IMAGE_DIGEST_PATTERN = re.compile(
     r"^(?:[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)?@sha256:[0-9a-f]{64}$"
 )
 IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+SOURCE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 # Service name pattern: word characters, hyphens, dots, ending in .service
 SERVICE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+\.service$")
@@ -1168,6 +1169,9 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
     image = params.get("image")
     if not isinstance(image, str) or not IMAGE_DIGEST_PATTERN.match(image):
         raise BrokerError("image must be a pinned digest (registry/path@sha256:64hex)")
+    source_commit = params.get("sourceCommit")
+    if not isinstance(source_commit, str) or not SOURCE_COMMIT_PATTERN.match(source_commit):
+        raise BrokerError("sourceCommit must be the exact 40-character merge commit")
     allowlist = load_allowlist()
     service_config = allowlist["allowedServices"].get(service)
     if service_config is None:
@@ -1236,6 +1240,12 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
         fail_receipted_operation(connection, receipt_id, {
             "image": image, "stderr": stderr,
         }, f"docker pull failed: {stderr}")
+    candidate_source_binding = _image_source_binding_evidence(image, source_commit)
+    if not candidate_source_binding["proofComplete"]:
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image,
+            "candidateSourceBinding": candidate_source_binding,
+        }, "candidate image does not bind an exact source commit to its immutable artifact digest")
     if not _pin_snapshot_matches(runtime_pin) or not _pin_snapshot_matches(approved_pin):
         fail_receipted_operation(connection, receipt_id, {
             "image": image,
@@ -1320,6 +1330,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "postHealth": post_health,
             "postFrontDoorHealth": post_front_door,
             "postImageBinding": post_image_binding,
+            "candidateSourceBinding": candidate_source_binding,
             "comprehensiveHealthPassed": True,
         }
         complete_receipt(connection, receipt_id, "completed", evidence, "success")
@@ -1342,6 +1353,7 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "postHealth": post_health,
             "postFrontDoorHealth": post_front_door,
             "postImageBinding": post_image_binding,
+            "candidateSourceBinding": candidate_source_binding,
             **compensation,
         }
         terminalize_receipted_operation(
@@ -1491,7 +1503,7 @@ def _inspect_image_reference(image: str) -> dict[str, Any]:
     returncode, stdout, stderr = run_command(
         [
             "docker", "image", "inspect",
-            "--format={{.Id}}\t{{json .RepoDigests}}", image,
+            "--format={{.Id}}\t{{json .RepoDigests}}\t{{index .Config.Labels \"org.opencontainers.image.revision\"}}", image,
         ],
         timeout=HEALTH_TIMEOUT_SECONDS,
     )
@@ -1501,9 +1513,11 @@ def _inspect_image_reference(image: str) -> dict[str, Any]:
             "reference": image,
             "imageId": "",
             "repoDigests": [],
+            "sourceCommit": "",
             "error": stderr.strip()[:500],
         }
-    image_id, separator, repo_digests_json = stdout.strip().partition("\t")
+    image_id, separator, remainder = stdout.strip().partition("\t")
+    repo_digests_json, source_separator, source_commit = remainder.partition("\t")
     try:
         repo_digests = json.loads(repo_digests_json) if separator else None
     except json.JSONDecodeError:
@@ -1518,6 +1532,7 @@ def _inspect_image_reference(image: str) -> dict[str, Any]:
             "reference": image,
             "imageId": image_id.strip(),
             "repoDigests": repo_digests if isinstance(repo_digests, list) else [],
+            "sourceCommit": source_commit.strip() if source_separator else "",
             "error": "docker image inspect returned incomplete immutable image evidence",
         }
     return {
@@ -1525,7 +1540,28 @@ def _inspect_image_reference(image: str) -> dict[str, Any]:
         "reference": image,
         "imageId": image_id.strip(),
         "repoDigests": repo_digests,
+        "sourceCommit": source_commit.strip() if source_separator else "",
         "error": "",
+    }
+
+
+def _image_source_binding_evidence(image: str, expected_source_commit: str) -> dict[str, Any]:
+    inspected = _inspect_image_reference(image)
+    artifact_digest = image.rsplit("@", 1)[-1] if "@" in image else ""
+    source_commit = inspected.get("sourceCommit", "")
+    proof_complete = (
+        inspected.get("inspectable") is True
+        and SOURCE_COMMIT_PATTERN.match(source_commit) is not None
+        and source_commit == expected_source_commit
+        and IMAGE_ID_PATTERN.match(artifact_digest) is not None
+        and image in inspected.get("repoDigests", [])
+    )
+    return {
+        "sourceCommit": source_commit,
+        "expectedSourceCommit": expected_source_commit,
+        "artifactDigest": artifact_digest,
+        "expectedImage": image,
+        "proofComplete": proof_complete,
     }
 
 
