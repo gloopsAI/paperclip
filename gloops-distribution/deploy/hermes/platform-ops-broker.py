@@ -38,6 +38,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -61,6 +63,9 @@ EXPECTED_HERMES_UID = 10_000
 HERMES_GID = 10_000
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 TEST_MODE = os.environ.get("GLOOPS_PLATFORM_OPS_BROKER_TEST_MODE") == "1"
+GITHUB_API_BASE = os.environ.get("GLOOPS_PLATFORM_OPS_GITHUB_API_BASE", "https://api.github.com").rstrip("/")
+DEPLOY_REPOSITORY = "gloopsAI/paperclip"
+DEPLOY_BASE_REF = "gloops/stable"
 
 # Image digest pattern: sha256:64hex or a named registry path ending in @sha256:64hex
 IMAGE_DIGEST_PATTERN = re.compile(
@@ -1232,7 +1237,15 @@ def op_deploy_pinned_image(params: dict[str, Any], connection: sqlite3.Connectio
             "priorStateCaptureFailure": _bounded_failure(error),
         }, "prior deployment state could not be captured safely")
 
-    # Pull only after the exact prior configuration and live release are bound.
+    approved_merge = _github_approved_merge_evidence(source_commit)
+    if not approved_merge["proofComplete"]:
+        fail_receipted_operation(connection, receipt_id, {
+            "image": image,
+            "approvedMerge": approved_merge,
+        }, "sourceCommit is not the authoritative merged head of an approved pull request")
+
+    # Pull only after the exact prior configuration/live release and the
+    # authoritative GitHub merge record are bound.
     returncode, _, stderr = run_command(
         ["docker", "pull", image], timeout=COMMAND_TIMEOUT_SECONDS,
     )
@@ -1542,6 +1555,88 @@ def _inspect_image_reference(image: str) -> dict[str, Any]:
         "repoDigests": repo_digests,
         "sourceCommit": source_commit.strip() if source_separator else "",
         "error": "",
+    }
+
+
+def _github_approved_merge_evidence(expected_source_commit: str) -> dict[str, Any]:
+    """Prove the deployment commit is an authoritative merged PR head.
+
+    This uses GitHub's public, TLS-authenticated repository record and no user or
+    host credential.  The endpoint is commit-addressed, so the caller cannot
+    substitute an unrelated PR number.  Any unavailable, oversized, malformed,
+    ambiguous, unmerged, wrong-base, or commit-mismatched response fails closed.
+    """
+    path = f"/repos/{DEPLOY_REPOSITORY}/commits/{expected_source_commit}/pulls"
+    request = Request(
+        f"{GITHUB_API_BASE}{path}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "gloops-platform-ops-broker/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urlopen(request, timeout=HEALTH_TIMEOUT_SECONDS) as response:
+            payload = response.read(64 * 1024 + 1)
+    except (HTTPError, URLError, TimeoutError, OSError) as error:
+        return {
+            "repository": DEPLOY_REPOSITORY,
+            "expectedSourceCommit": expected_source_commit,
+            "proofComplete": False,
+            "error": f"GitHub merge record unavailable: {type(error).__name__}",
+        }
+    if len(payload) > 64 * 1024:
+        return {
+            "repository": DEPLOY_REPOSITORY,
+            "expectedSourceCommit": expected_source_commit,
+            "proofComplete": False,
+            "error": "GitHub merge record exceeds the response bound",
+        }
+    try:
+        pulls = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        pulls = None
+    if not isinstance(pulls, list):
+        return {
+            "repository": DEPLOY_REPOSITORY,
+            "expectedSourceCommit": expected_source_commit,
+            "proofComplete": False,
+            "error": "GitHub merge record is malformed",
+        }
+    matches = []
+    for pull in pulls:
+        if not isinstance(pull, dict):
+            continue
+        base = pull.get("base")
+        if (
+            pull.get("state") == "closed"
+            and isinstance(pull.get("merged_at"), str)
+            and bool(pull["merged_at"].strip())
+            and pull.get("merge_commit_sha") == expected_source_commit
+            and isinstance(base, dict)
+            and base.get("ref") == DEPLOY_BASE_REF
+            and type(pull.get("number")) is int
+            and pull["number"] > 0
+        ):
+            matches.append(pull)
+    if len(matches) != 1:
+        return {
+            "repository": DEPLOY_REPOSITORY,
+            "expectedSourceCommit": expected_source_commit,
+            "baseRef": DEPLOY_BASE_REF,
+            "matchingPullRequestCount": len(matches),
+            "proofComplete": False,
+            "error": "expected exactly one merged pull request for the deployment commit",
+        }
+    pull = matches[0]
+    return {
+        "repository": DEPLOY_REPOSITORY,
+        "pullRequest": pull["number"],
+        "baseRef": DEPLOY_BASE_REF,
+        "mergedAt": pull["merged_at"],
+        "sourceCommit": pull["merge_commit_sha"],
+        "expectedSourceCommit": expected_source_commit,
+        "proofComplete": True,
     }
 
 

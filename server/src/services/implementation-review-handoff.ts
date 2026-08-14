@@ -146,6 +146,7 @@ export function planImplementationReviewHandoff(input: {
     status?: string | null;
     assigneeAgentId?: string | null;
     description?: string | null;
+    executionWorkspaceSettings?: unknown;
   }>;
   draftPr?: DraftPullRequestEvidence;
 }): ImplementationReviewHandoffPlan {
@@ -168,7 +169,12 @@ export function planImplementationReviewHandoff(input: {
   }
 
   const openStatuses = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
-  const duplicate = input.existingChildren.some((child) => {
+  const canonicalReviewChildren = input.existingChildren.filter((child) => {
+    const provenance = parseImplementationReviewProvenance(child.executionWorkspaceSettings);
+    return provenance?.kind === "implementation_exact_head"
+      && provenance.parentIssueId === input.parent.id;
+  });
+  const duplicate = canonicalReviewChildren.some((child) => {
     if (!openStatuses.has(String(child.status ?? ""))) return false;
     const title = String(child.title ?? "");
     const description = String(child.description ?? "");
@@ -183,10 +189,7 @@ export function planImplementationReviewHandoff(input: {
   if (duplicate) {
     return { action: "skip", reason: "duplicate_open_review" };
   }
-  const reviewRounds = input.existingChildren.filter((child) =>
-    String(child.title ?? "").includes(REVIEW_HANDOFF_MARKER)
-    || String(child.description ?? "").includes(REVIEW_HANDOFF_MARKER)
-  ).length;
+  const reviewRounds = canonicalReviewChildren.length;
   if (reviewRounds >= MAX_IMPLEMENTATION_REVIEW_ROUNDS) {
     return { action: "skip", reason: "review_rounds_exhausted" };
   }
@@ -607,6 +610,7 @@ export async function ensureImplementationReviewHandoff(
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         description: issues.description,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
       })
       .from(issues)
       .where(

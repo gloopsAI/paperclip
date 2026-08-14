@@ -135,6 +135,22 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             "test_socket_unproved_compensation_is_durable_reconciliation_required",
             "test_socket_rollback_proof_exception_requires_reconciliation",
         }
+        if uses_deploy and self._testMethodName != "test_deploy_rejects_unapproved_merge_before_pull_or_pin_mutation":
+            merge_patcher = patch.object(
+                broker,
+                "_github_approved_merge_evidence",
+                return_value={
+                    "repository": "gloopsAI/paperclip",
+                    "pullRequest": 297,
+                    "baseRef": "gloops/stable",
+                    "mergedAt": "2026-08-14T12:00:00Z",
+                    "sourceCommit": "d" * 40,
+                    "expectedSourceCommit": "d" * 40,
+                    "proofComplete": True,
+                },
+            )
+            merge_patcher.start()
+            self.addCleanup(merge_patcher.stop)
         if uses_deploy and self._testMethodName not in deploy_end_to_end_tests:
             if self._testMethodName != "test_deploy_rejects_unbound_source_commit_before_pin_mutation":
                 source_binding_patcher = patch.object(
@@ -790,6 +806,81 @@ class PlatformOpsBrokerTests(unittest.TestCase):
             self.assertEqual(receipt["state"], "failed")
             self.assertFalse(receipt["evidence"]["candidateSourceBinding"]["proofComplete"])
             connection.close()
+
+    def test_deploy_rejects_unapproved_merge_before_pull_or_pin_mutation(self):
+        with self.paths():
+            connection = broker.connect_database()
+            image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64
+            previous_env = (self.config / "runtime.env").read_text()
+            previous_pin = (self.config / "approved-image").read_text()
+            with patch.object(
+                broker,
+                "_github_approved_merge_evidence",
+                return_value={
+                    "repository": "gloopsAI/paperclip",
+                    "expectedSourceCommit": "d" * 40,
+                    "baseRef": "gloops/stable",
+                    "matchingPullRequestCount": 0,
+                    "proofComplete": False,
+                    "error": "expected exactly one merged pull request for the deployment commit",
+                },
+            ), patch.object(broker, "run_command") as commands:
+                with self.assertRaisesRegex(broker.BrokerError, "authoritative merged head"):
+                    broker.process_request({
+                        "operation": "deploy-pinned-image",
+                        "service": "paperclip-gloops.service",
+                        "image": image,
+                        "sourceCommit": "d" * 40,
+                        "actor": "wren-agent",
+                        "idempotencyKey": "deploy-unapproved-merge-001",
+                    }, connection=connection)
+            commands.assert_not_called()
+            self.assertEqual((self.config / "runtime.env").read_text(), previous_env)
+            self.assertEqual((self.config / "approved-image").read_text(), previous_pin)
+            receipt = broker.list_receipts(connection)[0]
+            self.assertEqual(receipt["state"], "failed")
+            self.assertFalse(receipt["evidence"]["approvedMerge"]["proofComplete"])
+            connection.close()
+
+    def test_github_merge_evidence_requires_one_exact_merged_pull_on_stable(self):
+        class Response:
+            def __init__(self, value):
+                self.value = value
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps(self.value).encode()
+
+        commit = "d" * 40
+        accepted = [{
+            "number": 297,
+            "state": "closed",
+            "merged_at": "2026-08-14T12:00:00Z",
+            "merge_commit_sha": commit,
+            "base": {"ref": "gloops/stable"},
+        }]
+        with patch.object(broker, "urlopen", return_value=Response(accepted)):
+            evidence = broker._github_approved_merge_evidence(commit)
+        self.assertTrue(evidence["proofComplete"])
+        self.assertEqual(evidence["pullRequest"], 297)
+
+        for changed in (
+            [{**accepted[0], "merge_commit_sha": "c" * 40}],
+            [{**accepted[0], "base": {"ref": "main"}}],
+            [{**accepted[0], "merged_at": None}],
+            accepted + [{**accepted[0], "number": 298}],
+        ):
+            with self.subTest(changed=changed), patch.object(
+                broker, "urlopen", return_value=Response(changed),
+            ):
+                self.assertFalse(
+                    broker._github_approved_merge_evidence(commit)["proofComplete"],
+                )
 
     def test_image_source_binding_requires_the_expected_commit_and_digest(self):
         image = "ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64

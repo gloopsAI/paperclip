@@ -28,8 +28,12 @@
       "kind": "review",
       "position": 2,
       "config": {
-        "reviewerKind": "any",
-        "whatHappensHere": "A designated Argus/reviewer-role agent reviews the exact PR head. The implementation handoff policy, not this visibility stage, enforces reviewer qualification and the three-round ceiling.",
+        "requireApproval": true,
+        "approver": {
+          "kind": "agent",
+          "id": "843c62bc-6f32-420e-9b62-7a2d6a34846f"
+        },
+        "whatHappensHere": "The configured Argus agent reviews the exact PR head. Pipeline exit and the implementation handoff both require the designated independent reviewer; canonical server-issued provenance enforces the three-round ceiling.",
         "approveToStageKey": "ci_merge",
         "requestChangesToStageKey": "implementation",
         "rejectToStageKey": "blocked",
