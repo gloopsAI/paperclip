@@ -4,8 +4,13 @@ This boundary admits one public GitHub event into the private Paperclip pilot:
 `POST https://hermes.gloops.ai/github-webhooks/paperclip-check-suite` with
 `X-GitHub-Event: check_suite`. The existing Hermes dashboard remains protected
 by Basic Auth. The receiver binds only to `127.0.0.1:8766`, verifies the exact
-request body with GitHub's `X-Hub-Signature-256` HMAC, and forwards only to the
-allowlisted local Paperclip plugin webhook.
+request body with GitHub's `X-Hub-Signature-256` HMAC, rejects empty, malformed,
+non-completed, or structurally invalid check-suite payloads before Paperclip
+persistence, and forwards only to the allowlisted local Paperclip plugin
+webhook. Paperclip persists `X-GitHub-Delivery` under a unique
+plugin/endpoint/delivery boundary; successful or in-flight duplicates return
+the existing audit row without a second worker dispatch, while one failed row
+may be atomically reclaimed for provider redelivery.
 
 ## Authority and secrets
 

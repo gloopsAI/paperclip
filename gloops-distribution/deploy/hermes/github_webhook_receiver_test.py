@@ -58,6 +58,17 @@ def signed_headers(secret, body, delivery="delivery-1", event="check_suite"):
     }
 
 
+def completed_body():
+    return json.dumps({
+        "action": "completed",
+        "repository": {"full_name": "gloopsAI/paperclip"},
+        "check_suite": {
+            "head_branch": "gloops/stable",
+            "head_sha": "a" * 40,
+        },
+    }, separators=(",", ":")).encode()
+
+
 def request(url, method="POST", body=b"{}", headers=None):
     candidate = urllib.request.Request(url, data=body if method != "GET" else None, method=method, headers=headers or {})
     try:
@@ -73,7 +84,7 @@ def request(url, method="POST", body=b"{}", headers=None):
 class ReceiverTest(unittest.TestCase):
     def test_valid_delivery_forwards_exact_bytes_and_headers(self):
         receiver = FakeReceiver()
-        body = b'{"action":"completed"}'
+        body = completed_body()
         with RunningReceiver(receiver) as base:
             status, payload = request(
                 base + MODULE.WEBHOOK_PATH,
@@ -137,7 +148,7 @@ class ReceiverTest(unittest.TestCase):
 
     def test_rate_limit_is_fail_closed(self):
         receiver = FakeReceiver(limit=1)
-        body = b"{}"
+        body = completed_body()
         with RunningReceiver(receiver) as base:
             headers = signed_headers(receiver.secret, body)
             self.assertEqual(request(base + MODULE.WEBHOOK_PATH, body=body, headers=headers)[0], 200)
@@ -147,10 +158,42 @@ class ReceiverTest(unittest.TestCase):
     def test_private_upstream_failure_is_not_reported_as_success(self):
         receiver = FakeReceiver()
         receiver.status = 502
-        body = b"{}"
+        body = completed_body()
         with RunningReceiver(receiver) as base:
             result = request(base + MODULE.WEBHOOK_PATH, body=body, headers=signed_headers(receiver.secret, body))
         self.assertEqual(result, (502, {"error": "private_upstream_failed"}))
+
+    def test_signed_empty_or_invalid_check_suite_never_reaches_persistence(self):
+        receiver = FakeReceiver()
+        with RunningReceiver(receiver) as base:
+            empty = b""
+            self.assertEqual(
+                request(
+                    base + MODULE.WEBHOOK_PATH,
+                    body=empty,
+                    headers=signed_headers(receiver.secret, empty),
+                ),
+                (422, {"error": "body_invalid"}),
+            )
+            invalid = b"{}"
+            self.assertEqual(
+                request(
+                    base + MODULE.WEBHOOK_PATH,
+                    body=invalid,
+                    headers=signed_headers(receiver.secret, invalid),
+                ),
+                (422, {"error": "payload_invalid"}),
+            )
+            wrong_action = completed_body().replace(b'"completed"', b'"requested"')
+            self.assertEqual(
+                request(
+                    base + MODULE.WEBHOOK_PATH,
+                    body=wrong_action,
+                    headers=signed_headers(receiver.secret, wrong_action),
+                ),
+                (422, {"error": "payload_invalid"}),
+            )
+        self.assertEqual(receiver.calls, [])
 
     def test_private_upstream_transport_error_is_not_reported_as_success(self):
         receiver = MODULE.Receiver(

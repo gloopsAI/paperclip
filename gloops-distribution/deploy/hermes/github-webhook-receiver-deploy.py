@@ -406,8 +406,10 @@ def rollback(args: argparse.Namespace) -> None:
     os.fsync(fd)
     os.close(fd)
     fsync_dir(tx)
-    backup = json.loads(read_regular(tx / "backup.json"))
     try:
+        backup = json.loads(read_regular(tx / "backup.json"))
+        if not isinstance(backup, dict):
+            raise RuntimeError("backup receipt is not an object")
         rollback_backup(backup)
         receipt = {
             "schema": "gloops.github-webhook-receiver-rollback-receipt.v1",

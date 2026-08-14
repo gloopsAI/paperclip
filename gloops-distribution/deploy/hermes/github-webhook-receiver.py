@@ -78,6 +78,30 @@ def verify_signature(secret: bytes, body: bytes, supplied: str | None) -> bool:
     return hmac.compare_digest(expected, supplied_hex.lower())
 
 
+def valid_completed_check_suite(body: bytes) -> bool:
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("action") != "completed":
+        return False
+    repository = payload.get("repository")
+    suite = payload.get("check_suite")
+    if not isinstance(repository, dict) or not isinstance(suite, dict):
+        return False
+    full_name = repository.get("full_name")
+    head_branch = suite.get("head_branch")
+    head_sha = suite.get("head_sha")
+    return (
+        isinstance(full_name, str)
+        and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}", full_name) is not None
+        and isinstance(head_branch, str)
+        and 1 <= len(head_branch) <= 255
+        and isinstance(head_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", head_sha) is not None
+    )
+
+
 def client_key(headers: object, peer: str) -> str:
     forwarded = getattr(headers, "get")("X-Forwarded-For")
     if forwarded:
@@ -155,10 +179,16 @@ def handler_class(receiver: Receiver) -> type[BaseHTTPRequestHandler]:
                 self._json(411, {"error": "content_length_required"})
                 return
             length = int(content_length)
+            if length == 0:
+                self._json(422, {"error": "body_invalid"})
+                return
             if length > MAX_BODY_BYTES:
                 self._json(413, {"error": "body_too_large"})
                 return
             body = self.rfile.read(length)
+            if len(body) != length:
+                self._json(400, {"error": "body_incomplete"})
+                return
             signature = self.headers.get("X-Hub-Signature-256")
             if not verify_signature(receiver.secret, body, signature):
                 self._json(401, {"error": "signature_invalid"})
@@ -170,6 +200,9 @@ def handler_class(receiver: Receiver) -> type[BaseHTTPRequestHandler]:
                 return
             if delivery is None or DELIVERY_RE.fullmatch(delivery) is None:
                 self._json(422, {"error": "delivery_invalid"})
+                return
+            if not valid_completed_check_suite(body):
+                self._json(422, {"error": "payload_invalid"})
                 return
             upstream_status = receiver.forward(
                 body,

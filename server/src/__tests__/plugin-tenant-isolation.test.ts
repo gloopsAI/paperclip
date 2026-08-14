@@ -14,6 +14,10 @@ import {
 import { buildHostServices, flushPluginLogBuffer } from "../services/plugin-host-services.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import {
+  claimPluginWebhookDelivery,
+  parsePluginWebhookExternalId,
+} from "../services/plugin-webhook-deliveries.js";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -101,6 +105,53 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     });
     return companyId;
   }
+
+  it("claims one persisted row per external delivery and reclaims failures once", async () => {
+    const pluginId = await seedPlugin();
+    const startedAt = new Date();
+    const input = {
+      pluginId,
+      webhookKey: "github-checks",
+      externalId: "delivery-123",
+      payload: { action: "completed" },
+      headers: { "x-github-delivery": "delivery-123" },
+      startedAt,
+    };
+
+    const initial = await Promise.all([
+      claimPluginWebhookDelivery(db, input),
+      claimPluginWebhookDelivery(db, input),
+    ]);
+    expect(initial.filter((entry) => entry.dispatch)).toHaveLength(1);
+    expect(new Set(initial.map((entry) => entry.deliveryId)).size).toBe(1);
+    let rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.externalId).toBe("delivery-123");
+
+    await db
+      .update(pluginWebhookDeliveries)
+      .set({ status: "failed", error: "injected", finishedAt: new Date() })
+      .where(eq(pluginWebhookDeliveries.id, initial[0]!.deliveryId));
+    const retried = await Promise.all([
+      claimPluginWebhookDelivery(db, input),
+      claimPluginWebhookDelivery(db, input),
+    ]);
+    expect(retried.filter((entry) => entry.dispatch)).toHaveLength(1);
+    expect(new Set(retried.map((entry) => entry.deliveryId))).toEqual(
+      new Set([initial[0]!.deliveryId]),
+    );
+    rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "pending", error: null, finishedAt: null });
+  });
+
+  it("validates bounded external delivery identifiers", () => {
+    expect(parsePluginWebhookExternalId(undefined)).toBeNull();
+    expect(parsePluginWebhookExternalId("delivery-123")).toBe("delivery-123");
+    expect(() => parsePluginWebhookExternalId(["a", "b"])).toThrow("ambiguous");
+    expect(() => parsePluginWebhookExternalId("bad delivery")).toThrow("invalid");
+    expect(() => parsePluginWebhookExternalId("x".repeat(129))).toThrow("invalid");
+  });
 
   it("allows NULL company_id on plugin_logs (instance-scope rows behave as before)", async () => {
     const pluginId = await seedPlugin();

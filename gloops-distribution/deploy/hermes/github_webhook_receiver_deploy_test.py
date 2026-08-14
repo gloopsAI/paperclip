@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import stat
@@ -192,6 +193,33 @@ class DeployTest(unittest.TestCase):
             self.assertEqual(receipt["status"], "rolled_back")
             self.assertEqual(receipt["errorClass"], "RuntimeError")
             self.assertNotIn("injected", str(receipt))
+
+    def test_corrupt_backup_after_durable_claim_writes_failure_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.deployment_fixture(pathlib.Path(temporary))
+            args, patches, _receiver, _unit, _secret, _caddy, transactions = fixture
+            stdin = io.TextIOWrapper(io.BytesIO(b"s" * 32))
+            with patches, \
+                 mock.patch.object(MODULE, "ensure_root"), \
+                 mock.patch.object(MODULE, "trusted_root_directory"), \
+                 mock.patch.object(MODULE, "validate_caddy"), \
+                 mock.patch.object(MODULE, "health"), \
+                 mock.patch.object(MODULE, "service_state", return_value={"active": False, "enabled": False}), \
+                 mock.patch.object(MODULE, "run"), \
+                 mock.patch.object(MODULE.subprocess, "run", side_effect=self.inactive_subprocess), \
+                 mock.patch.object(MODULE.os, "fchown"), \
+                 mock.patch.object(MODULE.sys, "stdin", stdin):
+                MODULE.install(args)
+                tx = transactions / args.transaction_id
+                (tx / "backup.json").write_text("{broken", encoding="utf-8")
+                with self.assertRaises(json.JSONDecodeError):
+                    MODULE.rollback(SimpleNamespace(transaction_id=args.transaction_id))
+
+            self.assertTrue((tx / "rollback-claim.json").exists())
+            failure = json.loads((tx / "rollback-failure-receipt.json").read_text())
+            self.assertEqual(failure["status"], "rollback_failed")
+            self.assertEqual(failure["errorClass"], "JSONDecodeError")
+            self.assertFalse((tx / "rollback-receipt.json").exists())
 
 
 if __name__ == "__main__":

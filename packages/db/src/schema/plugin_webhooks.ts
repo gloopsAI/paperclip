@@ -6,7 +6,9 @@ import {
   timestamp,
   jsonb,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
 import type { PluginWebhookDeliveryStatus } from "@paperclipai/shared";
@@ -65,5 +67,8 @@ export const pluginWebhookDeliveries = pgTable(
     companyIdx: index("plugin_webhook_deliveries_company_idx").on(table.companyId),
     statusIdx: index("plugin_webhook_deliveries_status_idx").on(table.status),
     keyIdx: index("plugin_webhook_deliveries_key_idx").on(table.webhookKey),
+    externalDeliveryIdx: uniqueIndex("plugin_webhook_deliveries_external_id_uq")
+      .on(table.pluginId, table.webhookKey, table.externalId)
+      .where(sql`${table.externalId} is not null`),
   }),
 );

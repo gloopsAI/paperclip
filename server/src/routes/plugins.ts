@@ -85,6 +85,10 @@ import {
 } from "../services/plugin-secrets-handler.js";
 import { isUuidSecretRef } from "../services/json-schema-secret-refs.js";
 import { secretService } from "../services/secrets.js";
+import {
+  claimPluginWebhookDelivery,
+  parsePluginWebhookExternalId,
+} from "../services/plugin-webhook-deliveries.js";
 import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -2680,23 +2684,43 @@ export function pluginRoutes(
     // This preserves the exact bytes the provider signed, whereas
     // JSON.stringify(req.body) would re-serialize and break HMAC verification.
     const stashedRaw = (req as unknown as { rawBody?: Buffer }).rawBody;
+    if (!stashedRaw || stashedRaw.length === 0) {
+      res.status(400).json({ error: "Webhook body must be a non-empty JSON object" });
+      return;
+    }
     const rawBody = stashedRaw ? stashedRaw.toString("utf-8") : "";
     const parsedBody = req.body as unknown;
-    const payload = (req.body as Record<string, unknown> | undefined) ?? {};
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      res.status(400).json({ error: "Webhook body must be a non-empty JSON object" });
+      return;
+    }
+    const payload = parsedBody as Record<string, unknown>;
+    let externalId: string | null;
+    try {
+      externalId = parsePluginWebhookExternalId(req.headers["x-github-delivery"]);
+    } catch {
+      res.status(422).json({ error: "Webhook external delivery id is invalid" });
+      return;
+    }
 
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
-    const [delivery] = await db
-      .insert(pluginWebhookDeliveries)
-      .values({
-        pluginId: plugin.id,
-        webhookKey: endpointKey,
-        status: "pending",
-        payload,
-        headers: rawHeaders,
-        startedAt,
-      })
-      .returning({ id: pluginWebhookDeliveries.id });
+    const delivery = await claimPluginWebhookDelivery(db, {
+      pluginId: plugin.id,
+      webhookKey: endpointKey,
+      externalId,
+      payload,
+      headers: rawHeaders,
+      startedAt,
+    });
+    if (!delivery.dispatch) {
+      res.status(200).json({
+        deliveryId: delivery.deliveryId,
+        status: delivery.status,
+        duplicate: true,
+      });
+      return;
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {
@@ -2718,10 +2742,10 @@ export function pluginRoutes(
           durationMs,
           finishedAt,
         })
-        .where(eq(pluginWebhookDeliveries.id, delivery.id));
+        .where(eq(pluginWebhookDeliveries.id, delivery.deliveryId));
 
       res.status(200).json({
-        deliveryId: delivery.id,
+        deliveryId: delivery.deliveryId,
         status: "success",
       });
     } catch (err) {
@@ -2738,10 +2762,10 @@ export function pluginRoutes(
           error: errorMessage,
           finishedAt,
         })
-        .where(eq(pluginWebhookDeliveries.id, delivery.id));
+        .where(eq(pluginWebhookDeliveries.id, delivery.deliveryId));
 
       res.status(502).json({
-        deliveryId: delivery.id,
+        deliveryId: delivery.deliveryId,
         status: "failed",
         error: errorMessage,
       });
@@ -2995,6 +3019,7 @@ export function pluginRoutes(
     let recentWebhookDeliveries: Array<{
       id: string;
       webhookKey: string;
+      externalId: string | null;
       status: string;
       durationMs: number | null;
       error: string | null;
@@ -3008,6 +3033,7 @@ export function pluginRoutes(
         .select({
           id: pluginWebhookDeliveries.id,
           webhookKey: pluginWebhookDeliveries.webhookKey,
+          externalId: pluginWebhookDeliveries.externalId,
           status: pluginWebhookDeliveries.status,
           durationMs: pluginWebhookDeliveries.durationMs,
           error: pluginWebhookDeliveries.error,
@@ -3023,6 +3049,7 @@ export function pluginRoutes(
       recentWebhookDeliveries = deliveries.map((d) => ({
         id: d.id,
         webhookKey: d.webhookKey,
+        externalId: d.externalId,
         status: d.status,
         durationMs: d.durationMs,
         error: d.error,
