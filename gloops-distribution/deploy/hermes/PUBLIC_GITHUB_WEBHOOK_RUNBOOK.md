@@ -8,9 +8,14 @@ request body with GitHub's `X-Hub-Signature-256` HMAC, rejects empty, malformed,
 non-completed, or structurally invalid check-suite payloads before Paperclip
 persistence, and forwards only to the allowlisted local Paperclip plugin
 webhook. Paperclip persists `X-GitHub-Delivery` under a unique
-plugin/endpoint/delivery boundary; successful or in-flight duplicates return
-the existing audit row without a second worker dispatch, while one failed row
-may be atomically reclaimed for provider redelivery.
+plugin/endpoint/delivery boundary. Its pending claim, bounded worker RPC, and
+terminal audit update share one database transaction: concurrent duplicates
+serialize behind the unique key, while a crash rolls the uncommitted pending
+claim back instead of leaving a tombstone. Successful duplicates return the
+existing audit row without a second worker dispatch; one failed row may be
+atomically reclaimed for provider redelivery. `X-GitHub-Delivery` is also the
+stable plugin `requestId`, so the plugin's atomic delivery claim suppresses a
+replayed side effect if the worker completed immediately before a host crash.
 
 ## Authority and secrets
 

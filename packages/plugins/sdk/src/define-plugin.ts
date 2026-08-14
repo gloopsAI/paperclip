@@ -133,7 +133,11 @@ export interface PluginWebhookInput {
   rawBody: string;
   /** Parsed JSON body (if applicable and parseable). */
   parsedBody?: unknown;
-  /** Unique request identifier for idempotency checks. */
+  /**
+   * Stable logical-delivery identifier. Provider redeliveries reuse this
+   * value; handlers that create side effects must claim it atomically and
+   * return success without repeating an already-completed effect.
+   */
   requestId: string;
 }
 

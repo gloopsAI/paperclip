@@ -21,7 +21,6 @@
 
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -86,8 +85,8 @@ import {
 import { isUuidSecretRef } from "../services/json-schema-secret-refs.js";
 import { secretService } from "../services/secrets.js";
 import {
-  claimPluginWebhookDelivery,
   parsePluginWebhookExternalId,
+  processPluginWebhookDelivery,
 } from "../services/plugin-webhook-deliveries.js";
 import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 
@@ -2670,7 +2669,6 @@ export function pluginRoutes(
     }
 
     // Step 5: Extract request data
-    const requestId = randomUUID();
     const rawHeaders: Record<string, string> = {};
     for (const [key, value] of Object.entries(req.headers)) {
       if (typeof value === "string") {
@@ -2703,17 +2701,32 @@ export function pluginRoutes(
       return;
     }
 
-    // Step 6: Record the delivery in the database
+    // Steps 6-8 form one bounded transaction. The pending claim remains
+    // invisible until the worker call has a terminal receipt, so a process
+    // crash cannot leave a committed tombstone that suppresses redelivery.
     const startedAt = new Date();
-    const delivery = await claimPluginWebhookDelivery(db, {
-      pluginId: plugin.id,
-      webhookKey: endpointKey,
-      externalId,
-      payload,
-      headers: rawHeaders,
-      startedAt,
-    });
-    if (!delivery.dispatch) {
+    const delivery = await processPluginWebhookDelivery(
+      db,
+      {
+        pluginId: plugin.id,
+        webhookKey: endpointKey,
+        externalId,
+        payload,
+        headers: rawHeaders,
+        startedAt,
+      },
+      async ({ requestId }) => {
+        await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
+          endpointKey,
+          headers: req.headers as Record<string, string | string[]>,
+          rawBody,
+          parsedBody,
+          requestId,
+        });
+      },
+    );
+
+    if (delivery.duplicate) {
       res.status(200).json({
         deliveryId: delivery.deliveryId,
         status: delivery.status,
@@ -2722,54 +2735,19 @@ export function pluginRoutes(
       return;
     }
 
-    // Step 7: Dispatch to the worker via handleWebhook RPC
-    try {
-      await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
-        endpointKey,
-        headers: req.headers as Record<string, string | string[]>,
-        rawBody,
-        parsedBody,
-        requestId,
-      });
-
-      // Step 8: Update delivery record to success
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
-      await db
-        .update(pluginWebhookDeliveries)
-        .set({
-          status: "success",
-          durationMs,
-          finishedAt,
-        })
-        .where(eq(pluginWebhookDeliveries.id, delivery.deliveryId));
-
-      res.status(200).json({
-        deliveryId: delivery.deliveryId,
-        status: "success",
-      });
-    } catch (err) {
-      // Step 8 (error): Update delivery record to failed
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
-      const errorMessage = err instanceof Error ? err.message : String(err);
-
-      await db
-        .update(pluginWebhookDeliveries)
-        .set({
-          status: "failed",
-          durationMs,
-          error: errorMessage,
-          finishedAt,
-        })
-        .where(eq(pluginWebhookDeliveries.id, delivery.deliveryId));
-
+    if (delivery.status === "failed") {
       res.status(502).json({
         deliveryId: delivery.deliveryId,
         status: "failed",
-        error: errorMessage,
+        error: delivery.error,
       });
+      return;
     }
+
+    res.status(200).json({
+      deliveryId: delivery.deliveryId,
+      status: "success",
+    });
   });
 
   // ===========================================================================

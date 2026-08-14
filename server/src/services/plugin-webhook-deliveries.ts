@@ -9,6 +9,16 @@ export type ClaimedPluginWebhookDelivery = {
   status: "pending" | "success" | "failed";
 };
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export type ProcessedPluginWebhookDelivery = {
+  deliveryId: string;
+  duplicate: boolean;
+  status: "pending" | "success" | "failed";
+  durationMs?: number;
+  error?: string;
+};
+
 export function parsePluginWebhookExternalId(
   value: string | string[] | undefined,
 ): string | null {
@@ -32,7 +42,7 @@ export function parsePluginWebhookExternalId(
  * redelivery can recover without creating a second audit record.
  */
 export async function claimPluginWebhookDelivery(
-  db: Db,
+  db: DbTransaction,
   input: {
     pluginId: string;
     webhookKey: string;
@@ -110,4 +120,82 @@ export async function claimPluginWebhookDelivery(
     .then((rows) => rows[0] ?? null);
   if (!raced) throw new Error("webhook delivery disappeared during reclaim");
   return { deliveryId: raced.id, dispatch: false, status: raced.status };
+}
+
+/**
+ * Persist, dispatch, and terminally receipt one delivery in one transaction.
+ *
+ * Keeping the pending row uncommitted across the bounded worker RPC removes
+ * the crash-before-dispatch tombstone: a process/connection loss rolls the
+ * row back, while a concurrent duplicate waits on the unique external-ID
+ * constraint and then observes the committed terminal state. The provider's
+ * external ID is also the stable worker requestId, so a crash after the worker
+ * commits but before this transaction commits is an at-least-once replay with
+ * a stable plugin idempotency key rather than a second logical request.
+ */
+export async function processPluginWebhookDelivery(
+  db: Db,
+  input: {
+    pluginId: string;
+    webhookKey: string;
+    externalId: string | null;
+    payload: Record<string, unknown>;
+    headers: Record<string, string>;
+    startedAt: Date;
+  },
+  dispatch: (claim: { deliveryId: string; requestId: string }) => Promise<void>,
+): Promise<ProcessedPluginWebhookDelivery> {
+  return db.transaction(async (tx) => {
+    const delivery = await claimPluginWebhookDelivery(tx, input);
+    if (!delivery.dispatch) {
+      return {
+        deliveryId: delivery.deliveryId,
+        duplicate: true,
+        status: delivery.status,
+      };
+    }
+
+    const requestId = input.externalId ?? delivery.deliveryId;
+    try {
+      await dispatch({ deliveryId: delivery.deliveryId, requestId });
+    } catch (error) {
+      const finishedAt = new Date();
+      const durationMs = finishedAt.getTime() - input.startedAt.getTime();
+      const message = error instanceof Error ? error.message : String(error);
+      await tx
+        .update(pluginWebhookDeliveries)
+        .set({
+          status: "failed",
+          durationMs,
+          error: message,
+          finishedAt,
+        })
+        .where(eq(pluginWebhookDeliveries.id, delivery.deliveryId));
+      return {
+        deliveryId: delivery.deliveryId,
+        duplicate: false,
+        status: "failed",
+        durationMs,
+        error: message,
+      };
+    }
+
+    const finishedAt = new Date();
+    const durationMs = finishedAt.getTime() - input.startedAt.getTime();
+    await tx
+      .update(pluginWebhookDeliveries)
+      .set({
+        status: "success",
+        durationMs,
+        error: null,
+        finishedAt,
+      })
+      .where(eq(pluginWebhookDeliveries.id, delivery.deliveryId));
+    return {
+      deliveryId: delivery.deliveryId,
+      duplicate: false,
+      status: "success",
+      durationMs,
+    };
+  });
 }
