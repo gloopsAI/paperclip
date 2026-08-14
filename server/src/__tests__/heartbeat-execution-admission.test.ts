@@ -66,12 +66,14 @@ const mockAdapterState = vi.hoisted(() => ({
   throwOverride: null as Error | null,
   providerTerminalEvidence: false,
   summaryOverride: null as string | null,
+  beforeReturn: null as ((runId: string) => Promise<void>) | null,
 }));
 const mockAdapterExecute = vi.hoisted(() => vi.fn(async (ctx: {
   runId: string;
   onProviderRequestPrepared?: (evidence: Record<string, unknown>) => Promise<unknown>;
 }) => {
   if (mockAdapterState.throwOverride) throw mockAdapterState.throwOverride;
+  await mockAdapterState.beforeReturn?.(ctx.runId);
   if (mockAdapterState.providerTerminalEvidence) {
     if (!ctx.onProviderRequestPrepared) throw new Error("prepared-request callback missing");
     await ctx.onProviderRequestPrepared({
@@ -150,7 +152,7 @@ const mockAdapterExecute = vi.hoisted(() => vi.fn(async (ctx: {
     signal: null,
     timedOut: false,
     errorMessage: null,
-    summary: "Execution admission integration run.",
+    summary: mockAdapterState.summaryOverride ?? "Execution admission integration run.",
     provider: "test",
     model: "test-model",
     ...(mockAdapterState.includeUsage
@@ -227,6 +229,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     mockAdapterState.throwOverride = null;
     mockAdapterState.providerTerminalEvidence = false;
     mockAdapterState.summaryOverride = null;
+    mockAdapterState.beforeReturn = null;
     mockWorkspaceRuntimeState.setupFailure = null;
     mockAdapterExecute.mockClear();
   });
@@ -953,6 +956,209 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       .toMatchObject({ status: "done", executionRunId: null });
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId)))
       .toMatchObject([{ body: "Durable Buzz answer.", createdByRunId: run!.id }]);
+  });
+
+  it("uses an invoked projectless task-bridge ask answer as bounded terminal evidence", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      originKind: "task_bridge",
+      originId: randomUUID(),
+      workMode: "ask",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        completionProfile: "direct",
+        resourceBudget: { maxRunsPerTask: 1, maxRetriesPerTask: 0 },
+      },
+    }).where(eq(issues.id, issueId));
+    mockAdapterState.summaryOverride = "Planning and tool narration.\nFinal answer: SAGE_BRIDGE_CANARY_OK";
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      status: "succeeded",
+      resultJson: { providerInvocationAttempted: true },
+    });
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]))
+      .toMatchObject({ status: "done", assigneeAgentId: agentId, executionRunId: null });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId)))
+      .toMatchObject([{ body: "SAGE_BRIDGE_CANARY_OK", authorAgentId: agentId, createdByRunId: run!.id }]);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))
+      .toHaveLength(0);
+  });
+
+  it("normalizes an existing same-run task-bridge ask comment to the last final answer", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      originKind: "task_bridge",
+      originId: randomUUID(),
+      workMode: "ask",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        completionProfile: "direct",
+        resourceBudget: { maxRunsPerTask: 1, maxRetriesPerTask: 0 },
+      },
+    }).where(eq(issues.id, issueId));
+    const noisy = "Planning and tool narration.\nAnswer: draft\nFinal answer: SAGE_BRIDGE_NORMALIZED";
+    mockAdapterState.summaryOverride = noisy;
+    mockAdapterState.beforeReturn = async (runId) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorType: "agent",
+        authorAgentId: agentId,
+        createdByRunId: runId,
+        body: noisy,
+      });
+    };
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]))
+      .toMatchObject({ status: "done" });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId)))
+      .toMatchObject([{ body: "SAGE_BRIDGE_NORMALIZED", createdByRunId: run!.id }]);
+  });
+
+  it.each([
+    { label: "ordinary ask", patch: { originKind: "manual", originId: null }, bounded: true },
+    { label: "missing bridge key identity", patch: { originKind: "task_bridge", originId: null }, bounded: true },
+    { label: "missing one-run budget", patch: { originKind: "task_bridge", originId: randomUUID() }, bounded: false },
+  ])("does not relax provider terminal evidence for $label", async ({ patch, bounded }) => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      ...patch,
+      workMode: "ask",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        completionProfile: "direct",
+        ...(bounded ? { resourceBudget: { maxRunsPerTask: 1, maxRetriesPerTask: 0 } } : {}),
+      },
+    }).where(eq(issues.id, issueId));
+    mockAdapterState.summaryOverride = "Final answer: MUST_NOT_AUTHORIZE";
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]))
+      .not.toMatchObject({ status: "done" });
+  });
+
+  it("does not trust a task-bridge ask answer when provider invocation was not attempted", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      originKind: "task_bridge",
+      originId: randomUUID(),
+      workMode: "ask",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        completionProfile: "direct",
+        resourceBudget: { maxRunsPerTask: 1, maxRetriesPerTask: 0 },
+      },
+    }).where(eq(issues.id, issueId));
+    mockAdapterState.resultOverride = {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      providerInvocationAttempted: false,
+      summary: "Final answer: MUST_NOT_AUTHORIZE",
+      provider: "test",
+      model: "test-model",
+    };
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      resultJson: { providerInvocationAttempted: false },
+    });
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]))
+      .not.toMatchObject({ status: "done" });
+  });
+
+  it("does not trust a task-bridge ask answer attached to a parent execution", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    const parentId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "in_progress" });
+    const issueId = await seedRunnableAdmissionIssue({ companyId, agentId, status: "todo" });
+    await db.update(issues).set({
+      parentId,
+      originKind: "task_bridge",
+      originId: randomUUID(),
+      workMode: "ask",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        completionProfile: "direct",
+        resourceBudget: { maxRunsPerTask: 1, maxRetriesPerTask: 0 },
+      },
+    }).where(eq(issues.id, issueId));
+    mockAdapterState.summaryOverride = "Final answer: MUST_NOT_AUTHORIZE";
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]))
+      .not.toMatchObject({ status: "done" });
   });
 
   async function seedIssueBudgetHistory(input: {

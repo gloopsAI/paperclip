@@ -5801,6 +5801,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect;
     issueId: string | null;
     providerTerminalEvidence: boolean;
+    providerInvocationAttempted: boolean;
     workspaceFinalized: boolean;
     workspaceCwd: string | null;
     exactBaseSha?: string | null;
@@ -5823,6 +5824,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         where id = ${input.issueId} and company_id = ${input.run.companyId}
         for update
       `);
+      if (input.directAnswerCommentPersisted) {
+        await tx.execute(sql`
+          select id from issue_comments
+          where company_id = ${input.run.companyId}
+            and issue_id = ${input.issueId}
+            and created_by_run_id = ${input.run.id}
+            and author_agent_id = ${input.run.agentId}
+            and deleted_at is null
+          for update
+        `);
+      }
       const [currentRun, currentIssue] = await Promise.all([
         tx.select().from(heartbeatRuns)
           .where(and(
@@ -5840,6 +5852,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!currentRun || !currentIssue) {
         return { changed: false, status: null, reason: "missing_bound_record" };
       }
+      const currentDirectAnswerComment = input.directAnswerCommentPersisted
+        ? await tx.select({ id: issueComments.id, body: issueComments.body })
+            .from(issueComments)
+            .where(and(
+              eq(issueComments.companyId, currentRun.companyId),
+              eq(issueComments.issueId, currentIssue.id),
+              eq(issueComments.createdByRunId, currentRun.id),
+              eq(issueComments.authorAgentId, currentRun.agentId),
+              isNull(issueComments.deletedAt),
+            ))
+            .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const taskBridgeResourceBudget = parseObject(
+        parseObject(currentIssue.executionPolicy).resourceBudget,
+      );
+      const persistedProviderInvocationAttempted =
+        parseObject(currentRun.resultJson).providerInvocationAttempted === true;
+
+      // Projectless Buzz consultations run through the task-bridge key and a
+      // bounded one-run ask contract. Codex subscription adapters do not emit
+      // Hermes' provider-I/O terminal envelope, so the exact run-authored
+      // answer is their terminal deliverable evidence. Keep this exception
+      // deliberately narrower than the general terminal-evidence policy: the
+      // provider fence must have been crossed, the answer must already exist,
+      // and no project, workspace, or parent execution authority may exist.
+      const trustedTaskBridgeDirectAnswerEvidence = Boolean(
+        currentIssue.originKind === "task_bridge" &&
+        readNonEmptyString(currentIssue.originId) &&
+        currentIssue.workMode === "ask" &&
+        currentIssue.projectId == null &&
+        currentIssue.projectWorkspaceId == null &&
+        currentIssue.executionWorkspaceId == null &&
+        currentIssue.parentId == null &&
+        taskBridgeResourceBudget.maxRunsPerTask === 1 &&
+        taskBridgeResourceBudget.maxRetriesPerTask === 0 &&
+        readNonEmptyString(currentDirectAnswerComment?.body) &&
+        input.providerInvocationAttempted === true &&
+        persistedProviderInvocationAttempted
+      );
 
       // WG-PLAT-007: a parent/root must never auto-complete to "done" while
       // any child (by parentId) is still open, regardless of whether
@@ -5884,7 +5937,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: currentRun.status,
           contextSnapshot: currentRun.contextSnapshot,
         },
-        providerTerminalEvidence: input.providerTerminalEvidence,
+        providerTerminalEvidence:
+          input.providerTerminalEvidence || trustedTaskBridgeDirectAnswerEvidence,
         workspaceFinalized: input.workspaceFinalized,
         workspaceCwd: input.workspaceCwd,
         workspaceHeadSha,
@@ -9258,6 +9312,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return db
       .select({
         id: issueComments.id,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
       })
       .from(issueComments)
       .where(
@@ -9265,6 +9321,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(issueComments.companyId, companyId),
           eq(issueComments.issueId, issueId),
           eq(issueComments.createdByRunId, runId),
+          isNull(issueComments.deletedAt),
         ),
       )
       .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
@@ -9282,9 +9339,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!input.issueId || input.run.status !== "succeeded") return false;
     const context = parseObject(input.run.contextSnapshot);
     if (context.skipIssueComment === true) return false;
-    const existing = await findRunIssueComment(input.run.id, input.run.companyId, input.issueId);
-    if (existing) return true;
     const body = buildHeartbeatRunIssueComment(input.resultJson, { workMode: input.workMode });
+    const existing = await findRunIssueComment(input.run.id, input.run.companyId, input.issueId);
+    if (existing) {
+      if (input.workMode !== "ask") return true;
+      if (!body || existing.authorAgentId !== input.agentId) return false;
+      if (existing.body === body) return true;
+      const updated = await db
+        .update(issueComments)
+        .set({ body, updatedAt: new Date() })
+        .where(and(
+          eq(issueComments.id, existing.id),
+          eq(issueComments.companyId, input.run.companyId),
+          eq(issueComments.issueId, input.issueId),
+          eq(issueComments.createdByRunId, input.run.id),
+          eq(issueComments.authorAgentId, input.agentId),
+          isNull(issueComments.deletedAt),
+        ))
+        .returning({ id: issueComments.id });
+      return updated.length === 1;
+    }
     if (!body) return false;
     await issuesSvc.addComment(input.issueId, body, { agentId: input.agentId, runId: input.run.id });
     return true;
@@ -17091,6 +17165,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         readNonEmptyString(
           adapterResult.providerIoTerminalEvidence?.terminalEvidence.resolvedProvider,
         ),
+        readNonEmptyString(parseObject(persistedRun?.usageJson).provider),
       ].filter((value): value is string => Boolean(value));
       let directAnswerCommentPersisted = false;
       if (persistedRun && outcome === "succeeded" && issueRef?.workMode === "ask") {
@@ -17113,6 +17188,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             run: persistedRun,
             issueId,
             providerTerminalEvidence: Boolean(adapterResult.providerIoTerminalEvidence),
+            providerInvocationAttempted: effectiveProviderInvocationAttempted,
             workspaceFinalized: adapterFinalizeOutcome === "succeeded",
             workspaceCwd: executionWorkspace.cwd,
             exactBaseSha: executionWorkspace.baseRefSha,
