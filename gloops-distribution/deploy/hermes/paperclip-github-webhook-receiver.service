@@ -1,0 +1,45 @@
+[Unit]
+Description=GLoops signed GitHub webhook receiver
+After=network-online.target paperclip-gloops.service
+Wants=network-online.target
+Requires=paperclip-gloops.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/github-webhook-receiver.py
+Environment=WEBHOOK_RECEIVER_PORT=8766
+Environment=PAPERCLIP_PLUGIN_WEBHOOK_URL=http://127.0.0.1:3100/api/plugins/eeb2d7a2-298e-4a59-8ee5-ca8b16de4bd4/webhooks/github-checks
+LoadCredential=github_webhook_hmac:/etc/paperclip-gloops/github-webhook-hmac
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

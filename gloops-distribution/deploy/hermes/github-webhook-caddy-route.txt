@@ -1,0 +1,6 @@
+# BEGIN GLOOPS PAPERCLIP GITHUB WEBHOOK
+	@paperclip_github_webhook path /github-webhooks/paperclip-check-suite
+	handle @paperclip_github_webhook {
+		reverse_proxy 127.0.0.1:8766
+	}
+# END GLOOPS PAPERCLIP GITHUB WEBHOOK
