@@ -13,7 +13,11 @@ import {
 import { logger } from "../middleware/logger.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
-import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  executionWorkspaceService,
+  inspectWorkspacePathState,
+  readExecutionWorkspaceConfig,
+} from "./execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { logActivity } from "./activity-log.js";
 import { workspaceOperationService } from "./workspace-operations.js";
@@ -266,6 +270,15 @@ export function workspaceAutoCleanupService(
         throw new WorkspaceLifecycleRevalidationError(`${decision.action}.${decision.reason}`);
       }
 
+      const workspacePath = lockedWorkspace.providerRef?.trim() || lockedWorkspace.cwd?.trim();
+      if (!workspacePath) {
+        throw new WorkspaceLifecycleRevalidationError("workspace_path_missing");
+      }
+      const lockedPathState = await inspectWorkspacePathState(workspacePath);
+      if (lockedPathState !== "absent") {
+        throw new WorkspaceLifecycleRevalidationError(`workspace_path_${lockedPathState}`);
+      }
+
       await environmentRuntime.destroyReusableSandboxLeases({
         companyId: lockedWorkspace.companyId,
         executionWorkspaceId: lockedWorkspace.id,
@@ -276,6 +289,10 @@ export function workspaceAutoCleanupService(
         executionWorkspaceId: lockedWorkspace.id,
         workspaceCwd: lockedWorkspace.cwd,
       });
+      const finalPathState = await inspectWorkspacePathState(workspacePath);
+      if (finalPathState !== "absent") {
+        throw new WorkspaceLifecycleRevalidationError(`workspace_path_${finalPathState}`);
+      }
       const receipt = lifecycleReceipt({
         workspaceId: lockedWorkspace.id,
         sourceIssueId: lockedWorkspace.sourceIssueId,

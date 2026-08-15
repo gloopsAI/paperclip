@@ -415,6 +415,88 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(reconciledReceipts).toEqual([]);
   });
 
+  it("rejects a workspace path that reappears before the absent-workspace archive transaction", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const workspacePath = path.join(os.tmpdir(), `paperclip-reappears-${randomUUID()}`);
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip lifecycle path CAS",
+      issuePrefix: "PAC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Lifecycle path CAS",
+      status: "in_progress",
+      executionWorkspacePolicy: { enabled: true },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Terminal while the path is absent",
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "directory",
+      name: "Reappearing runtime workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd: workspacePath,
+      cleanupEligibleAt: new Date(now.getTime() - 1_000),
+      metadata: { createdByRuntime: true },
+    });
+    await db.update(issues).set({ executionWorkspaceId }).where(eq(issues.id, issueId));
+
+    let injectedReappearance = false;
+    const racingDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "transaction") {
+          return async (callback: Parameters<typeof db.transaction>[0]) => {
+            if (!injectedReappearance) {
+              injectedReappearance = true;
+              await fs.mkdir(workspacePath);
+            }
+            return db.transaction(callback);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    try {
+      const result = await workspaceAutoCleanupService(racingDb as typeof db).runDue(now);
+      const workspace = await db.select().from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, executionWorkspaceId))
+        .then((rows) => rows[0]);
+      const reconciledReceipts = await db.select().from(activityLog).where(and(
+        eq(activityLog.entityId, executionWorkspaceId),
+        eq(activityLog.action, "execution_workspace.auto_cleanup_reconciled_absent"),
+      ));
+
+      expect(injectedReappearance).toBe(true);
+      expect(result).toMatchObject({ cleaned: 0, blocked: 1, failed: 0 });
+      expect(workspace?.status).toBe("active");
+      expect(workspace?.cleanupReason).toContain("workspace_path_present");
+      expect(reconciledReceipts).toEqual([]);
+    } finally {
+      await fs.rm(workspacePath, { recursive: true, force: true });
+    }
+  });
+
   it("clears matching environment selections transactionally without touching other workspaces", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

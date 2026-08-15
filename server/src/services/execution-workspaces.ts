@@ -170,7 +170,7 @@ export function workspacePathStateFromAccessError(error: unknown): "absent" | "u
   return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
 }
 
-async function inspectWorkspacePathState(
+export async function inspectWorkspacePathState(
   value: string | null | undefined,
 ): Promise<"present" | "absent" | "unknown"> {
   if (!value) return "absent";
