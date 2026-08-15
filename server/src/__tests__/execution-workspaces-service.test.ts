@@ -6,7 +6,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -29,15 +29,26 @@ import {
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
+  workspacePathStateFromAccessError,
 } from "../services/execution-workspaces.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { workspaceAutoCleanupService } from "../services/workspace-auto-cleanup-service.ts";
 
 const execFileAsync = promisify(execFile);
 
 describe("execution workspace config helpers", () => {
+  it("distinguishes proven absence from uninspectable path failures", () => {
+    expect(workspacePathStateFromAccessError({ code: "ENOENT" })).toBe("absent");
+    expect(workspacePathStateFromAccessError({ code: "ENOTDIR" })).toBe("absent");
+    for (const code of ["EACCES", "ELOOP", "EIO", "EPERM", ""]) {
+      expect(workspacePathStateFromAccessError({ code })).toBe("unknown");
+    }
+    expect(workspacePathStateFromAccessError(new Error("untyped"))).toBe("unknown");
+  });
+
   it("reads typed config from persisted metadata", () => {
     expect(readExecutionWorkspaceConfig({
       source: "project_primary",
@@ -325,6 +336,83 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "This workspace is still linked to an open issue. Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.",
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
     ]));
+  });
+
+  it("revalidates linked issue terminality inside the absent-workspace archive transaction", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip lifecycle CAS",
+      issuePrefix: "CAS",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Lifecycle CAS",
+      status: "in_progress",
+      executionWorkspacePolicy: { enabled: true },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Terminal before the race",
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "directory",
+      name: "Already absent runtime workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd: path.join(os.tmpdir(), `paperclip-absent-${randomUUID()}`),
+      cleanupEligibleAt: new Date(now.getTime() - 1_000),
+      metadata: { createdByRuntime: true },
+    });
+    await db.update(issues).set({ executionWorkspaceId }).where(eq(issues.id, issueId));
+
+    let injectedReopen = false;
+    const racingDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "transaction") {
+          return async (callback: Parameters<typeof db.transaction>[0]) => {
+            if (!injectedReopen) {
+              injectedReopen = true;
+              await db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, issueId));
+            }
+            return db.transaction(callback);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const result = await workspaceAutoCleanupService(racingDb as typeof db).runDue(now);
+    const workspace = await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId))
+      .then((rows) => rows[0]);
+    const reconciledReceipts = await db.select().from(activityLog).where(and(
+      eq(activityLog.entityId, executionWorkspaceId),
+      eq(activityLog.action, "execution_workspace.auto_cleanup_reconciled_absent"),
+    ));
+
+    expect(injectedReopen).toBe(true);
+    expect(result).toMatchObject({ cleaned: 0, blocked: 1, failed: 0 });
+    expect(workspace?.status).toBe("active");
+    expect(workspace?.cleanupReason).toContain("transaction_revalidation");
+    expect(reconciledReceipts).toEqual([]);
   });
 
   it("clears matching environment selections transactionally without touching other workspaces", async () => {

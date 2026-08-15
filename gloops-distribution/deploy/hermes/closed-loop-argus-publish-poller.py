@@ -47,6 +47,14 @@ STATE_PATH = Path(
         "/var/lib/paperclip-gloops/closed-loop-argus-publish-state.json",
     )
 )
+TRUSTED_REVIEWER_AGENT_IDS = frozenset(
+    value.strip()
+    for value in os.environ.get(
+        "CLOSED_LOOP_REVIEWER_AGENT_IDS",
+        "843c62bc-6f32-420e-9b62-7a2d6a34846f",
+    ).split(",")
+    if value.strip()
+)
 # Match: APPROVE head SHA | APPROVE exact head SHA | APPROVE SHA
 APPROVE_RE = re.compile(
     r"\bAPPROVE\b(?:\s+exact)?(?:\s+head)?\s+([0-9a-f]{40})\b",
@@ -124,6 +132,15 @@ def load_state() -> dict:
     return {"publishedForPr": {}, "lastRunAt": None, "lastActions": []}
 
 
+def write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("durable write made no progress")
+        view = view[written:]
+
+
 def save_state(st: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(STATE_PATH.parent, 0o700)
@@ -138,7 +155,7 @@ def save_state(st: dict) -> None:
             dir_fd=parent_fd,
         )
         payload = (json.dumps(st, indent=2, sort_keys=True) + "\n").encode()
-        os.write(temp_fd, payload)
+        write_all(temp_fd, payload)
         os.fsync(temp_fd)
         os.close(temp_fd)
         temp_fd = -1
@@ -288,6 +305,16 @@ def issue_comments(issue_id: str) -> list[dict]:
     return []
 
 
+def trusted_approval_comment(issue: dict, comment: dict) -> bool:
+    author_agent_id = comment.get("authorAgentId")
+    return (
+        isinstance(author_agent_id, str)
+        and author_agent_id in TRUSTED_REVIEWER_AGENT_IDS
+        and comment.get("authorUserId") in (None, "")
+        and issue.get("assigneeAgentId") == author_agent_id
+    )
+
+
 def open_surface_prs() -> list[dict]:
     prs = gh_json(f"/repos/{REPO}/pulls?state=open&base={BASE_REF}&per_page=30")
     return prs if isinstance(prs, list) else []
@@ -338,6 +365,8 @@ def collect_approved_heads() -> dict[str, str]:
     for issue in list_review_issues():
         ident = issue.get("identifier") or issue.get("id", "")[:8]
         for c in issue_comments(issue["id"]):
+            if not trusted_approval_comment(issue, c):
+                continue
             blob = c.get("body") or c.get("content") or ""
             for h in extract_approved_heads(blob):
                 heads[h] = str(ident)

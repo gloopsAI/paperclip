@@ -116,6 +116,26 @@ class ReceiverTest(unittest.TestCase):
             self.assertNotIn("check_suite", evidence)
             self.assertEqual(trigger.stat().st_mode & 0o777, 0o600)
 
+    def test_ci_merge_trigger_retries_short_writes(self):
+        real_write = MODULE.os.write
+        write_calls = []
+
+        def short_write(descriptor, payload):
+            write_calls.append(len(payload))
+            size = max(1, len(payload) // 2)
+            return real_write(descriptor, payload[:size])
+
+        with tempfile.TemporaryDirectory() as root:
+            trigger = pathlib.Path(root, "trigger.json")
+            receiver = FakeReceiver()
+            receiver.trigger_path = str(trigger)
+            with mock.patch.object(MODULE.os, "write", side_effect=short_write):
+                receiver.persist_ci_merge_trigger(completed_body(), "delivery-short-write")
+            evidence = json.loads(trigger.read_text())
+            self.assertEqual(evidence["deliveryId"], "delivery-short-write")
+            self.assertEqual(evidence["headSha"], "a" * 40)
+        self.assertGreater(len(write_calls), 1)
+
     def test_trigger_failure_is_retryable_and_never_false_green(self):
         receiver = FakeReceiver()
         receiver.trigger_path = "/missing-parent/trigger.json"

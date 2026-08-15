@@ -38,6 +38,15 @@ def datetime_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("durable write made no progress")
+        view = view[written:]
+
+
 class SlidingWindowLimiter:
     def __init__(self, limit: int, window_seconds: int = 60) -> None:
         self.limit = limit
@@ -170,7 +179,7 @@ class Receiver:
                 **evidence,
                 "receivedAt": datetime_now(),
             }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-            os.write(temp_fd, payload)
+            write_all(temp_fd, payload)
             os.fsync(temp_fd)
             os.close(temp_fd)
             temp_fd = -1

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -28,6 +28,13 @@ const DEFAULT_BATCH_LIMIT = 10;
 const ACTIVE_WORKSPACE_STATUSES = ["active", "idle", "in_review"];
 
 type LifecycleOutcome = "archived" | "reconciled_absent" | "cleanup_failed";
+
+class WorkspaceLifecycleRevalidationError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "WorkspaceLifecycleRevalidationError";
+  }
+}
 
 function lifecycleReceipt(input: {
   workspaceId: string;
@@ -169,43 +176,135 @@ export function workspaceAutoCleanupService(
   async function reconcileAbsentWorkspace(input: {
     workspace: Awaited<ReturnType<typeof workspaceSvc.getById>> & {};
     now: Date;
-    publicationReceipt: { state: string; expectedNewOid: string; remoteNewOid: string | null } | null;
+    readiness: NonNullable<Awaited<ReturnType<typeof workspaceSvc.getCloseReadiness>>>;
   }) {
-    await environmentRuntime.destroyReusableSandboxLeases({
-      companyId: input.workspace.companyId,
-      executionWorkspaceId: input.workspace.id,
-      failureReason: "execution_workspace_auto_cleanup_reconcile_absent",
-    });
-    await stopRuntimeServicesForExecutionWorkspace({
-      db,
-      executionWorkspaceId: input.workspace.id,
-      workspaceCwd: input.workspace.cwd,
-    });
-    const receipt = lifecycleReceipt({
-      workspaceId: input.workspace.id,
-      sourceIssueId: input.workspace.sourceIssueId,
-      outcome: "reconciled_absent",
-      warnings: ["runtime-created workspace was already absent; no filesystem deletion was attempted"],
-      publicationReceipt: input.publicationReceipt,
-      occurredAt: input.now,
-    });
     await db.transaction(async (tx) => {
-      await tx.update(executionWorkspaces).set({
+      const lockedWorkspace = await tx
+        .select()
+        .from(executionWorkspaces)
+        .where(and(
+          eq(executionWorkspaces.id, input.workspace.id),
+          eq(executionWorkspaces.companyId, input.workspace.companyId),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedWorkspace) {
+        throw new WorkspaceLifecycleRevalidationError("workspace_missing");
+      }
+      if (
+        lockedWorkspace.updatedAt.getTime() !== input.workspace.updatedAt.getTime()
+        || !ACTIVE_WORKSPACE_STATUSES.includes(lockedWorkspace.status)
+      ) {
+        throw new WorkspaceLifecycleRevalidationError("workspace_changed");
+      }
+
+      const lockedIssues = await tx
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, lockedWorkspace.companyId),
+          or(
+            eq(issues.executionWorkspaceId, lockedWorkspace.id),
+            lockedWorkspace.sourceIssueId
+              ? eq(issues.id, lockedWorkspace.sourceIssueId)
+              : undefined,
+          ),
+        ))
+        .for("update");
+      const lockedReadiness = {
+        ...input.readiness,
+        linkedIssues: lockedIssues.map((issue) => ({
+          ...issue,
+          isTerminal: issue.status === "done" || issue.status === "cancelled",
+        })),
+      };
+      const workProducts = await tx
+        .select({
+          provider: issueWorkProducts.provider,
+          status: issueWorkProducts.status,
+          metadata: issueWorkProducts.metadata,
+        })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, lockedWorkspace.companyId),
+          eq(issueWorkProducts.executionWorkspaceId, lockedWorkspace.id),
+        ))
+        .for("update");
+      const publicationReceipt = lockedWorkspace.branchName && lockedWorkspace.sourceIssueId
+        ? await tx
+            .select({
+              state: repositoryMutationReceipts.state,
+              expectedNewOid: repositoryMutationReceipts.expectedNewOid,
+              remoteNewOid: repositoryMutationReceipts.remoteNewOid,
+            })
+            .from(repositoryMutationReceipts)
+            .where(and(
+              eq(repositoryMutationReceipts.companyId, lockedWorkspace.companyId),
+              eq(repositoryMutationReceipts.issueId, lockedWorkspace.sourceIssueId),
+              eq(repositoryMutationReceipts.branchRef, lockedWorkspace.branchName),
+            ))
+            .orderBy(desc(repositoryMutationReceipts.updatedAt))
+            .limit(1)
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const decision = decideWorkspaceAutoCleanup({
+        now: input.now,
+        issueStatus: lockedIssues.find((issue) => issue.id === lockedWorkspace.sourceIssueId)?.status ?? "",
+        cleanupEligibleAt: lockedWorkspace.cleanupEligibleAt,
+        readiness: lockedReadiness,
+        workProducts,
+        requiresPublicationReceipt: lockedWorkspace.providerType === "git_worktree",
+        publicationReceipt,
+      });
+      if (decision.action !== "reconcile") {
+        throw new WorkspaceLifecycleRevalidationError(`${decision.action}.${decision.reason}`);
+      }
+
+      await environmentRuntime.destroyReusableSandboxLeases({
+        companyId: lockedWorkspace.companyId,
+        executionWorkspaceId: lockedWorkspace.id,
+        failureReason: "execution_workspace_auto_cleanup_reconcile_absent",
+      });
+      await stopRuntimeServicesForExecutionWorkspace({
+        db: tx as unknown as Db,
+        executionWorkspaceId: lockedWorkspace.id,
+        workspaceCwd: lockedWorkspace.cwd,
+      });
+      const receipt = lifecycleReceipt({
+        workspaceId: lockedWorkspace.id,
+        sourceIssueId: lockedWorkspace.sourceIssueId,
+        outcome: "reconciled_absent",
+        warnings: ["runtime-created workspace was already absent; no filesystem deletion was attempted"],
+        publicationReceipt,
+        occurredAt: input.now,
+      });
+      const archived = await tx.update(executionWorkspaces).set({
         status: "archived",
         closedAt: input.now,
         cleanupReason: "auto_cleanup_reconciled_absent",
         updatedAt: input.now,
       }).where(and(
-        eq(executionWorkspaces.id, input.workspace.id),
-        eq(executionWorkspaces.companyId, input.workspace.companyId),
-      ));
+        eq(executionWorkspaces.id, lockedWorkspace.id),
+        eq(executionWorkspaces.companyId, lockedWorkspace.companyId),
+        eq(executionWorkspaces.status, lockedWorkspace.status),
+        eq(executionWorkspaces.updatedAt, lockedWorkspace.updatedAt),
+      )).returning({ id: executionWorkspaces.id });
+      if (archived.length !== 1) {
+        throw new WorkspaceLifecycleRevalidationError("compare_and_swap_failed");
+      }
       await tx.insert(activityLog).values({
-        companyId: input.workspace.companyId,
+        companyId: lockedWorkspace.companyId,
         actorType: "system",
         actorId: "workspace_auto_cleanup",
         action: "execution_workspace.auto_cleanup_reconciled_absent",
         entityType: "execution_workspace",
-        entityId: input.workspace.id,
+        entityId: lockedWorkspace.id,
         details: { ...receipt, filesystemDeletionAttempted: false },
       });
     });
@@ -344,13 +443,18 @@ export function workspaceAutoCleanupService(
             continue;
           }
           if (decision.action === "reconcile") {
-            await reconcileAbsentWorkspace({ workspace, now, publicationReceipt });
+            await reconcileAbsentWorkspace({ workspace, now, readiness });
             result.cleaned += 1;
             continue;
           }
           if (await archiveWorkspace({ workspace, now, publicationReceipt })) result.cleaned += 1;
           else result.failed += 1;
         } catch (error) {
+          if (error instanceof WorkspaceLifecycleRevalidationError) {
+            result.blocked += 1;
+            await recordBlocked(row, "transaction_revalidation", error.code).catch(() => undefined);
+            continue;
+          }
           result.failed += 1;
           await recordExecutionFailure({ workspace: row, now, error }).catch(() => undefined);
           logger.error({ err: error, executionWorkspaceId: row.id }, "automatic workspace cleanup failed");
