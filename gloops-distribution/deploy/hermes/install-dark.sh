@@ -171,6 +171,9 @@ install -d -m 0555 -o root -g root "${LIB_DIR}/tools"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-tool.bundle.cjs" "${LIB_DIR}/tools/github-push-tool.bundle.cjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-read-tool.mjs" "${LIB_DIR}/tools/github-read-tool.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/platform-ops-tool.mjs" "${LIB_DIR}/tools/platform-ops-tool.mjs"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/closed-loop-argus-publish-poller.py" "${LIB_DIR}/tools/closed-loop-argus-publish-poller.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/paperclip-mark-pr-ready.py" "${LIB_DIR}/tools/paperclip-mark-pr-ready.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/github-webhook-receiver.py" "${LIB_DIR}/github-webhook-receiver.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/../../../packages/adapters/hermes/skills/paperclip-task-bridge/paperclip-task.mjs" "${LIB_DIR}/tools/paperclip-task.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/apply_patch" "${LIB_DIR}/tools/apply_patch"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/focused_test" "${LIB_DIR}/tools/focused_test"
@@ -199,6 +202,10 @@ install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-hermes-handshake-egress
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-gloops-alert@.service" /usr/local/lib/systemd/system/paperclip-gloops-alert@.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-campaign-deadman.service" /usr/local/lib/systemd/system/paperclip-campaign-deadman.service
 install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-controlled-swarm-commissioning-recovery.service" /usr/local/lib/systemd/system/paperclip-controlled-swarm-commissioning-recovery.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/paperclip-github-webhook-receiver.service" /usr/local/lib/systemd/system/paperclip-github-webhook-receiver.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/systemd/paperclip-closed-loop-publish-poller.service" /usr/local/lib/systemd/system/paperclip-closed-loop-publish-poller.service
+install -m 0644 -o root -g root "${SCRIPT_DIR}/systemd/paperclip-closed-loop-publish-poller.timer" /usr/local/lib/systemd/system/paperclip-closed-loop-publish-poller.timer
+install -m 0644 -o root -g root "${SCRIPT_DIR}/systemd/paperclip-closed-loop-publish-poller.path" /usr/local/lib/systemd/system/paperclip-closed-loop-publish-poller.path
 
 "${LIB_DIR}/provision-tirith.sh"
 
@@ -220,7 +227,9 @@ systemctl disable --now paperclip-hermes-handshake.service 2>/dev/null || true
 systemctl disable --now paperclip-hermes-handshake-egress.service 2>/dev/null || true
 systemctl disable --now paperclip-campaign-deadman.service 2>/dev/null || true
 systemctl disable --now paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
-systemctl mask paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service
+systemctl disable --now paperclip-github-webhook-receiver.service 2>/dev/null || true
+systemctl disable --now paperclip-closed-loop-publish-poller.timer paperclip-closed-loop-publish-poller.path 2>/dev/null || true
+systemctl mask paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service paperclip-github-webhook-receiver.service paperclip-closed-loop-publish-poller.timer paperclip-closed-loop-publish-poller.path
 systemctl reset-failed paperclip-gloops.service paperclip-controlled-swarm.service paperclip-gloops-handshake.service paperclip-hermes-execution.service paperclip-hermes-handshake.service paperclip-hermes-handshake-egress.service paperclip-github-push-broker.service paperclip-github-read-broker.service paperclip-platform-ops-broker.service paperclip-campaign-deadman.service paperclip-controlled-swarm-commissioning-recovery.service 2>/dev/null || true
 
 # Reconcile any complete receipt left by the previously installed broker before

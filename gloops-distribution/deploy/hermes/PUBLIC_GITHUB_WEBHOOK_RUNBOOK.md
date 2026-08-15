@@ -16,6 +16,14 @@ boundary. A crash or host bookkeeping failure therefore remains retryable
 without applying the logical plugin effect twice. Successful host audits are
 terminal and return without redispatch.
 
+After the private plugin accepts a completed check suite, the receiver also
+persists a minimal, root-separated `gloops.ci-merge-trigger.v1` file. A systemd
+path unit wakes the exact-head Argus publication/merge pass immediately. The
+two-minute timer remains only a bounded delivery backstop. The trigger contains
+no webhook body or credential and grants no merge authority: the poller still
+requires an Argus exact-head approval, and GitHub branch protection/auto-merge
+remains the final merge gate.
+
 ## Authority and secrets
 
 - Use a freshly generated HMAC for each install or rollback rehearsal.
@@ -84,6 +92,10 @@ All of the following are required:
 5. A genuine GitHub `check_suite` delivery returns 200, appears once in the
    Paperclip plugin dashboard, and its duplicate delivery ID remains idempotent.
 6. No other public path bypasses the existing Basic Auth boundary.
+7. The accepted delivery updates the private trigger file and starts one
+   `paperclip-closed-loop-publish-poller.service` pass; a helper failure is
+   receipted as `merge_path_failed` or `review_published_merge_pending`, never
+   as a ready/merge success.
 
 A hand-crafted signed request proves cryptographic plumbing but does not replace
 the genuine GitHub delivery requirement.

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import urllib.error
@@ -124,10 +125,34 @@ def load_state() -> dict:
 
 
 def save_state(st: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(st, indent=2, sort_keys=True) + "\n")
-    tmp.replace(STATE_PATH)
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(STATE_PATH.parent, 0o700)
+    parent_fd = os.open(STATE_PATH.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temp_name = f".{STATE_PATH.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+    temp_fd = -1
+    try:
+        temp_fd = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        payload = (json.dumps(st, indent=2, sort_keys=True) + "\n").encode()
+        os.write(temp_fd, payload)
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = -1
+        os.rename(temp_name, STATE_PATH.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.chmod(STATE_PATH, 0o600)
+        os.fsync(parent_fd)
+    finally:
+        if temp_fd >= 0:
+            os.close(temp_fd)
+        try:
+            os.unlink(temp_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
 
 
 def publish(pr: int, verdict: str = "accepted") -> None:
@@ -139,7 +164,7 @@ def publish(pr: int, verdict: str = "accepted") -> None:
         subprocess.check_call(["sudo", "-n", *cmd])
 
 
-def mark_ready_and_automerge(pr: int) -> None:
+def mark_ready_and_automerge(pr: int, expected_head: str) -> dict:
     """Surface drafts cannot auto-merge; mark ready via App install token.
 
     Host `gh` as zach-hermes lacks MarkPullRequestReadyForReview. Root helper
@@ -152,43 +177,38 @@ def mark_ready_and_automerge(pr: int) -> None:
             "/usr/local/lib/paperclip-gloops/tools/paperclip-mark-pr-ready.py",
         )
     )
-    if helper.is_file():
-        cmd = [
-            sys.executable,
-            str(helper),
-            "--pr",
-            str(pr),
-            "--repo",
-            REPO,
-            "--auto-merge",
-            "--merge-if-clean",
-        ]
-        print(f"[merge-path] {' '.join(cmd)}", flush=True)
-        if os.geteuid() == 0:
-            out = subprocess.run(cmd, check=False, timeout=90, capture_output=True, text=True)
-        else:
-            out = subprocess.run(
-                ["sudo", "-n", *cmd],
-                check=False,
-                timeout=90,
-                capture_output=True,
-                text=True,
-            )
-        if out.stdout:
-            print(out.stdout[-800:], flush=True)
-        if out.returncode != 0:
-            print(f"[warn] mark-pr-ready rc={out.returncode} {out.stderr[-300:]}", flush=True)
-        return
-    # Fallback: gh (often fails as zach-hermes — leave for operator)
-    for args in (
-        ["gh", "pr", "ready", str(pr), "--repo", REPO],
-        ["gh", "pr", "merge", str(pr), "--repo", REPO, "--squash", "--auto"],
-    ):
-        try:
-            print(f"[merge-path-fallback] {' '.join(args)}", flush=True)
-            subprocess.run(args, check=False, timeout=60, capture_output=True, text=True)
-        except Exception as e:
-            print(f"[warn] {' '.join(args)}: {e}", flush=True)
+    if not helper.is_file():
+        raise RuntimeError("exact-head protected merge helper is unavailable")
+    cmd = [
+        sys.executable,
+        str(helper),
+        "--pr",
+        str(pr),
+        "--repo",
+        REPO,
+        "--expected-head",
+        expected_head,
+        "--base",
+        BASE_REF,
+        "--auto-merge",
+        "--merge-if-clean",
+    ]
+    print(f"[merge-path] {' '.join(cmd)}", flush=True)
+    executable = cmd if os.geteuid() == 0 else ["sudo", "-n", *cmd]
+    out = subprocess.run(executable, check=False, timeout=90, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"protected merge helper failed rc={out.returncode}: {out.stderr[-300:]}")
+    try:
+        evidence = json.loads(out.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("protected merge helper returned invalid evidence") from error
+    if evidence.get("ok") is not True:
+        raise RuntimeError("protected merge helper did not report success")
+    if evidence.get("headSha") != expected_head or evidence.get("baseRef") != BASE_REF:
+        raise RuntimeError("protected merge helper evidence is not bound to the approved head/base")
+    if evidence.get("merged") is not True and evidence.get("autoMergeArmed") is not True:
+        raise RuntimeError("protected merge path is neither merged nor armed")
+    return evidence
 
 
 def extract_approved_heads(text: str) -> set[str]:
@@ -330,6 +350,7 @@ def main() -> int:
     dry = "--dry-run" in sys.argv
     st = load_state()
     actions = []
+    had_failure = False
     approved = collect_approved_heads()
     prs = open_surface_prs()
     print(f"[poll] open_prs={len(prs)} approved_heads={len(approved)}", flush=True)
@@ -353,7 +374,7 @@ def main() -> int:
             )
             if not dry:
                 try:
-                    mark_ready_and_automerge(num)
+                    merge_evidence = mark_ready_and_automerge(num, head)
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
                         "source": approved.get(head) or "ir-green",
@@ -366,9 +387,18 @@ def main() -> int:
                             "at": ts(),
                             "result": "ready_merge_pass",
                             "alreadyPublished": already,
+                            "mergeEvidence": merge_evidence,
                         }
                     )
                 except Exception as e:
+                    had_failure = True
+                    actions.append({
+                        "pr": num,
+                        "head": head,
+                        "at": ts(),
+                        "result": "merge_path_failed",
+                        "errorClass": type(e).__name__,
+                    })
                     print(f"[warn] ready/merge pr#{num}: {e}", flush=True)
             continue
         action = {
@@ -386,11 +416,13 @@ def main() -> int:
         try:
             publish(num, "accepted")
             try:
-                mark_ready_and_automerge(num)
+                merge_evidence = mark_ready_and_automerge(num, head)
                 action["mergePath"] = "ready+auto"
+                action["mergeEvidence"] = merge_evidence
             except Exception as e:
-                action["mergePathError"] = str(e)[:120]
-            action["result"] = "published"
+                had_failure = True
+                action["mergePathErrorClass"] = type(e).__name__
+            action["result"] = "published" if "mergeEvidence" in action else "review_published_merge_pending"
             st.setdefault("publishedForPr", {})[key] = action
             actions.append(action)
         except Exception as e:
@@ -403,7 +435,7 @@ def main() -> int:
     if not dry:
         save_state(st)
     print(json.dumps({"ok": True, "actions": actions, "dryRun": dry}, indent=2))
-    return 0
+    return 1 if had_failure else 0
 
 
 if __name__ == "__main__":

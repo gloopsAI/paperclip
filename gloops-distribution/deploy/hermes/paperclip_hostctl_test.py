@@ -23,7 +23,7 @@ class PaperclipHostctlTest(unittest.TestCase):
                     "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=",
                     "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
                     "HEARTBEAT_SCHEDULER_ENABLED=false",
-                    "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false",
+                    "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
                     "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=",
                     "PAPERCLIP_ALLOWED_HOSTNAMES=ubuntu-hermes-nyc1.taild219d6.ts.net,127.0.0.1,localhost",
                     "PAPERCLIP_IMAGE=ghcr.io/gloopsai/paperclip-gloops@sha256:" + "a" * 64,

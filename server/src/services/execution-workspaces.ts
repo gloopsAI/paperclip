@@ -542,6 +542,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     warnings.push(`Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`);
     return {
       git: {
+        pathState: "absent",
         repoRoot: null,
         workspacePath,
         branchName: workspace.branchName,
@@ -630,6 +631,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   return {
     git: {
+      pathState: repoRoot ? "present" : "unknown",
       repoRoot,
       workspacePath,
       branchName,

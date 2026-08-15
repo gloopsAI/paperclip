@@ -76,7 +76,7 @@ done
   exit 1
 }
 grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
-grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general' "${CONFIG_DIR}/runtime.env"
 ! grep -Eq '^PAPERCLIP_CAMPAIGN_' "${CONFIG_DIR}/runtime.env"

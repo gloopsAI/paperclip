@@ -23,7 +23,8 @@ Enable timers `paperclip-substrate-ir-approval-poller.timer` and
 
 ## Argus-accept front half (A4)
 
-`closed-loop-argus-publish-poller.py` runs every two minutes. It reads only
+`closed-loop-argus-publish-poller.py` runs from the signed check-suite systemd
+path trigger, with the two-minute timer retained only as a bounded backstop. It reads only
 review-issue **comments** for an Argus exact-head approval (or the compatible
 `PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
 `gloops/stable`, then invokes the independent-review publisher and arms the

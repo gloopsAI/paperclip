@@ -37,8 +37,9 @@ grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.
   echo "accepted source has not been bound to an immutable release" >&2
   exit 1
 }
-grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' "${CONFIG_DIR}/runtime.env" || {
-  echo "inert activation requires startup execution recovery to remain disabled" >&2
+grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env" \
+  && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' "${CONFIG_DIR}/campaign-runtime.env" || {
+  echo "controlled swarm requires the product recovery backstop and a campaign-local recovery override" >&2
   exit 1
 }
 grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime.env" || {

@@ -95,6 +95,40 @@ class ReceiverTest(unittest.TestCase):
         self.assertEqual(receiver.calls[0][0], body)
         self.assertEqual(receiver.calls[0][1]["X-GitHub-Delivery"], "delivery-1")
 
+    def test_accepted_delivery_persists_minimal_durable_ci_merge_trigger(self):
+        with tempfile.TemporaryDirectory() as root:
+            trigger = pathlib.Path(root, "trigger.json")
+            receiver = FakeReceiver()
+            receiver.trigger_path = str(trigger)
+            body = completed_body()
+            with RunningReceiver(receiver) as base:
+                status, payload = request(
+                    base + MODULE.WEBHOOK_PATH,
+                    body=body,
+                    headers=signed_headers(receiver.secret, body, delivery="delivery-atomic"),
+                )
+            self.assertEqual((status, payload), (200, {"status": "accepted"}))
+            evidence = json.loads(trigger.read_text())
+            self.assertEqual(evidence["schema"], "gloops.ci-merge-trigger.v1")
+            self.assertEqual(evidence["deliveryId"], "delivery-atomic")
+            self.assertEqual(evidence["repository"], "gloopsAI/paperclip")
+            self.assertEqual(evidence["headSha"], "a" * 40)
+            self.assertNotIn("check_suite", evidence)
+            self.assertEqual(trigger.stat().st_mode & 0o777, 0o600)
+
+    def test_trigger_failure_is_retryable_and_never_false_green(self):
+        receiver = FakeReceiver()
+        receiver.trigger_path = "/missing-parent/trigger.json"
+        body = completed_body()
+        with RunningReceiver(receiver) as base:
+            result = request(
+                base + MODULE.WEBHOOK_PATH,
+                body=body,
+                headers=signed_headers(receiver.secret, body),
+            )
+        self.assertEqual(result, (503, {"error": "ci_merge_trigger_failed"}))
+        self.assertEqual(len(receiver.calls), 1)
+
     def test_invalid_signature_never_forwards(self):
         receiver = FakeReceiver()
         with RunningReceiver(receiver) as base:

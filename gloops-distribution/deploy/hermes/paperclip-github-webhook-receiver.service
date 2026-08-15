@@ -10,7 +10,10 @@ DynamicUser=yes
 ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/github-webhook-receiver.py
 Environment=WEBHOOK_RECEIVER_PORT=8766
 Environment=PAPERCLIP_PLUGIN_WEBHOOK_URL=http://127.0.0.1:3100/api/plugins/__PAPERCLIP_PLUGIN_ID__/webhooks/github-checks
+Environment=CI_MERGE_TRIGGER_PATH=/var/lib/paperclip-github-webhook-receiver/ci-merge-trigger.json
 LoadCredential=github_webhook_hmac:/etc/paperclip-gloops/github-webhook-hmac
+StateDirectory=paperclip-github-webhook-receiver
+StateDirectoryMode=0700
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=30s

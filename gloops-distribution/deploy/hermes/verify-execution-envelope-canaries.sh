@@ -45,7 +45,7 @@ campaign_runtime_env="${repo_root}/gloops-distribution/deploy/hermes/campaign-ru
 for expected_runtime_line in \
   'PAPERCLIP_MTE_ENABLED=false' \
   'HEARTBEAT_SCHEDULER_ENABLED=false' \
-  'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' \
+  'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' \
   'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' \
   'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general' \
   'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' \

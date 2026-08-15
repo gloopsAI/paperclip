@@ -126,6 +126,7 @@ export interface ExecutionWorkspaceCloseLinkedIssue {
 }
 
 export interface ExecutionWorkspaceCloseGitReadiness {
+  pathState: "present" | "absent" | "unknown";
   repoRoot: string | null;
   workspacePath: string | null;
   branchName: string | null;

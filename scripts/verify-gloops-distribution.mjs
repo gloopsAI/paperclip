@@ -318,6 +318,26 @@ const githubWebhookReceiverServicePath = new URL(
   "../gloops-distribution/deploy/hermes/paperclip-github-webhook-receiver.service",
   import.meta.url,
 );
+const closedLoopPublishPollerPath = new URL(
+  "../gloops-distribution/deploy/hermes/closed-loop-argus-publish-poller.py",
+  import.meta.url,
+);
+const closedLoopPublishPollerTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/closed_loop_argus_publish_poller_test.py",
+  import.meta.url,
+);
+const markPrReadyPath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip-mark-pr-ready.py",
+  import.meta.url,
+);
+const markPrReadyTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/paperclip_mark_pr_ready_test.py",
+  import.meta.url,
+);
+const closedLoopPublishPathUnitPath = new URL(
+  "../gloops-distribution/deploy/hermes/systemd/paperclip-closed-loop-publish-poller.path",
+  import.meta.url,
+);
 const githubWebhookCaddyRoutePath = new URL(
   "../gloops-distribution/deploy/hermes/github-webhook-caddy-route.txt",
   import.meta.url,
@@ -540,6 +560,8 @@ try {
       "unittest",
       githubWebhookReceiverTestPath.pathname,
       githubWebhookReceiverDeployTestPath.pathname,
+      closedLoopPublishPollerTestPath.pathname,
+      markPrReadyTestPath.pathname,
     ],
     { stdio: "inherit" },
   );
@@ -555,6 +577,9 @@ const githubPushBrokerService = readFileSync(githubPushBrokerServicePath, "utf8"
 const githubWebhookReceiver = readFileSync(githubWebhookReceiverPath, "utf8");
 const githubWebhookReceiverDeploy = readFileSync(githubWebhookReceiverDeployPath, "utf8");
 const githubWebhookReceiverService = readFileSync(githubWebhookReceiverServicePath, "utf8");
+const closedLoopPublishPoller = readFileSync(closedLoopPublishPollerPath, "utf8");
+const markPrReady = readFileSync(markPrReadyPath, "utf8");
+const closedLoopPublishPathUnit = readFileSync(closedLoopPublishPathUnitPath, "utf8");
 const githubWebhookCaddyRoute = readFileSync(githubWebhookCaddyRoutePath, "utf8");
 const publicGithubWebhookRunbook = readFileSync(publicGithubWebhookRunbookPath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
@@ -1078,7 +1103,7 @@ if (
 }
 for (const required of [
   "HEARTBEAT_SCHEDULER_ENABLED=false",
-  "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false",
+  "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
   "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
   "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
   "PAPERCLIP_MTE_ENABLED=false",
@@ -2031,6 +2056,8 @@ for (const required of [
   "verify_signature(receiver.secret, body, signature)",
   "MAX_BODY_BYTES = 1_048_576",
   "UPSTREAM_RE.fullmatch(upstream_url)",
+  "gloops.ci-merge-trigger.v1",
+  "os.fsync(directory_fd)",
 ]) {
   if (!githubWebhookReceiver.includes(required)) {
     fail(`public GitHub webhook receiver is missing ${required}`);
@@ -2053,9 +2080,40 @@ for (const required of [
   "IPAddressDeny=any",
   "IPAddressAllow=localhost",
   "ProtectSystem=strict",
+  "StateDirectory=paperclip-github-webhook-receiver",
+  "CI_MERGE_TRIGGER_PATH=/var/lib/paperclip-github-webhook-receiver/ci-merge-trigger.json",
 ]) {
   if (!githubWebhookReceiverService.includes(required)) {
     fail(`public GitHub webhook receiver service is missing ${required}`);
+  }
+}
+for (const required of [
+  "PathChanged=/var/lib/private/paperclip-github-webhook-receiver/ci-merge-trigger.json",
+  "Unit=paperclip-closed-loop-publish-poller.service",
+]) {
+  if (!closedLoopPublishPathUnit.includes(required)) {
+    fail(`event-driven CI-to-merge path unit is missing ${required}`);
+  }
+}
+for (const required of [
+  '"--expected-head"',
+  '"--base"',
+  '"merge_path_failed"',
+  '"review_published_merge_pending"',
+  "protected merge helper evidence is not bound to the approved head/base",
+]) {
+  if (!closedLoopPublishPoller.includes(required)) {
+    fail(`closed-loop publish poller is missing ${required}`);
+  }
+}
+for (const required of [
+  'parser.add_argument("--expected-head", required=True)',
+  "assert_exact_pr(final, expected_head, args.base)",
+  '"sha": expected_head',
+  '"autoMergeArmed"',
+]) {
+  if (!markPrReady.includes(required)) {
+    fail(`exact-head protected merge helper is missing ${required}`);
   }
 }
 for (const required of [

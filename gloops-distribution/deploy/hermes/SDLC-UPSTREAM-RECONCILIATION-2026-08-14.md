@@ -15,7 +15,7 @@ second orchestrator, execution ledger, workspace subsystem, or retry loop.
 | Review-round limit | Upstream `27f8c8d` | Adapt narrowly at the existing GLoops implementation-review handoff; three total rounds including cancelled rounds |
 | Review policy / stalled review | Upstream `f554d67`, `678728f`, `814cb33` | Do not backport their overlapping core migrations; use the existing handoff, designated reviewer qualification, terminal three-round decision, and Paperclip pipeline visibility |
 | Pull-request check loop | Fork `.agents/skills/prcheckloop/SKILL.md` | Reuse unchanged for CI-to-merge ownership |
-| Merge-aware terminal workspace cleanup | Upstream change already incorporated in fork history (`72b509c895` lineage) and hardened by GLoops publication receipts | Reuse unchanged |
+| Merge-aware terminal workspace cleanup | Upstream change already incorporated in fork history (`72b509c895` lineage) and hardened by GLoops publication receipts | Extend narrowly with atomic lifecycle receipts and non-destructive reconciliation when a runtime-created workspace is already absent |
 | Plugin webhook transport | Core `POST /api/plugins/:pluginId/webhooks/:endpointKey` route and worker delivery | Reuse; add only signed GitHub Check Suite handling to the existing autonomic policy plugin |
 | Provider accounting | Paperclip has provider routing evidence but provider names can share one subscription | Add GLoops billing-pool suppression; never route Luna/Terra/Codex successively after a shared-pool exhaustion |
 | Deploy and rollback truth | Existing GLoops broker has action digests, prior-release snapshots, health and compensation receipts | Extend only with expected merge-commit ↔ OCI revision ↔ immutable image digest binding |
