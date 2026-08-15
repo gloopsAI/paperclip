@@ -269,6 +269,7 @@ async function importWorkerBundle(args) {
     "gitdir",
     "objectOids",
     "packPath",
+    "requiredBaseOid",
     "remoteRef",
     "repositoryFullName",
     "schemaVersion",
@@ -279,6 +280,7 @@ async function importWorkerBundle(args) {
   if (
     request.schemaVersion !== "gloops.github-push-worker-request.v1"
     || !OID_PATTERN.test(request.expectedNewOid)
+    || (request.requiredBaseOid !== null && !OID_PATTERN.test(request.requiredBaseOid))
     || request.expectedOldOid !== ZERO_OID
     || !branchRunId
     || !RUN_ID_PATTERN.test(branchRunId)
@@ -334,6 +336,18 @@ async function importWorkerBundle(args) {
       + `(reachable=${reachable.length}, indexed=${indexed.length}, missing=${missing.join(",") || "none"}, `
       + `extra=${extra.join(",") || "none"})`,
     );
+  }
+  if (
+    request.requiredBaseOid !== null
+    && !(await git.isDescendent({
+      fs,
+      dir: gitdir,
+      gitdir,
+      oid: request.expectedNewOid,
+      ancestor: request.requiredBaseOid,
+    }))
+  ) {
+    fail("external issue claim base is not an ancestor of the publication head");
   }
   return { request, gitdir };
 }

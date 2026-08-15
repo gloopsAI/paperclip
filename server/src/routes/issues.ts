@@ -35,6 +35,9 @@ import {
   createAcceptedPlanDecompositionSchema,
   resetExhaustedAdmissionAndCheckoutIssueSchema,
   checkoutIssueSchema,
+  createExternalIssueClaimSchema,
+  validateExternalIssueClaimSchema,
+  releaseExternalIssueClaimSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
@@ -9551,6 +9554,155 @@ export function issueRoutes(
 
     res.json(updated);
   });
+
+  router.post("/issues/:id/external-claim", validate(createExternalIssueClaimSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
+      res.status(403).json({ error: "Agent may only acquire an external claim for itself" });
+      return;
+    }
+    const claimAgent = await agentsSvc.getById(req.body.agentId);
+    const packetReadiness = evaluateIssuePacketReadiness({
+      title: issue.title,
+      description: issue.description,
+      workMode: issue.workMode,
+      status: issue.status,
+      assigneeRole: claimAgent?.role ?? null,
+      assigneeName: claimAgent?.name ?? null,
+      repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+    });
+    if (packetReadiness.mode === "enforce" && !packetReadiness.ready) {
+      res.status(422).json({
+        error: ISSUE_PACKET_REASON.NOT_READY,
+        reasonCodes: packetReadiness.reasonCodes,
+        missing: packetReadiness.missing,
+        present: packetReadiness.present,
+        profile: packetReadiness.profile,
+        details: packetReadiness.details,
+        mode: packetReadiness.mode,
+      });
+      return;
+    }
+    const workspaceAdmitMode = getWorkspaceAdmitMode();
+    if (workspaceAdmitMode !== "off" && issueRequiresWorkspaceAdmit({
+      title: issue.title,
+      description: issue.description,
+      workMode: issue.workMode,
+      status: issue.status,
+      assigneeRole: claimAgent?.role ?? null,
+      assigneeName: claimAgent?.name ?? null,
+      repositoryBacked: Boolean(issue.projectWorkspaceId || issue.executionWorkspaceId),
+    })) {
+      const workspaceAdmit = await runWorkspaceAdmitPreflight(db, {
+        companyId: issue.companyId,
+        issue: {
+          id: issue.id,
+          title: issue.title,
+          description: issue.description,
+          workMode: issue.workMode,
+          status: issue.status,
+          projectWorkspaceId: issue.projectWorkspaceId,
+          executionWorkspaceId: issue.executionWorkspaceId,
+          projectId: issue.projectId,
+          parentId: issue.parentId,
+        },
+        assignee: { role: claimAgent?.role ?? null, name: claimAgent?.name ?? null },
+      });
+      if (workspaceAdmitMode === "enforce" && !workspaceAdmit.admitted) {
+        const errorCode = primaryWorkspaceAdmitErrorCode(workspaceAdmit);
+        res.status(422).json({
+          error: errorCode,
+          errorCode,
+          reasonCodes: workspaceAdmit.reasonCodes,
+          expectedHeadSha: workspaceAdmit.expectedHeadSha,
+          observedHeadSha: workspaceAdmit.observedHeadSha,
+          projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
+          mode: workspaceAdmitMode,
+          gate: "workspace_admit",
+        });
+        return;
+      }
+    }
+    const result = await svc.claimExternalIssue(id, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: result.run.id,
+      action: result.created ? "issue.external_claim_acquired" : "issue.external_claim_replayed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        claimId: result.binding.claimId,
+        entryPoint: result.binding.entryPoint,
+        repositoryFullName: result.binding.repositoryFullName,
+        baseSha: result.binding.baseSha,
+        branchName: result.binding.branchName,
+        projectWorkspaceId: result.binding.projectWorkspaceId,
+      },
+    });
+    res.status(result.created ? 201 : 200).json({
+      created: result.created,
+      runId: result.run.id,
+      binding: result.binding,
+    });
+  });
+
+  router.post(
+    "/issues/:id/external-claim/validate",
+    validate(validateExternalIssueClaimSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const actorAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
+      res.json(await svc.validateExternalIssueClaim(id, req.body, actorAgentId));
+    },
+  );
+
+  router.post(
+    "/issues/:id/external-claim/release",
+    validate(releaseExternalIssueClaimSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const actorAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
+      const result = await svc.releaseExternalIssueClaim(id, req.body, actorAgentId);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: result.runId,
+        action: "issue.external_claim_released",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { claimId: req.body.claimId, disposition: result.disposition },
+      });
+      res.json(result);
+    },
+  );
 
   /**
    * Read-only issue packet Definition of Ready evaluation.

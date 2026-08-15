@@ -14012,6 +14012,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      // External writable claims deliberately have no managed child process.
+      // Their durable liveness is the atomic claim lease itself, renewed by an
+      // exact replay or validation. Never misclassify one as process_lost. A
+      // four-hour silent lease expires fail-closed: only the matching run and
+      // issue locks are terminalized, with no retry or provider routing.
+      if (run.invocationSource === "external_claim") {
+        const leaseRef = latestDate(run.lastUsefulActionAt, run.updatedAt, run.startedAt);
+        const leaseExpired = !leaseRef || now.getTime() - leaseRef.getTime() >= 4 * 60 * 60 * 1000;
+        if (!leaseExpired) continue;
+        const claimContext = parseObject(run.contextSnapshot);
+        const issueId = readNonEmptyString(claimContext.issueId);
+        const expired = await db.transaction(async (rawTx) => {
+          const tx = rawTx as unknown as Db;
+          const terminal = await tx.update(heartbeatRuns).set({
+            status: "cancelled",
+            error: "External writable issue claim lease expired without renewal",
+            errorCode: "external_claim_lease_expired",
+            finishedAt: now,
+            resultJson: {
+              externalIssueClaimLease: {
+                schemaVersion: "paperclip.external-issue-claim-lease.v1",
+                disposition: "expired",
+                expiredAt: now.toISOString(),
+              },
+            },
+            updatedAt: now,
+          }).where(and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "running"),
+            eq(heartbeatRuns.invocationSource, "external_claim"),
+            eq(heartbeatRuns.updatedAt, run.updatedAt),
+          )).returning({ id: heartbeatRuns.id }).then((rows) => rows[0] ?? null);
+          if (!terminal) return false;
+          if (issueId) {
+            const released = await tx.update(issues).set({
+              status: "blocked",
+              checkoutRunId: null,
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            }).where(and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              eq(issues.checkoutRunId, run.id),
+              eq(issues.executionRunId, run.id),
+            )).returning({ id: issues.id }).then((rows) => rows[0] ?? null);
+            if (released) {
+              await tx.insert(activityLog).values({
+                companyId: run.companyId,
+                actorType: "system",
+                actorId: "system",
+                action: "issue.external_claim_expired",
+                entityType: "issue",
+                entityId: issueId,
+                agentId: run.agentId,
+                runId: run.id,
+                details: { claimId: run.id, disposition: "blocked" },
+              });
+            }
+          }
+          return true;
+        });
+        if (expired) reaped.push(run.id);
+        continue;
+      }
+
       // Never convert an active writer into `process_lost` solely because this
       // service instance lacks an in-memory handle. A fresh runtime heartbeat
       // or durable output/useful-action timestamp is positive liveness; leave
@@ -14167,7 +14234,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (reaped.length > 0) {
-      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
+      logger.warn(
+        { reapedCount: reaped.length, runIds: reaped },
+        "reaped orphaned heartbeat runs or expired external claim leases",
+      );
     }
     return { reaped: reaped.length, runIds: reaped };
   }

@@ -105,6 +105,33 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function externalIssueClaimForMutationContext(value: unknown) {
+  const candidate = record(record(value).externalIssueClaim);
+  const expectedKeys = new Set([
+    "schemaVersion", "claimId", "companyId", "issueId", "agentId", "entryPoint",
+    "repositoryFullName", "baseSha", "branchName", "projectWorkspaceId",
+    "workspaceIdentity", "claimedAt",
+  ]);
+  if (
+    !hasExactKeys(candidate, expectedKeys)
+    || candidate.schemaVersion !== "paperclip.external-issue-claim.v1"
+    || !UUID_PATTERN.test(String(candidate.claimId))
+    || !UUID_PATTERN.test(String(candidate.companyId))
+    || !UUID_PATTERN.test(String(candidate.issueId))
+    || !UUID_PATTERN.test(String(candidate.agentId))
+    || !["buzz", "paperclip_agent", "interactive_codex"].includes(String(candidate.entryPoint))
+    || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(candidate.repositoryFullName))
+    || !OID_PATTERN.test(String(candidate.baseSha))
+    || candidate.branchName !== `paperclip/${candidate.claimId}/calibration`
+    || !UUID_PATTERN.test(String(candidate.projectWorkspaceId))
+    || !nonEmptyString(candidate.workspaceIdentity)
+    || !Number.isFinite(Date.parse(String(candidate.claimedAt)))
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
 function hasExactKeys(value: unknown, expected: Set<string>): boolean {
   return Boolean(
     value
@@ -342,9 +369,23 @@ export function repositoryMutationReceiptService(db: Db) {
         : null;
       if (!workspace || !repositoryFullName) return null;
 
+      const externalIssueClaim = externalIssueClaimForMutationContext(run.contextSnapshot);
+      if (run.invocationSource === "external_claim" && !externalIssueClaim) return null;
+      if (run.invocationSource !== "external_claim" && externalIssueClaim) return null;
+      if (externalIssueClaim && (
+        externalIssueClaim.claimId !== run.id
+        || externalIssueClaim.companyId !== run.companyId
+        || externalIssueClaim.issueId !== issue.id
+        || externalIssueClaim.agentId !== run.agentId
+        || externalIssueClaim.projectWorkspaceId !== workspace.id
+        || externalIssueClaim.repositoryFullName !== repositoryFullName
+        || externalIssueClaim.baseSha !== workspace.repoRef
+      )) return null;
+
       return {
         schemaVersion: "gloops.repository-mutation-context.v1",
         heartbeatRunId: run.id,
+        runInvocationSource: run.invocationSource,
         runStatus: run.status,
         companyId: run.companyId,
         agentId: run.agentId,
@@ -355,6 +396,7 @@ export function repositoryMutationReceiptService(db: Db) {
         repositoryFullName,
         configuredDefaultBranch: workspace.defaultRef,
         configuredRepositoryRef: workspace.repoRef,
+        externalIssueClaim,
       };
     },
 

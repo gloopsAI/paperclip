@@ -52,6 +52,9 @@ import type {
   LowTrustBoundary,
   SuccessfulRunHandoffState,
   IssueReviewProvenance,
+  CreateExternalIssueClaim,
+  ValidateExternalIssueClaim,
+  ReleaseExternalIssueClaim,
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
@@ -143,6 +146,57 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
+const EXTERNAL_ISSUE_CLAIM_SCHEMA_VERSION = "paperclip.external-issue-claim.v1" as const;
+const EXTERNAL_ISSUE_CLAIM_RUN_STATUSES = new Set(["queued", "running"]);
+
+export type ExternalIssueClaimBinding = {
+  schemaVersion: typeof EXTERNAL_ISSUE_CLAIM_SCHEMA_VERSION;
+  claimId: string;
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  entryPoint: CreateExternalIssueClaim["entryPoint"];
+  repositoryFullName: string;
+  baseSha: string;
+  branchName: string;
+  projectWorkspaceId: string;
+  workspaceIdentity: string;
+  claimedAt: string;
+};
+
+function externalIssueClaimFromContext(value: unknown): ExternalIssueClaimBinding | null {
+  const context = parseObject(value);
+  const candidate = parseObject(context.externalIssueClaim);
+  if (
+    candidate.schemaVersion !== EXTERNAL_ISSUE_CLAIM_SCHEMA_VERSION
+    || typeof candidate.claimId !== "string"
+    || typeof candidate.companyId !== "string"
+    || typeof candidate.issueId !== "string"
+    || typeof candidate.agentId !== "string"
+    || !["buzz", "paperclip_agent", "interactive_codex"].includes(String(candidate.entryPoint))
+    || typeof candidate.repositoryFullName !== "string"
+    || typeof candidate.baseSha !== "string"
+    || typeof candidate.branchName !== "string"
+    || typeof candidate.projectWorkspaceId !== "string"
+    || typeof candidate.workspaceIdentity !== "string"
+    || typeof candidate.claimedAt !== "string"
+  ) {
+    return null;
+  }
+  return candidate as ExternalIssueClaimBinding;
+}
+
+function externalIssueClaimMatches(
+  binding: ExternalIssueClaimBinding,
+  input: Pick<CreateExternalIssueClaim, "claimId" | "entryPoint" | "repositoryFullName" | "baseSha" | "branchName" | "workspaceIdentity">,
+) {
+  return binding.claimId === input.claimId
+    && binding.entryPoint === input.entryPoint
+    && binding.repositoryFullName === input.repositoryFullName
+    && binding.baseSha === input.baseSha
+    && binding.branchName === input.branchName
+    && binding.workspaceIdentity === input.workspaceIdentity;
+}
 
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
@@ -4756,9 +4810,298 @@ export function issueService(db: Db) {
     });
   }
 
+  async function resolveExternalClaimWorkspace(
+    tx: Db,
+    issue: { companyId: string; projectId: string | null; projectWorkspaceId: string | null },
+  ) {
+    if (!issue.projectId) {
+      throw unprocessable("External writable claims require a repository-backed project", {
+        code: "external_claim_project_required",
+      });
+    }
+    const workspace = issue.projectWorkspaceId
+      ? await tx.select().from(projectWorkspaces).where(and(
+        eq(projectWorkspaces.id, issue.projectWorkspaceId),
+        eq(projectWorkspaces.companyId, issue.companyId),
+        eq(projectWorkspaces.projectId, issue.projectId),
+      )).then((rows) => rows[0] ?? null)
+      : await tx.select().from(projectWorkspaces).where(and(
+        eq(projectWorkspaces.companyId, issue.companyId),
+        eq(projectWorkspaces.projectId, issue.projectId),
+        eq(projectWorkspaces.isPrimary, true),
+      )).then((rows) => rows[0] ?? null);
+    if (!workspace?.repoUrl || !workspace.repoRef) {
+      throw unprocessable("External writable claims require a pinned project workspace", {
+        code: "external_claim_workspace_unpinned",
+      });
+    }
+    const repositoryFullName = (() => {
+      const ssh = /^git@github\.com:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(workspace.repoUrl);
+      if (ssh) return ssh[1] ?? null;
+      try {
+        const url = new URL(workspace.repoUrl);
+        if (url.protocol !== "https:" || url.hostname !== "github.com" || url.username || url.password) return null;
+        const candidate = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+        return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(candidate) ? candidate : null;
+      } catch {
+        return null;
+      }
+    })();
+    if (!repositoryFullName || !/^[0-9a-f]{40}$/.test(workspace.repoRef)) {
+      throw unprocessable("External writable claims require a GitHub repository pinned to an exact SHA", {
+        code: "external_claim_workspace_invalid",
+      });
+    }
+    return { workspace, repositoryFullName };
+  }
+
+  async function claimExternalIssue(
+    issueId: string,
+    input: CreateExternalIssueClaim,
+  ) {
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`external-issue-claim:${input.claimId}`}))`);
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      const issue = await tx.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      await assertAssignableAgent(tx, issue.companyId, input.agentId, { kind: "work" });
+
+      const existingRun = await tx.select().from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.claimId))
+        .then((rows) => rows[0] ?? null);
+      if (existingRun) {
+        const binding = externalIssueClaimFromContext(existingRun.contextSnapshot);
+        if (
+          binding
+          && binding.companyId === issue.companyId
+          && binding.issueId === issue.id
+          && binding.agentId === input.agentId
+          && externalIssueClaimMatches(binding, input)
+          && EXTERNAL_ISSUE_CLAIM_RUN_STATUSES.has(existingRun.status)
+          && issue.assigneeAgentId === input.agentId
+          && issue.checkoutRunId === existingRun.id
+          && issue.executionRunId === existingRun.id
+        ) {
+          const renewedAt = new Date();
+          const renewedRun = await tx.update(heartbeatRuns).set({
+            lastUsefulActionAt: renewedAt,
+            updatedAt: renewedAt,
+          }).where(and(
+            eq(heartbeatRuns.id, existingRun.id),
+            eq(heartbeatRuns.status, existingRun.status),
+          )).returning().then((rows) => rows[0] ?? null);
+          if (!renewedRun) throw conflict("External issue claim changed during renewal");
+          return { created: false, run: renewedRun, binding };
+        }
+        throw conflict("External issue claim id is already bound to different work", {
+          code: "external_claim_id_conflict",
+          claimId: input.claimId,
+        });
+      }
+
+      for (const ownerRunId of new Set([issue.checkoutRunId, issue.executionRunId].filter(Boolean))) {
+        const owner = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, ownerRunId!))
+          .then((rows) => rows[0] ?? null);
+        if (owner && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(owner.status)) {
+          throw conflict("Issue already has a live writable owner", {
+            code: "external_claim_live_owner",
+            issueId: issue.id,
+            ownerRunId,
+          });
+        }
+      }
+      if (issue.assigneeAgentId && issue.assigneeAgentId !== input.agentId) {
+        throw conflict("External issue claim cannot steal another assignee", {
+          code: "external_claim_assignee_conflict",
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+        });
+      }
+      if (!["backlog", "todo", "blocked", "in_progress"].includes(issue.status)) {
+        throw conflict("Issue status is not eligible for writable external claim", {
+          code: "external_claim_status_conflict",
+          issueId: issue.id,
+          status: issue.status,
+        });
+      }
+
+      const { workspace, repositoryFullName } = await resolveExternalClaimWorkspace(tx, issue);
+      if (repositoryFullName !== input.repositoryFullName || workspace.repoRef !== input.baseSha) {
+        throw conflict("External issue claim conflicts with the pinned repository workspace", {
+          code: "external_claim_repository_drift",
+          issueId: issue.id,
+          projectWorkspaceId: workspace.id,
+        });
+      }
+      const now = new Date();
+      const binding: ExternalIssueClaimBinding = {
+        schemaVersion: EXTERNAL_ISSUE_CLAIM_SCHEMA_VERSION,
+        claimId: input.claimId,
+        companyId: issue.companyId,
+        issueId: issue.id,
+        agentId: input.agentId,
+        entryPoint: input.entryPoint,
+        repositoryFullName,
+        baseSha: input.baseSha,
+        branchName: input.branchName,
+        projectWorkspaceId: workspace.id,
+        workspaceIdentity: input.workspaceIdentity,
+        claimedAt: now.toISOString(),
+      };
+      const run = await tx.insert(heartbeatRuns).values({
+        id: input.claimId,
+        companyId: issue.companyId,
+        agentId: input.agentId,
+        invocationSource: "external_claim",
+        triggerDetail: input.entryPoint,
+        status: "running",
+        startedAt: now,
+        externalRunId: `external-issue-claim:${input.claimId}`,
+        contextSnapshot: { issueId: issue.id, externalIssueClaim: binding },
+        lastUsefulActionAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }).returning().then((rows) => rows[0]!);
+      const updated = await tx.update(issues).set({
+        assigneeAgentId: input.agentId,
+        assigneeUserId: null,
+        checkoutRunId: run.id,
+        executionRunId: run.id,
+        executionAgentNameKey: null,
+        executionLockedAt: now,
+        status: "in_progress",
+        startedAt: issue.startedAt ?? now,
+        updatedAt: now,
+      }).where(eq(issues.id, issue.id)).returning({ id: issues.id }).then((rows) => rows[0] ?? null);
+      if (!updated) throw conflict("Issue changed while acquiring external writable claim");
+      return { created: true, run, binding };
+    });
+  }
+
+  async function validateExternalIssueClaim(
+    issueId: string,
+    input: ValidateExternalIssueClaim,
+    actorAgentId: string | null,
+  ) {
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`external-issue-claim:${input.claimId}`}))`);
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      const issue = await tx.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      const run = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.claimId)).then((rows) => rows[0] ?? null);
+      const binding = externalIssueClaimFromContext(run?.contextSnapshot);
+      if (
+        !issue || !run || !binding
+        || binding.issueId !== issue.id
+        || binding.companyId !== issue.companyId
+        || binding.claimId !== input.claimId
+        || binding.repositoryFullName !== input.repositoryFullName
+        || binding.baseSha !== input.baseSha
+        || binding.branchName !== input.branchName
+        || binding.workspaceIdentity !== input.workspaceIdentity
+        || (actorAgentId && binding.agentId !== actorAgentId)
+        || !EXTERNAL_ISSUE_CLAIM_RUN_STATUSES.has(run.status)
+        || issue.status !== "in_progress"
+        || issue.assigneeAgentId !== run.agentId
+        || issue.checkoutRunId !== run.id
+        || issue.executionRunId !== run.id
+      ) {
+        throw conflict("External issue claim is not the current writable owner", {
+          code: "external_claim_not_owner",
+          issueId,
+          claimId: input.claimId,
+        });
+      }
+      const { workspace, repositoryFullName } = await resolveExternalClaimWorkspace(tx, issue);
+      if (
+        workspace.id !== binding.projectWorkspaceId
+        || repositoryFullName !== binding.repositoryFullName
+        || workspace.repoRef !== binding.baseSha
+      ) {
+        throw conflict("External issue claim repository facts drifted", {
+          code: "external_claim_repository_drift",
+          issueId,
+          claimId: input.claimId,
+        });
+      }
+      const validatedAt = new Date();
+      const renewed = await tx.update(heartbeatRuns).set({
+        lastUsefulActionAt: validatedAt,
+        updatedAt: validatedAt,
+      }).where(and(
+        eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.status, run.status),
+      )).returning({ id: heartbeatRuns.id }).then((rows) => rows[0] ?? null);
+      if (!renewed) throw conflict("External issue claim changed during validation");
+      return { valid: true as const, runId: run.id, headSha: input.headSha, binding };
+    });
+  }
+
+  async function releaseExternalIssueClaim(
+    issueId: string,
+    input: ReleaseExternalIssueClaim,
+    actorAgentId: string | null,
+  ) {
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`external-issue-claim:${input.claimId}`}))`);
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      const issue = await tx.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      const run = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.claimId)).then((rows) => rows[0] ?? null);
+      const binding = externalIssueClaimFromContext(run?.contextSnapshot);
+      if (
+        !issue || !run || !binding
+        || binding.issueId !== issue.id
+        || (actorAgentId && binding.agentId !== actorAgentId)
+        || issue.checkoutRunId !== run.id
+        || issue.executionRunId !== run.id
+        || !EXTERNAL_ISSUE_CLAIM_RUN_STATUSES.has(run.status)
+      ) {
+        throw conflict("Only the active external claim owner can release the issue", {
+          code: "external_claim_release_denied",
+          issueId,
+          claimId: input.claimId,
+        });
+      }
+      const now = new Date();
+      await tx.update(heartbeatRuns).set({
+        status: input.disposition === "handoff" ? "succeeded" : "cancelled",
+        finishedAt: now,
+        resultJson: {
+          externalIssueClaimRelease: {
+            schemaVersion: "paperclip.external-issue-claim-release.v1",
+            disposition: input.disposition,
+            releasedAt: now.toISOString(),
+          },
+        },
+        updatedAt: now,
+      }).where(eq(heartbeatRuns.id, run.id));
+      const updated = await tx.update(issues).set({
+        status: input.disposition === "handoff" ? "in_review" : "todo",
+        assigneeAgentId: input.disposition === "handoff" ? issue.assigneeAgentId : null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      }).where(and(
+        eq(issues.id, issue.id),
+        eq(issues.checkoutRunId, run.id),
+        eq(issues.executionRunId, run.id),
+      )).returning().then((rows) => rows[0] ?? null);
+      if (!updated) throw conflict("Issue claim changed before release");
+      return { released: true as const, disposition: input.disposition, runId: run.id, binding };
+    });
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    claimExternalIssue,
+    validateExternalIssueClaim,
+    releaseExternalIssueClaim,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {

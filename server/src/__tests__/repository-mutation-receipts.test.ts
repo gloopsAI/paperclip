@@ -225,6 +225,45 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
       .rejects.toBeInstanceOf(RepositoryMutationReceiptConflictError);
   });
 
+  it("fails closed when an external run lacks the exact atomic claim binding", async () => {
+    const identity = await seed();
+    const baseSha = "a".repeat(40);
+    await db.update(projectWorkspaces).set({ repoRef: baseSha });
+    await db.update(heartbeatRuns).set({
+      invocationSource: "external_claim",
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const service = repositoryMutationReceiptService(db);
+    await expect(service.getContext(identity.heartbeatRunId)).resolves.toBeNull();
+
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId: identity.issueId,
+        externalIssueClaim: {
+          schemaVersion: "paperclip.external-issue-claim.v1",
+          claimId: identity.heartbeatRunId,
+          companyId: identity.companyId,
+          issueId: identity.issueId,
+          agentId: identity.agentId,
+          entryPoint: "interactive_codex",
+          repositoryFullName: "gloopsAI/gloops-paperclip-plugin",
+          baseSha,
+          branchName: `paperclip/${identity.heartbeatRunId}/calibration`,
+          projectWorkspaceId: identity.projectWorkspaceId,
+          workspaceIdentity: "/workspace/interactive",
+          claimedAt: "2026-08-15T00:00:00.000Z",
+        },
+      },
+    });
+    await expect(service.getContext(identity.heartbeatRunId)).resolves.toMatchObject({
+      runInvocationSource: "external_claim",
+      externalIssueClaim: {
+        claimId: identity.heartbeatRunId,
+        baseSha,
+      },
+    });
+  });
+
   it("rejects conflicting allocation and terminal replay facts", async () => {
     const identity = await seed();
     const service = repositoryMutationReceiptService(db);

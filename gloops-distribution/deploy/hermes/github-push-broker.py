@@ -607,12 +607,13 @@ def read_bundle(request: dict[str, Any], work_dir: Path) -> tuple[dict[str, Any]
     return manifest, copied_pack
 
 
-def compare_work_facts(authorization: dict[str, Any], context: dict[str, Any]) -> None:
+def compare_work_facts(authorization: dict[str, Any], context: dict[str, Any]) -> str | None:
     exact_keys(
         context,
         {
             "schemaVersion",
             "heartbeatRunId",
+            "runInvocationSource",
             "runStatus",
             "companyId",
             "agentId",
@@ -623,6 +624,7 @@ def compare_work_facts(authorization: dict[str, Any], context: dict[str, Any]) -
             "repositoryFullName",
             "configuredDefaultBranch",
             "configuredRepositoryRef",
+            "externalIssueClaim",
         },
         "Paperclip mutation context",
     )
@@ -643,6 +645,41 @@ def compare_work_facts(authorization: dict[str, Any], context: dict[str, Any]) -
         or any(context.get(key) != value for key, value in expected.items())
     ):
         raise BrokerError("Paperclip work facts conflict with the root authorization")
+    claim = context["externalIssueClaim"]
+    if context["runInvocationSource"] == "external_claim" and claim is None:
+        raise BrokerError("external-claim run lacks a valid atomic issue claim")
+    if context["runInvocationSource"] != "external_claim" and claim is not None:
+        raise BrokerError("non-external run cannot present an external issue claim")
+    if claim is None:
+        return None
+    claim = exact_keys(
+        claim,
+        {
+            "schemaVersion", "claimId", "companyId", "issueId", "agentId", "entryPoint",
+            "repositoryFullName", "baseSha", "branchName", "projectWorkspaceId",
+            "workspaceIdentity", "claimedAt",
+        },
+        "Paperclip external issue claim",
+    )
+    if (
+        claim["schemaVersion"] != "paperclip.external-issue-claim.v1"
+        or claim["entryPoint"] not in {"buzz", "paperclip_agent", "interactive_codex"}
+        or claim["claimId"] != authorization["paperclipRunId"]
+        or claim["companyId"] != authorization["companyId"]
+        or claim["issueId"] != authorization["issueId"]
+        or claim["agentId"] != authorization["agentId"]
+        or claim["repositoryFullName"] != authorization["repositoryFullName"]
+        or claim["projectWorkspaceId"] != authorization["projectWorkspaceId"]
+        or claim["branchName"] != authorization["branchRef"].removeprefix("refs/heads/")
+        or claim["baseSha"] != context["configuredRepositoryRef"]
+        or not OID_PATTERN.fullmatch(str(claim["baseSha"]))
+        or not isinstance(claim["workspaceIdentity"], str)
+        or not claim["workspaceIdentity"].strip()
+        or not isinstance(claim["claimedAt"], str)
+        or not claim["claimedAt"].strip()
+    ):
+        raise BrokerError("Paperclip external issue claim conflicts with publication facts")
+    return str(claim["baseSha"])
 
 
 def prepared_receipt(
@@ -1234,7 +1271,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
         "GET",
         f"/heartbeat-runs/{authorization['paperclipRunId']}/repository-mutation-context",
     )
-    compare_work_facts(authorization, context)
+    required_base_oid = compare_work_facts(authorization, context)
 
     work_dir = create_worker_area()
     try:
@@ -1261,6 +1298,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             "remoteRef": authorization["branchRef"],
             "expectedOldOid": lease["expectedOldOid"],
             "expectedNewOid": lease["expectedNewOid"],
+            "requiredBaseOid": required_base_oid,
             "objectOids": manifest["objectOids"],
             "packPath": str(pack_path),
             "gitdir": str(preflight_gitdir),
@@ -1323,6 +1361,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
                 "remoteRef": authorization["branchRef"],
                 "expectedOldOid": lease["expectedOldOid"],
                 "expectedNewOid": lease["expectedNewOid"],
+                "requiredBaseOid": required_base_oid,
                 "objectOids": manifest["objectOids"],
                 "packPath": str(pack_path),
                 "gitdir": str(gitdir),

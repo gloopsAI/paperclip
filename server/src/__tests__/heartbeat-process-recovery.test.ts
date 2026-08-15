@@ -543,6 +543,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    invocationSource?: string;
+    lastUsefulActionAt?: Date | null;
     contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
@@ -590,7 +592,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: runId,
       companyId,
       agentId,
-      invocationSource: "assignment",
+      invocationSource: input?.invocationSource ?? "assignment",
       triggerDetail: "system",
       status: input?.runStatus ?? "running",
       wakeupRequestId,
@@ -603,6 +605,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
+      lastUsefulActionAt: input?.lastUsefulActionAt ?? null,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
 
@@ -1341,6 +1344,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runIds: [],
     });
     expect((await heartbeat.getRun(runId))?.status).toBe("running");
+  });
+
+  it("retains a fresh processless external claim and expires only its matching issue locks", async () => {
+    const fresh = await seedRunFixture({
+      invocationSource: "external_claim",
+      processPid: null,
+      processGroupId: null,
+      lastUsefulActionAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+    expect((await heartbeat.getRun(fresh.runId))?.status).toBe("running");
+
+    await db.update(heartbeatRuns).set({
+      lastUsefulActionAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    }).where(eq(heartbeatRuns.id, fresh.runId));
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fresh.runId] });
+    expect(await heartbeat.getRun(fresh.runId)).toMatchObject({
+      status: "cancelled",
+      errorCode: "external_claim_lease_expired",
+    });
+    const issue = await db.select().from(issues).where(eq(issues.id, fresh.issueId))
+      .then((rows) => rows[0]!);
+    expect(issue).toMatchObject({ status: "blocked", checkoutRunId: null, executionRunId: null });
+    expect(await db.select().from(activityLog).where(eq(activityLog.runId, fresh.runId)))
+      .toEqual([expect.objectContaining({ action: "issue.external_claim_expired" })]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {
