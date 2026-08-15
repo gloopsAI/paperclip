@@ -58,6 +58,7 @@ readonly EXPECTED_IMAGE="$(tr -d '\r\n' < "${APPROVED_IMAGE_FILE}")"
   exit 1
 }
 declare -A EXPECTED_EXECUTION_ENVELOPE=(
+  [CODEX_HOME]='/home/paperclip/.paperclip/instances/default/companies/89ed0964-d918-4fcc-b830-5be49d2d4089/codex-home'
   [HEARTBEAT_SCHEDULER_ENABLED]='false'
   [PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED]='true'
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
