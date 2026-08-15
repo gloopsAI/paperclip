@@ -1,0 +1,10 @@
+[Unit]
+Description=Event-driven Paperclip exact-head CI-to-merge handoff
+After=paperclip-github-webhook-receiver.service
+
+[Path]
+PathChanged=/var/lib/private/paperclip-github-webhook-receiver/ci-merge-trigger.json
+Unit=paperclip-closed-loop-publish-poller.service
+
+[Install]
+WantedBy=multi-user.target

@@ -14,6 +14,7 @@ function readiness(overrides: Partial<ExecutionWorkspaceCloseReadiness> = {}): E
     isSharedWorkspace: false,
     isProjectPrimaryWorkspace: false,
     git: {
+      pathState: "present",
       repoRoot: "/tmp/repo",
       workspacePath: "/tmp/worktree",
       branchName: "paperclip/work",
@@ -60,14 +61,14 @@ describe("decideWorkspaceAutoCleanup", () => {
       "missing workspace path",
       readiness({
         warnings: ["Workspace path does not exist"],
-        git: { ...readiness().git!, repoRoot: null },
+        git: { ...readiness().git!, pathState: "unknown", repoRoot: null },
       }),
       [],
       "workspace_inspection_incomplete",
     ],
     [
       "uninspectable repository",
-      readiness({ git: { ...readiness().git!, repoRoot: null } }),
+      readiness({ git: { ...readiness().git!, pathState: "unknown", repoRoot: null } }),
       [],
       "workspace_inspection_incomplete",
     ],
@@ -99,5 +100,39 @@ describe("decideWorkspaceAutoCleanup", () => {
       requiresPublicationReceipt: true,
       publicationReceipt: { ...terminalReceipt, remoteNewOid: "c".repeat(40) },
     })).toMatchObject({ action: "block", reason: "publication_receipt_not_terminal" });
+  });
+
+  it("reconciles an already-absent runtime workspace without authorizing filesystem deletion", () => {
+    expect(decideWorkspaceAutoCleanup({
+      now: new Date("2026-08-13T12:00:00Z"),
+      issueStatus: "done",
+      cleanupEligibleAt: "2026-08-13T11:00:00Z",
+      readiness: readiness({
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+        warnings: ["Workspace path does not exist"],
+        git: { ...readiness().git!, pathState: "absent", repoRoot: null },
+      }),
+      workProducts: [],
+      requiresPublicationReceipt: true,
+      publicationReceipt: terminalReceipt,
+    })).toEqual({ action: "reconcile", reason: "runtime_workspace_already_absent" });
+  });
+
+  it("refuses reconciliation when an absent workspace had unsalvaged outputs", () => {
+    expect(decideWorkspaceAutoCleanup({
+      now: new Date("2026-08-13T12:00:00Z"),
+      issueStatus: "done",
+      cleanupEligibleAt: "2026-08-13T11:00:00Z",
+      readiness: readiness({
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+        warnings: ["Workspace path does not exist"],
+        git: { ...readiness().git!, pathState: "absent", repoRoot: null },
+      }),
+      workProducts: [{ provider: "workspace", status: "ready", metadata: { resourceRef: { kind: "workspace_file" } } }],
+      requiresPublicationReceipt: true,
+      publicationReceipt: terminalReceipt,
+    })).toMatchObject({ action: "block", reason: "workspace_artifact_unsalvaged" });
   });
 });

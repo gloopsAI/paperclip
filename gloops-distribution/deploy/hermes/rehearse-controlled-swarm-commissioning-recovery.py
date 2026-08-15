@@ -794,7 +794,7 @@ def paperclip_runtime_evidence(paths: Any) -> dict[str, object]:
     scheduler_disabled = (
         runtime_lines.count("HEARTBEAT_SCHEDULER_ENABLED=false") == 1
         and runtime_lines.count(
-            "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false",
+            "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
         )
         == 1
     )

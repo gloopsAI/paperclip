@@ -12,9 +12,11 @@ import stat
 import sys
 import threading
 import time
+import secrets
 import urllib.error
 import urllib.request
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -30,6 +32,19 @@ UPSTREAM_RE = re.compile(
     r"^http://127\.0\.0\.1:3100/api/plugins/"
     r"[0-9a-f-]{36}/webhooks/github-checks$"
 )
+
+
+def datetime_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("durable write made no progress")
+        view = view[written:]
 
 
 class SlidingWindowLimiter:
@@ -78,21 +93,21 @@ def verify_signature(secret: bytes, body: bytes, supplied: str | None) -> bool:
     return hmac.compare_digest(expected, supplied_hex.lower())
 
 
-def valid_completed_check_suite(body: bytes) -> bool:
+def completed_check_suite(body: bytes) -> dict[str, str] | None:
     try:
         payload = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
+        return None
     if not isinstance(payload, dict) or payload.get("action") != "completed":
-        return False
+        return None
     repository = payload.get("repository")
     suite = payload.get("check_suite")
     if not isinstance(repository, dict) or not isinstance(suite, dict):
-        return False
+        return None
     full_name = repository.get("full_name")
     head_branch = suite.get("head_branch")
     head_sha = suite.get("head_sha")
-    return (
+    valid = (
         isinstance(full_name, str)
         and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}", full_name) is not None
         and isinstance(head_branch, str)
@@ -100,6 +115,17 @@ def valid_completed_check_suite(body: bytes) -> bool:
         and isinstance(head_sha, str)
         and re.fullmatch(r"[0-9a-f]{40}", head_sha) is not None
     )
+    if not valid:
+        return None
+    return {
+        "repository": full_name,
+        "headBranch": head_branch,
+        "headSha": head_sha,
+    }
+
+
+def valid_completed_check_suite(body: bytes) -> bool:
+    return completed_check_suite(body) is not None
 
 
 def client_key(headers: object, peer: str) -> str:
@@ -112,13 +138,61 @@ def client_key(headers: object, peer: str) -> str:
 
 
 class Receiver:
-    def __init__(self, secret: bytes, upstream_url: str, limiter: SlidingWindowLimiter) -> None:
+    def __init__(
+        self,
+        secret: bytes,
+        upstream_url: str,
+        limiter: SlidingWindowLimiter,
+        trigger_path: str | None = None,
+    ) -> None:
         parsed = urlparse(upstream_url)
         if parsed.scheme != "http" or not UPSTREAM_RE.fullmatch(upstream_url):
             raise ValueError("upstream URL is outside the loopback plugin allowlist")
         self.secret = secret
         self.upstream_url = upstream_url
         self.limiter = limiter
+        self.trigger_path = trigger_path
+
+    def persist_ci_merge_trigger(self, body: bytes, delivery: str) -> None:
+        if self.trigger_path is None:
+            return
+        evidence = completed_check_suite(body)
+        if evidence is None:
+            raise ValueError("completed check suite evidence is invalid")
+        path = os.path.abspath(self.trigger_path)
+        parent, leaf = os.path.split(path)
+        if not parent or not leaf or leaf in (".", ".."):
+            raise ValueError("CI merge trigger path is invalid")
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        temp_leaf = f".{leaf}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(6)}.tmp"
+        temp_fd = -1
+        try:
+            temp_fd = os.open(
+                temp_leaf,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            payload = json.dumps({
+                "schema": "gloops.ci-merge-trigger.v1",
+                "deliveryId": delivery,
+                **evidence,
+                "receivedAt": datetime_now(),
+            }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+            write_all(temp_fd, payload)
+            os.fsync(temp_fd)
+            os.close(temp_fd)
+            temp_fd = -1
+            os.rename(temp_leaf, leaf, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        finally:
+            if temp_fd >= 0:
+                os.close(temp_fd)
+            try:
+                os.unlink(temp_leaf, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            os.close(directory_fd)
 
     def forward(self, body: bytes, headers: dict[str, str]) -> int:
         request = urllib.request.Request(
@@ -215,6 +289,11 @@ def handler_class(receiver: Receiver) -> type[BaseHTTPRequestHandler]:
             if upstream_status < 200 or upstream_status >= 300:
                 self._json(502, {"error": "private_upstream_failed"})
                 return
+            try:
+                receiver.persist_ci_merge_trigger(body, delivery)
+            except (OSError, ValueError):
+                self._json(503, {"error": "ci_merge_trigger_failed"})
+                return
             self._json(200, {"status": "accepted"})
 
         def do_PUT(self) -> None:  # noqa: N802
@@ -240,6 +319,7 @@ def main() -> int:
         load_secret(secret_path),
         upstream,
         SlidingWindowLimiter(MAX_REQUESTS_PER_MINUTE),
+        os.environ.get("CI_MERGE_TRIGGER_PATH") or None,
     )
     server = ThreadingHTTPServer((LISTEN_HOST, port), handler_class(receiver))
     print(json.dumps({"event": "receiver.ready", "host": LISTEN_HOST, "port": port}), flush=True)

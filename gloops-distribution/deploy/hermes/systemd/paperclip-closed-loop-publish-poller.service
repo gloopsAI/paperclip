@@ -10,5 +10,6 @@ EnvironmentFile=-/etc/paperclip-gloops/runtime.env
 EnvironmentFile=-/etc/paperclip-gloops/github-read.env
 Environment=PAPERCLIP_API=http://127.0.0.1:3100/api
 Environment=PAPERCLIP_BOARD_TOKEN_FILE=/etc/paperclip-gloops/operator-board-token
+Environment=CLOSED_LOOP_REVIEWER_AGENT_IDS=843c62bc-6f32-420e-9b62-7a2d6a34846f
 ExecStart=/usr/bin/python3 /usr/local/lib/paperclip-gloops/tools/closed-loop-argus-publish-poller.py --once
 Nice=10

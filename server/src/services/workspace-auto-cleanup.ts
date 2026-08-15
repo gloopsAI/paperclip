@@ -2,6 +2,7 @@ import type { ExecutionWorkspaceCloseReadiness } from "@paperclipai/shared";
 
 export type WorkspaceAutoCleanupDecision =
   | { action: "cleanup"; reason: "eligible_after_verified_salvage" }
+  | { action: "reconcile"; reason: "runtime_workspace_already_absent" }
   | { action: "wait"; reason: "not_scheduled" | "retention_window" | "issue_not_terminal" }
   | {
       action: "block";
@@ -64,12 +65,8 @@ export function decideWorkspaceAutoCleanup(input: {
   if (input.issueStatus !== "done" && input.issueStatus !== "cancelled") {
     return { action: "wait", reason: "issue_not_terminal" };
   }
-  if (!input.readiness.isDestructiveCloseAllowed || input.readiness.state === "blocked") {
-    return {
-      action: "block",
-      reason: "close_readiness_blocked",
-      detail: input.readiness.blockingReasons.join(" | ") || "Workspace close readiness is blocked",
-    };
+  if (input.readiness.linkedIssues.some((issue) => !issue.isTerminal)) {
+    return { action: "wait", reason: "issue_not_terminal" };
   }
   if (input.readiness.isSharedWorkspace || input.readiness.isProjectPrimaryWorkspace) {
     return {
@@ -85,6 +82,41 @@ export function decideWorkspaceAutoCleanup(input: {
       action: "block",
       reason: "workspace_not_runtime_created",
       detail: "Automatic cleanup cannot remove a workspace Paperclip did not create",
+    };
+  }
+  const unsalvagedCount = input.workProducts.filter(isUnsalvagedWorkspaceReference).length;
+  if (git.pathState === "absent") {
+    if (unsalvagedCount > 0) {
+      return {
+        action: "block",
+        reason: "workspace_artifact_unsalvaged",
+        detail: `${unsalvagedCount} workspace-only artifact${unsalvagedCount === 1 ? "" : "s"} lack attachment-backed salvage`,
+      };
+    }
+    if (input.requiresPublicationReceipt && !input.publicationReceipt) {
+      return { action: "block", reason: "publication_receipt_missing", detail: "No exact-head publication receipt exists" };
+    }
+    if (
+      input.requiresPublicationReceipt
+      && input.publicationReceipt
+      && (
+        input.publicationReceipt.state !== "reconciled_success"
+        || input.publicationReceipt.remoteNewOid !== input.publicationReceipt.expectedNewOid
+      )
+    ) {
+      return {
+        action: "block",
+        reason: "publication_receipt_not_terminal",
+        detail: "Publication receipt does not prove the expected exact head",
+      };
+    }
+    return { action: "reconcile", reason: "runtime_workspace_already_absent" };
+  }
+  if (!input.readiness.isDestructiveCloseAllowed || input.readiness.state === "blocked") {
+    return {
+      action: "block",
+      reason: "close_readiness_blocked",
+      detail: input.readiness.blockingReasons.join(" | ") || "Workspace close readiness is blocked",
     };
   }
   if (
@@ -108,7 +140,6 @@ export function decideWorkspaceAutoCleanup(input: {
   if (git && git.aheadCount && git.aheadCount > 0 && git.isMergedIntoBase !== true) {
     return { action: "block", reason: "branch_not_merged", detail: "Workspace branch is not merged into its exact base" };
   }
-  const unsalvagedCount = input.workProducts.filter(isUnsalvagedWorkspaceReference).length;
   if (unsalvagedCount > 0) {
     return {
       action: "block",

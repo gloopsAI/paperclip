@@ -163,13 +163,22 @@ function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceSta
     : null;
 }
 
-async function pathExists(value: string | null | undefined) {
-  if (!value) return false;
+export function workspacePathStateFromAccessError(error: unknown): "absent" | "unknown" {
+  const code = error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
+}
+
+export async function inspectWorkspacePathState(
+  value: string | null | undefined,
+): Promise<"present" | "absent" | "unknown"> {
+  if (!value) return "absent";
   try {
     await fs.access(value);
-    return true;
-  } catch {
-    return false;
+    return "present";
+  } catch (error) {
+    return workspacePathStateFromAccessError(error);
   }
 }
 
@@ -538,10 +547,16 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     return { git: null, warnings };
   }
 
-  if (!(await pathExists(workspacePath))) {
-    warnings.push(`Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`);
+  const workspacePathState = await inspectWorkspacePathState(workspacePath);
+  if (workspacePathState !== "present") {
+    warnings.push(
+      workspacePathState === "absent"
+        ? `Workspace path "${workspacePath}" does not exist, so Paperclip cannot inspect git status before close.`
+        : `Workspace path "${workspacePath}" could not be inspected, so Paperclip cannot prove it is absent before close.`,
+    );
     return {
       git: {
+        pathState: workspacePathState,
         repoRoot: null,
         workspacePath,
         branchName: workspace.branchName,
@@ -630,6 +645,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   return {
     git: {
+      pathState: repoRoot ? "present" : "unknown",
       repoRoot,
       workspacePath,
       branchName,
@@ -666,8 +682,19 @@ export async function inspectExecutionWorkspaceGit(
 ): Promise<ExecutionWorkspaceGitObservation> {
   const observedAt = new Date().toISOString();
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-  if (!workspacePath || !(await pathExists(workspacePath))) {
+  if (!workspacePath) {
     return { observedAt, state: "missing", headSha: null, changedAt: null, digest: null, dirty: null };
+  }
+  const pathState = await inspectWorkspacePathState(workspacePath);
+  if (pathState !== "present") {
+    return {
+      observedAt,
+      state: pathState === "absent" ? "missing" : "unknown",
+      headSha: null,
+      changedAt: null,
+      digest: null,
+      dirty: null,
+    };
   }
 
   try {
