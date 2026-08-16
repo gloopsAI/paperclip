@@ -1092,7 +1092,15 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       statusCategory: "succeeded",
       statusTone: "success",
       isTerminal: true,
-      data: { provider: "github", merged: true, headSha, mergeCommitSha },
+      data: {
+        provider: "github",
+        owner: "gloopsAI",
+        repo: "gloops-paperclip-plugin",
+        number: 50,
+        merged: true,
+        headSha,
+        mergeCommitSha,
+      },
     }).returning();
     await db.insert(externalObjectMentions).values({
       companyId,
@@ -1105,6 +1113,46 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
 
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "plugin",
+      actorId: "attacker-plugin",
+      runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        source: "github_merged_exact_head",
+        externalObjectId: pull!.id,
+        externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
+        repository: "gloopsAI/gloops-paperclip-plugin",
+        pullRequestNumber: 50,
+        headSha,
+        mergeCommitSha,
+        terminalReceiptDigest: receipt.digest,
+      },
+    });
+    const forged = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(forged.runs[0]?.verifiedTerminalChange).toBeNull();
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "external-object-resolver",
+      runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        source: "github_merged_exact_head",
+        externalObjectId: pull!.id,
+        externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
+        repository: "gloopsAI/gloops-paperclip-plugin",
+        pullRequestNumber: 50,
+        headSha,
+        mergeCommitSha,
+        terminalReceiptDigest: receipt.digest,
+      },
+    });
     const summary = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
     expect(summary.runs[0]?.verifiedTerminalChange).toEqual({
       status: "operational",
@@ -1119,13 +1167,19 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     });
 
     await db.update(externalObjects).set({
-      data: { provider: "github", merged: true, headSha, mergeCommitSha: "c".repeat(40) },
+      data: {
+        provider: "github", owner: "gloopsAI", repo: "gloops-paperclip-plugin", number: 50,
+        merged: true, headSha, mergeCommitSha: "c".repeat(40),
+      },
     }).where(eq(externalObjects.id, pull!.id));
     const mismatched = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
     expect(mismatched.runs[0]?.verifiedTerminalChange).toBeNull();
 
     await db.update(externalObjects).set({
-      data: { provider: "github", merged: true, headSha, mergeCommitSha },
+      data: {
+        provider: "github", owner: "gloopsAI", repo: "gloops-paperclip-plugin", number: 50,
+        merged: true, headSha, mergeCommitSha,
+      },
     }).where(eq(externalObjects.id, pull!.id));
     await db.update(issues).set({ status: "in_review", completedAt: null }).where(eq(issues.id, issueId));
     const nonterminal = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });

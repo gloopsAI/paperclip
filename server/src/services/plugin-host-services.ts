@@ -664,7 +664,11 @@ export function buildHostServices(
   const parseVerifiedTerminalReceipt = (contextSnapshot: unknown) => {
     if (!isRecord(contextSnapshot)) return null;
     const receipt = contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY];
-    if (!isRecord(receipt) || receipt.status !== "operational") return null;
+    if (!isRecord(receipt) || receipt.status !== "operational"
+      || receipt.schemaVersion !== "gloops.execution-truth.operator-receipt.v2") return null;
+    const work = isRecord(receipt.work) ? receipt.work : null;
+    const workId = typeof work?.id === "string" && work.id.trim().length > 0 ? work.id.trim() : null;
+    if (!workId) return null;
     const receiptDigest = typeof receipt.digest === "string"
       ? receipt.digest.trim().toLowerCase()
       : null;
@@ -691,7 +695,7 @@ export function buildHostServices(
     ) {
       return null;
     }
-    return { receiptDigest, exactHeadSha, mergeCommitSha };
+    return { receiptDigest, exactHeadSha, mergeCommitSha, workId };
   };
 
   const requirePluginIssueIdempotencyKey = (value: unknown): string | null => {
@@ -835,7 +839,7 @@ export function buildHostServices(
     const statusCondition = options.activeOnly
       ? inArray(heartbeatRuns.status, ["queued", "running"])
       : undefined;
-    const rows = await db
+    const rawRows = await db
       .select({
         id: heartbeatRuns.id,
         issueId: issueIdExpr,
@@ -851,57 +855,65 @@ export function buildHostServices(
         contextSnapshot: heartbeatRuns.contextSnapshot,
         usageJson: heartbeatRuns.usageJson,
         resultJson: heartbeatRuns.resultJson,
+        terminalIssueId: issuesTable.id,
+        terminalIssueIdentifier: issuesTable.identifier,
+        terminalIssueStatus: issuesTable.status,
+        terminalIssueCompletedAt: issuesTable.completedAt,
+        terminalIssueExecutionRunId: issuesTable.executionRunId,
+        terminalIssueCheckoutRunId: issuesTable.checkoutRunId,
+        pullObjectId: externalObjects.id,
+        pullExternalId: externalObjects.externalId,
+        pullProviderKey: externalObjects.providerKey,
+        pullObjectType: externalObjects.objectType,
+        pullStatusKey: externalObjects.statusKey,
+        pullIsTerminal: externalObjects.isTerminal,
+        pullData: externalObjects.data,
+        reconciliationActivityId: activityLog.id,
+        reconciliationActivityDetails: activityLog.details,
       })
       .from(heartbeatRuns)
+      .leftJoin(issuesTable, and(
+        eq(issuesTable.companyId, companyId),
+        sql`${issuesTable.id}::text = ${issueIdExpr}`,
+      ))
+      .leftJoin(externalObjectMentions, and(
+        eq(externalObjectMentions.companyId, companyId),
+        eq(externalObjectMentions.sourceIssueId, issuesTable.id),
+      ))
+      .leftJoin(externalObjects, and(
+        eq(externalObjects.companyId, companyId),
+        eq(externalObjects.id, externalObjectMentions.objectId),
+        eq(externalObjects.providerKey, "github"),
+        eq(externalObjects.objectType, "pull_request"),
+        eq(externalObjects.statusKey, "merged"),
+        eq(externalObjects.isTerminal, true),
+      ))
+      .leftJoin(activityLog, and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.actorType, "system"),
+        eq(activityLog.actorId, "external-object-resolver"),
+        eq(activityLog.action, "issue.updated"),
+        eq(activityLog.entityType, "issue"),
+        sql`${activityLog.entityId} = ${issuesTable.id}::text`,
+        eq(activityLog.runId, heartbeatRuns.id),
+      ))
       .where(and(eq(heartbeatRuns.companyId, companyId), inArray(issueIdExpr, issueIds), statusCondition))
       .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(100);
-
-    const terminalIssueRows = options.activeOnly
-      ? []
-      : await db
-        .select({
-          id: issuesTable.id,
-          status: issuesTable.status,
-          completedAt: issuesTable.completedAt,
-          executionRunId: issuesTable.executionRunId,
-          checkoutRunId: issuesTable.checkoutRunId,
-        })
-        .from(issuesTable)
-        .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)));
-    const terminalIssueById = new Map(terminalIssueRows.map((issue) => [issue.id, issue]));
-    const mergedPullRows = options.activeOnly
-      ? []
-      : await db
-        .select({
-          issueId: externalObjectMentions.sourceIssueId,
-          objectId: externalObjects.id,
-          externalId: externalObjects.externalId,
-          providerKey: externalObjects.providerKey,
-          objectType: externalObjects.objectType,
-          statusKey: externalObjects.statusKey,
-          isTerminal: externalObjects.isTerminal,
-          data: externalObjects.data,
-        })
-        .from(externalObjectMentions)
-        .innerJoin(externalObjects, eq(externalObjectMentions.objectId, externalObjects.id))
-        .where(and(
-          eq(externalObjectMentions.companyId, companyId),
-          inArray(externalObjectMentions.sourceIssueId, issueIds),
-          eq(externalObjects.companyId, companyId),
-          eq(externalObjects.providerKey, "github"),
-          eq(externalObjects.objectType, "pull_request"),
-          eq(externalObjects.statusKey, "merged"),
-          eq(externalObjects.isTerminal, true),
-        ));
-    const mergedPullsByIssue = new Map<string, typeof mergedPullRows>();
-    for (const pull of mergedPullRows) {
-      const existing = mergedPullsByIssue.get(pull.issueId) ?? [];
-      existing.push(pull);
-      mergedPullsByIssue.set(pull.issueId, existing);
+      .limit(500);
+    const groupedRows = new Map<string, {
+      row: (typeof rawRows)[number];
+      evidenceRows: Array<(typeof rawRows)[number]>;
+    }>();
+    for (const row of rawRows) {
+      const existing = groupedRows.get(row.id);
+      if (existing) {
+        existing.evidenceRows.push(row);
+      } else if (groupedRows.size < 100) {
+        groupedRows.set(row.id, { row, evidenceRows: [row] });
+      }
     }
 
-    return rows.map((row) => {
+    return [...groupedRows.values()].map(({ row, evidenceRows }) => {
       const usage = isRecord(row.usageJson) ? row.usageJson : {};
       const result = isRecord(row.resultJson) ? row.resultJson : {};
       const metrics = isRecord(result.execution_metrics)
@@ -930,21 +942,48 @@ export function buildHostServices(
             ? route.transport
             : null;
       const contextInputBytes = Buffer.byteLength(JSON.stringify(row.contextSnapshot ?? null), "utf8");
-      const terminalIssue = row.issueId ? terminalIssueById.get(row.issueId) : null;
       const terminalReceipt = parseVerifiedTerminalReceipt(row.contextSnapshot);
-      const matchingPulls = terminalIssue && terminalReceipt
-        && terminalIssue.status === "done"
-        && terminalIssue.completedAt !== null
-        && (terminalIssue.executionRunId === row.id || terminalIssue.checkoutRunId === row.id)
-        ? (mergedPullsByIssue.get(terminalIssue.id) ?? []).filter((pull) => {
-            const data = isRecord(pull.data) ? pull.data : {};
+      const expectedWorkId = row.terminalIssueIdentifier ?? row.terminalIssueId;
+      const matchingPulls = !options.activeOnly && terminalReceipt
+        && row.status === "succeeded"
+        && row.terminalIssueId === row.issueId
+        && row.terminalIssueStatus === "done"
+        && row.terminalIssueCompletedAt !== null
+        && expectedWorkId === terminalReceipt.workId
+        && (row.terminalIssueExecutionRunId === row.id || row.terminalIssueCheckoutRunId === row.id)
+        ? evidenceRows.filter((candidate) => {
+            const data = isRecord(candidate.pullData) ? candidate.pullData : {};
+            const activity = isRecord(candidate.reconciliationActivityDetails)
+              ? candidate.reconciliationActivityDetails
+              : {};
             const headSha = typeof data.headSha === "string" ? data.headSha.trim().toLowerCase() : null;
             const mergeCommitSha = typeof data.mergeCommitSha === "string"
               ? data.mergeCommitSha.trim().toLowerCase()
               : null;
-            return data.merged === true
+            const owner = typeof data.owner === "string" ? data.owner.trim() : null;
+            const repo = typeof data.repo === "string" ? data.repo.trim() : null;
+            const pullNumber = typeof data.number === "number" && Number.isInteger(data.number)
+              ? data.number
+              : null;
+            const repository = owner && repo ? `${owner}/${repo}` : null;
+            return candidate.pullObjectId !== null
+              && candidate.pullExternalId === `${repository}#pull/${pullNumber}`
+              && candidate.pullProviderKey === "github"
+              && candidate.pullObjectType === "pull_request"
+              && candidate.pullStatusKey === "merged"
+              && candidate.pullIsTerminal === true
+              && data.provider === "github" && data.merged === true
               && headSha === terminalReceipt.exactHeadSha
-              && mergeCommitSha === terminalReceipt.mergeCommitSha;
+              && mergeCommitSha === terminalReceipt.mergeCommitSha
+              && candidate.reconciliationActivityId !== null
+              && activity.source === "github_merged_exact_head"
+              && activity.externalObjectId === candidate.pullObjectId
+              && activity.externalId === candidate.pullExternalId
+              && activity.repository === repository
+              && activity.pullRequestNumber === pullNumber
+              && activity.headSha === headSha
+              && activity.mergeCommitSha === mergeCommitSha
+              && activity.terminalReceiptDigest === terminalReceipt.receiptDigest;
           })
         : [];
       const verifiedTerminalChange = matchingPulls.length === 1 && terminalReceipt
@@ -954,7 +993,7 @@ export function buildHostServices(
             exactHeadSha: terminalReceipt.exactHeadSha,
             pullRequest: {
               provider: "github" as const,
-              externalId: matchingPulls[0]!.externalId,
+              externalId: matchingPulls[0]!.pullExternalId!,
               headSha: terminalReceipt.exactHeadSha,
               mergeCommitSha: terminalReceipt.mergeCommitSha,
             },

@@ -800,6 +800,11 @@ export function externalObjectService(
       : {};
     const headSha = typeof data.headSha === "string" ? data.headSha : null;
     const mergeCommitSha = typeof data.mergeCommitSha === "string" ? data.mergeCommitSha : null;
+    const owner = typeof data.owner === "string" ? data.owner : null;
+    const repo = typeof data.repo === "string" ? data.repo : null;
+    const pullRequestNumber = typeof data.number === "number" && Number.isInteger(data.number)
+      ? data.number
+      : null;
     const mentionedIssues = await db
       .select({
         id: issues.id,
@@ -946,7 +951,12 @@ export function externalObjectService(
           status: "done",
           source: "github_merged_exact_head",
           externalObjectId: object.id,
+          externalId: object.externalId,
+          repository: owner && repo ? `${owner}/${repo}` : null,
+          pullRequestNumber,
           headSha,
+          mergeCommitSha,
+          terminalReceiptDigest: decision.receipt.digest,
           _previous: { status: "in_review" },
         },
       });
