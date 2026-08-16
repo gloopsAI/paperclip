@@ -123,8 +123,8 @@ class ArgusPublishPollerTests(unittest.TestCase):
                 poller, "publish"
             ) as publish, patch.object(
                 poller,
-                "mark_ready_and_automerge",
-                return_value={"ok": True, "repo": "gloopsAI/paperclip", "pr": 300, "headSha": HEAD, "baseRef": "gloops/stable", "baseSha": "b" * 40, "autoMergeArmed": True},
+                "mark_ready_and_merge",
+                return_value={"ok": True, "repo": "gloopsAI/paperclip", "pr": 300, "headSha": HEAD, "baseRef": "gloops/stable", "baseSha": "b" * 40, "mergePending": True},
             ) as merge_path, patch.object(
                 poller.sys, "argv", ["poller", "--once"]
             ):
@@ -154,7 +154,7 @@ class ArgusPublishPollerTests(unittest.TestCase):
             ), patch.object(poller, "gh_json", return_value=pr), patch.object(poller, "independent_review_ok", return_value=False), patch.object(
                 poller, "publish"
             ) as publish, patch.object(
-                poller, "mark_ready_and_automerge", side_effect=RuntimeError("injected")
+            poller, "mark_ready_and_merge", side_effect=RuntimeError("injected")
             ), patch.object(poller.sys, "argv", ["poller", "--once"]):
                 self.assertEqual(poller.main(), 1)
                 receipt = poller.load_state()["publishedForPr"]["1299155335:300:" + HEAD]

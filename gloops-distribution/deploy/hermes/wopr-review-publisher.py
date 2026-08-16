@@ -164,9 +164,9 @@ def mint_board_approval(repository_id, repo, base_ref, base_sha, pr, head, subst
         "kind":"trust_substrate_ir",
         "title":f"Trust substrate IR clearance — PR #{pr}",
         "summary":f"Independent review for PR #{pr} touches trust-substrate paths. Approve only if you accept the governance impact. Head `{head[:12]}`. Paths: {', '.join(substrate_hits[:12])}.",
-        "recommendedAction":f"Approve to clear GitHub check gloops/independent-review for PR #{pr} and allow auto-merge. Reject keeps merge blocked.",
+        "recommendedAction":f"Approve to clear GitHub check gloops/independent-review for PR #{pr} and allow the exact-base leased merge. Reject keeps merge blocked.",
         "repositoryId":str(repository_id),"repository":repo,"baseRef":base_ref,"baseSha":base_sha,"pr":pr,"prUrl":pr_url,"headSha":head,"reviewIssueId":review_issue_id,"reviewRunId":review_run_id,"substratePaths":substrate_hits[:40],
-        "risks":["Touches trust-substrate denylist paths.","Clearance unblocks required branch-protection check and may auto-merge to gloops/stable.","Does not authorize GO DEPLOY or Induct write."],
+        "risks":["Touches trust-substrate denylist paths.","Clearance unblocks the independent-review check and exact-base leased merge.","Does not authorize GO DEPLOY or Induct write."],
         "encodeClass":"T-SUBSTRATE-IR-SURFACE",
     }
     try:
@@ -224,7 +224,7 @@ def publish_with_auth(a, repository_id, provenance, auth):
         summ=("Operator/board cleared trust-substrate IR. Paths: "+", ".join(subs[:20])) if subs else "Operator/board cleared prior action_required."
     elif subs:
         concl="action_required"; title="Independent review: touches trust substrate - human review required"
-        summ=("Changed files include trust-substrate paths (auto-merge withheld): "+", ".join(subs[:20])+
+        summ=("Changed files include trust-substrate paths (merge withheld): "+", ".join(subs[:20])+
               f". Open Paperclip Approvals or phrase: `clear trust substrate IR for #{a.pr}`.")
         if not a.dry_run:
             mark_action_required(repository_id,a.repo,a.base,a.base_sha,a.pr,head)
@@ -232,7 +232,7 @@ def publish_with_auth(a, repository_id, provenance, auth):
                 approval_id=mint_board_approval(repository_id,a.repo,a.base,a.base_sha,a.pr,head,subs,a.review_issue_id,a.review_run_id)
             except RuntimeError as e:
                 approval_error=str(e)
-                summ=("Changed files include trust-substrate paths; auto-merge remains withheld. "
+                summ=("Changed files include trust-substrate paths; merge remains withheld. "
                       f"CRITICAL: Paperclip board approval was not created ({approval_error}). "
                       "Treat this publisher invocation as failed; investigate the board path before clearing IR.")
             notify_human(a.repo,a.pr,head,subs,approval_id)

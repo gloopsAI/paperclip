@@ -195,12 +195,12 @@ def publish(binding: dict, verdict: str = "accepted") -> None:
         subprocess.check_call(["sudo", "-n", *cmd])
 
 
-def mark_ready_and_automerge(binding: dict) -> dict:
-    """Surface drafts cannot auto-merge; mark ready via App install token.
+def mark_ready_and_merge(binding: dict) -> dict:
+    """Mark ready and perform an exact-base leased fast-forward when clean.
 
     Host `gh` as zach-hermes lacks MarkPullRequestReadyForReview. Root helper
     paperclip-mark-pr-ready.py mints a short-lived App token (PR write), marks
-    ready, and arms squash auto-merge — then revokes the token.
+    ready, then advances the governed base only through an exact old-OID lease.
     """
     helper = Path(
         os.environ.get(
@@ -223,8 +223,11 @@ def mark_ready_and_automerge(binding: dict) -> dict:
         binding["baseRef"],
         "--base-sha",
         binding["exactBaseSha"],
-        "--auto-merge",
-        "--merge-if-clean",
+        "--source-run-id",
+        binding["sourceRunId"],
+        "--review-run-id",
+        binding["reviewRunId"],
+        "--merge-exact",
     ]
     print(f"[merge-path] {' '.join(cmd)}", flush=True)
     executable = cmd if os.geteuid() == 0 else ["sudo", "-n", *cmd]
@@ -245,8 +248,8 @@ def mark_ready_and_automerge(binding: dict) -> dict:
         or evidence.get("pr") != binding["pullRequestNumber"]
     ):
         raise RuntimeError("protected merge helper evidence is not bound to the approved head/base")
-    if evidence.get("merged") is not True and evidence.get("autoMergeArmed") is not True:
-        raise RuntimeError("protected merge path is neither merged nor armed")
+    if evidence.get("merged") is not True and evidence.get("mergePending") is not True:
+        raise RuntimeError("protected merge path is neither merged nor cleanly pending")
     return evidence
 
 
@@ -505,14 +508,14 @@ def main() -> int:
         already = key in st.get("publishedForPr", {})
         ok = independent_review_ok(binding)
         if already or ok is True:
-            # Re-enter after CI finishes: ready + merge-if-clean (not only first IR stamp).
+            # Re-enter after CI finishes: ready + exact leased merge.
             print(
                 f"[merge-path] pr#{num} already_published={already} ir_ok={ok}",
                 flush=True,
             )
             if not dry:
                 try:
-                    merge_evidence = mark_ready_and_automerge(binding)
+                    merge_evidence = mark_ready_and_merge(binding)
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
                         "source": binding["sourceIssue"],
@@ -556,8 +559,8 @@ def main() -> int:
         try:
             publish(binding, "accepted")
             try:
-                merge_evidence = mark_ready_and_automerge(binding)
-                action["mergePath"] = "ready+auto"
+                merge_evidence = mark_ready_and_merge(binding)
+                action["mergePath"] = "ready+exact-lease"
                 action["mergeEvidence"] = merge_evidence
             except Exception as e:
                 had_failure = True

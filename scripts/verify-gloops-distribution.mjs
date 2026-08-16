@@ -2116,9 +2116,11 @@ for (const required of [
 for (const required of [
   'parser.add_argument("--expected-head", required=True)',
   'parser.add_argument("--base-sha", required=True)',
-  "assert_exact_pr(final, expected_head, args.base, expected_base_sha)",
-  '"sha": expected_head',
-  '"autoMergeArmed"',
+  'parser.add_argument("--source-run-id", required=True)',
+  'parser.add_argument("--review-run-id", required=True)',
+  'parser.add_argument("--merge-exact", action="store_true")',
+  '"--force-with-lease=refs/heads/{base_ref}:{expected_base_sha}"',
+  '"mergePending"',
 ]) {
   if (!markPrReady.includes(required)) {
     fail(`exact-head protected merge helper is missing ${required}`);

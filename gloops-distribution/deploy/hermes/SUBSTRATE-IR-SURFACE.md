@@ -33,7 +33,7 @@ unbound-run, same-implementer, and reassigned-reviewer comments are ignored even
 when their text contains an approval marker. The poller accepts an exact-head approval
 (or the compatible `PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
 `gloops/stable`, then invokes the independent-review publisher and arms the
-normal ready/auto-merge path. Its state is keyed by `PR:head`, so a new commit
+normal ready/exact-leased-merge path. Its state is keyed by `PR:head`, so a new commit
 requires a new exact-head approval.
 
 After SUCCESS publication, the same repository-scoped App-B installation marks
@@ -47,4 +47,4 @@ scheduled substrate poller back half before independent review can be SUCCESS.
 Paperclip **#225** exercised the full approval arm on 2026-07-30: its exact head was
 held with `action_required`, a `trust_substrate_ir` board approval was minted and
 approved, and the scheduled poller published independent-review SUCCESS before
-auto-merge. The canary did not authorize a product deploy.
+merge. The canary did not authorize a product deploy.
