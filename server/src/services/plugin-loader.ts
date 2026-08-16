@@ -59,7 +59,7 @@ export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROO
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
 const CONTENT_ADDRESSED_PLUGIN_PROVENANCE_SUFFIX = ".provenance.json";
-export const CONTENT_ADDRESSED_PLUGIN_ROOT = "/var/lib/paperclip-plugin-cas";
+export const CONTENT_ADDRESSED_PLUGIN_ROOT = "/opt/paperclip/plugins/cas";
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
