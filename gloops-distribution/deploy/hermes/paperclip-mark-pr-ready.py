@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""Bind an approved exact PR head to one exact-base repository mutation.
+"""Bind an approved exact PR head to GitHub's protected merge transaction.
 
-This helper marks a matching draft ready, waits for GitHub to classify the PR
-as clean, then fast-forwards the governed base with a Git force-with-lease bound
-to the independently reviewed base OID. It never arms delayed auto-merge. A
-base or head change before the mutation makes the lease/fetch fail closed.
+This helper never arms delayed auto-merge and never pushes the base ref. It
+requires strict required-status-check enforcement, marks a matching draft
+ready, and asks GitHub to squash-merge only a clean exact head/base tuple. If
+the base advances, strict enforcement makes the reviewed head stale and the
+server-side merge fails atomically.
 """
 from __future__ import annotations
 
 import argparse
 import base64
 import json
-import os
 import re
-import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -145,79 +144,57 @@ def assert_exact_independent_review(
         raise RuntimeError("exact App-B independent-review check is absent or ambiguous")
 
 
-def run_git(args: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=90,
-    )
-
-
-def checked_git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
-    result = run_git(args, cwd, env)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "git command failed")[-400:]
-        raise RuntimeError(f"exact-base Git mutation failed: {detail}")
-    return result.stdout.strip()
-
-
-def exact_leased_fast_forward(
-    *, repo: str, base_ref: str, expected_base_sha: str,
-    expected_head_sha: str, pull_request_number: int, token: str,
-) -> None:
-    """Advance base to head iff the remote still has the reviewed tuple.
-
-    Git's force-with-lease is the remote compare-and-swap primitive. The update
-    is additionally constrained to a real fast-forward by an ancestry proof;
-    the word "force" only enables the exact old-OID lease check.
-    """
-    with tempfile.TemporaryDirectory(prefix="gloops-exact-merge-") as temp_name:
-        temp = Path(temp_name)
-        os.chmod(temp, 0o700)
-        askpass = temp / "askpass.sh"
-        askpass.write_text(
-            "#!/bin/sh\n"
-            "case \"$1\" in\n"
-            "  *Username*) printf '%s\\n' x-access-token ;;\n"
-            "  *) printf '%s\\n' \"$GLOOPS_GITHUB_APP_TOKEN\" ;;\n"
-            "esac\n",
-            encoding="utf-8",
+def assert_strict_required_checks(repo: str, base_ref: str, token: str) -> None:
+    encoded = quote(base_ref, safe="")
+    try:
+        legacy = gh_api(
+            "GET", f"/repos/{repo}/branches/{encoded}/protection/required_status_checks", token
         )
-        os.chmod(askpass, 0o700)
-        env = {
-            **os.environ,
-            "GIT_ASKPASS": str(askpass),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GLOOPS_GITHUB_APP_TOKEN": token,
-        }
-        checked_git(["init", "--bare", "--quiet"], temp, env)
-        remote = f"https://github.com/{repo}.git"
-        checked_git([
-            "fetch", "--quiet", "--no-tags", remote,
-            f"+refs/heads/{base_ref}:refs/gloops/base",
-            f"+refs/pull/{pull_request_number}/head:refs/gloops/head",
-        ], temp, env)
-        observed_base = checked_git(["rev-parse", "refs/gloops/base^{commit}"], temp, env).lower()
-        observed_head = checked_git(["rev-parse", "refs/gloops/head^{commit}"], temp, env).lower()
-        if observed_base != expected_base_sha:
-            raise RuntimeError(
-                f"base changed before leased merge: expected {expected_base_sha}, observed {observed_base}"
-            )
-        if observed_head != expected_head_sha:
-            raise RuntimeError(
-                f"head changed before leased merge: expected {expected_head_sha}, observed {observed_head}"
-            )
-        checked_git(["merge-base", "--is-ancestor", expected_base_sha, expected_head_sha], temp, env)
-        checked_git([
-            "push", "--porcelain",
-            f"--force-with-lease=refs/heads/{base_ref}:{expected_base_sha}",
-            remote,
-            f"{expected_head_sha}:refs/heads/{base_ref}",
-        ], temp, env)
+        if legacy.get("strict") is True:
+            return
+    except RuntimeError:
+        pass
+    try:
+        rules = gh_api("GET", f"/repos/{repo}/rules/branches/{encoded}", token)
+    except RuntimeError as error:
+        raise RuntimeError("strict required-status-check enforcement is unproved") from error
+    if not isinstance(rules, list) or not any(
+        isinstance(rule, dict)
+        and rule.get("type") == "required_status_checks"
+        and isinstance(rule.get("parameters"), dict)
+        and rule["parameters"].get("strict_required_status_checks_policy") is True
+        for rule in rules
+    ):
+        raise RuntimeError("strict required-status-check enforcement is absent")
+
+
+def assert_exact_squash_commit(commit: dict, expected_base_sha: str) -> None:
+    parents = commit.get("parents") if isinstance(commit, dict) else None
+    if not isinstance(parents, list) or len(parents) != 1:
+        raise RuntimeError("merged PR is not an exact squash commit")
+    parent = str((parents[0] or {}).get("sha") or "").lower()
+    if parent != expected_base_sha:
+        raise RuntimeError(
+            f"merged PR parent drifted: expected {expected_base_sha}, observed {parent or 'missing'}"
+        )
+
+
+def reconcile_merged_pr(
+    *, repo: str, pr: dict, expected_head: str, expected_base: str,
+    expected_base_sha: str, token: str,
+) -> str:
+    if not pr.get("merged"):
+        raise RuntimeError("pull request is not merged")
+    if str((pr.get("head") or {}).get("sha") or "").lower() != expected_head:
+        raise RuntimeError("merged PR head does not match the reviewed head")
+    if str((pr.get("base") or {}).get("ref") or "") != expected_base:
+        raise RuntimeError("merged PR base ref does not match the reviewed base")
+    merge_sha = str(pr.get("merge_commit_sha") or "").lower()
+    if SHA_RE.fullmatch(merge_sha) is None:
+        raise RuntimeError("merged PR is missing its merge commit SHA")
+    commit = gh_api("GET", f"/repos/{repo}/git/commits/{merge_sha}", token)
+    assert_exact_squash_commit(commit, expected_base_sha)
+    return merge_sha
 
 
 def main() -> int:
@@ -244,7 +221,8 @@ def main() -> int:
         token = app_b_token(int(binding["repositoryId"]))
         path = f"/repos/{args.repo}/pulls/{args.pr}"
         pr = gh_api("GET", path, token)
-        assert_exact_pr(pr, expected_head, args.base, expected_base_sha)
+        if not pr.get("merged"):
+            assert_exact_pr(pr, expected_head, args.base, expected_base_sha)
         checks = gh_api(
             "GET",
             f"/repos/{args.repo}/commits/{expected_head}/check-runs"
@@ -264,9 +242,15 @@ def main() -> int:
             raise RuntimeError("pull request is missing its immutable node id")
 
         mutation_attempted = False
+        merge_sha = None
         if pr.get("merged"):
             final = pr
+            merge_sha = reconcile_merged_pr(
+                repo=args.repo, pr=pr, expected_head=expected_head,
+                expected_base=args.base, expected_base_sha=expected_base_sha, token=token,
+            )
         else:
+            assert_strict_required_checks(args.repo, args.base, token)
             if pr.get("draft"):
                 graphql(token, """
                   mutation($id: ID!) {
@@ -279,22 +263,22 @@ def main() -> int:
             assert_exact_pr(refreshed, expected_head, args.base, expected_base_sha)
             if args.merge_exact and refreshed.get("mergeable") is True and refreshed.get("mergeable_state") == "clean":
                 mutation_attempted = True
-                exact_leased_fast_forward(
-                    repo=args.repo,
-                    base_ref=args.base,
-                    expected_base_sha=expected_base_sha,
-                    expected_head_sha=expected_head,
-                    pull_request_number=args.pr,
-                    token=token,
-                )
-                final = refreshed
-                for _ in range(10):
+                try:
+                    result = gh_api("PUT", f"{path}/merge", token, {
+                        "merge_method": "squash",
+                        "sha": expected_head,
+                    })
+                    if result.get("merged") is not True:
+                        raise RuntimeError("GitHub protected merge was not accepted")
+                except Exception as merge_error:
                     final = gh_api("GET", path, token)
-                    if final.get("merged"):
-                        break
-                    time.sleep(0.5)
-                if not final.get("merged"):
-                    raise RuntimeError("base mutation succeeded but GitHub PR merge reconciliation is unproved")
+                    if not final.get("merged"):
+                        raise RuntimeError("protected merge failed before a terminal GitHub state") from merge_error
+                final = gh_api("GET", path, token)
+                merge_sha = reconcile_merged_pr(
+                    repo=args.repo, pr=final, expected_head=expected_head,
+                    expected_base=args.base, expected_base_sha=expected_base_sha, token=token,
+                )
             else:
                 final = refreshed
 
@@ -315,6 +299,7 @@ def main() -> int:
             "merged": merged,
             "mergePending": bool(args.merge_exact and not merged),
             "mutationAttempted": mutation_attempted,
+            "mergeCommitSha": merge_sha,
         }, sort_keys=True))
         return 0
     except Exception as error:

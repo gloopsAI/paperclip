@@ -164,9 +164,9 @@ def mint_board_approval(repository_id, repo, base_ref, base_sha, pr, head, subst
         "kind":"trust_substrate_ir",
         "title":f"Trust substrate IR clearance — PR #{pr}",
         "summary":f"Independent review for PR #{pr} touches trust-substrate paths. Approve only if you accept the governance impact. Head `{head[:12]}`. Paths: {', '.join(substrate_hits[:12])}.",
-        "recommendedAction":f"Approve to clear GitHub check gloops/independent-review for PR #{pr} and allow the exact-base leased merge. Reject keeps merge blocked.",
+        "recommendedAction":f"Approve to clear GitHub check gloops/independent-review for PR #{pr} and allow GitHub's strict protected merge. Reject keeps merge blocked.",
         "repositoryId":str(repository_id),"repository":repo,"baseRef":base_ref,"baseSha":base_sha,"pr":pr,"prUrl":pr_url,"headSha":head,"reviewIssueId":review_issue_id,"reviewRunId":review_run_id,"substratePaths":substrate_hits[:40],
-        "risks":["Touches trust-substrate denylist paths.","Clearance unblocks the independent-review check and exact-base leased merge.","Does not authorize GO DEPLOY or Induct write."],
+        "risks":["Touches trust-substrate denylist paths.","Clearance unblocks the independent-review check and strict protected merge.","Does not authorize GO DEPLOY or Induct write."],
         "encodeClass":"T-SUBSTRATE-IR-SURFACE",
     }
     try:

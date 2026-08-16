@@ -33,7 +33,7 @@ unbound-run, same-implementer, and reassigned-reviewer comments are ignored even
 when their text contains an approval marker. The poller accepts an exact-head approval
 (or the compatible `PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
 `gloops/stable`, then invokes the independent-review publisher and arms the
-normal ready/exact-leased-merge path. Its state is keyed by `PR:head`, so a new commit
+normal ready/strict-protected-merge path. Its state is keyed by `PR:head`, so a new commit
 requires a new exact-head approval.
 
 After SUCCESS publication, the same repository-scoped App-B installation marks

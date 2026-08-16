@@ -39,6 +39,32 @@ BINDING = {
 
 
 class ArgusPublishPollerTests(unittest.TestCase):
+    def test_merged_pr_remains_reconcilable_after_base_ref_advances(self):
+        binding = {
+            "repositoryId": "1299155335",
+            "baseRef": "gloops/stable",
+            "exactBaseSha": "b" * 40,
+            "exactHeadSha": HEAD,
+        }
+        self.assertTrue(poller.pr_matches_review_binding({
+            "state": "closed",
+            "merged": True,
+            "head": {"sha": HEAD},
+            "base": {
+                "ref": "gloops/stable", "sha": "c" * 40,
+                "repo": {"id": 1299155335},
+            },
+        }, binding))
+        self.assertFalse(poller.pr_matches_review_binding({
+            "state": "open",
+            "merged": False,
+            "head": {"sha": HEAD},
+            "base": {
+                "ref": "gloops/stable", "sha": "c" * 40,
+                "repo": {"id": 1299155335},
+            },
+        }, binding))
+
     def test_extracts_explicit_exact_head_approval(self):
         self.assertEqual(
             poller.extract_approved_heads(f"APPROVE exact head {HEAD}"), {HEAD}

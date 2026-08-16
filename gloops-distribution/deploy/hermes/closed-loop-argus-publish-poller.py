@@ -196,11 +196,12 @@ def publish(binding: dict, verdict: str = "accepted") -> None:
 
 
 def mark_ready_and_merge(binding: dict) -> dict:
-    """Mark ready and perform an exact-base leased fast-forward when clean.
+    """Mark ready and invoke GitHub's strict protected squash merge when clean.
 
     Host `gh` as zach-hermes lacks MarkPullRequestReadyForReview. Root helper
     paperclip-mark-pr-ready.py mints a short-lived App token (PR write), marks
-    ready, then advances the governed base only through an exact old-OID lease.
+    ready. GitHub refuses merge when the current base is not in the reviewed
+    head because every governed branch must enforce strict status checks.
     """
     helper = Path(
         os.environ.get(
@@ -445,6 +446,17 @@ def independent_review_ok(binding: dict) -> bool | None:
         return None
 
 
+def pr_matches_review_binding(pr: dict, binding: dict) -> bool:
+    merged = pr.get("merged") is True
+    return bool(
+        (pr.get("head") or {}).get("sha", "").lower() == binding["exactHeadSha"]
+        and (pr.get("base") or {}).get("ref") == binding["baseRef"]
+        and str((pr.get("base") or {}).get("repo", {}).get("id") or "") == binding["repositoryId"]
+        and (merged or (pr.get("base") or {}).get("sha", "").lower() == binding["exactBaseSha"])
+        and (merged or pr.get("state") == "open")
+    )
+
+
 def collect_approved_bindings() -> list[dict]:
     """Return server-bound repository/PR/base/head review receipts.
 
@@ -496,19 +508,13 @@ def main() -> int:
             actions.append({"repository": repo, "pr": num, "head": head, "result": "pr_read_failed", "errorClass": type(error).__name__})
             continue
         title = pr.get("title") or ""
-        if (
-            (pr.get("head") or {}).get("sha", "").lower() != head
-            or (pr.get("base") or {}).get("ref") != binding["baseRef"]
-            or (pr.get("base") or {}).get("sha", "").lower() != binding["exactBaseSha"]
-            or str((pr.get("base") or {}).get("repo", {}).get("id") or "") != binding["repositoryId"]
-            or pr.get("state") != "open"
-        ):
+        if not pr_matches_review_binding(pr, binding):
             continue
         key = f"{binding['repositoryId']}:{num}:{head}"
         already = key in st.get("publishedForPr", {})
         ok = independent_review_ok(binding)
         if already or ok is True:
-            # Re-enter after CI finishes: ready + exact leased merge.
+            # Re-enter after CI finishes: ready + strict protected merge.
             print(
                 f"[merge-path] pr#{num} already_published={already} ir_ok={ok}",
                 flush=True,
@@ -516,17 +522,18 @@ def main() -> int:
             if not dry:
                 try:
                     merge_evidence = mark_ready_and_merge(binding)
+                    merged = merge_evidence.get("merged") is True
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
                         "source": binding["sourceIssue"],
-                        "note": "ready_merge_pass",
+                        "note": "merged" if merged else "merge_pending",
                     }
                     actions.append(
                         {
                             "repository": repo, "pr": num,
                             "head": head,
                             "at": ts(),
-                            "result": "ready_merge_pass",
+                            "result": "merged" if merged else "merge_pending",
                             "alreadyPublished": already,
                             "mergeEvidence": merge_evidence,
                         }
@@ -560,12 +567,16 @@ def main() -> int:
             publish(binding, "accepted")
             try:
                 merge_evidence = mark_ready_and_merge(binding)
-                action["mergePath"] = "ready+exact-lease"
+                action["mergePath"] = "ready+strict-protected-merge"
                 action["mergeEvidence"] = merge_evidence
             except Exception as e:
                 had_failure = True
                 action["mergePathErrorClass"] = type(e).__name__
-            action["result"] = "published" if "mergeEvidence" in action else "review_published_merge_pending"
+            action["result"] = (
+                "published_and_merged"
+                if action.get("mergeEvidence", {}).get("merged") is True
+                else "review_published_merge_pending"
+            )
             st.setdefault("publishedForPr", {})[key] = action
             actions.append(action)
         except Exception as e:

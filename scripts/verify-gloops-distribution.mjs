@@ -2119,7 +2119,8 @@ for (const required of [
   'parser.add_argument("--source-run-id", required=True)',
   'parser.add_argument("--review-run-id", required=True)',
   'parser.add_argument("--merge-exact", action="store_true")',
-  '"--force-with-lease=refs/heads/{base_ref}:{expected_base_sha}"',
+  '"strict required-status-check enforcement is absent"',
+  '"merge_method": "squash"',
   '"mergePending"',
 ]) {
   if (!markPrReady.includes(required)) {
