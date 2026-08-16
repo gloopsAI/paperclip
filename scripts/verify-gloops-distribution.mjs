@@ -2119,8 +2119,9 @@ for (const required of [
   'parser.add_argument("--source-run-id", required=True)',
   'parser.add_argument("--review-run-id", required=True)',
   'parser.add_argument("--merge-exact", action="store_true")',
-  '"strict required-status-check enforcement is absent"',
-  '"merge_method": "squash"',
+  '"single-entry merge queue or exact App-B required check is absent"',
+  'enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head})',
+  '"mergeQueued"',
   '"mergePending"',
 ]) {
   if (!markPrReady.includes(required)) {

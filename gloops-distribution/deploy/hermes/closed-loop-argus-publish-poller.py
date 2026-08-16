@@ -249,8 +249,12 @@ def mark_ready_and_merge(binding: dict) -> dict:
         or evidence.get("pr") != binding["pullRequestNumber"]
     ):
         raise RuntimeError("protected merge helper evidence is not bound to the approved head/base")
-    if evidence.get("merged") is not True and evidence.get("mergePending") is not True:
-        raise RuntimeError("protected merge path is neither merged nor cleanly pending")
+    if (
+        evidence.get("merged") is not True
+        and evidence.get("mergePending") is not True
+        and evidence.get("mergeQueued") is not True
+    ):
+        raise RuntimeError("protected merge path is neither merged, queued, nor cleanly pending")
     return evidence
 
 
@@ -523,17 +527,18 @@ def main() -> int:
                 try:
                     merge_evidence = mark_ready_and_merge(binding)
                     merged = merge_evidence.get("merged") is True
+                    queued = merge_evidence.get("mergeQueued") is True
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
                         "source": binding["sourceIssue"],
-                        "note": "merged" if merged else "merge_pending",
+                        "note": "merged" if merged else ("merge_queued" if queued else "merge_pending"),
                     }
                     actions.append(
                         {
                             "repository": repo, "pr": num,
                             "head": head,
                             "at": ts(),
-                            "result": "merged" if merged else "merge_pending",
+                            "result": "merged" if merged else ("merge_queued" if queued else "merge_pending"),
                             "alreadyPublished": already,
                             "mergeEvidence": merge_evidence,
                         }
@@ -567,7 +572,7 @@ def main() -> int:
             publish(binding, "accepted")
             try:
                 merge_evidence = mark_ready_and_merge(binding)
-                action["mergePath"] = "ready+strict-protected-merge"
+                action["mergePath"] = "ready+single-entry-merge-queue"
                 action["mergeEvidence"] = merge_evidence
             except Exception as e:
                 had_failure = True
@@ -575,7 +580,11 @@ def main() -> int:
             action["result"] = (
                 "published_and_merged"
                 if action.get("mergeEvidence", {}).get("merged") is True
-                else "review_published_merge_pending"
+                else (
+                    "review_published_merge_queued"
+                    if action.get("mergeEvidence", {}).get("mergeQueued") is True
+                    else "review_published_merge_pending"
+                )
             )
             st.setdefault("publishedForPr", {})[key] = action
             actions.append(action)

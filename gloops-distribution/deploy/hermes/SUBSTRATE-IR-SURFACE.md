@@ -33,11 +33,13 @@ unbound-run, same-implementer, and reassigned-reviewer comments are ignored even
 when their text contains an approval marker. The poller accepts an exact-head approval
 (or the compatible `PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
 `gloops/stable`, then invokes the independent-review publisher and arms the
-normal ready/strict-protected-merge path. Its state is keyed by `PR:head`, so a new commit
+normal ready/single-entry-merge-queue path. Its state is keyed by `PR:head`, so a new commit
 requires a new exact-head approval.
 
 After SUCCESS publication, the same repository-scoped App-B installation marks
-the exact draft ready and arms or performs the normal protected squash merge.
+the exact draft ready and enqueues the normal protected squash merge. App B
+projects the authenticated independent-review receipt onto the queue integration
+SHA only when its queue base exactly matches the reviewed base SHA.
 The helper allowlists the four governed repository/base pairs and revalidates
 the full PR tuple before and after every mutation. It cannot bypass the publisher's
 trust-substrate denylist. A substrate PR still follows the Board Approve →

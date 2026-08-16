@@ -87,20 +87,31 @@ class MarkPrReadyTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "parent drifted"):
             MODULE.assert_exact_squash_commit({"parents": [{"sha": "c" * 40}]}, base)
 
-    def test_strict_status_checks_are_required_from_legacy_or_ruleset(self):
-        with mock.patch.object(MODULE, "gh_api", return_value={"strict": True}):
-            MODULE.assert_strict_required_checks("gloopsAI/paperclip", "gloops/stable", "token")
-        with mock.patch.object(MODULE, "gh_api", side_effect=[
-            RuntimeError("no legacy protection"),
-            [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": True}}],
-        ]):
-            MODULE.assert_strict_required_checks("gloopsAI/gloops-paperclip-plugin", "main", "token")
-        with mock.patch.object(MODULE, "gh_api", side_effect=[
-            {"strict": False},
-            [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": False}}],
-        ]):
-            with self.assertRaisesRegex(RuntimeError, "strict required-status-check enforcement is absent"):
-                MODULE.assert_strict_required_checks("gloopsAI/personal-delegate", "main", "token")
+    def test_merge_queue_policy_requires_single_entry_ir_and_no_app_b_bypass(self):
+        rules = [
+            {"ruleset_id": 10, "type": "merge_queue", "parameters": {
+                "grouping_strategy": "ALLGREEN", "merge_method": "SQUASH", "max_entries_to_merge": 1,
+            }},
+            {"ruleset_id": 10, "type": "required_status_checks", "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [{"context": "gloops / independent-review", "integration_id": 4071335}],
+            }},
+        ]
+        with mock.patch.object(MODULE, "gh_api", side_effect=[rules, {"bypass_actors": []}]):
+            self.assertEqual(MODULE.merge_queue_policy("gloopsAI/paperclip", "gloops/stable", "token"), {
+                "queueRulesetIds": [10],
+            })
+        bypass = {"bypass_actors": [{"actor_type": "Integration", "actor_id": 4071335}]}
+        with mock.patch.object(MODULE, "gh_api", side_effect=[rules, bypass]):
+            with self.assertRaisesRegex(RuntimeError, "may not bypass"):
+                MODULE.merge_queue_policy("gloopsAI/paperclip", "gloops/stable", "token")
+        wrong_checks = [{**rules[0]}, {**rules[1], "parameters": {
+            **rules[1]["parameters"],
+            "required_status_checks": [{"context": "gloops / independent-review", "integration_id": 1}],
+        }}]
+        with mock.patch.object(MODULE, "gh_api", return_value=wrong_checks):
+            with self.assertRaisesRegex(RuntimeError, "required check is absent"):
+                MODULE.merge_queue_policy("gloopsAI/paperclip", "gloops/stable", "token")
 
     def test_response_loss_reconciles_only_exact_reviewed_squash(self):
         base = "b" * 40
@@ -122,6 +133,50 @@ class MarkPrReadyTest(unittest.TestCase):
                     repo="gloopsAI/paperclip", pr=merged, expected_head=head,
                     expected_base="gloops/stable", expected_base_sha=base, token="token",
                 )
+
+    def test_queue_base_drift_dequeues_without_publishing_integration_review(self):
+        entry = {
+            "id": "queue-entry",
+            "state": "AWAITING_CHECKS",
+            "baseCommit": {"oid": "c" * 40},
+            "headCommit": {"oid": "d" * 40},
+            "pullRequest": {"id": "pr-node"},
+        }
+        with mock.patch.object(MODULE, "queue_entry", return_value=entry), mock.patch.object(
+            MODULE, "dequeue_entry"
+        ) as dequeue, mock.patch.object(MODULE, "ensure_integration_review_check") as publish:
+            with self.assertRaisesRegex(RuntimeError, "fresh review required"):
+                MODULE.enqueue_exact_merge_group(
+                    token="token", node_id="pr-node", repo="gloopsAI/paperclip",
+                    repository_id=1299155335, pull_request_number=305,
+                    expected_base_sha="b" * 40, expected_head_sha="a" * 40,
+                    source_run_id="source-run", review_run_id="review-run",
+                )
+        dequeue.assert_called_once_with("token", "queue-entry")
+        publish.assert_not_called()
+
+    def test_integration_review_check_binds_full_queue_tuple(self):
+        base = "b" * 40
+        head = "a" * 40
+        integration = "d" * 40
+        with mock.patch.object(MODULE, "gh_api", side_effect=[
+            {"check_runs": []},
+            {"head_sha": integration, "external_id": mock.ANY},
+        ]) as api:
+            external_id = MODULE.ensure_integration_review_check(
+                repo="gloopsAI/paperclip", repository_id=1299155335,
+                pull_request_number=305, source_run_id="source-run",
+                review_run_id="review-run", expected_base_sha=base,
+                expected_head_sha=head, integration_sha=integration,
+                queue_entry_id="queue-entry", token="token",
+            )
+        self.assertRegex(external_id, r"^gloops-ir-group-v1:[0-9a-f]{64}$")
+        published = api.call_args_list[1].args[3]
+        self.assertEqual(published["head_sha"], integration)
+        self.assertEqual(published["external_id"], external_id)
+        self.assertIn(base, published["output"]["text"])
+        self.assertIn(head, published["output"]["text"])
+        self.assertIn(integration, published["output"]["text"])
 
 
 if __name__ == "__main__":

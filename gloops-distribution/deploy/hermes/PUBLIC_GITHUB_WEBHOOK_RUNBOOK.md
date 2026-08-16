@@ -21,7 +21,7 @@ persists a minimal, root-separated `gloops.ci-merge-trigger.v1` file. A systemd
 path unit wakes the exact-head Argus publication/merge pass immediately. The
 two-minute timer remains only a bounded delivery backstop. The trigger contains
 no webhook body or credential and grants no merge authority: the poller still
-requires an Argus exact-head approval, and GitHub's strict protected merge path
+requires an Argus exact-head approval, and GitHub's single-entry merge queue
 remains the final merge gate.
 
 ## Authority and secrets
