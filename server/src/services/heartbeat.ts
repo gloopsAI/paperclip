@@ -5796,6 +5796,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       errorCode: input.errorCode,
       error: input.error,
     });
+    if (result.action === "failed_over" && result.nextReviewerAgentId) {
+      await enqueueWakeup(result.nextReviewerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "implementation_review_reviewer_failover",
+        idempotencyKey: `implementation-review-failover:${input.issueId}:${input.run.id}:${result.nextReviewerAgentId}`,
+        contextSnapshot: { issueId: input.issueId },
+        payload: {
+          issueId: input.issueId,
+          failedRunId: input.run.id,
+          failureCode: input.errorCode,
+        },
+      });
+      logger.warn({
+        companyId: input.run.companyId,
+        issueId: input.issueId,
+        runId: input.run.id,
+        nextReviewerAgentId: result.nextReviewerAgentId,
+      }, "implementation review failed over to alternate reviewer");
+      return result;
+    }
     if (result.action === "recorded" || result.action === "duplicate") {
       logger.warn(
         {

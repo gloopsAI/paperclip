@@ -7,6 +7,8 @@ import {
   buildReviewExecutionWorkspaceSettings,
   isImplementationReviewIssue,
   pickCompanyReviewerAgent,
+  pickCompanyReviewerCandidates,
+  remainingReviewerCandidateIds,
   pickCompanyReviewerAgentDetailed,
   planImplementationReviewHandoff,
 } from "./implementation-review-handoff.js";
@@ -218,6 +220,58 @@ describe("pickCompanyReviewerAgentDetailed", () => {
         { id: "dead2", name: "B", role: "qa", status: "pending_approval" },
       ]),
     ).toEqual({ source: "none" });
+  });
+
+  it("excludes the implementer and unhealthy reviewers while retaining a bounded alternate", () => {
+    expect(pickCompanyReviewerCandidates([
+      { id: WREN, name: "Wren", role: "qa", status: "idle" },
+      { id: ARGUS, name: "Argus", role: "qa", status: "error" },
+      { id: "00000000-0000-4000-8000-000000000003", name: "Review B", role: "reviewer", status: "idle" },
+      { id: "00000000-0000-4000-8000-000000000004", name: "Review C", role: "quality", status: "active" },
+    ], WREN)).toEqual([
+      { id: "00000000-0000-4000-8000-000000000003", source: "reviewer_role" },
+      { id: "00000000-0000-4000-8000-000000000004", source: "reviewer_role" },
+    ]);
+  });
+
+  it("uses the provider-diverse durable reserve without permitting self-review", () => {
+    expect(pickCompanyReviewerCandidates([
+      { id: "argus-error", name: "Argus", role: "qa", status: "error" },
+      { id: "atlas-luna", name: "Atlas", role: "cto", status: "idle" },
+      { id: "mason-terra", name: "Mason", role: "engineer", status: "idle" },
+    ], "atlas-luna")).toEqual([
+      { id: "mason-terra", source: "reviewer_role" },
+    ]);
+  });
+
+  it("never revisits a previously attempted reviewer", () => {
+    const provenance = {
+      kind: "implementation_exact_head_v2" as const,
+      parentIssueId: PARENT,
+      sourceRunId: "00000000-0000-4000-8000-000000000010",
+      implementerAgentId: WREN,
+      reviewerAgentId: ARGUS,
+      alternateReviewerAgentIds: [
+        "00000000-0000-4000-8000-000000000011",
+        "00000000-0000-4000-8000-000000000012",
+      ],
+      projectWorkspaceId: "00000000-0000-4000-8000-000000000013",
+      repositoryId: "1299155335",
+      repositoryFullName: "gloopsAI/paperclip",
+      baseRef: "gloops/stable",
+      exactBaseSha: BASE,
+      exactHeadSha: HEAD,
+      pullRequestNumber: 305,
+      pullRequestUrl: "https://github.com/gloopsAI/paperclip/pull/305",
+    };
+    expect(remainingReviewerCandidateIds(provenance, ARGUS)).toEqual([
+      "00000000-0000-4000-8000-000000000011",
+      "00000000-0000-4000-8000-000000000012",
+    ]);
+    expect(remainingReviewerCandidateIds(provenance, "00000000-0000-4000-8000-000000000011")).toEqual([
+      "00000000-0000-4000-8000-000000000012",
+    ]);
+    expect(remainingReviewerCandidateIds(provenance, "00000000-0000-4000-8000-000000000012")).toEqual([]);
   });
 });
 

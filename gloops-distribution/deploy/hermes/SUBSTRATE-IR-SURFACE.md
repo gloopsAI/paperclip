@@ -25,16 +25,21 @@ Enable timers `paperclip-substrate-ir-approval-poller.timer` and
 
 `closed-loop-argus-publish-poller.py` runs from the signed check-suite systemd
 path trigger, with the two-minute timer retained only as a bounded backstop. It reads only
-review-issue **comments** whose immutable `authorAgentId` is the source-controlled
-Argus identity and still matches the issue's designated assignee. Board-user,
-untrusted-agent, and reassigned-reviewer comments are ignored even when their
-text contains an approval marker. The poller accepts an Argus exact-head approval
+review-issue **comments** whose immutable run and author identity match the
+server-authenticated `implementation_exact_head_v2` provenance. That provenance
+binds repository id/name, PR, base ref/SHA, exact head, source run, implementer,
+primary reviewer, and bounded alternate reviewers. Board-user, untrusted-agent,
+unbound-run, same-implementer, and reassigned-reviewer comments are ignored even
+when their text contains an approval marker. The poller accepts an exact-head approval
 (or the compatible `PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
 `gloops/stable`, then invokes the independent-review publisher and arms the
 normal ready/auto-merge path. Its state is keyed by `PR:head`, so a new commit
 requires a new exact-head approval.
 
-It does not merge or deploy by itself, and it cannot bypass the publisher's
+After SUCCESS publication, the same repository-scoped App-B installation marks
+the exact draft ready and arms or performs the normal protected squash merge.
+The helper allowlists the four governed repository/base pairs and revalidates
+the full PR tuple before and after every mutation. It cannot bypass the publisher's
 trust-substrate denylist. A substrate PR still follows the Board Approve →
 scheduled substrate poller back half before independent review can be SUCCESS.
 

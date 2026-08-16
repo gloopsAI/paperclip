@@ -26,8 +26,12 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = os.environ.get("CLOSED_LOOP_REPO", "gloopsAI/paperclip")
-BASE_REF = os.environ.get("CLOSED_LOOP_BASE", "gloops/stable")
+GOVERNED_REPOSITORIES = {
+    "gloopsAI/paperclip": {"repositoryId": "1299155335", "baseRef": "gloops/stable"},
+    "gloopsAI/personal-delegate": {"repositoryId": "1308141485", "baseRef": "main"},
+    "gloopsAI/autonomy-strategy": {"repositoryId": "1279656482", "baseRef": "main"},
+    "gloopsAI/gloops-paperclip-plugin": {"repositoryId": "1297008772", "baseRef": "main"},
+}
 API = os.environ.get("PAPERCLIP_API", "http://127.0.0.1:3100/api").rstrip("/")
 COMPANY = os.environ.get(
     "PAPERCLIP_COMPANY_ID", "89ed0964-d918-4fcc-b830-5be49d2d4089"
@@ -172,8 +176,18 @@ def save_state(st: dict) -> None:
         os.close(parent_fd)
 
 
-def publish(pr: int, verdict: str = "accepted") -> None:
-    cmd = [sys.executable, str(PUBLISHER), "--pr", str(pr), "--verdict", verdict]
+def publish(binding: dict, verdict: str = "accepted") -> None:
+    cmd = [
+        sys.executable, str(PUBLISHER),
+        "--repo", binding["repositoryFullName"],
+        "--base", binding["baseRef"],
+        "--base-sha", binding["exactBaseSha"],
+        "--pr", str(binding["pullRequestNumber"]),
+        "--head", binding["exactHeadSha"],
+        "--review-issue-id", binding["reviewIssueId"],
+        "--review-run-id", binding["reviewRunId"],
+        "--verdict", verdict,
+    ]
     print(f"[publish] {' '.join(cmd)}", flush=True)
     if os.geteuid() == 0:
         subprocess.check_call(cmd)
@@ -181,7 +195,7 @@ def publish(pr: int, verdict: str = "accepted") -> None:
         subprocess.check_call(["sudo", "-n", *cmd])
 
 
-def mark_ready_and_automerge(pr: int, expected_head: str) -> dict:
+def mark_ready_and_automerge(binding: dict) -> dict:
     """Surface drafts cannot auto-merge; mark ready via App install token.
 
     Host `gh` as zach-hermes lacks MarkPullRequestReadyForReview. Root helper
@@ -200,13 +214,15 @@ def mark_ready_and_automerge(pr: int, expected_head: str) -> dict:
         sys.executable,
         str(helper),
         "--pr",
-        str(pr),
+        str(binding["pullRequestNumber"]),
         "--repo",
-        REPO,
+        binding["repositoryFullName"],
         "--expected-head",
-        expected_head,
+        binding["exactHeadSha"],
         "--base",
-        BASE_REF,
+        binding["baseRef"],
+        "--base-sha",
+        binding["exactBaseSha"],
         "--auto-merge",
         "--merge-if-clean",
     ]
@@ -221,7 +237,13 @@ def mark_ready_and_automerge(pr: int, expected_head: str) -> dict:
         raise RuntimeError("protected merge helper returned invalid evidence") from error
     if evidence.get("ok") is not True:
         raise RuntimeError("protected merge helper did not report success")
-    if evidence.get("headSha") != expected_head or evidence.get("baseRef") != BASE_REF:
+    if (
+        evidence.get("headSha") != binding["exactHeadSha"]
+        or evidence.get("baseRef") != binding["baseRef"]
+        or evidence.get("baseSha") != binding["exactBaseSha"]
+        or evidence.get("repo") != binding["repositoryFullName"]
+        or evidence.get("pr") != binding["pullRequestNumber"]
+    ):
         raise RuntimeError("protected merge helper evidence is not bound to the approved head/base")
     if evidence.get("merged") is not True and evidence.get("autoMergeArmed") is not True:
         raise RuntimeError("protected merge path is neither merged nor armed")
@@ -305,6 +327,79 @@ def issue_comments(issue_id: str) -> list[dict]:
     return []
 
 
+def issue_detail(issue_id: str) -> dict:
+    for path in (f"/issues/{issue_id}", f"/companies/{COMPANY}/issues/{issue_id}"):
+        try:
+            value = api("GET", path)
+            if isinstance(value, dict):
+                return value.get("issue") if isinstance(value.get("issue"), dict) else value
+        except Exception:
+            continue
+    return {}
+
+
+def review_provenance(issue: dict) -> dict | None:
+    settings = issue.get("executionWorkspaceSettings")
+    if not isinstance(settings, dict):
+        return None
+    value = settings.get("reviewProvenance")
+    if not isinstance(value, dict) or value.get("kind") != "implementation_exact_head_v2":
+        return None
+    repository = value.get("repositoryFullName")
+    governed = GOVERNED_REPOSITORIES.get(repository)
+    required = {
+        "parentIssueId", "sourceRunId", "implementerAgentId", "reviewerAgentId",
+        "projectWorkspaceId", "repositoryId", "repositoryFullName", "baseRef",
+        "exactBaseSha", "exactHeadSha", "pullRequestNumber", "pullRequestUrl",
+    }
+    expected_keys = required | {"kind", "alternateReviewerAgentIds"}
+    if set(value) != expected_keys or not governed:
+        return None
+    if (
+        value.get("repositoryId") != governed["repositoryId"]
+        or value.get("baseRef") != governed["baseRef"]
+        or value.get("implementerAgentId") == value.get("reviewerAgentId")
+        or not isinstance(value.get("pullRequestNumber"), int)
+        or value.get("pullRequestNumber", 0) <= 0
+        or value.get("pullRequestUrl") != f"https://github.com/{repository}/pull/{value['pullRequestNumber']}"
+        or not SHA_RE.fullmatch(str(value.get("exactBaseSha", "")))
+        or not SHA_RE.fullmatch(str(value.get("exactHeadSha", "")))
+    ):
+        return None
+    alternates = value.get("alternateReviewerAgentIds")
+    if not isinstance(alternates, list) or any(not isinstance(item, str) for item in alternates):
+        return None
+    return value
+
+
+def authenticated_reviewer_run(issue: dict, comment: dict, provenance: dict) -> bool:
+    author_agent_id = comment.get("authorAgentId")
+    allowed_reviewers = {provenance["reviewerAgentId"], *provenance["alternateReviewerAgentIds"]}
+    run_id = comment.get("createdByRunId")
+    if (
+        not isinstance(author_agent_id, str)
+        or author_agent_id not in allowed_reviewers
+        or issue.get("assigneeAgentId") != author_agent_id
+        or comment.get("authorUserId") not in (None, "")
+        or not isinstance(run_id, str)
+    ):
+        return False
+    try:
+        run = api("GET", f"/heartbeat-runs/{run_id}")
+    except Exception:
+        return False
+    context = run.get("contextSnapshot") if isinstance(run, dict) else None
+    return bool(
+        isinstance(context, dict)
+        and run.get("companyId") == COMPANY
+        and run.get("agentId") == author_agent_id
+        and run.get("status") == "succeeded"
+        and context.get("issueId") == issue.get("id")
+        and (run.get("providerInvocationAttempted") is True
+             or (isinstance(run.get("resultJson"), dict) and run["resultJson"].get("providerInvocationAttempted") is True))
+    )
+
+
 def trusted_approval_comment(issue: dict, comment: dict) -> bool:
     author_agent_id = comment.get("authorAgentId")
     return (
@@ -315,63 +410,67 @@ def trusted_approval_comment(issue: dict, comment: dict) -> bool:
     )
 
 
-def open_surface_prs() -> list[dict]:
-    prs = gh_json(f"/repos/{REPO}/pulls?state=open&base={BASE_REF}&per_page=30")
+def open_surface_prs(repo: str, base_ref: str) -> list[dict]:
+    prs = gh_json(f"/repos/{repo}/pulls?state=open&base={base_ref}&per_page=30")
     return prs if isinstance(prs, list) else []
 
 
-def independent_review_ok(pr_number: int) -> bool | None:
-    """True if check success, False if missing/failed, None if unknown."""
-    # Prefer check-runs on the head
+def independent_review_ok(binding: dict) -> bool | None:
+    """Require the exact App-B publication for this authenticated review run."""
     try:
-        # Use PR view via gh
-        out = subprocess.check_output(
-            [
-                "gh",
-                "pr",
-                "view",
-                str(pr_number),
-                "--repo",
-                REPO,
-                "--json",
-                "statusCheckRollup",
-            ],
-            text=True,
-            timeout=45,
+        external_id = (
+            f"gloops-ir-v2:{binding['repositoryId']}:{binding['pullRequestNumber']}:"
+            f"{binding['exactHeadSha']}:{binding['sourceRunId']}:{binding['reviewRunId']}"
         )
-        data = json.loads(out)
-        for c in data.get("statusCheckRollup") or []:
-            name = (c.get("name") or "").lower()
-            if "independent-review" in name:
-                conc = (c.get("conclusion") or "").upper()
-                state = (c.get("status") or "").upper()
-                if conc == "SUCCESS" or state == "SUCCESS":
-                    return True
-                return False
+        data = gh_json(
+            f"/repos/{binding['repositoryFullName']}/commits/{binding['exactHeadSha']}"
+            "/check-runs?check_name=gloops%20%2F%20independent-review&per_page=100"
+        )
+        checks = data.get("check_runs") if isinstance(data, dict) else None
+        if not isinstance(checks, list): return False
+        for check in checks:
+            if (
+                check.get("name") == "gloops / independent-review"
+                and int((check.get("app") or {}).get("id") or 0) == 4071335
+                and check.get("head_sha") == binding["exactHeadSha"]
+                and check.get("external_id") == external_id
+            ):
+                return check.get("status") == "completed" and check.get("conclusion") == "success"
         return False
     except Exception as e:
-        print(f"[warn] check rollup pr#{pr_number}: {e}", flush=True)
+        print(f"[warn] exact check read pr#{binding['pullRequestNumber']}: {e}", flush=True)
         return None
 
 
-def collect_approved_heads() -> dict[str, str]:
-    """headSha -> source issue identifier.
+def collect_approved_bindings() -> list[dict]:
+    """Return server-bound repository/PR/base/head review receipts.
 
     Only **comments** count for bare APPROVE (issue descriptions include the
     template line "Verdict: APPROVE or CHANGES_REQUESTED" which is not a verdict).
     Same-line APPROVE_RE is also only applied to comments.
     """
-    heads: dict[str, str] = {}
-    for issue in list_review_issues():
+    bindings: dict[tuple, dict] = {}
+    for summary in list_review_issues():
+        issue = issue_detail(summary["id"])
+        provenance = review_provenance(issue)
+        if not provenance:
+            continue
         ident = issue.get("identifier") or issue.get("id", "")[:8]
         for c in issue_comments(issue["id"]):
-            if not trusted_approval_comment(issue, c):
+            if not authenticated_reviewer_run(issue, c, provenance):
                 continue
             blob = c.get("body") or c.get("content") or ""
             for h in extract_approved_heads(blob):
-                heads[h] = str(ident)
-                print(f"[approve] {ident} head={h[:12]}…", flush=True)
-    return heads
+                if h != provenance["exactHeadSha"]:
+                    continue
+                binding = {**provenance, "sourceIssue": str(ident), "reviewIssueId": issue["id"], "reviewRunId": c["createdByRunId"]}
+                key = (
+                    binding["repositoryId"], binding["repositoryFullName"],
+                    binding["pullRequestNumber"], binding["baseRef"], binding["exactBaseSha"], binding["exactHeadSha"],
+                )
+                bindings[key] = binding
+                print(f"[approve] {ident} {binding['repositoryFullName']}#{binding['pullRequestNumber']} head={h[:12]}…", flush=True)
+    return list(bindings.values())
 
 
 def main() -> int:
@@ -380,21 +479,31 @@ def main() -> int:
     st = load_state()
     actions = []
     had_failure = False
-    approved = collect_approved_heads()
-    prs = open_surface_prs()
-    print(f"[poll] open_prs={len(prs)} approved_heads={len(approved)}", flush=True)
+    approved = collect_approved_bindings()
+    print(f"[poll] approved_bindings={len(approved)}", flush=True)
 
-    for pr in prs:
-        num = pr["number"]
-        head = (pr.get("head") or {}).get("sha", "").lower()
+    for binding in approved:
+        num = binding["pullRequestNumber"]
+        head = binding["exactHeadSha"]
+        repo = binding["repositoryFullName"]
+        try:
+            pr = gh_json(f"/repos/{repo}/pulls/{num}")
+        except Exception as error:
+            had_failure = True
+            actions.append({"repository": repo, "pr": num, "head": head, "result": "pr_read_failed", "errorClass": type(error).__name__})
+            continue
         title = pr.get("title") or ""
-        if not head:
+        if (
+            (pr.get("head") or {}).get("sha", "").lower() != head
+            or (pr.get("base") or {}).get("ref") != binding["baseRef"]
+            or (pr.get("base") or {}).get("sha", "").lower() != binding["exactBaseSha"]
+            or str((pr.get("base") or {}).get("repo", {}).get("id") or "") != binding["repositoryId"]
+            or pr.get("state") != "open"
+        ):
             continue
-        if head not in approved:
-            continue
-        key = f"{num}:{head}"
+        key = f"{binding['repositoryId']}:{num}:{head}"
         already = key in st.get("publishedForPr", {})
-        ok = independent_review_ok(num)
+        ok = independent_review_ok(binding)
         if already or ok is True:
             # Re-enter after CI finishes: ready + merge-if-clean (not only first IR stamp).
             print(
@@ -403,15 +512,15 @@ def main() -> int:
             )
             if not dry:
                 try:
-                    merge_evidence = mark_ready_and_automerge(num, head)
+                    merge_evidence = mark_ready_and_automerge(binding)
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
-                        "source": approved.get(head) or "ir-green",
+                        "source": binding["sourceIssue"],
                         "note": "ready_merge_pass",
                     }
                     actions.append(
                         {
-                            "pr": num,
+                            "repository": repo, "pr": num,
                             "head": head,
                             "at": ts(),
                             "result": "ready_merge_pass",
@@ -433,19 +542,21 @@ def main() -> int:
         action = {
             "pr": num,
             "head": head,
-            "sourceIssue": approved[head],
+            "repository": repo,
+            "sourceIssue": binding["sourceIssue"],
+            "reviewRunId": binding["reviewRunId"],
             "title": title[:80],
             "at": ts(),
             "dryRun": dry,
         }
-        print(f"[action] publish pr#{num} head={head[:12]} from {approved[head]}", flush=True)
+        print(f"[action] publish {repo}#{num} head={head[:12]} from {binding['sourceIssue']}", flush=True)
         if dry:
             actions.append(action)
             continue
         try:
-            publish(num, "accepted")
+            publish(binding, "accepted")
             try:
-                merge_evidence = mark_ready_and_automerge(num, head)
+                merge_evidence = mark_ready_and_automerge(binding)
                 action["mergePath"] = "ready+auto"
                 action["mergeEvidence"] = merge_evidence
             except Exception as e:

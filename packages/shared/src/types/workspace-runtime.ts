@@ -170,11 +170,28 @@ export interface ProjectExecutionWorkspacePolicy {
   authorizationPolicy?: TrustAuthorizationPolicy | null;
 }
 
-export interface IssueReviewProvenance {
-  kind: "implementation_exact_head";
-  parentIssueId: string;
-  sourceRunId: string;
-}
+export type IssueReviewProvenance =
+  | {
+      kind: "implementation_exact_head";
+      parentIssueId: string;
+      sourceRunId: string;
+    }
+  | {
+      kind: "implementation_exact_head_v2";
+      parentIssueId: string;
+      sourceRunId: string;
+      implementerAgentId: string;
+      reviewerAgentId: string;
+      alternateReviewerAgentIds: string[];
+      projectWorkspaceId: string;
+      repositoryId: string;
+      repositoryFullName: string;
+      baseRef: string;
+      exactBaseSha: string;
+      exactHeadSha: string;
+      pullRequestNumber: number;
+      pullRequestUrl: string;
+    };
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;

@@ -319,6 +319,31 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
     await expect(service.getForSettlement(identity.heartbeatRunId)).resolves.toMatchObject({
       disposition: "reconciled_success",
     });
+    await expect(service.getAuthenticatedImplementationReviewBinding({
+      heartbeatRunId: identity.heartbeatRunId,
+      companyId: identity.companyId,
+      issueId: identity.issueId,
+      projectWorkspaceId: identity.projectWorkspaceId,
+      exactBaseSha: receipt.expectedOldOid,
+      exactHeadSha: receipt.expectedNewOid,
+    })).resolves.toEqual({
+      repositoryId: receipt.repositoryId,
+      repositoryFullName: receipt.repositoryFullName,
+      baseRef: receipt.defaultBranch,
+      exactBaseSha: receipt.expectedOldOid,
+      exactHeadSha: receipt.expectedNewOid,
+      pullRequestNumber: 7,
+      pullRequestUrl: "https://github.com/gloopsAI/gloops-paperclip-plugin/pull/7",
+      projectWorkspaceId: identity.projectWorkspaceId,
+    });
+    await expect(service.getAuthenticatedImplementationReviewBinding({
+      heartbeatRunId: identity.heartbeatRunId,
+      companyId: identity.companyId,
+      issueId: identity.issueId,
+      projectWorkspaceId: identity.projectWorkspaceId,
+      exactBaseSha: "f".repeat(40),
+      exactHeadSha: receipt.expectedNewOid,
+    })).resolves.toBeNull();
   });
 
   it("accepts pr:none draft evidence and rejects malformed draft PR fields", async () => {

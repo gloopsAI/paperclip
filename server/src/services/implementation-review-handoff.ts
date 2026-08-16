@@ -6,12 +6,13 @@
  * (Argus) with the exact head SHA. Does not open PRs (broker-owned) and does
  * not weaken verified_change.
  */
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { issueReviewProvenanceSchema, type IssueReviewProvenance } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "./issues.js";
+import { repositoryMutationReceiptService } from "./repository-mutation-receipts.js";
 
 const SHA_RE = /^[0-9a-f]{40}$/i;
 export const REVIEW_HANDOFF_MARKER = "maw-implementation-review";
@@ -171,7 +172,8 @@ export function planImplementationReviewHandoff(input: {
   const openStatuses = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
   const canonicalReviewChildren = input.existingChildren.filter((child) => {
     const provenance = parseImplementationReviewProvenance(child.executionWorkspaceSettings);
-    return provenance?.kind === "implementation_exact_head"
+    return (provenance?.kind === "implementation_exact_head"
+      || provenance?.kind === "implementation_exact_head_v2")
       && provenance.parentIssueId === input.parent.id;
   });
   const duplicate = canonicalReviewChildren.some((child) => {
@@ -228,6 +230,39 @@ export type ReviewerPick =
   | { id: string; source: Exclude<ReviewerPickSource, "none"> }
   | { source: "none" };
 
+const HEALTHY_REVIEWER_STATUSES = new Set(["active", "idle", "running"]);
+// Source-controlled durable review pool. Argus and Atlas are Luna/high;
+// Mason is the Terra/medium provider-diverse reserve. The current implementer
+// is always excluded, so a multi-role reserve can never self-review.
+const DURABLE_REVIEWER_NAMES = new Set(["argus", "atlas", "mason"]);
+
+export function pickCompanyReviewerCandidates(
+  companyAgents: Array<{ id: string; name?: string | null; role?: string | null; status?: string | null }>,
+  implementerAgentId?: string | null,
+): Array<{ id: string; source: Exclude<ReviewerPickSource, "none"> }> {
+  const qualified = companyAgents.filter((agent) => {
+    if (agent.id === implementerAgentId) return false;
+    if (!HEALTHY_REVIEWER_STATUSES.has(String(agent.status ?? "").trim().toLowerCase())) return false;
+    const role = String(agent.role ?? "").trim().toLowerCase();
+    const name = String(agent.name ?? "").trim().toLowerCase();
+    return DURABLE_REVIEWER_NAMES.has(name)
+      || role === "qa"
+      || role === "reviewer"
+      || role === "quality";
+  });
+  return qualified
+    .map((agent) => ({
+      id: agent.id,
+      source: String(agent.name ?? "").trim().toLowerCase() === "argus"
+        ? "argus_name" as const
+        : "reviewer_role" as const,
+    }))
+    .sort((left, right) => {
+      if (left.source !== right.source) return left.source === "argus_name" ? -1 : 1;
+      return left.id.localeCompare(right.id);
+    });
+}
+
 export function pickCompanyReviewerAgent(
   companyAgents: Array<{ id: string; name?: string | null; role?: string | null; status?: string | null }>,
 ): string | null {
@@ -242,22 +277,14 @@ export function pickCompanyReviewerAgent(
  *
  * Tier order:
  *  1. agent named "argus"
- *  2. agent with reviewer-style role (qa / reviewer / quality)
+ *  2. source-controlled durable review reserve or reviewer-style role
  * No generic live-agent fallback exists: only a designated reviewer can issue
  * a merge-authorizing verdict.
  */
 export function pickCompanyReviewerAgentDetailed(
   companyAgents: Array<{ id: string; name?: string | null; role?: string | null; status?: string | null }>,
 ): ReviewerPick {
-  const live = companyAgents.filter((a) => a.status !== "terminated" && a.status !== "pending_approval");
-  const byName = live.find((a) => String(a.name ?? "").trim().toLowerCase() === "argus");
-  if (byName) return { id: byName.id, source: "argus_name" };
-  const byRole = live.find((a) => {
-    const role = String(a.role ?? "").trim().toLowerCase();
-    return role === "qa" || role === "reviewer" || role === "quality";
-  });
-  if (byRole) return { id: byRole.id, source: "reviewer_role" };
-  return { source: "none" };
+  return pickCompanyReviewerCandidates(companyAgents)[0] ?? { source: "none" };
 }
 
 export type ImplementationReviewHandoffResult =
@@ -275,6 +302,23 @@ export type ReviewTerminalFailureInput = {
 };
 
 export const REVIEW_TERMINAL_FAILURE_MARKER = "REVIEW_TERMINAL_V1";
+export const REVIEW_FAILOVER_MARKER = "REVIEW_FAILOVER_V1";
+
+function isReviewerAvailabilityFailure(input: ReviewTerminalFailureInput): boolean {
+  return /(?:provider_quota|provider_unavailable|workforce_capacity|subscription_route|timed_out|timeout)/i.test(
+    `${input.errorCode} ${input.error ?? input.errorMessage ?? ""}`,
+  );
+}
+
+export function remainingReviewerCandidateIds(
+  provenance: Extract<IssueReviewProvenance, { kind: "implementation_exact_head_v2" }>,
+  currentReviewerAgentId: string | null,
+): string[] {
+  const ordered = [provenance.reviewerAgentId, ...provenance.alternateReviewerAgentIds];
+  const currentIndex = currentReviewerAgentId ? ordered.indexOf(currentReviewerAgentId) : -1;
+  if (currentIndex < 0) return [];
+  return ordered.slice(currentIndex + 1).filter((id) => id !== provenance.implementerAgentId);
+}
 
 export function parseImplementationReviewProvenance(
   executionWorkspaceSettings: unknown,
@@ -348,7 +392,11 @@ export async function persistImplementationReviewTerminalFailure(
     companyId: string;
     issueId: string;
   } & ReviewTerminalFailureInput,
-): Promise<{ action: "recorded" | "duplicate" | "not_review_issue" | "stale_attempt"; parentBlocked: boolean }> {
+): Promise<{
+  action: "recorded" | "duplicate" | "not_review_issue" | "stale_attempt" | "failed_over";
+  parentBlocked: boolean;
+  nextReviewerAgentId?: string;
+}> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`
       select id from issues
@@ -362,6 +410,7 @@ export async function persistImplementationReviewTerminalFailure(
         description: issues.description,
         status: issues.status,
         parentId: issues.parentId,
+        assigneeAgentId: issues.assigneeAgentId,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
@@ -409,6 +458,54 @@ export async function persistImplementationReviewTerminalFailure(
       || (issue.executionRunId !== input.runId && issue.checkoutRunId !== input.runId)
     ) {
       return { action: "stale_attempt" as const, parentBlocked: false };
+    }
+
+    if (provenance?.kind === "implementation_exact_head_v2" && isReviewerAvailabilityFailure(input)) {
+      const candidateIds = remainingReviewerCandidateIds(provenance, issue.assigneeAgentId);
+      const healthyCandidates = candidateIds.length > 0
+        ? await tx
+            .select({ id: agents.id })
+            .from(agents)
+            .where(and(
+              eq(agents.companyId, input.companyId),
+              inArray(agents.id, candidateIds),
+              inArray(agents.status, ["active", "idle", "running"]),
+            ))
+        : [];
+      const healthyIds = new Set(healthyCandidates.map((candidate) => candidate.id));
+      const nextReviewerAgentId = candidateIds.find((id) => healthyIds.has(id)) ?? null;
+      if (nextReviewerAgentId) {
+        const updated = await tx
+          .update(issues)
+          .set({
+            assigneeAgentId: nextReviewerAgentId,
+            status: "todo",
+            executionRunId: null,
+            checkoutRunId: null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, input.companyId),
+            eq(issues.assigneeAgentId, issue.assigneeAgentId!),
+            or(eq(issues.executionRunId, input.runId), eq(issues.checkoutRunId, input.runId)),
+          ))
+          .returning({ id: issues.id });
+        if (updated.length === 1) {
+          await tx.insert(issueComments).values({
+            companyId: input.companyId,
+            issueId: issue.id,
+            authorType: "system",
+            createdByRunId: input.runId,
+            body: `${REVIEW_FAILOVER_MARKER}: reviewer availability failed before a verdict; reassigned to the next independently designated reviewer.`,
+          });
+          return {
+            action: "failed_over" as const,
+            parentBlocked: false,
+            nextReviewerAgentId,
+          };
+        }
+      }
     }
 
     const body = buildReviewTerminalFailureComment({
@@ -564,6 +661,7 @@ export async function ensureImplementationReviewHandoff(
         workMode: issues.workMode,
         title: issues.title,
         companyId: issues.companyId,
+        projectWorkspaceId: issues.projectWorkspaceId,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
       })
@@ -589,6 +687,39 @@ export async function ensureImplementationReviewHandoff(
     if (!authenticSourceRun) {
       return { ok: false, error: "source_run_not_authentic" };
     }
+    if (!parent.projectWorkspaceId || !isExactHeadSha(input.exactBaseSha) || !isExactHeadSha(input.exactHeadSha)) {
+      await persistImplementationReviewHandoffFailure(db, {
+        companyId: input.companyId,
+        parentIssueId: input.parentIssueId,
+        runId: input.sourceRunId,
+        errorCode: "review_handoff_missing_authenticated_repository_binding",
+        error: "Exact-head review requires the source issue workspace and exact base/head",
+        exactBaseSha: input.exactBaseSha,
+        exactHeadSha: input.exactHeadSha,
+      });
+      return { ok: false, error: "missing_authenticated_repository_binding" };
+    }
+    const reviewBinding = await repositoryMutationReceiptService(db)
+      .getAuthenticatedImplementationReviewBinding({
+        heartbeatRunId: authenticSourceRun.id,
+        companyId: input.companyId,
+        issueId: parent.id,
+        projectWorkspaceId: parent.projectWorkspaceId,
+        exactBaseSha: input.exactBaseSha.trim().toLowerCase(),
+        exactHeadSha: input.exactHeadSha.trim().toLowerCase(),
+      });
+    if (!reviewBinding) {
+      await persistImplementationReviewHandoffFailure(db, {
+        companyId: input.companyId,
+        parentIssueId: input.parentIssueId,
+        runId: input.sourceRunId,
+        errorCode: "review_handoff_pr_binding_not_authenticated",
+        error: "No terminal broker receipt binds this run, workspace, repository, PR, base, and head",
+        exactBaseSha: input.exactBaseSha,
+        exactHeadSha: input.exactHeadSha,
+      });
+      return { ok: false, error: "review_pr_binding_not_authenticated" };
+    }
 
     const companyAgents = await db
       .select({
@@ -600,7 +731,10 @@ export async function ensureImplementationReviewHandoff(
       .from(agents)
       .where(eq(agents.companyId, input.companyId));
 
-    const reviewerPick = pickCompanyReviewerAgentDetailed(companyAgents);
+    const reviewerCandidates = pickCompanyReviewerCandidates(companyAgents, input.implementerAgentId);
+    const reviewerPick: ReviewerPick = reviewerCandidates.length === 0
+      ? { source: "none" }
+      : reviewerCandidates[0]!;
     const reviewerAgentId = reviewerPick.source === "none" ? null : reviewerPick.id;
 
     const children = await db
@@ -627,7 +761,11 @@ export async function ensureImplementationReviewHandoff(
       implementerAgentId: input.implementerAgentId,
       reviewerAgentId,
       existingChildren: children,
-      draftPr: input.draftPr,
+      draftPr: {
+        disposition: "created",
+        prNumber: reviewBinding.pullRequestNumber,
+        prUrl: reviewBinding.pullRequestUrl,
+      },
     });
 
     if (plan.action === "skip") {
@@ -657,15 +795,27 @@ export async function ensureImplementationReviewHandoff(
       priority: "high",
       workMode: "standard",
       projectId: plan.projectId,
+      projectWorkspaceId: reviewBinding.projectWorkspaceId,
       parentId: plan.parentId,
       assigneeAgentId: plan.assigneeAgentId,
       // Declared workspace head MUST be exact head for reviews (GLO-1940 / GLO-1941 / C2).
       // Never fall back to project pin / origin/gloops/stable here.
       executionWorkspaceSettings: buildReviewExecutionWorkspaceSettings(plan.exactHeadSha),
       serverReviewProvenance: {
-        kind: "implementation_exact_head",
+        kind: "implementation_exact_head_v2",
         parentIssueId: plan.parentId,
         sourceRunId: authenticSourceRun.id,
+        implementerAgentId: input.implementerAgentId,
+        reviewerAgentId: plan.assigneeAgentId,
+        alternateReviewerAgentIds: reviewerCandidates.slice(1, 5).map((candidate) => candidate.id),
+        projectWorkspaceId: reviewBinding.projectWorkspaceId,
+        repositoryId: reviewBinding.repositoryId,
+        repositoryFullName: reviewBinding.repositoryFullName,
+        baseRef: reviewBinding.baseRef,
+        exactBaseSha: reviewBinding.exactBaseSha,
+        exactHeadSha: reviewBinding.exactHeadSha,
+        pullRequestNumber: reviewBinding.pullRequestNumber,
+        pullRequestUrl: reviewBinding.pullRequestUrl,
       },
     });
 

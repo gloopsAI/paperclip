@@ -141,11 +141,47 @@ const executionWorkspaceStrategySchema = z
   .strict()
   .superRefine(validateExecutionWorkspaceBranchTemplate);
 
-export const issueReviewProvenanceSchema = z.object({
+const legacyIssueReviewProvenanceSchema = z.object({
   kind: z.literal("implementation_exact_head"),
   parentIssueId: z.string().uuid(),
   sourceRunId: z.string().uuid(),
 }).strict();
+
+const exactHeadReviewProvenanceSchema = z.object({
+  kind: z.literal("implementation_exact_head_v2"),
+  parentIssueId: z.string().uuid(),
+  sourceRunId: z.string().uuid(),
+  implementerAgentId: z.string().uuid(),
+  reviewerAgentId: z.string().uuid(),
+  alternateReviewerAgentIds: z.array(z.string().uuid()).max(4),
+  projectWorkspaceId: z.string().uuid(),
+  repositoryId: z.string().regex(/^[1-9][0-9]*$/),
+  repositoryFullName: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  baseRef: z.string().min(1),
+  exactBaseSha: z.string().regex(/^[0-9a-f]{40}$/),
+  exactHeadSha: z.string().regex(/^[0-9a-f]{40}$/),
+  pullRequestNumber: z.number().int().positive(),
+  pullRequestUrl: z.string().url(),
+}).strict().superRefine((value, ctx) => {
+  if (value.implementerAgentId === value.reviewerAgentId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "reviewer must differ from implementer" });
+  }
+  if (
+    value.alternateReviewerAgentIds.includes(value.implementerAgentId)
+    || value.alternateReviewerAgentIds.includes(value.reviewerAgentId)
+    || new Set(value.alternateReviewerAgentIds).size !== value.alternateReviewerAgentIds.length
+  ) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "alternate reviewers must be unique and independent" });
+  }
+  if (value.pullRequestUrl !== `https://github.com/${value.repositoryFullName}/pull/${value.pullRequestNumber}`) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "pull request URL must match the repository and number" });
+  }
+});
+
+export const issueReviewProvenanceSchema = z.union([
+  legacyIssueReviewProvenanceSchema,
+  exactHeadReviewProvenanceSchema,
+]);
 
 export type IssueReviewProvenance = z.infer<typeof issueReviewProvenanceSchema>;
 

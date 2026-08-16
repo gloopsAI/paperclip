@@ -2104,6 +2104,7 @@ for (const required of [
 for (const required of [
   '"--expected-head"',
   '"--base"',
+  '"--base-sha"',
   '"merge_path_failed"',
   '"review_published_merge_pending"',
   "protected merge helper evidence is not bound to the approved head/base",
@@ -2114,7 +2115,8 @@ for (const required of [
 }
 for (const required of [
   'parser.add_argument("--expected-head", required=True)',
-  "assert_exact_pr(final, expected_head, args.base)",
+  'parser.add_argument("--base-sha", required=True)',
+  "assert_exact_pr(final, expected_head, args.base, expected_base_sha)",
   '"sha": expected_head',
   '"autoMergeArmed"',
 ]) {
