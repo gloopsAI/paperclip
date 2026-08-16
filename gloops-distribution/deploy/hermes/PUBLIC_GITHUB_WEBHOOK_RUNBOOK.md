@@ -21,7 +21,7 @@ persists a minimal, root-separated `gloops.ci-merge-trigger.v1` file. A systemd
 path unit wakes the exact-head Argus publication/merge pass immediately. The
 two-minute timer remains only a bounded delivery backstop. The trigger contains
 no webhook body or credential and grants no merge authority: the poller still
-requires an Argus exact-head approval, and GitHub branch protection/auto-merge
+requires an Argus exact-head approval, and GitHub's single-entry merge queue
 remains the final merge gate.
 
 ## Authority and secrets
@@ -94,8 +94,19 @@ All of the following are required:
 6. No other public path bypasses the existing Basic Auth boundary.
 7. The accepted delivery updates the private trigger file and starts one
    `paperclip-closed-loop-publish-poller.service` pass; a helper failure is
-   receipted as `merge_path_failed` or `review_published_merge_pending`, never
-   as a ready/merge success.
+   receipted as `merge_path_failed`, `review_published_merge_pending`, or
+   `review_published_queue_terminal_suppressed`, never as a ready/merge success.
+
+The queue conductor admits at most one queue entry for a reviewed
+repository/PR/base/head candidate; source/review-run provenance is stored but
+cannot create a second candidate slot. If GitHub removes a proven entry after
+CI failure, the durable attempt record suppresses re-enqueueing; the next pass
+reports `queue_terminal_suppressed` and requires a new reviewed head. A crash
+after reservation but before an entry is proven reports
+`queue_attempt_reconciliation_required`, never falsely claims an ended queue,
+and later timer passes suppress further mutation. Disable both the path and timer units for an operational kill switch;
+the helper also refuses queue mutation unless its source-controlled systemd
+unit sets `PAPERCLIP_CI_MERGE_ENABLED=1`.
 
 A hand-crafted signed request proves cryptographic plumbing but does not replace
 the genuine GitHub delivery requirement.

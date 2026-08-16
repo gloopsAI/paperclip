@@ -88,6 +88,17 @@ export type RepositoryMutationTerminalReceipt =
     draftPullRequest?: RepositoryMutationDraftPullRequest;
   };
 
+export type AuthenticatedImplementationReviewBinding = {
+  repositoryId: string;
+  repositoryFullName: string;
+  baseRef: string;
+  exactBaseSha: string;
+  exactHeadSha: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  projectWorkspaceId: string;
+};
+
 export class RepositoryMutationReceiptConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -322,6 +333,58 @@ function preparedProjection(input: RepositoryMutationPreparedReceipt | Repositor
 
 export function repositoryMutationReceiptService(db: Db) {
   return {
+    getAuthenticatedImplementationReviewBinding: async (input: {
+      heartbeatRunId: string;
+      companyId: string;
+      issueId: string;
+      projectWorkspaceId: string;
+      exactBaseSha: string;
+      exactHeadSha: string;
+    }): Promise<AuthenticatedImplementationReviewBinding | null> => {
+      if (!OID_PATTERN.test(input.exactBaseSha) || !OID_PATTERN.test(input.exactHeadSha)) {
+        return null;
+      }
+      const row = await db
+        .select()
+        .from(repositoryMutationReceipts)
+        .where(and(
+          eq(repositoryMutationReceipts.heartbeatRunId, input.heartbeatRunId),
+          eq(repositoryMutationReceipts.companyId, input.companyId),
+          eq(repositoryMutationReceipts.issueId, input.issueId),
+          eq(repositoryMutationReceipts.projectWorkspaceId, input.projectWorkspaceId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!row || row.state !== "reconciled_success") return null;
+
+      const receipt = row.receipt as RepositoryMutationTerminalReceipt;
+      try {
+        validateTerminal(receipt);
+      } catch {
+        return null;
+      }
+      const draftPullRequest = receipt.draftPullRequest;
+      if (
+        draftPullRequest?.disposition !== "created"
+        || receipt.expectedOldOid !== input.exactBaseSha.toLowerCase()
+        || receipt.remoteOldOid !== input.exactBaseSha.toLowerCase()
+        || receipt.expectedNewOid !== input.exactHeadSha.toLowerCase()
+        || receipt.remoteNewOid !== input.exactHeadSha.toLowerCase()
+        || receipt.projectWorkspaceId !== input.projectWorkspaceId
+      ) {
+        return null;
+      }
+      return {
+        repositoryId: receipt.repositoryId,
+        repositoryFullName: receipt.repositoryFullName,
+        baseRef: receipt.defaultBranch,
+        exactBaseSha: receipt.remoteOldOid,
+        exactHeadSha: receipt.remoteNewOid,
+        pullRequestNumber: draftPullRequest.prNumber,
+        pullRequestUrl: draftPullRequest.prUrl,
+        projectWorkspaceId: receipt.projectWorkspaceId,
+      };
+    },
+
     getContext: async (heartbeatRunId: string) => {
       const run = await db
         .select()

@@ -37,7 +37,14 @@ def main():
         if payload.get("kind")!="trust_substrate_ir":
             continue
         pr=int(payload.get("pr") or 0)
-        if pr<=0: continue
+        repo=payload.get("repository")
+        base_ref=payload.get("baseRef")
+        base_sha=payload.get("baseSha")
+        head=payload.get("headSha")
+        review_issue_id=payload.get("reviewIssueId")
+        review_run_id=payload.get("reviewRunId")
+        if pr<=0 or not all(isinstance(value,str) and value for value in (repo,base_ref,base_sha,head,review_issue_id,review_run_id)):
+            continue
         status=a.get("status")
         aid=a.get("id")
         marker=STATE_DIR/f"approval-{aid}.handled"
@@ -48,7 +55,7 @@ def main():
             continue
         if status=="approved":
             print(f"approved substrate clearance pr={pr} id={aid} -> force publish")
-            r=subprocess.run([sys.executable, str(PUBLISHER), "--pr", str(pr), "--verdict", "accepted", "--force-after-action-required"], capture_output=True, text=True)
+            r=subprocess.run([sys.executable, str(PUBLISHER), "--repo", repo, "--base", base_ref, "--base-sha", base_sha, "--pr", str(pr), "--head", head, "--review-issue-id", review_issue_id, "--review-run-id", review_run_id, "--verdict", "accepted", "--force-after-action-required"], capture_output=True, text=True)
             print(r.stdout); print(r.stderr, file=sys.stderr)
             if r.returncode==0:
                 marker.write_text(json.dumps({"handledAt":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"status":"approved","pr":pr})+"\n")

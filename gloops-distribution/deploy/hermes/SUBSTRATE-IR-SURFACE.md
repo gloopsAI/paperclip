@@ -25,16 +25,31 @@ Enable timers `paperclip-substrate-ir-approval-poller.timer` and
 
 `closed-loop-argus-publish-poller.py` runs from the signed check-suite systemd
 path trigger, with the two-minute timer retained only as a bounded backstop. It reads only
-review-issue **comments** whose immutable `authorAgentId` is the source-controlled
-Argus identity and still matches the issue's designated assignee. Board-user,
-untrusted-agent, and reassigned-reviewer comments are ignored even when their
-text contains an approval marker. The poller accepts an Argus exact-head approval
+review-issue **comments** whose immutable run and author identity match the
+server-authenticated `implementation_exact_head_v2` provenance. That provenance
+binds repository id/name, PR, base ref/SHA, exact head, source run, implementer,
+primary reviewer, and bounded alternate reviewers. Board-user, untrusted-agent,
+unbound-run, same-implementer, and reassigned-reviewer comments are ignored even
+when their text contains an approval marker. The poller accepts an exact-head approval
 (or the compatible `PAPERCLIP_SWARM_V1` accepted marker), matches that SHA to an open PR on
 `gloops/stable`, then invokes the independent-review publisher and arms the
-normal ready/auto-merge path. Its state is keyed by `PR:head`, so a new commit
+normal ready/single-entry-merge-queue path. Its state is keyed by `PR:head`, so a new commit
 requires a new exact-head approval.
 
-It does not merge or deploy by itself, and it cannot bypass the publisher's
+After SUCCESS publication, the same repository-scoped App-B installation marks
+the exact draft ready and enqueues the normal protected squash merge. App B
+projects the authenticated independent-review receipt onto the queue integration
+SHA only when its queue base exactly matches the reviewed base SHA.
+The queue token has only `merge_queues:write` plus repository read authority;
+check publication uses a separate `checks:write` token. A durable attempt slot
+permits one queue entry for the exact repository/PR/base/head candidate and
+terminally suppresses automatic re-enqueue after GitHub removes it. A reserved
+but unproved entry is receipted as reconciliation-required instead of ended.
+The systemd path and timer are the
+operational kill switch, and the helper also requires the explicit
+`PAPERCLIP_CI_MERGE_ENABLED=1` unit setting before queue mutation.
+The helper allowlists the four governed repository/base pairs and revalidates
+the full PR tuple before and after every mutation. It cannot bypass the publisher's
 trust-substrate denylist. A substrate PR still follows the Board Approve →
 scheduled substrate poller back half before independent review can be SUCCESS.
 
@@ -42,4 +57,4 @@ scheduled substrate poller back half before independent review can be SUCCESS.
 Paperclip **#225** exercised the full approval arm on 2026-07-30: its exact head was
 held with `action_required`, a `trust_substrate_ir` board approval was minted and
 approved, and the scheduled poller published independent-review SUCCESS before
-auto-merge. The canary did not authorize a product deploy.
+merge. The canary did not authorize a product deploy.
