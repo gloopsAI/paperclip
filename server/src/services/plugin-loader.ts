@@ -25,7 +25,8 @@
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -57,6 +58,180 @@ export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugi
 export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "sandbox-providers");
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
+const CONTENT_ADDRESSED_PLUGIN_PROVENANCE_SUFFIX = ".provenance.json";
+export const CONTENT_ADDRESSED_PLUGIN_ROOT = "/opt/paperclip/plugins/cas";
+const SHA40 = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+export function contentAddressedPluginWorkerIsolation(packageRoot: string) {
+  if (!process.allowedNodeEnvironmentFlags.has("--permission")) {
+    throw new Error("Content-addressed plugin execution requires Node permission isolation");
+  }
+  return {
+    env: { NODE_PATH: "" },
+    execArgv: ["--permission", `--allow-fs-read=${packageRoot}`],
+  };
+}
+
+type TrustedPluginRuntimeIdentity = {
+  installationId: string;
+  pluginKey: string;
+  version: string;
+  manifestSha256: string;
+  workerEntrypointSha256: string;
+  packageTreeSha256: string;
+  sourceRepository: string;
+  sourceHeadSha: string;
+  deploymentReceiptDigest: string;
+  jobDeclarationCount: number;
+  jobKeys: string[];
+  jobDeclarationsSha256: string;
+};
+
+function stableJson(value: unknown): string {
+  if (value === undefined) return "null";
+  if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function canonicalRepository(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized) ? normalized.toLowerCase() : null;
+}
+
+async function assertTrustedDirectoryChain(inputPath: string, ownerUid: number, trustedRoot?: string): Promise<void> {
+  let current = await realpath(inputPath);
+  const stop = trustedRoot ? await realpath(trustedRoot) : null;
+  for (;;) {
+    const info = await lstat(current);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== ownerUid || (info.mode & 0o022) !== 0) {
+      throw new Error(`Untrusted content-addressed plugin directory: ${current}`);
+    }
+    if (stop && current === stop) return;
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
+export async function computeContentAddressedPluginTreeSha256(
+  packageRoot: string,
+  ownerUid = 0,
+  trustedRoot?: string,
+): Promise<string> {
+  const canonicalRoot = await realpath(packageRoot);
+  await assertTrustedDirectoryChain(canonicalRoot, ownerUid, trustedRoot);
+  const hasher = createHash("sha256");
+  const walk = async (directory: string, prefix: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = path.join(directory, entry.name);
+      const info = await lstat(absolutePath);
+      if (info.isSymbolicLink() || info.uid !== ownerUid || (info.mode & 0o022) !== 0) {
+        throw new Error(`Untrusted content-addressed plugin entry: ${relativePath}`);
+      }
+      if (info.isDirectory()) {
+        hasher.update(`d\0${relativePath}\0${info.mode & 0o777}\0`);
+        await walk(absolutePath, relativePath);
+      } else if (info.isFile()) {
+        const bytes = await readFile(absolutePath);
+        const after = await lstat(absolutePath);
+        if (!after.isFile() || after.isSymbolicLink() || after.dev !== info.dev || after.ino !== info.ino
+          || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) {
+          throw new Error(`Content-addressed plugin entry changed while hashing: ${relativePath}`);
+        }
+        hasher.update(`f\0${relativePath}\0${info.mode & 0o777}\0${bytes.length}\0`);
+        hasher.update(bytes);
+        hasher.update("\0");
+      } else {
+        throw new Error(`Unsupported content-addressed plugin entry: ${relativePath}`);
+      }
+    }
+  };
+  await walk(canonicalRoot, "");
+  return hasher.digest("hex");
+}
+
+export async function attestContentAddressedPluginPackage(input: {
+  packageRoot: string;
+  workerEntrypoint: string;
+  installationId: string;
+  pluginKey: string;
+  manifest: PaperclipPluginManifestV1;
+  ownerUid?: number;
+  trustedRoot?: string;
+}): Promise<TrustedPluginRuntimeIdentity | null> {
+  try {
+    const ownerUid = input.ownerUid ?? 0;
+    const canonicalRoot = await realpath(input.packageRoot);
+    if (path.resolve(input.packageRoot) !== canonicalRoot) return null;
+    if (input.trustedRoot === undefined
+      && path.dirname(canonicalRoot) !== CONTENT_ADDRESSED_PLUGIN_ROOT) return null;
+    const canonicalWorker = await realpath(input.workerEntrypoint);
+    if (path.resolve(input.workerEntrypoint) !== canonicalWorker) return null;
+    if (!canonicalWorker.startsWith(`${canonicalRoot}${path.sep}`)) return null;
+    const packageTreeSha256 = await computeContentAddressedPluginTreeSha256(
+      canonicalRoot,
+      ownerUid,
+      input.trustedRoot,
+    );
+    if (path.basename(canonicalRoot) !== packageTreeSha256) return null;
+    if (input.trustedRoot === undefined) {
+      let ancestor = path.dirname(canonicalRoot);
+      for (;;) {
+        if (existsSync(path.join(ancestor, "node_modules"))) return null;
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) break;
+        ancestor = parent;
+      }
+    }
+    const provenancePath = `${canonicalRoot}${CONTENT_ADDRESSED_PLUGIN_PROVENANCE_SUFFIX}`;
+    const provenanceInfo = await lstat(provenancePath);
+    if (!provenanceInfo.isFile() || provenanceInfo.isSymbolicLink() || provenanceInfo.uid !== ownerUid
+      || (provenanceInfo.mode & 0o022) !== 0) return null;
+    const provenance = JSON.parse(await readFile(provenancePath, "utf8")) as Record<string, unknown>;
+    const receipt = provenance.deploymentReceipt;
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) return null;
+    const body = receipt as Record<string, unknown>;
+    const sourceRepository = canonicalRepository(body.sourceRepository);
+    const sourceHeadSha = typeof body.sourceHeadSha === "string" ? body.sourceHeadSha.toLowerCase() : "";
+    const receiptTreeSha = typeof body.packageTreeSha256 === "string" ? body.packageTreeSha256.toLowerCase() : "";
+    const deploymentReceiptDigest = typeof provenance.deploymentReceiptDigest === "string"
+      ? provenance.deploymentReceiptDigest.toLowerCase()
+      : "";
+    const observedReceiptDigest = createHash("sha256").update(stableJson(body)).digest("hex");
+    if (body.schemaVersion !== "paperclip-plugin-deployment-receipt@1" || !sourceRepository
+      || !SHA40.test(sourceHeadSha) || receiptTreeSha !== packageTreeSha256
+      || !SHA256.test(deploymentReceiptDigest) || deploymentReceiptDigest !== observedReceiptDigest) return null;
+    const manifestSha256 = createHash("sha256").update(stableJson(input.manifest)).digest("hex");
+    const workerEntrypointSha256 = createHash("sha256").update(await readFile(canonicalWorker)).digest("hex");
+    const jobs = [...(input.manifest.jobs ?? [])].sort((left, right) => left.jobKey.localeCompare(right.jobKey));
+    return {
+      installationId: input.installationId,
+      pluginKey: input.pluginKey,
+      version: input.manifest.version,
+      manifestSha256,
+      workerEntrypointSha256,
+      packageTreeSha256,
+      sourceRepository,
+      sourceHeadSha,
+      deploymentReceiptDigest,
+      jobDeclarationCount: jobs.length,
+      jobKeys: jobs.map((job) => job.jobKey),
+      jobDeclarationsSha256: createHash("sha256").update(stableJson(jobs)).digest("hex"),
+    };
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -314,7 +489,11 @@ export interface PluginRuntimeServices {
    * events.emit, config.get). Each plugin gets its own set of handlers
    * scoped to its capabilities and plugin ID.
    */
-  buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => WorkerToHostHandlers;
+  buildHostHandlers: (
+    pluginId: string,
+    manifest: PaperclipPluginManifestV1,
+    runtimeIdentity: TrustedPluginRuntimeIdentity | null,
+  ) => WorkerToHostHandlers;
   /**
    * Host instance information passed to the worker during initialization.
    * Includes the instance ID and host version.
@@ -2130,7 +2309,14 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 3. Build host handlers for this plugin
       // ------------------------------------------------------------------
-      const hostHandlers = buildHostHandlers(pluginId, manifest);
+      const runtimeIdentity = await attestContentAddressedPluginPackage({
+        packageRoot,
+        workerEntrypoint,
+        installationId: pluginId,
+        pluginKey,
+        manifest,
+      });
+      const hostHandlers = buildHostHandlers(pluginId, manifest, runtimeIdentity);
 
       // ------------------------------------------------------------------
       // 4. Retrieve plugin config (if any)
@@ -2149,6 +2335,9 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 5. Spawn worker process
       // ------------------------------------------------------------------
+      const runtimeIsolation = runtimeIdentity
+        ? contentAddressedPluginWorkerIsolation(packageRoot)
+        : null;
       const workerOptions: WorkerStartOptions = {
         entrypointPath: workerEntrypoint,
         manifest,
@@ -2158,14 +2347,19 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        env: {
+          ...buildPluginWorkerEnv({ manifest, instanceInfo }),
+          ...(runtimeIsolation?.env ?? {}),
+        },
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (!runtimeIdentity && activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      } else if (runtimeIsolation) {
+        workerOptions.execArgv = runtimeIsolation.execArgv;
       }
 
       const jobDeclarations = manifest.jobs ?? [];

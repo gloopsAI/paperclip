@@ -1239,6 +1239,29 @@ export interface PluginIssueRunSummary {
    * issue, and actor identities before use.
    */
   resultSummary?: string | null;
+  /**
+   * Bounded terminal change evidence derived from Paperclip's server-owned
+   * GitHub external-object reconciliation. This is present only when the
+   * issue is terminal, this run remains its current run, the execution-truth
+   * receipt is internally valid, and a linked merged pull request matches
+   * both the reviewed head and merge commit.
+   */
+  verifiedTerminalChange?: {
+    status: "operational";
+    receiptDigest: string;
+    exactHeadSha: string;
+    candidate: {
+      originKind: string;
+      originId: string;
+      createdByRuntime: PluginRuntimeIdentity;
+    };
+    pullRequest: {
+      provider: "github";
+      externalId: string;
+      headSha: string;
+      mergeCommitSha: string;
+    };
+  } | null;
   usage?: {
     inputTokens: number;
     cachedInputTokens: number;
@@ -1304,9 +1327,29 @@ export interface PluginIssueInvocationBlockSummary {
   reason: string;
 }
 
+export interface PluginRuntimeIdentity {
+  installationId: string;
+  pluginKey: string;
+  version: string;
+  manifestSha256: string;
+  workerEntrypointSha256: string;
+  packageTreeSha256: string;
+  sourceRepository: string;
+  sourceHeadSha: string;
+  deploymentReceiptDigest: string;
+  jobDeclarationCount: number;
+  jobKeys: string[];
+  jobDeclarationsSha256: string;
+}
+
 export interface PluginIssueOrchestrationSummary {
   issueId: string;
   companyId: string;
+  /**
+   * Host-observed identity of the exact plugin worker instance serving this
+   * request. The worker cannot supply or override these values.
+   */
+  runtimeIdentity: PluginRuntimeIdentity | null;
   subtreeIssueIds: string[];
   relations: Record<string, PluginIssueRelationSummary>;
   approvals: PluginIssueApprovalSummary[];

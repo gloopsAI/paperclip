@@ -5,13 +5,19 @@ import {
   documents,
   externalObjectMentions,
   externalObjects,
+  executionWorkspaces,
   heartbeatRuns,
   issueComments,
   issueDocuments,
   issues,
   plugins,
+  activityLog,
 } from "@paperclipai/db";
-import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  readBoundExecutionContext,
+} from "@paperclipai/adapter-utils/execution-envelope";
 import {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalUrl,
@@ -43,6 +49,70 @@ export interface ExternalObjectSourceContext {
   sourceRecordId: string | null;
   documentKey: string | null;
   propertyKey: string | null;
+}
+
+function canonicalGitHubRepository(repoUrl: string | null): string | null {
+  const raw = repoUrl?.trim();
+  if (!raw) return null;
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) return raw.toLowerCase();
+  const ssh = raw.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (ssh) return `${ssh[1]}/${ssh[2]}`.toLowerCase();
+  try {
+    const parsed = new URL(raw);
+    if (parsed.hostname.toLowerCase() !== "github.com") return null;
+    const segments = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (segments.length !== 2) return null;
+    return `${segments[0]}/${segments[1]!.replace(/\.git$/i, "")}`.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function trustedPluginRuntimeIdentity(value: unknown) {
+  const candidate = record(value);
+  if (!candidate) return null;
+  const string = (key: string) => typeof candidate[key] === "string" ? candidate[key] as string : null;
+  const sha256 = (key: string) => string(key)?.match(/^[0-9a-f]{64}$/)?.[0] ?? null;
+  const sourceHeadSha = string("sourceHeadSha")?.match(/^[0-9a-f]{40}$/)?.[0] ?? null;
+  const sourceRepository = canonicalGitHubRepository(string("sourceRepository"));
+  const storedVersion = string("version");
+  const version = storedVersion === "***REDACTED***"
+    ? null
+    : storedVersion?.startsWith("semver:")
+      ? storedVersion.slice("semver:".length) || null
+      : storedVersion;
+  const jobDeclarationCount = candidate.jobDeclarationCount;
+  const jobKeys = Array.isArray(candidate.jobKeys)
+    && candidate.jobKeys.every((entry) => typeof entry === "string" && entry.length > 0)
+    && new Set(candidate.jobKeys).size === candidate.jobKeys.length
+    ? [...candidate.jobKeys].sort() as string[]
+    : null;
+  if (!string("installationId") || !string("pluginKey") || !version || !sourceRepository
+    || !sourceHeadSha || !sha256("manifestSha256") || !sha256("workerEntrypointSha256")
+    || !sha256("packageTreeSha256") || !sha256("deploymentReceiptDigest")
+    || !sha256("jobDeclarationsSha256") || typeof jobDeclarationCount !== "number"
+    || !Number.isSafeInteger(jobDeclarationCount) || jobDeclarationCount < 0
+    || !jobKeys || jobKeys.length !== jobDeclarationCount) return null;
+  return {
+    installationId: string("installationId")!,
+    pluginKey: string("pluginKey")!,
+    version,
+    manifestSha256: sha256("manifestSha256")!,
+    workerEntrypointSha256: sha256("workerEntrypointSha256")!,
+    packageTreeSha256: sha256("packageTreeSha256")!,
+    sourceRepository,
+    sourceHeadSha,
+    deploymentReceiptDigest: sha256("deploymentReceiptDigest")!,
+    jobDeclarationCount,
+    jobKeys,
+    jobDeclarationsSha256: sha256("jobDeclarationsSha256")!,
+  };
 }
 
 export interface ExternalObjectDetection {
@@ -799,6 +869,12 @@ export function externalObjectService(
       ? object.data as Record<string, unknown>
       : {};
     const headSha = typeof data.headSha === "string" ? data.headSha : null;
+    const mergeCommitSha = typeof data.mergeCommitSha === "string" ? data.mergeCommitSha : null;
+    const owner = typeof data.owner === "string" ? data.owner : null;
+    const repo = typeof data.repo === "string" ? data.repo : null;
+    const pullRequestNumber = typeof data.number === "number" && Number.isInteger(data.number)
+      ? data.number
+      : null;
     const mentionedIssues = await db
       .select({
         id: issues.id,
@@ -808,6 +884,9 @@ export function externalObjectService(
         workMode: issues.workMode,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        originKind: issues.originKind,
+        originId: issues.originId,
         completedAt: issues.completedAt,
       })
       .from(externalObjectMentions)
@@ -847,12 +926,32 @@ export function externalObjectService(
           provider: "github",
           merged: true,
           headSha,
+          mergeCommitSha,
         },
       });
       if (decision.kind !== "project") continue;
 
       const changed = await db.transaction(async (tx) => {
-        const [currentIssue, currentRun] = await Promise.all([
+        await tx.execute(
+          sql`select id from issues where id = ${issue.id} and company_id = ${object.companyId} for update`,
+        );
+        const lockedIssue = await tx.select({
+          executionWorkspaceId: issues.executionWorkspaceId,
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, object.companyId)))
+          .then((rows) => rows[0] ?? null);
+        const lockedRunId = lockedIssue?.executionRunId ?? lockedIssue?.checkoutRunId;
+        if (!lockedIssue?.executionWorkspaceId || !lockedRunId) return false;
+        await tx.execute(
+          sql`select id from execution_workspaces where id = ${lockedIssue.executionWorkspaceId} and company_id = ${object.companyId} for update`,
+        );
+        await tx.execute(
+          sql`select id from heartbeat_runs where id = ${lockedRunId} and company_id = ${object.companyId} for update`,
+        );
+        const [currentIssue, currentRun, creationActivities] = await Promise.all([
           tx.select({
             id: issues.id,
             identifier: issues.identifier,
@@ -861,9 +960,17 @@ export function externalObjectService(
             workMode: issues.workMode,
             executionRunId: issues.executionRunId,
             checkoutRunId: issues.checkoutRunId,
+            executionWorkspaceId: issues.executionWorkspaceId,
+            executionWorkspaceRepoUrl: executionWorkspaces.repoUrl,
+            originKind: issues.originKind,
+            originId: issues.originId,
             completedAt: issues.completedAt,
           })
             .from(issues)
+            .leftJoin(executionWorkspaces, and(
+              eq(executionWorkspaces.id, issues.executionWorkspaceId),
+              eq(executionWorkspaces.companyId, object.companyId),
+            ))
             .where(and(
               eq(issues.id, issue.id),
               eq(issues.companyId, object.companyId),
@@ -880,8 +987,48 @@ export function externalObjectService(
               eq(heartbeatRuns.companyId, object.companyId),
             ))
             .then((rows) => rows[0] ?? null),
+          tx.select({
+            actorId: activityLog.actorId,
+            details: activityLog.details,
+          })
+            .from(activityLog)
+            .where(and(
+              eq(activityLog.companyId, object.companyId),
+              eq(activityLog.actorType, "plugin"),
+              eq(activityLog.action, "issue.created"),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, issue.id),
+            ))
+            .limit(2),
         ]);
         if (!currentIssue || currentIssue.status !== "in_review" || !currentRun) return false;
+        const expectedRepository = canonicalGitHubRepository(currentIssue.executionWorkspaceRepoUrl);
+        const observedRepository = owner && repo ? `${owner}/${repo}`.toLowerCase() : null;
+        if (!expectedRepository || observedRepository !== expectedRepository) return false;
+        const runContext = record(currentRun.contextSnapshot) ?? {};
+        const boundExecution = readBoundExecutionContext(runContext[PAPERCLIP_EXECUTION_CONTEXT_KEY]);
+        const packet = record(boundExecution?.packet);
+        const packetScope = record(packet?.scope);
+        const packetRepo = record(packet?.repoRef);
+        const packetAuthority = record(packet?.authority);
+        if (!boundExecution || packetScope?.issueId !== currentIssue.id
+          || packetAuthority?.runId !== currentRun.id
+          || packetRepo?.workspaceId !== currentIssue.executionWorkspaceId
+          || canonicalGitHubRepository(typeof packetRepo?.repoUrl === "string" ? packetRepo.repoUrl : null)
+            !== expectedRepository
+          || runContext.executionWorkspaceId !== currentIssue.executionWorkspaceId) return false;
+        if (creationActivities.length !== 1 || typeof currentIssue.originKind !== "string"
+          || !currentIssue.originKind.startsWith("plugin:") || typeof currentIssue.originId !== "string"
+          || currentIssue.originId.length === 0) return false;
+        const creationDetails = record(creationActivities[0]!.details);
+        const createdByRuntime = trustedPluginRuntimeIdentity(creationDetails?.createdByRuntime);
+        if (!creationDetails || !createdByRuntime
+          || creationActivities[0]!.actorId !== createdByRuntime.installationId
+          || creationDetails.pluginKey !== createdByRuntime.pluginKey
+          || creationDetails.originKind !== currentIssue.originKind
+          || creationDetails.originId !== currentIssue.originId
+          || (currentIssue.originKind !== `plugin:${createdByRuntime.pluginKey}`
+            && !currentIssue.originKind.startsWith(`plugin:${createdByRuntime.pluginKey}:`))) return false;
         const currentDecision = decideMergedPullRequestIssueReconciliation({
           completionProfile: resolveIssueExecutionCompletionProfile({
             executionPolicy: currentIssue.executionPolicy,
@@ -893,14 +1040,10 @@ export function externalObjectService(
             provider: "github",
             merged: true,
             headSha,
+            mergeCommitSha,
           },
         });
         if (currentDecision.kind !== "project") return false;
-        const runContext = currentRun.contextSnapshot &&
-          typeof currentRun.contextSnapshot === "object" &&
-          !Array.isArray(currentRun.contextSnapshot)
-          ? currentRun.contextSnapshot as Record<string, unknown>
-          : {};
         await tx.update(heartbeatRuns)
           .set({
             contextSnapshot: {
@@ -923,30 +1066,50 @@ export function externalObjectService(
             eq(issues.id, issue.id),
             eq(issues.companyId, object.companyId),
             eq(issues.status, "in_review"),
+            eq(issues.executionWorkspaceId, currentIssue.executionWorkspaceId!),
+            currentIssue.executionRunId === null
+              ? isNull(issues.executionRunId)
+              : eq(issues.executionRunId, currentIssue.executionRunId),
+            currentIssue.checkoutRunId === null
+              ? isNull(issues.checkoutRunId)
+              : eq(issues.checkoutRunId, currentIssue.checkoutRunId),
+            eq(issues.originKind, currentIssue.originKind!),
+            eq(issues.originId, currentIssue.originId!),
           ))
           .returning({ id: issues.id });
-        return updated.length === 1;
+        if (updated.length !== 1) return false;
+        await tx.insert(activityLog).values({
+          companyId: object.companyId,
+          actorType: "system",
+          actorId: "external-object-resolver",
+          agentId: null,
+          runId: currentRun.id,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            identifier: currentIssue.identifier,
+            status: "done",
+            source: "github_merged_exact_head",
+            externalObjectId: object.id,
+            externalId: object.externalId,
+            repository: owner && repo ? `${owner}/${repo}` : null,
+            authorizedRepository: expectedRepository,
+            pullRequestNumber,
+            headSha,
+            mergeCommitSha,
+            terminalReceiptDigest: currentDecision.receipt.digest,
+            candidateOriginKind: currentIssue.originKind,
+            candidateOriginId: currentIssue.originId,
+            candidateCreatedByRuntime: createdByRuntime,
+            executionWorkspaceId: currentIssue.executionWorkspaceId,
+            _previous: { status: "in_review" },
+          },
+        });
+        return true;
       });
       if (!changed) continue;
       projected += 1;
-      await logActivity(db, {
-        companyId: object.companyId,
-        actorType: "system",
-        actorId: "external-object-resolver",
-        agentId: null,
-        runId: run.id,
-        action: "issue.updated",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          status: "done",
-          source: "github_merged_exact_head",
-          externalObjectId: object.id,
-          headSha,
-          _previous: { status: "in_review" },
-        },
-      });
     }
     return { projected };
   }
@@ -971,7 +1134,12 @@ export function externalObjectService(
       return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
     }
 
-    const pluginResult = await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
+    // GitHub merge state is promotion authority. Reserve that provider namespace
+    // to the built-in authenticated resolver; plugins may enrich other providers
+    // but cannot self-certify a GitHub merge/head tuple.
+    const pluginResult = object.providerKey === "github"
+      ? null
+      : await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
     const resolver = pluginResult ? null : resolverRegistry.find(object);
     if (!pluginResult && !resolver) {
       const [updated] = await db

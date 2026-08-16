@@ -6,6 +6,8 @@ import {
   budgetIncidents,
   costEvents,
   companies as companiesTable,
+  externalObjectMentions,
+  externalObjects,
   heartbeatRuns,
   invites,
   issues as issuesTable,
@@ -519,7 +521,24 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    runtimeIdentity?: {
+      installationId: string;
+      pluginKey: string;
+      version: string;
+      manifestSha256: string;
+      workerEntrypointSha256: string;
+      packageTreeSha256: string;
+      sourceRepository: string;
+      sourceHeadSha: string;
+      deploymentReceiptDigest: string;
+      jobDeclarationCount: number;
+      jobKeys: string[];
+      jobDeclarationsSha256: string;
+    } | null;
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -654,6 +673,86 @@ export function buildHostServices(
         .join(",")}}`;
     }
     return JSON.stringify(value) ?? "null";
+  };
+
+  const SHA = /^[0-9a-f]{40}$/;
+  const SHA256 = /^[0-9a-f]{64}$/;
+  const RECEIPT_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+  const activityRuntimeVersion = (value: string | null) => {
+    if (!value || value === "***REDACTED***") return null;
+    return value.startsWith("semver:") ? value.slice("semver:".length) || null : value;
+  };
+
+  const parsePluginRuntimeIdentity = (value: unknown) => {
+    if (!isRecord(value)) return null;
+    const text = (key: string) => typeof value[key] === "string" ? value[key] as string : null;
+    const digest = (key: string) => text(key)?.match(SHA256)?.[0] ?? null;
+    const jobDeclarationCount = value.jobDeclarationCount;
+    const jobKeys = Array.isArray(value.jobKeys)
+      && value.jobKeys.every((entry) => typeof entry === "string" && entry.length > 0)
+      && new Set(value.jobKeys).size === value.jobKeys.length
+      ? [...value.jobKeys].sort() as string[]
+      : null;
+    const version = activityRuntimeVersion(text("version"));
+    if (!text("installationId") || !text("pluginKey") || !version
+      || !text("sourceRepository")?.match(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+      || !text("sourceHeadSha")?.match(SHA) || !digest("manifestSha256")
+      || !digest("workerEntrypointSha256") || !digest("packageTreeSha256")
+      || !digest("deploymentReceiptDigest") || !digest("jobDeclarationsSha256")
+      || typeof jobDeclarationCount !== "number" || !Number.isSafeInteger(jobDeclarationCount)
+      || jobDeclarationCount < 0 || !jobKeys || jobKeys.length !== jobDeclarationCount) return null;
+    return {
+      installationId: text("installationId")!,
+      pluginKey: text("pluginKey")!,
+      version,
+      manifestSha256: digest("manifestSha256")!,
+      workerEntrypointSha256: digest("workerEntrypointSha256")!,
+      packageTreeSha256: digest("packageTreeSha256")!,
+      sourceRepository: text("sourceRepository")!.toLowerCase(),
+      sourceHeadSha: text("sourceHeadSha")!.toLowerCase(),
+      deploymentReceiptDigest: digest("deploymentReceiptDigest")!,
+      jobDeclarationCount,
+      jobKeys,
+      jobDeclarationsSha256: digest("jobDeclarationsSha256")!,
+    };
+  };
+
+  const parseVerifiedTerminalReceipt = (contextSnapshot: unknown) => {
+    if (!isRecord(contextSnapshot)) return null;
+    const receipt = contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY];
+    if (!isRecord(receipt) || receipt.status !== "operational"
+      || receipt.schemaVersion !== "gloops.execution-truth.operator-receipt.v2") return null;
+    const work = isRecord(receipt.work) ? receipt.work : null;
+    const workId = typeof work?.id === "string" && work.id.trim().length > 0 ? work.id.trim() : null;
+    if (!workId) return null;
+    const receiptDigest = typeof receipt.digest === "string"
+      ? receipt.digest.trim().toLowerCase()
+      : null;
+    if (!receiptDigest || !RECEIPT_DIGEST.test(receiptDigest)) return null;
+    const body = { ...receipt };
+    delete body.digest;
+    const observedDigest = `sha256:${createHash("sha256").update(stableJson(body)).digest("hex")}`;
+    if (observedDigest !== receiptDigest) return null;
+    const verification = isRecord(receipt.verification) ? receipt.verification : null;
+    const review = verification && isRecord(verification.review) ? verification.review : null;
+    const exactHeadSha = typeof verification?.exactHeadSha === "string"
+      ? verification.exactHeadSha.trim().toLowerCase()
+      : null;
+    const reviewHeadSha = typeof review?.headSha === "string"
+      ? review.headSha.trim().toLowerCase()
+      : null;
+    const mergeCommitSha = typeof review?.mergeCommitSha === "string"
+      ? review.mergeCommitSha.trim().toLowerCase()
+      : null;
+    if (
+      !exactHeadSha || !SHA.test(exactHeadSha) || reviewHeadSha !== exactHeadSha
+      || !mergeCommitSha || !SHA.test(mergeCommitSha)
+      || review?.status !== "accepted" || review?.source !== "github_merge"
+    ) {
+      return null;
+    }
+    return { receiptDigest, exactHeadSha, mergeCommitSha, workId };
   };
 
   const requirePluginIssueIdempotencyKey = (value: unknown): string | null => {
@@ -797,7 +896,17 @@ export function buildHostServices(
     const statusCondition = options.activeOnly
       ? inArray(heartbeatRuns.status, ["queued", "running"])
       : undefined;
-    const rows = await db
+    const limitedRunIds = db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(issueIdExpr, issueIds),
+        statusCondition,
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(100);
+    const rawRows = await db
       .select({
         id: heartbeatRuns.id,
         issueId: issueIdExpr,
@@ -813,13 +922,67 @@ export function buildHostServices(
         contextSnapshot: heartbeatRuns.contextSnapshot,
         usageJson: heartbeatRuns.usageJson,
         resultJson: heartbeatRuns.resultJson,
+        terminalIssueId: issuesTable.id,
+        terminalIssueIdentifier: issuesTable.identifier,
+        terminalIssueStatus: issuesTable.status,
+        terminalIssueCompletedAt: issuesTable.completedAt,
+        terminalIssueExecutionRunId: issuesTable.executionRunId,
+        terminalIssueCheckoutRunId: issuesTable.checkoutRunId,
+        terminalIssueExecutionWorkspaceId: issuesTable.executionWorkspaceId,
+        terminalIssueOriginKind: issuesTable.originKind,
+        terminalIssueOriginId: issuesTable.originId,
+        pullObjectId: externalObjects.id,
+        pullExternalId: externalObjects.externalId,
+        pullProviderKey: externalObjects.providerKey,
+        pullObjectType: externalObjects.objectType,
+        pullStatusKey: externalObjects.statusKey,
+        pullIsTerminal: externalObjects.isTerminal,
+        pullData: externalObjects.data,
+        reconciliationActivityId: activityLog.id,
+        reconciliationActivityDetails: activityLog.details,
       })
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(issueIdExpr, issueIds), statusCondition))
-      .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(100);
+      .leftJoin(issuesTable, and(
+        eq(issuesTable.companyId, companyId),
+        sql`${issuesTable.id}::text = ${issueIdExpr}`,
+      ))
+      .leftJoin(externalObjectMentions, and(
+        eq(externalObjectMentions.companyId, companyId),
+        eq(externalObjectMentions.sourceIssueId, issuesTable.id),
+      ))
+      .leftJoin(externalObjects, and(
+        eq(externalObjects.companyId, companyId),
+        eq(externalObjects.id, externalObjectMentions.objectId),
+        eq(externalObjects.providerKey, "github"),
+        eq(externalObjects.objectType, "pull_request"),
+        eq(externalObjects.statusKey, "merged"),
+        eq(externalObjects.isTerminal, true),
+      ))
+      .leftJoin(activityLog, and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.actorType, "system"),
+        eq(activityLog.actorId, "external-object-resolver"),
+        eq(activityLog.action, "issue.updated"),
+        eq(activityLog.entityType, "issue"),
+        sql`${activityLog.entityId} = ${issuesTable.id}::text`,
+        eq(activityLog.runId, heartbeatRuns.id),
+      ))
+      .where(inArray(heartbeatRuns.id, limitedRunIds))
+      .orderBy(desc(heartbeatRuns.createdAt));
+    const groupedRows = new Map<string, {
+      row: (typeof rawRows)[number];
+      evidenceRows: Array<(typeof rawRows)[number]>;
+    }>();
+    for (const row of rawRows) {
+      const existing = groupedRows.get(row.id);
+      if (existing) {
+        existing.evidenceRows.push(row);
+      } else if (groupedRows.size < 100) {
+        groupedRows.set(row.id, { row, evidenceRows: [row] });
+      }
+    }
 
-    return rows.map((row) => {
+    return [...groupedRows.values()].map(({ row, evidenceRows }) => {
       const usage = isRecord(row.usageJson) ? row.usageJson : {};
       const result = isRecord(row.resultJson) ? row.resultJson : {};
       const metrics = isRecord(result.execution_metrics)
@@ -848,6 +1011,87 @@ export function buildHostServices(
             ? route.transport
             : null;
       const contextInputBytes = Buffer.byteLength(JSON.stringify(row.contextSnapshot ?? null), "utf8");
+      const terminalReceipt = parseVerifiedTerminalReceipt(row.contextSnapshot);
+      const expectedWorkId = row.terminalIssueIdentifier ?? row.terminalIssueId;
+      const matchingPulls = !options.activeOnly && terminalReceipt
+        && row.status === "succeeded"
+        && row.terminalIssueId === row.issueId
+        && row.terminalIssueStatus === "done"
+        && row.terminalIssueCompletedAt !== null
+        && expectedWorkId === terminalReceipt.workId
+        && (row.terminalIssueExecutionRunId === row.id || row.terminalIssueCheckoutRunId === row.id)
+        ? [...new Map(evidenceRows.filter((candidate) => {
+            const data = isRecord(candidate.pullData) ? candidate.pullData : {};
+            const activity = isRecord(candidate.reconciliationActivityDetails)
+              ? candidate.reconciliationActivityDetails
+              : {};
+            const headSha = typeof data.headSha === "string" ? data.headSha.trim().toLowerCase() : null;
+            const mergeCommitSha = typeof data.mergeCommitSha === "string"
+              ? data.mergeCommitSha.trim().toLowerCase()
+              : null;
+            const owner = typeof data.owner === "string" ? data.owner.trim() : null;
+            const repo = typeof data.repo === "string" ? data.repo.trim() : null;
+            const pullNumber = typeof data.number === "number" && Number.isInteger(data.number)
+              ? data.number
+              : null;
+            const repository = owner && repo ? `${owner}/${repo}` : null;
+            const createdByRuntime = parsePluginRuntimeIdentity(activity.candidateCreatedByRuntime);
+            return candidate.pullObjectId !== null
+              && candidate.pullExternalId === `${repository}#pull/${pullNumber}`
+              && candidate.pullProviderKey === "github"
+              && candidate.pullObjectType === "pull_request"
+              && candidate.pullStatusKey === "merged"
+              && candidate.pullIsTerminal === true
+              && data.provider === "github" && data.merged === true
+              && headSha === terminalReceipt.exactHeadSha
+              && mergeCommitSha === terminalReceipt.mergeCommitSha
+              && candidate.reconciliationActivityId !== null
+              && activity.source === "github_merged_exact_head"
+              && activity.externalObjectId === candidate.pullObjectId
+              && activity.externalId === candidate.pullExternalId
+              && activity.repository === repository
+              && activity.authorizedRepository === repository?.toLowerCase()
+              && activity.pullRequestNumber === pullNumber
+              && activity.headSha === headSha
+              && activity.mergeCommitSha === mergeCommitSha
+              && activity.terminalReceiptDigest === terminalReceipt.receiptDigest
+              && activity.executionWorkspaceId === row.terminalIssueExecutionWorkspaceId
+              && activity.candidateOriginKind === row.terminalIssueOriginKind
+              && activity.candidateOriginId === row.terminalIssueOriginId
+              && createdByRuntime !== null;
+          }).map((candidate) => [
+            `${candidate.pullObjectId}:${candidate.reconciliationActivityId}`,
+            candidate,
+          ] as const)).values()]
+        : [];
+      const verifiedTerminalChange = matchingPulls.length === 1 && terminalReceipt
+        && typeof row.terminalIssueOriginId === "string" && row.terminalIssueOriginId.length > 0
+        && parsePluginRuntimeIdentity(
+          (isRecord(matchingPulls[0]!.reconciliationActivityDetails)
+            ? matchingPulls[0]!.reconciliationActivityDetails
+            : {}).candidateCreatedByRuntime,
+        )
+        ? {
+            status: "operational" as const,
+            receiptDigest: terminalReceipt.receiptDigest,
+            exactHeadSha: terminalReceipt.exactHeadSha,
+            candidate: {
+              originKind: row.terminalIssueOriginKind!,
+              originId: row.terminalIssueOriginId,
+              createdByRuntime: parsePluginRuntimeIdentity(
+                (isRecord(matchingPulls[0]!.reconciliationActivityDetails)
+                  ? matchingPulls[0]!.reconciliationActivityDetails
+                  : {}).candidateCreatedByRuntime,
+              )!,
+            },
+            pullRequest: {
+              provider: "github" as const,
+              externalId: matchingPulls[0]!.pullExternalId!,
+              headSha: terminalReceipt.exactHeadSha,
+              mergeCommitSha: terminalReceipt.mergeCommitSha,
+            },
+          }
+        : null;
       return {
         id: row.id,
         issueId: row.issueId,
@@ -862,6 +1106,7 @@ export function buildHostServices(
         lastOutputAt: row.lastOutputAt?.toISOString() ?? null,
         contextInputBytes,
         resultSummary,
+        verifiedTerminalChange,
         usage: {
           inputTokens: number(usage.inputTokens ?? usage.input_tokens),
           cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),
@@ -1713,6 +1958,16 @@ export function buildHostServices(
               identifier: issue.identifier,
               originKind: normalizedOriginKind,
               originId: issue.originId,
+              createdByRuntime: options.runtimeIdentity
+                ? {
+                    ...options.runtimeIdentity,
+                    // A bare semantic version (for example 1.0.0) matches the
+                    // generic JWT-shaped-value redaction rule. Prefix it only
+                    // in the activity ledger; authority readers normalize it
+                    // back to the exact manifest version.
+                    version: `semver:${options.runtimeIdentity.version}`,
+                  }
+                : null,
               billingCode: issue.billingCode,
               blockedByIssueIds: params.blockedByIssueIds ?? [],
             },
@@ -1802,7 +2057,22 @@ export function buildHostServices(
         delete patch.actorRunId;
         delete patch.executionTruthReceipt;
         if (patch.originKind !== undefined) {
-          patch.originKind = normalizePluginOriginKind(patch.originKind);
+          const requestedOriginKind = normalizePluginOriginKind(patch.originKind);
+          if (requestedOriginKind !== existing.originKind) {
+            throw new Error("Plugin issue originKind is immutable after creation");
+          }
+          delete patch.originKind;
+        }
+        if (patch.originId !== undefined) {
+          if (patch.originId !== existing.originId) {
+            throw new Error("Plugin issue originId is immutable after creation");
+          }
+          delete patch.originId;
+        }
+        if (patch.executionWorkspaceId !== undefined
+          && patch.executionWorkspaceId !== existing.executionWorkspaceId
+          && (existing.executionRunId || existing.checkoutRunId)) {
+          throw new Error("Plugin issue executionWorkspaceId is immutable after execution is bound");
         }
         const governedTransition = patch.status === "in_review"
           ? "ready"
@@ -2255,6 +2525,7 @@ export function buildHostServices(
         return {
           issueId: rootIssue.id,
           companyId,
+          runtimeIdentity: options.runtimeIdentity ?? null,
           subtreeIssueIds,
           relations: Object.fromEntries(relationPairs),
           approvals: approvalRows,

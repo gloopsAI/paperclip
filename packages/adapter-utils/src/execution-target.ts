@@ -1344,6 +1344,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   let socket: net.Socket | null = null;
   let stopping = false;
   let stdinSeq = 0;
+  let remoteInputQueue: Promise<void> = Promise.resolve();
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
     type?: string;
@@ -1432,17 +1433,16 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           socket = nextSocket;
           flushPendingRemoteEvents();
         }
-        void (async () => {
-          if (message.type === "stdin" && typeof message.data === "string") {
-            stdinSeq += 1;
-            const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-            await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
-          } else if (message.type === "stdinEnd") {
-            stdinSeq += 1;
-            const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-            await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
-          }
-        })().catch((error) => {
+        if ((message.type === "stdin" && typeof message.data === "string") || message.type === "stdinEnd") {
+          stdinSeq += 1;
+          const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+          const payload = message.type === "stdin"
+            ? jsonLine({ type: "stdin", data: message.data })
+            : jsonLine({ type: "stdinEnd" });
+          remoteInputQueue = remoteInputQueue.then(() =>
+            client.writeTextFile(path.posix.join(stdinDir, name), payload));
+        }
+        void remoteInputQueue.catch((error) => {
           nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
           nextSocket.destroy();
         });

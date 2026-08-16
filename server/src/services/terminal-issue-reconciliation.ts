@@ -58,6 +58,7 @@ export type MergedPullRequestIssueDecision =
         | "run_not_current"
         | "pull_request_not_merged"
         | "missing_pull_request_head"
+        | "missing_pull_request_merge_commit"
         | "missing_execution_truth"
         | "exact_head_mismatch"
         | "execution_truth_rejected";
@@ -536,6 +537,7 @@ export function decideMergedPullRequestIssueReconciliation(input: {
     provider: string | null;
     merged: boolean;
     headSha: string | null;
+    mergeCommitSha: string | null;
   };
 }): MergedPullRequestIssueDecision {
   if (input.completionProfile !== "verified_change") {
@@ -559,6 +561,10 @@ export function decideMergedPullRequestIssueReconciliation(input: {
   const headSha = input.pullRequest.headSha?.trim().toLowerCase() ?? null;
   if (!headSha || !SHA.test(headSha)) {
     return { kind: "preserve", reason: "missing_pull_request_head" };
+  }
+  const mergeCommitSha = input.pullRequest.mergeCommitSha?.trim().toLowerCase() ?? null;
+  if (!mergeCommitSha || !SHA.test(mergeCommitSha)) {
+    return { kind: "preserve", reason: "missing_pull_request_merge_commit" };
   }
 
   const existingReceipt = record(
@@ -584,6 +590,7 @@ export function decideMergedPullRequestIssueReconciliation(input: {
       review: {
         status: "accepted",
         headSha,
+        mergeCommitSha,
         unresolvedThreads: 0,
         source: "github_merge",
       },

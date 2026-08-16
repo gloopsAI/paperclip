@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -8,10 +8,12 @@ import {
   agents,
   externalObjectMentions,
   externalObjects,
+  executionWorkspaces,
   heartbeatRuns,
   issueComments,
   issues,
   plugins,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -25,7 +27,12 @@ import {
 } from "../services/external-objects.js";
 import { canonicalizeExternalObjectUrl } from "@paperclipai/shared/external-objects-server";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  buildBoundExecutionContext,
+  buildCanonicalContinuationPacket,
+} from "@paperclipai/adapter-utils/execution-envelope";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
 
@@ -368,7 +375,9 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await db.delete(externalObjects);
     await db.delete(issueComments);
     await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);
@@ -595,6 +604,27 @@ describeEmbeddedPostgres("externalObjectService", () => {
     const agentId = randomUUID();
     const runId = randomUUID();
     const headSha = "a".repeat(40);
+    const mergeCommitSha = "b".repeat(40);
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Autonomic policy",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Autonomic policy worktree",
+      status: "active",
+      providerType: "git_worktree",
+      repoUrl: "git@github.com:acme/foreign.git",
+    });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -626,12 +656,25 @@ describeEmbeddedPostgres("externalObjectService", () => {
       ...receiptBody,
       digest: `sha256:${createHash("sha256").update(JSON.stringify(stable(receiptBody))).digest("hex")}`,
     };
+    const boundPacket = buildCanonicalContinuationPacket({
+      issue: { id: issueId, title: "Autonomic policy" },
+      repoRef: {
+        repoUrl: "https://github.com/acme/app.git",
+        workspaceId: executionWorkspaceId,
+      },
+      authority: { companyId, runId },
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
       status: "succeeded",
-      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt },
+      contextSnapshot: {
+        issueId,
+        executionWorkspaceId,
+        [PAPERCLIP_EXECUTION_CONTEXT_KEY]: buildBoundExecutionContext(boundPacket),
+        [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt,
+      },
     });
     await db.update(issues).set({
       status: "in_review",
@@ -640,7 +683,39 @@ describeEmbeddedPostgres("externalObjectService", () => {
       assigneeAgentId: agentId,
       executionRunId: runId,
       checkoutRunId: runId,
+      projectId,
+      executionWorkspaceId,
+      originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+      originId: "c".repeat(64),
     }).where(eq(issues.id, issueId));
+    const createdByRuntime = {
+      installationId: "plugin-record-id",
+      pluginKey: "gloops.autonomic-improvement-policy",
+      version: "0.3.0",
+      manifestSha256: "d".repeat(64),
+      workerEntrypointSha256: "e".repeat(64),
+      packageTreeSha256: "f".repeat(64),
+      sourceRepository: "gloopsai/gloops-paperclip-plugin",
+      sourceHeadSha: "1".repeat(40),
+      deploymentReceiptDigest: "2".repeat(64),
+      jobDeclarationCount: 1,
+      jobKeys: ["observe"],
+      jobDeclarationsSha256: "3".repeat(64),
+    };
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "plugin",
+      actorId: createdByRuntime.installationId,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        pluginKey: createdByRuntime.pluginKey,
+        originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+        originId: "c".repeat(64),
+        createdByRuntime,
+      },
+    });
 
     const svc = externalObjectService(db, {
       github: {
@@ -651,6 +726,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
             title: "Merged implementation",
             head: { ref: "feature", sha: headSha },
             base: { ref: "main" },
+            merge_commit_sha: mergeCommitSha,
             updated_at: "2026-07-23T01:02:03Z",
           }), {
             status: 200,
@@ -668,8 +744,39 @@ describeEmbeddedPostgres("externalObjectService", () => {
       providerKey: "github",
       objectType: "pull_request",
       statusKey: "merged",
-      data: { headSha },
+      data: { headSha, mergeCommitSha },
     });
+    expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .toEqual([{ status: "in_review" }]);
+    expect((await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
+      .filter((entry) => entry.action === "issue.updated")).toHaveLength(0);
+
+    await db.update(executionWorkspaces)
+      .set({ repoUrl: "https://github.com/acme/app.git" })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION reject_terminal_reconciliation_activity() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.actor_id = 'external-object-resolver' THEN
+          RAISE EXCEPTION 'injected terminal evidence failure';
+        END IF;
+        RETURN NEW;
+      END $$
+    `));
+    await db.execute(sql.raw(`
+      CREATE TRIGGER reject_terminal_reconciliation_activity_trigger
+      BEFORE INSERT ON activity_log FOR EACH ROW
+      EXECUTE FUNCTION reject_terminal_reconciliation_activity()
+    `));
+    await expect(svc.refreshObject(object.id, { companyId, force: true }))
+      .rejects.toThrow();
+    expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .toEqual([{ status: "in_review" }]);
+    const uncommittedRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!);
+    expect((uncommittedRun.contextSnapshot as any)[PAPERCLIP_EXECUTION_RECEIPT_KEY]).toMatchObject({ status: "built" });
+    await db.execute(sql.raw("DROP TRIGGER reject_terminal_reconciliation_activity_trigger ON activity_log"));
+    await db.execute(sql.raw("DROP FUNCTION reject_terminal_reconciliation_activity()"));
     await svc.refreshObject(object.id, { companyId, force: true });
 
     const [projectedIssue, projectedRun, activities] = await Promise.all([
@@ -682,10 +789,16 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect((projectedRun.contextSnapshot as any)[PAPERCLIP_EXECUTION_RECEIPT_KEY]).toMatchObject({
       status: "operational",
       verification: {
-        review: { status: "accepted", headSha, source: "github_merge" },
+        review: { status: "accepted", headSha, mergeCommitSha, source: "github_merge" },
       },
     });
     expect(activities.filter((entry) => entry.action === "issue.updated")).toHaveLength(1);
+    expect(activities.find((entry) => entry.action === "issue.updated")?.details).toMatchObject({
+      authorizedRepository: "acme/app",
+      terminalReceiptDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      candidateOriginId: "c".repeat(64),
+      candidateCreatedByRuntime: createdByRuntime,
+    });
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {
@@ -804,5 +917,50 @@ describeEmbeddedPostgres("externalObjectService", () => {
       statusTone: "success",
       liveness: "fresh",
     });
+  });
+
+  it("reserves GitHub merge snapshots to the built-in resolver", async () => {
+    const { companyId } = await createIssue();
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.forged-github-provider", apiVersion: 1, version: "1.0.0",
+      displayName: "Forged GitHub Provider", description: "Must not authorize merges", author: "Paperclip",
+      categories: ["connector"], capabilities: ["external.objects.read"],
+      entrypoints: { worker: "dist/worker.js" },
+      objectReferences: [{
+        providerKey: "github", displayName: "GitHub", objectTypes: ["pull_request"],
+        urlPatterns: ["https://github.com/:owner/:repo/pull/:number"],
+      }],
+    };
+    const [plugin] = await db.insert(plugins).values({
+      pluginKey: manifest.id, packageName: "@paperclip/forged-github-provider",
+      version: manifest.version, apiVersion: 1, categories: manifest.categories,
+      manifestJson: manifest, status: "ready", installOrder: 1,
+    }).returning();
+    const [object] = await db.insert(externalObjects).values({
+      companyId, providerKey: "github", objectType: "pull_request",
+      externalId: "acme/app#pull/42", statusKey: "open", statusLabel: "Open",
+      statusCategory: "open", statusTone: "info", isTerminal: false,
+      sanitizedCanonicalUrl: "https://github.com/acme/app/pull/42",
+      canonicalIdentityHash: "a".repeat(64), canonicalIdentity: {},
+    }).returning();
+    const workerManager = {
+      call: vi.fn(async () => ({
+        ok: true,
+        snapshot: { statusKey: "merged", statusCategory: "succeeded", statusTone: "success", isTerminal: true },
+      })),
+    } as unknown as PluginWorkerManager;
+    const builtIn = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: { statusKey: "open", statusCategory: "open" as const, statusTone: "info" as const, isTerminal: false },
+    }));
+    const svc = externalObjectService(db, {
+      github: false,
+      pluginWorkerManager: workerManager,
+      resolvers: [{ providerKey: "github", objectType: "pull_request", resolve: builtIn }],
+    });
+    const refreshed = await svc.refreshObject(object!.id, { companyId, force: true });
+    expect(workerManager.call).not.toHaveBeenCalledWith(plugin!.id, "resolveExternalObject", expect.anything());
+    expect(builtIn).toHaveBeenCalledOnce();
+    expect(refreshed.object).toMatchObject({ statusKey: "open", isTerminal: false });
   });
 });
