@@ -81,13 +81,19 @@ function trustedPluginRuntimeIdentity(value: unknown) {
   const sha256 = (key: string) => string(key)?.match(/^[0-9a-f]{64}$/)?.[0] ?? null;
   const sourceHeadSha = string("sourceHeadSha")?.match(/^[0-9a-f]{40}$/)?.[0] ?? null;
   const sourceRepository = canonicalGitHubRepository(string("sourceRepository"));
+  const storedVersion = string("version");
+  const version = storedVersion === "***REDACTED***"
+    ? null
+    : storedVersion?.startsWith("semver:")
+      ? storedVersion.slice("semver:".length) || null
+      : storedVersion;
   const jobDeclarationCount = candidate.jobDeclarationCount;
   const jobKeys = Array.isArray(candidate.jobKeys)
     && candidate.jobKeys.every((entry) => typeof entry === "string" && entry.length > 0)
     && new Set(candidate.jobKeys).size === candidate.jobKeys.length
     ? [...candidate.jobKeys].sort() as string[]
     : null;
-  if (!string("installationId") || !string("pluginKey") || !string("version") || !sourceRepository
+  if (!string("installationId") || !string("pluginKey") || !version || !sourceRepository
     || !sourceHeadSha || !sha256("manifestSha256") || !sha256("workerEntrypointSha256")
     || !sha256("packageTreeSha256") || !sha256("deploymentReceiptDigest")
     || !sha256("jobDeclarationsSha256") || typeof jobDeclarationCount !== "number"
@@ -96,7 +102,7 @@ function trustedPluginRuntimeIdentity(value: unknown) {
   return {
     installationId: string("installationId")!,
     pluginKey: string("pluginKey")!,
-    version: string("version")!,
+    version,
     manifestSha256: sha256("manifestSha256")!,
     workerEntrypointSha256: sha256("workerEntrypointSha256")!,
     packageTreeSha256: sha256("packageTreeSha256")!,

@@ -308,7 +308,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
             initiatingActorType: "agent",
             initiatingActorId: agentId,
             initiatingRunId: originRunId,
-            createdByRuntime: creationRuntimeIdentity,
+            createdByRuntime: {
+              ...creationRuntimeIdentity,
+              version: `semver:${creationRuntimeIdentity.version}`,
+            },
           }),
         }),
       ]),
@@ -419,7 +422,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   });
 
   it("enforces plugin origin namespaces", async () => {
-    const { companyId } = await seedCompanyAndAgent();
+    const { companyId, agentId } = await seedCompanyAndAgent();
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
 
     const featureIssue = await services.issues.create({

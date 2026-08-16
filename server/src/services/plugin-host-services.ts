@@ -679,6 +679,11 @@ export function buildHostServices(
   const SHA256 = /^[0-9a-f]{64}$/;
   const RECEIPT_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
+  const activityRuntimeVersion = (value: string | null) => {
+    if (!value || value === "***REDACTED***") return null;
+    return value.startsWith("semver:") ? value.slice("semver:".length) || null : value;
+  };
+
   const parsePluginRuntimeIdentity = (value: unknown) => {
     if (!isRecord(value)) return null;
     const text = (key: string) => typeof value[key] === "string" ? value[key] as string : null;
@@ -689,7 +694,8 @@ export function buildHostServices(
       && new Set(value.jobKeys).size === value.jobKeys.length
       ? [...value.jobKeys].sort() as string[]
       : null;
-    if (!text("installationId") || !text("pluginKey") || !text("version")
+    const version = activityRuntimeVersion(text("version"));
+    if (!text("installationId") || !text("pluginKey") || !version
       || !text("sourceRepository")?.match(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
       || !text("sourceHeadSha")?.match(SHA) || !digest("manifestSha256")
       || !digest("workerEntrypointSha256") || !digest("packageTreeSha256")
@@ -699,7 +705,7 @@ export function buildHostServices(
     return {
       installationId: text("installationId")!,
       pluginKey: text("pluginKey")!,
-      version: text("version")!,
+      version,
       manifestSha256: digest("manifestSha256")!,
       workerEntrypointSha256: digest("workerEntrypointSha256")!,
       packageTreeSha256: digest("packageTreeSha256")!,
@@ -1952,7 +1958,16 @@ export function buildHostServices(
               identifier: issue.identifier,
               originKind: normalizedOriginKind,
               originId: issue.originId,
-              createdByRuntime: options.runtimeIdentity ?? null,
+              createdByRuntime: options.runtimeIdentity
+                ? {
+                    ...options.runtimeIdentity,
+                    // A bare semantic version (for example 1.0.0) matches the
+                    // generic JWT-shaped-value redaction rule. Prefix it only
+                    // in the activity ledger; authority readers normalize it
+                    // back to the exact manifest version.
+                    version: `semver:${options.runtimeIdentity.version}`,
+                  }
+                : null,
               billingCode: issue.billingCode,
               blockedByIssueIds: params.blockedByIssueIds ?? [],
             },

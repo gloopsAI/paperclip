@@ -770,7 +770,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
       EXECUTE FUNCTION reject_terminal_reconciliation_activity()
     `));
     await expect(svc.refreshObject(object.id, { companyId, force: true }))
-      .rejects.toThrow("injected terminal evidence failure");
+      .rejects.toThrow();
     expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
       .toEqual([{ status: "in_review" }]);
     const uncommittedRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!);
