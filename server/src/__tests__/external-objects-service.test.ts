@@ -595,6 +595,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
     const agentId = randomUUID();
     const runId = randomUUID();
     const headSha = "a".repeat(40);
+    const mergeCommitSha = "b".repeat(40);
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -651,6 +652,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
             title: "Merged implementation",
             head: { ref: "feature", sha: headSha },
             base: { ref: "main" },
+            merge_commit_sha: mergeCommitSha,
             updated_at: "2026-07-23T01:02:03Z",
           }), {
             status: 200,
@@ -668,7 +670,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
       providerKey: "github",
       objectType: "pull_request",
       statusKey: "merged",
-      data: { headSha },
+      data: { headSha, mergeCommitSha },
     });
     await svc.refreshObject(object.id, { companyId, force: true });
 
@@ -682,7 +684,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect((projectedRun.contextSnapshot as any)[PAPERCLIP_EXECUTION_RECEIPT_KEY]).toMatchObject({
       status: "operational",
       verification: {
-        review: { status: "accepted", headSha, source: "github_merge" },
+        review: { status: "accepted", headSha, mergeCommitSha, source: "github_merge" },
       },
     });
     expect(activities.filter((entry) => entry.action === "issue.updated")).toHaveLength(1);

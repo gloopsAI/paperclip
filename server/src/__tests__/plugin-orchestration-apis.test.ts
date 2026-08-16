@@ -12,6 +12,8 @@ import {
   costEvents,
   createDb,
   executionWorkspaces,
+  externalObjectMentions,
+  externalObjects,
   heartbeatRuns,
   issueRelations,
   issues,
@@ -23,6 +25,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
 import { buildHostServices } from "../services/plugin-host-services.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -68,6 +71,34 @@ function executionTruthReceipt(workId: string) {
   return { ...body, digest };
 }
 
+function terminalExecutionTruthReceipt(workId: string, headSha: string, mergeCommitSha: string) {
+  const receipt = executionTruthReceipt(workId);
+  const body = {
+    ...receipt,
+    status: "operational",
+    verification: {
+      ...(receipt.verification as Record<string, unknown>),
+      review: {
+        status: "accepted",
+        headSha,
+        mergeCommitSha,
+        unresolvedThreads: 0,
+        source: "github_merge",
+      },
+    },
+  } as Record<string, unknown>;
+  delete body.digest;
+  const stable = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(stable)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, stable(entry)]))
+      : value;
+  return {
+    ...body,
+    digest: `sha256:${createHash("sha256").update(JSON.stringify(stable(body))).digest("hex")}`,
+  };
+}
+
 if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres plugin orchestration API tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
@@ -89,6 +120,8 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     tempRoots.length = 0;
     await db.delete(activityLog);
     await db.delete(costEvents);
+    await db.delete(externalObjectMentions);
+    await db.delete(externalObjects);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
@@ -1022,6 +1055,81 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(summary.runs[0]?.resultSummary).not.toContain(`ghp_${"s".repeat(40)}`);
     expect(summary.runs[0]?.resultSummary).toContain("...[truncated]...");
     expect(summary.runs[0]?.resultSummary).toContain(terminalMarker);
+  });
+
+  it("exposes terminal change evidence only for the current done run and its linked server-observed merged pull request", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const headSha = "a".repeat(40);
+    const mergeCommitSha = "b".repeat(40);
+    const receipt = terminalExecutionTruthReceipt("GLO-TERM", headSha, mergeCommitSha);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "GLO-TERM",
+      title: "Merged terminal change",
+      status: "done",
+      priority: "medium",
+      completedAt: new Date("2026-08-16T18:00:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId, [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt },
+    });
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const [pull] = await db.insert(externalObjects).values({
+      companyId,
+      providerKey: "github",
+      objectType: "pull_request",
+      externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
+      statusKey: "merged",
+      statusLabel: "Merged",
+      statusCategory: "succeeded",
+      statusTone: "success",
+      isTerminal: true,
+      data: { provider: "github", merged: true, headSha, mergeCommitSha },
+    }).returning();
+    await db.insert(externalObjectMentions).values({
+      companyId,
+      sourceIssueId: issueId,
+      sourceKind: "description",
+      objectId: pull!.id,
+      providerKey: "github",
+      detectorKey: "github",
+      objectType: "pull_request",
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const summary = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(summary.runs[0]?.verifiedTerminalChange).toEqual({
+      status: "operational",
+      receiptDigest: receipt.digest,
+      exactHeadSha: headSha,
+      pullRequest: {
+        provider: "github",
+        externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
+        headSha,
+        mergeCommitSha,
+      },
+    });
+
+    await db.update(externalObjects).set({
+      data: { provider: "github", merged: true, headSha, mergeCommitSha: "c".repeat(40) },
+    }).where(eq(externalObjects.id, pull!.id));
+    const mismatched = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(mismatched.runs[0]?.verifiedTerminalChange).toBeNull();
+
+    await db.update(externalObjects).set({
+      data: { provider: "github", merged: true, headSha, mergeCommitSha },
+    }).where(eq(externalObjects.id, pull!.id));
+    await db.update(issues).set({ status: "in_review", completedAt: null }).where(eq(issues.id, issueId));
+    const nonterminal = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
+    expect(nonterminal.runs[0]?.verifiedTerminalChange).toBeNull();
   });
 
   it("narrows orchestration cost summaries by subtree and billing code", async () => {

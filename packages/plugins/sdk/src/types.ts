@@ -1239,6 +1239,24 @@ export interface PluginIssueRunSummary {
    * issue, and actor identities before use.
    */
   resultSummary?: string | null;
+  /**
+   * Bounded terminal change evidence derived from Paperclip's server-owned
+   * GitHub external-object reconciliation. This is present only when the
+   * issue is terminal, this run remains its current run, the execution-truth
+   * receipt is internally valid, and a linked merged pull request matches
+   * both the reviewed head and merge commit.
+   */
+  verifiedTerminalChange?: {
+    status: "operational";
+    receiptDigest: string;
+    exactHeadSha: string;
+    pullRequest: {
+      provider: "github";
+      externalId: string;
+      headSha: string;
+      mergeCommitSha: string;
+    };
+  } | null;
   usage?: {
     inputTokens: number;
     cachedInputTokens: number;

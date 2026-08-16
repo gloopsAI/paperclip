@@ -496,6 +496,7 @@ describe("decideMergedPullRequestIssueReconciliation", () => {
         provider: "github",
         merged: true,
         headSha,
+        mergeCommitSha: "d".repeat(40),
       },
     });
 
@@ -509,6 +510,7 @@ describe("decideMergedPullRequestIssueReconciliation", () => {
           review: {
             status: "accepted",
             headSha,
+            mergeCommitSha: "d".repeat(40),
             unresolvedThreads: 0,
             source: "github_merge",
           },
@@ -538,6 +540,7 @@ describe("decideMergedPullRequestIssueReconciliation", () => {
         provider: "github",
         merged: true,
         headSha: "c".repeat(40),
+        mergeCommitSha: "d".repeat(40),
       },
     };
     expect(decideMergedPullRequestIssueReconciliation(base))
@@ -550,5 +553,9 @@ describe("decideMergedPullRequestIssueReconciliation", () => {
         checkoutRunId: null,
       },
     })).toEqual({ kind: "preserve", reason: "run_not_current" });
+    expect(decideMergedPullRequestIssueReconciliation({
+      ...base,
+      pullRequest: { ...base.pullRequest, headSha, mergeCommitSha: null },
+    })).toEqual({ kind: "preserve", reason: "missing_pull_request_merge_commit" });
   });
 });

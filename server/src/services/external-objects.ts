@@ -799,6 +799,7 @@ export function externalObjectService(
       ? object.data as Record<string, unknown>
       : {};
     const headSha = typeof data.headSha === "string" ? data.headSha : null;
+    const mergeCommitSha = typeof data.mergeCommitSha === "string" ? data.mergeCommitSha : null;
     const mentionedIssues = await db
       .select({
         id: issues.id,
@@ -847,6 +848,7 @@ export function externalObjectService(
           provider: "github",
           merged: true,
           headSha,
+          mergeCommitSha,
         },
       });
       if (decision.kind !== "project") continue;
@@ -893,6 +895,7 @@ export function externalObjectService(
             provider: "github",
             merged: true,
             headSha,
+            mergeCommitSha,
           },
         });
         if (currentDecision.kind !== "project") return false;

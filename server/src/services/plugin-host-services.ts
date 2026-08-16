@@ -6,6 +6,8 @@ import {
   budgetIncidents,
   costEvents,
   companies as companiesTable,
+  externalObjectMentions,
+  externalObjects,
   heartbeatRuns,
   invites,
   issues as issuesTable,
@@ -656,6 +658,42 @@ export function buildHostServices(
     return JSON.stringify(value) ?? "null";
   };
 
+  const SHA = /^[0-9a-f]{40}$/;
+  const RECEIPT_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+  const parseVerifiedTerminalReceipt = (contextSnapshot: unknown) => {
+    if (!isRecord(contextSnapshot)) return null;
+    const receipt = contextSnapshot[PAPERCLIP_EXECUTION_RECEIPT_KEY];
+    if (!isRecord(receipt) || receipt.status !== "operational") return null;
+    const receiptDigest = typeof receipt.digest === "string"
+      ? receipt.digest.trim().toLowerCase()
+      : null;
+    if (!receiptDigest || !RECEIPT_DIGEST.test(receiptDigest)) return null;
+    const body = { ...receipt };
+    delete body.digest;
+    const observedDigest = `sha256:${createHash("sha256").update(stableJson(body)).digest("hex")}`;
+    if (observedDigest !== receiptDigest) return null;
+    const verification = isRecord(receipt.verification) ? receipt.verification : null;
+    const review = verification && isRecord(verification.review) ? verification.review : null;
+    const exactHeadSha = typeof verification?.exactHeadSha === "string"
+      ? verification.exactHeadSha.trim().toLowerCase()
+      : null;
+    const reviewHeadSha = typeof review?.headSha === "string"
+      ? review.headSha.trim().toLowerCase()
+      : null;
+    const mergeCommitSha = typeof review?.mergeCommitSha === "string"
+      ? review.mergeCommitSha.trim().toLowerCase()
+      : null;
+    if (
+      !exactHeadSha || !SHA.test(exactHeadSha) || reviewHeadSha !== exactHeadSha
+      || !mergeCommitSha || !SHA.test(mergeCommitSha)
+      || review?.status !== "accepted" || review?.source !== "github_merge"
+    ) {
+      return null;
+    }
+    return { receiptDigest, exactHeadSha, mergeCommitSha };
+  };
+
   const requirePluginIssueIdempotencyKey = (value: unknown): string | null => {
     if (value == null) return null;
     if (typeof value !== "string") {
@@ -819,6 +857,50 @@ export function buildHostServices(
       .orderBy(desc(heartbeatRuns.createdAt))
       .limit(100);
 
+    const terminalIssueRows = options.activeOnly
+      ? []
+      : await db
+        .select({
+          id: issuesTable.id,
+          status: issuesTable.status,
+          completedAt: issuesTable.completedAt,
+          executionRunId: issuesTable.executionRunId,
+          checkoutRunId: issuesTable.checkoutRunId,
+        })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)));
+    const terminalIssueById = new Map(terminalIssueRows.map((issue) => [issue.id, issue]));
+    const mergedPullRows = options.activeOnly
+      ? []
+      : await db
+        .select({
+          issueId: externalObjectMentions.sourceIssueId,
+          objectId: externalObjects.id,
+          externalId: externalObjects.externalId,
+          providerKey: externalObjects.providerKey,
+          objectType: externalObjects.objectType,
+          statusKey: externalObjects.statusKey,
+          isTerminal: externalObjects.isTerminal,
+          data: externalObjects.data,
+        })
+        .from(externalObjectMentions)
+        .innerJoin(externalObjects, eq(externalObjectMentions.objectId, externalObjects.id))
+        .where(and(
+          eq(externalObjectMentions.companyId, companyId),
+          inArray(externalObjectMentions.sourceIssueId, issueIds),
+          eq(externalObjects.companyId, companyId),
+          eq(externalObjects.providerKey, "github"),
+          eq(externalObjects.objectType, "pull_request"),
+          eq(externalObjects.statusKey, "merged"),
+          eq(externalObjects.isTerminal, true),
+        ));
+    const mergedPullsByIssue = new Map<string, typeof mergedPullRows>();
+    for (const pull of mergedPullRows) {
+      const existing = mergedPullsByIssue.get(pull.issueId) ?? [];
+      existing.push(pull);
+      mergedPullsByIssue.set(pull.issueId, existing);
+    }
+
     return rows.map((row) => {
       const usage = isRecord(row.usageJson) ? row.usageJson : {};
       const result = isRecord(row.resultJson) ? row.resultJson : {};
@@ -848,6 +930,36 @@ export function buildHostServices(
             ? route.transport
             : null;
       const contextInputBytes = Buffer.byteLength(JSON.stringify(row.contextSnapshot ?? null), "utf8");
+      const terminalIssue = row.issueId ? terminalIssueById.get(row.issueId) : null;
+      const terminalReceipt = parseVerifiedTerminalReceipt(row.contextSnapshot);
+      const matchingPulls = terminalIssue && terminalReceipt
+        && terminalIssue.status === "done"
+        && terminalIssue.completedAt !== null
+        && (terminalIssue.executionRunId === row.id || terminalIssue.checkoutRunId === row.id)
+        ? (mergedPullsByIssue.get(terminalIssue.id) ?? []).filter((pull) => {
+            const data = isRecord(pull.data) ? pull.data : {};
+            const headSha = typeof data.headSha === "string" ? data.headSha.trim().toLowerCase() : null;
+            const mergeCommitSha = typeof data.mergeCommitSha === "string"
+              ? data.mergeCommitSha.trim().toLowerCase()
+              : null;
+            return data.merged === true
+              && headSha === terminalReceipt.exactHeadSha
+              && mergeCommitSha === terminalReceipt.mergeCommitSha;
+          })
+        : [];
+      const verifiedTerminalChange = matchingPulls.length === 1 && terminalReceipt
+        ? {
+            status: "operational" as const,
+            receiptDigest: terminalReceipt.receiptDigest,
+            exactHeadSha: terminalReceipt.exactHeadSha,
+            pullRequest: {
+              provider: "github" as const,
+              externalId: matchingPulls[0]!.externalId,
+              headSha: terminalReceipt.exactHeadSha,
+              mergeCommitSha: terminalReceipt.mergeCommitSha,
+            },
+          }
+        : null;
       return {
         id: row.id,
         issueId: row.issueId,
@@ -862,6 +974,7 @@ export function buildHostServices(
         lastOutputAt: row.lastOutputAt?.toISOString() ?? null,
         contextInputBytes,
         resultSummary,
+        verifiedTerminalChange,
         usage: {
           inputTokens: number(usage.inputTokens ?? usage.input_tokens),
           cachedInputTokens: number(usage.cachedInputTokens ?? usage.cached_input_tokens),
