@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import unittest
+from unittest import mock
 
 MODULE_PATH = pathlib.Path(__file__).with_name("paperclip-mark-pr-ready.py")
 SPEC = importlib.util.spec_from_file_location("paperclip_mark_pr_ready", MODULE_PATH)
@@ -85,6 +86,42 @@ class MarkPrReadyTest(unittest.TestCase):
             MODULE.assert_exact_squash_commit({"parents": [{"sha": base}, {"sha": "a" * 40}]}, base)
         with self.assertRaisesRegex(RuntimeError, "parent drifted"):
             MODULE.assert_exact_squash_commit({"parents": [{"sha": "c" * 40}]}, base)
+
+    def test_strict_status_checks_are_required_from_legacy_or_ruleset(self):
+        with mock.patch.object(MODULE, "gh_api", return_value={"strict": True}):
+            MODULE.assert_strict_required_checks("gloopsAI/paperclip", "gloops/stable", "token")
+        with mock.patch.object(MODULE, "gh_api", side_effect=[
+            RuntimeError("no legacy protection"),
+            [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": True}}],
+        ]):
+            MODULE.assert_strict_required_checks("gloopsAI/gloops-paperclip-plugin", "main", "token")
+        with mock.patch.object(MODULE, "gh_api", side_effect=[
+            {"strict": False},
+            [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": False}}],
+        ]):
+            with self.assertRaisesRegex(RuntimeError, "strict required-status-check enforcement is absent"):
+                MODULE.assert_strict_required_checks("gloopsAI/personal-delegate", "main", "token")
+
+    def test_response_loss_reconciles_only_exact_reviewed_squash(self):
+        base = "b" * 40
+        head = "a" * 40
+        merged = {
+            "merged": True,
+            "head": {"sha": head},
+            "base": {"ref": "gloops/stable"},
+            "merge_commit_sha": "c" * 40,
+        }
+        with mock.patch.object(MODULE, "gh_api", return_value={"parents": [{"sha": base}]}):
+            self.assertEqual(MODULE.reconcile_merged_pr(
+                repo="gloopsAI/paperclip", pr=merged, expected_head=head,
+                expected_base="gloops/stable", expected_base_sha=base, token="token",
+            ), "c" * 40)
+        with mock.patch.object(MODULE, "gh_api", return_value={"parents": [{"sha": "d" * 40}]}):
+            with self.assertRaisesRegex(RuntimeError, "parent drifted"):
+                MODULE.reconcile_merged_pr(
+                    repo="gloopsAI/paperclip", pr=merged, expected_head=head,
+                    expected_base="gloops/stable", expected_base_sha=base, token="token",
+                )
 
 
 if __name__ == "__main__":
