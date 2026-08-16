@@ -142,11 +142,12 @@ async function readBody(args, textFlag, fileFlag) {
 }
 
 async function apiFetch(config, path, options = {}) {
+  const runId = options.runId ?? config.runId;
   const headers = {
     Authorization: `Bearer ${config.apiKey}`,
     Accept: "application/json",
     ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    ...(options.mutating && config.runId ? { "X-Paperclip-Run-Id": config.runId } : {}),
+    ...(options.mutating && runId ? { "X-Paperclip-Run-Id": runId } : {}),
   };
   const response = await fetch(`${config.apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
@@ -351,6 +352,7 @@ async function claim(config, args) {
   const result = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/external-claim`, {
     method: "POST",
     mutating: true,
+    runId: facts.claimId,
     body: { ...claimFacts, agentId: identity.agentId, entryPoint },
   });
   printJson({ command: "claim", ...result });
@@ -364,6 +366,7 @@ async function validateClaim(config, args) {
   const result = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/external-claim/validate`, {
     method: "POST",
     mutating: true,
+    runId: facts.claimId,
     body: { ...claimFacts, headSha },
   });
   printJson({ command: "validate-claim", ...result });
@@ -381,6 +384,7 @@ async function releaseClaim(config, args) {
   const result = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/external-claim/release`, {
     method: "POST",
     mutating: true,
+    runId: claimId,
     body: { claimId, disposition },
   });
   printJson({ command: "release-claim", ...result });

@@ -255,6 +255,7 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
         },
       },
     });
+    await db.update(issues).set({ checkoutRunId: identity.heartbeatRunId });
     await expect(service.getContext(identity.heartbeatRunId)).resolves.toMatchObject({
       runInvocationSource: "external_claim",
       externalIssueClaim: {
@@ -262,6 +263,14 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
         baseSha,
       },
     });
+
+    await db.update(issues).set({ checkoutRunId: null });
+    await expect(service.getContext(identity.heartbeatRunId)).resolves.toBeNull();
+    await db.update(issues).set({
+      checkoutRunId: identity.heartbeatRunId,
+      executionRunId: null,
+    });
+    await expect(service.getContext(identity.heartbeatRunId)).resolves.toBeNull();
   });
 
   it("rejects conflicting allocation and terminal replay facts", async () => {

@@ -372,6 +372,13 @@ export function repositoryMutationReceiptService(db: Db) {
       const externalIssueClaim = externalIssueClaimForMutationContext(run.contextSnapshot);
       if (run.invocationSource === "external_claim" && !externalIssueClaim) return null;
       if (run.invocationSource !== "external_claim" && externalIssueClaim) return null;
+      // The external claim is deliberately the issue's single atomic writer:
+      // both ownership columns must still point at the same real run. Managed
+      // heartbeat runs retain their existing either-column compatibility.
+      if (externalIssueClaim && (
+        issue.executionRunId !== run.id
+        || issue.checkoutRunId !== run.id
+      )) return null;
       if (externalIssueClaim && (
         externalIssueClaim.claimId !== run.id
         || externalIssueClaim.companyId !== run.companyId

@@ -9668,7 +9668,7 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const actorAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
       res.json(await svc.validateExternalIssueClaim(id, req.body, actorAgentId));
     },

@@ -235,6 +235,8 @@ describe("paperclip-task-bridge helper", () => {
     expect(requests[0]?.body).not.toHaveProperty("issueId");
     expect(requests[1]?.body).toMatchObject({ claimId, headSha });
     expect(requests[2]?.body).toEqual({ claimId, disposition: "handoff" });
+    expect(requests.map((request) => request.headers["x-paperclip-run-id"]))
+      .toEqual([claimId, claimId, claimId]);
   });
 
   it("rejects a non-UUID claim issue before making any request", async () => {
