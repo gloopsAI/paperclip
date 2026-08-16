@@ -586,6 +586,54 @@ export const checkoutIssueSchema = z.object({
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
 
+const gitOidSchema = z.string().regex(/^[0-9a-f]{40}$/, "Expected a lowercase Git SHA-1 object id");
+const repositoryFullNameSchema = z.string().regex(
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+  "Expected an owner/repository GitHub repository name",
+);
+const externalClaimEntryPointSchema = z.enum(["buzz", "paperclip_agent", "interactive_codex"]);
+
+const externalIssueClaimFactsSchema = z.object({
+  claimId: z.string().uuid(),
+  repositoryFullName: repositoryFullNameSchema,
+  baseSha: gitOidSchema,
+  branchName: z.string().trim().min(1).max(240),
+  workspaceIdentity: z.string().trim().min(1).max(1024),
+}).strict();
+
+function validateExternalClaimBranch(
+  value: { claimId: string; branchName: string },
+  ctx: z.RefinementCtx,
+) {
+  if (value.branchName !== `paperclip/${value.claimId}/calibration`) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["branchName"],
+      message: "External claims must use the run-bound paperclip/<claimId>/calibration branch",
+    });
+  }
+}
+
+export const createExternalIssueClaimSchema = externalIssueClaimFactsSchema.extend({
+  agentId: z.string().uuid(),
+  entryPoint: externalClaimEntryPointSchema,
+}).strict().superRefine(validateExternalClaimBranch);
+
+export type CreateExternalIssueClaim = z.infer<typeof createExternalIssueClaimSchema>;
+
+export const validateExternalIssueClaimSchema = externalIssueClaimFactsSchema.extend({
+  headSha: gitOidSchema,
+}).strict().superRefine(validateExternalClaimBranch);
+
+export type ValidateExternalIssueClaim = z.infer<typeof validateExternalIssueClaimSchema>;
+
+export const releaseExternalIssueClaimSchema = z.object({
+  claimId: z.string().uuid(),
+  disposition: z.enum(["handoff", "abandoned"]),
+}).strict();
+
+export type ReleaseExternalIssueClaim = z.infer<typeof releaseExternalIssueClaimSchema>;
+
 export const resetExhaustedAdmissionAndCheckoutIssueSchema = z.object({
   agentId: z.string().uuid(),
   resetId: z

@@ -115,6 +115,19 @@ describe("paperclip-task-bridge helper", () => {
         }));
         return;
       }
+      if (req.method === "POST" && req.url === "/api/issues/33333333-3333-4333-8333-333333333333/external-claim") {
+        res.statusCode = 201;
+        res.end(JSON.stringify({ created: true, runId: body.claimId, binding: body }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/issues/33333333-3333-4333-8333-333333333333/external-claim/validate") {
+        res.end(JSON.stringify({ valid: true, runId: body.claimId, headSha: body.headSha }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/issues/33333333-3333-4333-8333-333333333333/external-claim/release") {
+        res.end(JSON.stringify({ released: true, runId: body.claimId, disposition: body.disposition }));
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: "not found" }));
     });
@@ -182,5 +195,62 @@ describe("paperclip-task-bridge helper", () => {
     expect(commentRequest?.headers["x-paperclip-run-id"]).toBe(overrideRunId);
     expect(patchRequest?.body).toMatchObject({ status: "in_review", comment: "Ready" });
     expect(comment.stdout + update.stdout).not.toContain(apiKey);
+  });
+
+  it("acquires, validates, and releases an exact atomic claim without resolving identifiers", async () => {
+    const issueId = "33333333-3333-4333-8333-333333333333";
+    const claimId = "77777777-7777-4777-8777-777777777777";
+    const baseSha = "a".repeat(40);
+    const headSha = "b".repeat(40);
+    const common = [
+      "--issue", issueId,
+      "--claim-id", claimId,
+      "--repository", "gloopsAI/paperclip",
+      "--base-sha", baseSha,
+      "--workspace-identity", "/workspace/codex",
+    ];
+    const claimed = await runHelper(["claim", ...common, "--entry-point", "interactive_codex"], env());
+    const validated = await runHelper(["validate-claim", ...common, "--head-sha", headSha], env());
+    const released = await runHelper([
+      "release-claim", "--issue", issueId, "--claim-id", claimId, "--disposition", "handoff",
+    ], env());
+
+    expect(claimed.code).toBe(0);
+    expect(validated.code).toBe(0);
+    expect(released.code).toBe(0);
+    expect(requests.map((request) => request.url)).toEqual([
+      `/api/issues/${issueId}/external-claim`,
+      `/api/issues/${issueId}/external-claim/validate`,
+      `/api/issues/${issueId}/external-claim/release`,
+    ]);
+    expect(requests[0]?.body).toMatchObject({
+      claimId,
+      agentId: "11111111-1111-4111-8111-111111111111",
+      entryPoint: "interactive_codex",
+      repositoryFullName: "gloopsAI/paperclip",
+      baseSha,
+      branchName: `paperclip/${claimId}/calibration`,
+      workspaceIdentity: "/workspace/codex",
+    });
+    expect(requests[0]?.body).not.toHaveProperty("issueId");
+    expect(requests[1]?.body).toMatchObject({ claimId, headSha });
+    expect(requests[2]?.body).toEqual({ claimId, disposition: "handoff" });
+    expect(requests.map((request) => request.headers["x-paperclip-run-id"]))
+      .toEqual([claimId, claimId, claimId]);
+  });
+
+  it("rejects a non-UUID claim issue before making any request", async () => {
+    const result = await runHelper([
+      "claim",
+      "--issue", "PAP-123",
+      "--claim-id", "77777777-7777-4777-8777-777777777777",
+      "--entry-point", "buzz",
+      "--repository", "gloopsAI/paperclip",
+      "--base-sha", "a".repeat(40),
+      "--workspace-identity", "/workspace/buzz",
+    ], env());
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("exact Paperclip issue UUID");
+    expect(requests).toEqual([]);
   });
 });

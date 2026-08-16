@@ -39,6 +39,10 @@ APPROVED_IMAGE = Path(
 )
 SYSTEMCTL = os.environ.get("PAPERCLIP_HOSTCTL_SYSTEMCTL", "systemctl")
 TEST_MODE = os.environ.get("PAPERCLIP_HOSTCTL_TEST_MODE") == "1"
+EXPECTED_CODEX_HOME = (
+    "/home/paperclip/.paperclip/instances/default/companies/"
+    "89ed0964-d918-4fcc-b830-5be49d2d4089/codex-home"
+)
 
 TRACKED_KEYS = (
     "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED",
@@ -53,6 +57,7 @@ ALLOWED_KEYS = frozenset(
         "PAPERCLIP_IMAGE",
         "PAPERCLIP_ALLOWED_HOSTNAMES",
         "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS",
+        "CODEX_HOME",
     )
 )
 ALLOWED_ACTIONS = frozenset(("start", "stop", "restart", "mask", "unmask", "reset-failed"))
@@ -123,6 +128,8 @@ def update_runtime(updates: dict[str, str]) -> None:
     unknown = sorted(set(updates) - ALLOWED_KEYS)
     if unknown:
         raise HostctlError(f"runtime key is not allowlisted: {', '.join(unknown)}")
+    if "CODEX_HOME" in updates and updates["CODEX_HOME"] != EXPECTED_CODEX_HOME:
+        raise HostctlError("CODEX_HOME must be the exact managed company Codex home")
     source = RUNTIME_ENV.read_text(encoding="utf-8")
     lines = source.splitlines()
     seen = {key: 0 for key in updates}

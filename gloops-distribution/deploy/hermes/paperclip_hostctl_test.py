@@ -246,6 +246,28 @@ raise SystemExit(0)
         )
         self.assertEqual([entry["event"] for entry in self.journal()][-2:], ["pre", "post"])
 
+    def test_a9_managed_company_codex_home_is_exact_and_receipted(self) -> None:
+        expected = (
+            "/home/paperclip/.paperclip/instances/default/companies/"
+            "89ed0964-d918-4fcc-b830-5be49d2d4089/codex-home"
+        )
+        self.reconcile()
+        accepted = self.command(
+            "apply", *self.identity(), "--intent", "bind subscription home",
+            "--set", f"CODEX_HOME={expected}",
+            check=True,
+        )
+        self.assertTrue(json.loads(accepted.stdout)["ok"])
+        self.assertIn(f"CODEX_HOME={expected}", self.runtime.read_text(encoding="utf-8"))
+        before = self.runtime.read_text(encoding="utf-8")
+        rejected = self.command(
+            "apply", *self.identity(), "--intent", "reject arbitrary home",
+            "--set", "CODEX_HOME=/tmp/attacker-controlled",
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("exact managed company Codex home", rejected.stderr)
+        self.assertEqual(self.runtime.read_text(encoding="utf-8"), before)
+
 
 if __name__ == "__main__":
     unittest.main()

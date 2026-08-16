@@ -1042,6 +1042,12 @@ if (!/^PAPERCLIP_HOME=\/home\/paperclip\/\.paperclip$/m.test(runtimeEnv)) {
 if (!/^HOME=\/home\/paperclip$/m.test(runtimeEnv)) {
   fail("Hermes runtime HOME must contain the writable Paperclip state mount");
 }
+if (!/^CODEX_HOME=\/home\/paperclip\/\.paperclip\/instances\/default\/companies\/89ed0964-d918-4fcc-b830-5be49d2d4089\/codex-home$/m.test(runtimeEnv)) {
+  fail("Hermes runtime must bind subscription auth to the persisted managed company Codex home");
+}
+if (!preflight.includes("[CODEX_HOME]='/home/paperclip/.paperclip/instances/default/companies/89ed0964-d918-4fcc-b830-5be49d2d4089/codex-home'")) {
+  fail("activation preflight must fail closed when the managed company Codex home drifts");
+}
 if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/config\.json$/m.test(runtimeEnv)) {
   fail("Hermes runtime must load the persisted instance configuration from the state mount");
 }

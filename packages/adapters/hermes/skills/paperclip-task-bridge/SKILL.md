@@ -57,6 +57,9 @@ node ./paperclip-task.mjs list-assigned
 node ./paperclip-task.mjs create-task --parent-id "00000000-0000-4000-8000-000000000000" --title "Investigate checkout failures" --description "Capture failing request and root cause."
 node ./paperclip-task.mjs comment --issue PAP-123 --body "Found the failing request path."
 node ./paperclip-task.mjs update-status --issue PAP-123 --status in_review --comment "Ready for review."
+node ./paperclip-task.mjs claim --issue "$ISSUE_UUID" --claim-id "$CLAIM_UUID" --entry-point buzz --repository gloopsAI/paperclip --base-sha "$BASE_SHA" --workspace-identity "$PWD"
+node ./paperclip-task.mjs validate-claim --issue "$ISSUE_UUID" --claim-id "$CLAIM_UUID" --repository gloopsAI/paperclip --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --workspace-identity "$PWD"
+node ./paperclip-task.mjs release-claim --issue "$ISSUE_UUID" --claim-id "$CLAIM_UUID" --disposition handoff
 ```
 
 `create-task` defaults to assigning the task to the authenticated Hermes agent so the work is immediately actionable. Use `--unassigned` to create backlog work instead. Use `--assignee-agent-id <uuid>` only when the Paperclip API key has permission to assign work to that agent.
@@ -70,6 +73,20 @@ node ./paperclip-task.mjs comment --issue PAP-123 --body-file -
 
 ## Workflow Expectations
 
+- Before Buzz, Hermes, or an interactive Codex session writes repository files, acquire one exact
+  `claim` using the Paperclip issue UUID, pinned base SHA, repository, and workspace identity. Do
+  not resolve a human-readable identifier inside this authority-bearing operation.
+- Treat the returned claim id as the Paperclip heartbeat run id and use only
+  `paperclip/<claim-id>/calibration` for its writable branch. The claim reuses Paperclip's existing
+  `checkoutRunId` and `executionRunId`; it is not a second lock system.
+- Before publication, run `validate-claim` against the exact head. On handoff, use
+  `release-claim --disposition handoff`; on abandoned work use `abandoned`. Release never marks an
+  issue done.
+- An external claim is a four-hour silent lease. Exact claim replay or `validate-claim` renews it.
+  Long-running sessions must renew before four hours; expiry cancels that run, clears only its exact
+  matching locks, and blocks the issue without a provider retry or reassignment.
+- Paperclip-managed agent heartbeats already acquire the same issue checkout/execution ownership
+  natively. They must not call the external claim command in addition to their managed claim.
 - Keep tasks company-scoped by using the company resolved from the scoped agent key.
 - Let Paperclip activity logging come from the normal API endpoints; do not write local logs that include credentials.
 - Use comments for durable progress.

@@ -274,6 +274,35 @@ describe("codexHomeHasUsableAuth", () => {
 });
 
 describe("seedManagedCodexHome", () => {
+  it("preserves opaque subscription auth when the shared source is the managed target", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-self-"));
+    try {
+      const managedCompanyHome = path.join(
+        root,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "codex-home",
+      );
+      const authPath = path.join(managedCompanyHome, "auth.json");
+      const opaqueAuth = '{"tokens":{"access_token":"opaque-subscription"}}\n';
+      await fs.mkdir(managedCompanyHome, { recursive: true });
+      await fs.writeFile(authPath, opaqueAuth, { mode: 0o600 });
+
+      await seedManagedCodexHome(
+        managedCompanyHome,
+        { CODEX_HOME: managedCompanyHome },
+        async () => {},
+      );
+
+      expect((await fs.lstat(authPath)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(authPath, "utf8")).toBe(opaqueAuth);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("symlinks auth.json from the shared source into an explicit per-agent home", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-"));
     try {

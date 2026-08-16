@@ -172,14 +172,15 @@ test("worker imports a complete closure into a native bare repository", async ()
   fs.mkdirSync(path.join(repo, "nested"), { recursive: true });
   fs.writeFileSync(path.join(repo, "nested", "proof.txt"), "complete closure\n");
   git(repo, "add", "nested/proof.txt");
-  git(repo, "commit", "-m", "nested closure");
+  git(repo, "commit", "-m", "base closure");
+  const base = git(repo, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(repo, "nested", "proof.txt"), "descendant closure\n");
+  git(repo, "commit", "-am", "descendant closure");
   const head = git(repo, "rev-parse", "HEAD");
-  const objectOids = [
-    head,
-    git(repo, "rev-parse", "HEAD^{tree}"),
-    git(repo, "rev-parse", "HEAD:nested"),
-    git(repo, "rev-parse", "HEAD:nested/proof.txt"),
-  ].sort();
+  const objectOids = git(repo, "rev-list", "--objects", "--no-object-names", "HEAD")
+    .split("\n")
+    .filter(Boolean)
+    .sort();
   const packed = spawnSync("git", ["pack-objects", "--stdout", "--revs"], {
     cwd: repo,
     input: `${head}\n`,
@@ -193,6 +194,7 @@ test("worker imports a complete closure into a native bare repository", async ()
     remoteRef: `refs/heads/paperclip/${runId}/calibration`,
     expectedOldOid: "0".repeat(40),
     expectedNewOid: head,
+    requiredBaseOid: base,
     objectOids,
     packPath: pack,
     gitdir,
@@ -202,6 +204,13 @@ test("worker imports a complete closure into a native bare repository", async ()
   assert.equal(result.status, 0, result.stderr);
   assert.equal(git(root, "--git-dir", gitdir, "rev-parse", "--is-bare-repository"), "true");
   assert.equal(git(root, "--git-dir", gitdir, "cat-file", "-t", head), "commit");
+  const rejectedRequest = JSON.parse(fs.readFileSync(request, "utf8"));
+  rejectedRequest.requiredBaseOid = "f".repeat(40);
+  rejectedRequest.gitdir = path.join(root, "rejected-worker.git");
+  fs.writeFileSync(request, JSON.stringify(rejectedRequest));
+  const rejected = await runTool(["validate", "--request", request], root);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /required base commit|descendant|not an ancestor/i);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -237,6 +246,7 @@ test("worker rejects a committed symlink before making a request", async () => {
     remoteRef: `refs/heads/paperclip/${runId}/calibration`,
     expectedOldOid: "0".repeat(40),
     expectedNewOid: head,
+    requiredBaseOid: null,
     objectOids,
     packPath: pack,
     gitdir,
@@ -257,6 +267,7 @@ test("worker rejects an overbroad ref before reading a credential or making a re
     remoteRef: "refs/heads/main",
     expectedOldOid: "0".repeat(40),
     expectedNewOid: "a".repeat(40),
+    requiredBaseOid: null,
     objectOids: ["a".repeat(40)],
     packPath: path.join(root, "input.pack"),
     gitdir: path.join(root, "repo.git"),

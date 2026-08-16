@@ -155,6 +155,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
         context = {
             "schemaVersion": "gloops.repository-mutation-context.v1",
             "heartbeatRunId": run_id,
+            "runInvocationSource": "on_demand",
             "runStatus": "running",
             "companyId": authorization["companyId"],
             "agentId": authorization["agentId"],
@@ -165,6 +166,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
             "repositoryFullName": authorization["repositoryFullName"],
             "configuredDefaultBranch": authorization["defaultBranch"],
             "configuredRepositoryRef": "main",
+            "externalIssueClaim": None,
         }
         broker.compare_work_facts(authorization, context)
         with self.assertRaisesRegex(broker.BrokerError, "work facts conflict"):
@@ -172,6 +174,29 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 authorization,
                 {**context, "agentId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"},
             )
+
+        external = {
+            **context,
+            "runInvocationSource": "external_claim",
+            "configuredRepositoryRef": "a" * 40,
+            "externalIssueClaim": {
+                "schemaVersion": "paperclip.external-issue-claim.v1",
+                "claimId": run_id,
+                "companyId": authorization["companyId"],
+                "issueId": authorization["issueId"],
+                "agentId": authorization["agentId"],
+                "entryPoint": "interactive_codex",
+                "repositoryFullName": authorization["repositoryFullName"],
+                "baseSha": "a" * 40,
+                "branchName": authorization["branchRef"].removeprefix("refs/heads/"),
+                "projectWorkspaceId": authorization["projectWorkspaceId"],
+                "workspaceIdentity": "/workspace/external",
+                "claimedAt": "2026-08-15T00:00:00.000Z",
+            },
+        }
+        self.assertEqual(broker.compare_work_facts(authorization, external), "a" * 40)
+        with self.assertRaisesRegex(broker.BrokerError, "lacks a valid atomic issue claim"):
+            broker.compare_work_facts(authorization, {**external, "externalIssueClaim": None})
 
     def test_bundle_import_rejects_symlink_and_digest_drift(self):
         run_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"

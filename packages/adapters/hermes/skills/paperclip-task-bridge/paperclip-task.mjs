@@ -5,7 +5,10 @@ import fs from "node:fs/promises";
 const STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"]);
 const PRIORITIES = new Set(["critical", "high", "medium", "low"]);
 const WORK_MODES = new Set(["standard", "ask", "planning"]);
+const CLAIM_ENTRY_POINTS = new Set(["buzz", "paperclip_agent", "interactive_codex"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const OID_RE = /^[0-9a-f]{40}$/;
+const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 const HELP = `Paperclip task bridge for Hermes
 
@@ -14,6 +17,9 @@ Usage:
   paperclip-task.mjs create-task --title <title> [--description <text>|--description-file <path|->] [options]
   paperclip-task.mjs comment --issue <id|identifier> (--body <text>|--body-file <path|->) [--resume|--reopen]
   paperclip-task.mjs update-status --issue <id|identifier> --status <status> [--comment <text>|--comment-file <path|->]
+  paperclip-task.mjs claim --issue <uuid> --claim-id <uuid> --entry-point <buzz|paperclip_agent|interactive_codex> --repository <owner/repo> --base-sha <sha> --workspace-identity <identity>
+  paperclip-task.mjs validate-claim --issue <uuid> --claim-id <uuid> --repository <owner/repo> --base-sha <sha> --head-sha <sha> --workspace-identity <identity>
+  paperclip-task.mjs release-claim --issue <uuid> --claim-id <uuid> --disposition <handoff|abandoned>
 
 Environment:
   PAPERCLIP_API_URL    Paperclip base URL, with or without /api.
@@ -136,11 +142,12 @@ async function readBody(args, textFlag, fileFlag) {
 }
 
 async function apiFetch(config, path, options = {}) {
+  const runId = options.runId ?? config.runId;
   const headers = {
     Authorization: `Bearer ${config.apiKey}`,
     Accept: "application/json",
     ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
-    ...(options.mutating && config.runId ? { "X-Paperclip-Run-Id": config.runId } : {}),
+    ...(options.mutating && runId ? { "X-Paperclip-Run-Id": runId } : {}),
   };
   const response = await fetch(`${config.apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
@@ -317,6 +324,72 @@ async function updateStatus(config, args) {
   printJson({ command: "update-status", issue: issueSummary(issue) });
 }
 
+function externalClaimFacts(args) {
+  const issueId = requireStringFlag(args, "issue");
+  const claimId = requireStringFlag(args, "claim-id");
+  const repositoryFullName = requireStringFlag(args, "repository");
+  const baseSha = requireStringFlag(args, "base-sha");
+  const workspaceIdentity = requireStringFlag(args, "workspace-identity");
+  if (!UUID_RE.test(issueId)) throw new UsageError("--issue must be the exact Paperclip issue UUID");
+  if (!UUID_RE.test(claimId)) throw new UsageError("--claim-id must be a UUID");
+  if (!REPOSITORY_RE.test(repositoryFullName)) throw new UsageError("--repository must be owner/repository");
+  if (!OID_RE.test(baseSha)) throw new UsageError("--base-sha must be a lowercase 40-character Git SHA");
+  return {
+    issueId,
+    claimId,
+    repositoryFullName,
+    baseSha,
+    branchName: `paperclip/${claimId}/calibration`,
+    workspaceIdentity,
+  };
+}
+
+async function claim(config, args) {
+  const identity = await resolveIdentity(config);
+  const facts = externalClaimFacts(args);
+  const { issueId, ...claimFacts } = facts;
+  const entryPoint = validateEnum(requireStringFlag(args, "entry-point"), CLAIM_ENTRY_POINTS, "entry point");
+  const result = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/external-claim`, {
+    method: "POST",
+    mutating: true,
+    runId: facts.claimId,
+    body: { ...claimFacts, agentId: identity.agentId, entryPoint },
+  });
+  printJson({ command: "claim", ...result });
+}
+
+async function validateClaim(config, args) {
+  const facts = externalClaimFacts(args);
+  const { issueId, ...claimFacts } = facts;
+  const headSha = requireStringFlag(args, "head-sha");
+  if (!OID_RE.test(headSha)) throw new UsageError("--head-sha must be a lowercase 40-character Git SHA");
+  const result = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/external-claim/validate`, {
+    method: "POST",
+    mutating: true,
+    runId: facts.claimId,
+    body: { ...claimFacts, headSha },
+  });
+  printJson({ command: "validate-claim", ...result });
+}
+
+async function releaseClaim(config, args) {
+  const issueId = requireStringFlag(args, "issue");
+  const claimId = requireStringFlag(args, "claim-id");
+  const disposition = requireStringFlag(args, "disposition");
+  if (!UUID_RE.test(issueId)) throw new UsageError("--issue must be the exact Paperclip issue UUID");
+  if (!UUID_RE.test(claimId)) throw new UsageError("--claim-id must be a UUID");
+  if (!new Set(["handoff", "abandoned"]).has(disposition)) {
+    throw new UsageError("--disposition must be handoff or abandoned");
+  }
+  const result = await apiFetch(config, `/issues/${encodeURIComponent(issueId)}/external-claim/release`, {
+    method: "POST",
+    mutating: true,
+    runId: claimId,
+    body: { claimId, disposition },
+  });
+  printJson({ command: "release-claim", ...result });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = args._[0];
@@ -329,6 +402,9 @@ async function main() {
   if (command === "create-task") return createTask(config, args);
   if (command === "comment") return comment(config, args);
   if (command === "update-status") return updateStatus(config, args);
+  if (command === "claim") return claim(config, args);
+  if (command === "validate-claim") return validateClaim(config, args);
+  if (command === "release-claim") return releaseClaim(config, args);
   throw new UsageError(`Unknown command: ${command}`);
 }
 

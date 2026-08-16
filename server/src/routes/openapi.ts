@@ -22,6 +22,9 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  createExternalIssueClaimSchema,
+  validateExternalIssueClaimSchema,
+  releaseExternalIssueClaimSchema,
   resetExhaustedAdmissionAndCheckoutIssueSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
@@ -1935,6 +1938,61 @@ registry.registerPath({
     body: jsonBody(checkoutIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/external-claim",
+  tags: ["issues"],
+  summary: "Atomically claim an issue for an external execution entry point",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(createExternalIssueClaimSchema),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/external-claim/validate",
+  tags: ["issues"],
+  summary: "Validate and renew an external issue claim",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(validateExternalIssueClaimSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/external-claim/release",
+  tags: ["issues"],
+  summary: "Release an external issue claim without marking implementation done",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(releaseExternalIssueClaimSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+  },
 });
 
 registry.registerPath({

@@ -15639,7 +15639,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
       }
       return false;
     }
-    async function isDescendent({
+    async function isDescendent2({
       fs: fs2,
       dir,
       gitdir = join(dir, ".git"),
@@ -18412,7 +18412,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
       hashBlob,
       indexPack: indexPack2,
       init,
-      isDescendent,
+      isDescendent: isDescendent2,
       isIgnored,
       listBranches,
       listFiles,
@@ -18484,7 +18484,7 @@ ${obj.gpgsig ? obj.gpgsig : ""}`;
     exports2.hashBlob = hashBlob;
     exports2.indexPack = indexPack2;
     exports2.init = init;
-    exports2.isDescendent = isDescendent;
+    exports2.isDescendent = isDescendent2;
     exports2.isIgnored = isIgnored;
     exports2.listBranches = listBranches;
     exports2.listFiles = listFiles;
@@ -18779,6 +18779,7 @@ async function importWorkerBundle(args) {
     "gitdir",
     "objectOids",
     "packPath",
+    "requiredBaseOid",
     "remoteRef",
     "repositoryFullName",
     "schemaVersion"
@@ -18786,7 +18787,7 @@ async function importWorkerBundle(args) {
   const branchRunId = /^refs\/heads\/paperclip\/([^/]+)\/calibration$/.exec(
     request.remoteRef
   )?.[1];
-  if (request.schemaVersion !== "gloops.github-push-worker-request.v1" || !OID_PATTERN.test(request.expectedNewOid) || request.expectedOldOid !== ZERO_OID || !branchRunId || !RUN_ID_PATTERN.test(branchRunId) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repositoryFullName) || !Array.isArray(request.objectOids) || request.objectOids.length === 0 || request.objectOids.length > MAX_OBJECTS || new Set(request.objectOids).size !== request.objectOids.length || request.objectOids.some((oid) => !OID_PATTERN.test(oid))) {
+  if (request.schemaVersion !== "gloops.github-push-worker-request.v1" || !OID_PATTERN.test(request.expectedNewOid) || request.requiredBaseOid !== null && !OID_PATTERN.test(request.requiredBaseOid) || request.expectedOldOid !== ZERO_OID || !branchRunId || !RUN_ID_PATTERN.test(branchRunId) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repositoryFullName) || !Array.isArray(request.objectOids) || request.objectOids.length === 0 || request.objectOids.length > MAX_OBJECTS || new Set(request.objectOids).size !== request.objectOids.length || request.objectOids.some((oid) => !OID_PATTERN.test(oid))) {
     fail("worker request violates the accepted push contract");
   }
   const gitdir = import_node_path.default.resolve(request.gitdir);
@@ -18830,6 +18831,15 @@ async function importWorkerBundle(args) {
     fail(
       `pack contains extra objects or does not close over the expected commit (reachable=${reachable.length}, indexed=${indexed.length}, missing=${missing.join(",") || "none"}, extra=${extra.join(",") || "none"})`
     );
+  }
+  if (request.requiredBaseOid !== null && !await git.isDescendent({
+    fs: import_node_fs.default,
+    dir: gitdir,
+    gitdir,
+    oid: request.expectedNewOid,
+    ancestor: request.requiredBaseOid
+  })) {
+    fail("external issue claim base is not an ancestor of the publication head");
   }
   return { request, gitdir };
 }
