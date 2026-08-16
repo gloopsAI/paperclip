@@ -254,9 +254,28 @@ def mark_ready_and_merge(binding: dict) -> dict:
         and evidence.get("mergePending") is not True
         and evidence.get("mergeQueued") is not True
         and evidence.get("queueEnded") is not True
+        and evidence.get("queueAttemptSuppressed") is not True
     ):
-        raise RuntimeError("protected merge path is neither merged, queued, terminally suppressed, nor cleanly pending")
+        raise RuntimeError("protected merge path is neither merged, queued, suppressed, nor cleanly pending")
+    if evidence.get("queueAttemptSuppressed") is True and evidence.get("reconciliationRequired") is not True:
+        raise RuntimeError("suppressed queue attempt is missing reconciliation-required evidence")
+    if evidence.get("queueEnded") is True:
+        prior_entry_id = (evidence.get("queueEvidence") or {}).get("priorQueueEntryId")
+        if not isinstance(prior_entry_id, str) or not prior_entry_id:
+            raise RuntimeError("ended queue attempt lacks a proven prior queue entry")
     return evidence
+
+
+def merge_lifecycle_result(evidence: dict) -> str:
+    if evidence.get("reconciliationRequired") is True:
+        return "queue_attempt_reconciliation_required"
+    if evidence.get("merged") is True:
+        return "merged"
+    if evidence.get("mergeQueued") is True:
+        return "merge_queued"
+    if evidence.get("queueEnded") is True:
+        return "queue_terminal_suppressed"
+    return "merge_pending"
 
 
 def extract_approved_heads(text: str) -> set[str]:
@@ -517,6 +536,13 @@ def main() -> int:
             continue
         key = f"{binding['repositoryId']}:{num}:{head}"
         already = key in st.get("publishedForPr", {})
+        previous_note = (st.get("publishedForPr", {}).get(key) or {}).get("note")
+        if previous_note == "queue_attempt_reconciliation_required":
+            actions.append({
+                "repository": repo, "pr": num, "head": head, "at": ts(),
+                "result": "reconciliation_required_suppressed",
+            })
+            continue
         ok = independent_review_ok(binding)
         if already or ok is True:
             # Re-enter after CI finishes: ready + strict protected merge.
@@ -527,28 +553,21 @@ def main() -> int:
             if not dry:
                 try:
                     merge_evidence = mark_ready_and_merge(binding)
-                    merged = merge_evidence.get("merged") is True
-                    queued = merge_evidence.get("mergeQueued") is True
-                    queue_ended = merge_evidence.get("queueEnded") is True
+                    lifecycle = merge_lifecycle_result(merge_evidence)
+                    reconciliation_required = merge_evidence.get("reconciliationRequired") is True
+                    if reconciliation_required:
+                        had_failure = True
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
                         "source": binding["sourceIssue"],
-                        "note": (
-                            "merged" if merged else
-                            ("merge_queued" if queued else
-                             ("queue_terminal_suppressed" if queue_ended else "merge_pending"))
-                        ),
+                        "note": lifecycle,
                     }
                     actions.append(
                         {
                             "repository": repo, "pr": num,
                             "head": head,
                             "at": ts(),
-                            "result": (
-                                "merged" if merged else
-                                ("merge_queued" if queued else
-                                 ("queue_terminal_suppressed" if queue_ended else "merge_pending"))
-                            ),
+                            "result": lifecycle,
                             "alreadyPublished": already,
                             "mergeEvidence": merge_evidence,
                         }
@@ -588,21 +607,21 @@ def main() -> int:
                 had_failure = True
                 action["mergePathErrorClass"] = type(e).__name__
             action["result"] = (
-                "published_and_merged"
-                if action.get("mergeEvidence", {}).get("merged") is True
-                else (
-                    "review_published_merge_queued"
-                    if action.get("mergeEvidence", {}).get("mergeQueued") is True
-                    else (
-                        "review_published_queue_terminal_suppressed"
-                        if action.get("mergeEvidence", {}).get("queueEnded") is True
-                        else "review_published_merge_pending"
-                    )
+                (
+                    "published_and_merged"
+                    if merge_lifecycle_result(action["mergeEvidence"]) == "merged"
+                    else "review_published_" + merge_lifecycle_result(action["mergeEvidence"])
                 )
+                if "mergeEvidence" in action
+                else "review_published_merge_pending"
             )
+            if action.get("mergeEvidence", {}).get("reconciliationRequired") is True:
+                had_failure = True
+                action["note"] = "queue_attempt_reconciliation_required"
             st.setdefault("publishedForPr", {})[key] = action
             actions.append(action)
         except Exception as e:
+            had_failure = True
             action["result"] = f"error:{e}"
             actions.append(action)
             print(f"[error] publish pr#{num}: {e}", flush=True)

@@ -2112,7 +2112,9 @@ for (const required of [
   '"--base-sha"',
   '"merge_path_failed"',
   '"review_published_merge_pending"',
-  '"review_published_queue_terminal_suppressed"',
+  'def merge_lifecycle_result',
+  '"queue_terminal_suppressed"',
+  '"queue_attempt_reconciliation_required"',
   "protected merge helper evidence is not bound to the approved head/base",
 ]) {
   if (!closedLoopPublishPoller.includes(required)) {
@@ -2127,13 +2129,14 @@ for (const required of [
   'parser.add_argument("--merge-exact", action="store_true")',
   '"single-entry merge queue or exact App-B required check is absent"',
   'enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head})',
-  'dequeuePullRequest(input: {id: $id})',
   '"merge_queues": "write"',
   '"exact-merge-queue-attempts@1"',
   '"PAPERCLIP_CI_MERGE_ENABLED"',
   '"mergeQueued"',
   '"mergePending"',
   '"queueEnded"',
+  '"queueAttemptSuppressed"',
+  '"reconciliationRequired"',
 ]) {
   if (!markPrReady.includes(required)) {
     fail(`exact-head protected merge helper is missing ${required}`);

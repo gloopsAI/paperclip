@@ -98,10 +98,13 @@ All of the following are required:
    `review_published_queue_terminal_suppressed`, never as a ready/merge success.
 
 The queue conductor admits at most one queue entry for a reviewed
-repository/PR/base/head/source-run/review-run tuple. If GitHub removes that
-entry after CI failure, the durable attempt record suppresses re-enqueueing;
-the next pass reports `queue_terminal_suppressed` and requires a new reviewed
-head. Disable both the path and timer units for an operational kill switch;
+repository/PR/base/head candidate; source/review-run provenance is stored but
+cannot create a second candidate slot. If GitHub removes a proven entry after
+CI failure, the durable attempt record suppresses re-enqueueing; the next pass
+reports `queue_terminal_suppressed` and requires a new reviewed head. A crash
+after reservation but before an entry is proven reports
+`queue_attempt_reconciliation_required`, never falsely claims an ended queue,
+and later timer passes suppress further mutation. Disable both the path and timer units for an operational kill switch;
 the helper also refuses queue mutation unless its source-controlled systemd
 unit sets `PAPERCLIP_CI_MERGE_ENABLED=1`.
 

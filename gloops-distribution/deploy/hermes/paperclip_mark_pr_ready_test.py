@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -29,6 +30,20 @@ class MarkPrReadyTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "disabled by kill switch"):
             MODULE.require_ci_merge_enabled({})
         MODULE.require_ci_merge_enabled({"PAPERCLIP_CI_MERGE_ENABLED": "1"})
+
+    def test_disabled_merge_path_performs_no_app_mutation(self):
+        argv = [
+            "paperclip-mark-pr-ready.py", "--pr", "305",
+            "--repo", "gloopsAI/paperclip", "--expected-head", "a" * 40,
+            "--base", "gloops/stable", "--base-sha", "b" * 40,
+            "--source-run-id", "source-run", "--review-run-id", "review-run",
+            "--merge-exact",
+        ]
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(
+            MODULE.os.environ, {"PAPERCLIP_CI_MERGE_ENABLED": "0"}
+        ), mock.patch.object(MODULE, "app_b_token") as token:
+            self.assertEqual(MODULE.main(), 1)
+        token.assert_not_called()
 
     def test_exact_head_and_base_are_required(self):
         head = "a" * 40
@@ -136,7 +151,7 @@ class MarkPrReadyTest(unittest.TestCase):
                     expected_base="gloops/stable", expected_base_sha=base, token="token",
                 )
 
-    def test_queue_base_drift_dequeues_without_publishing_integration_review(self):
+    def test_queue_base_drift_withholds_authority_without_destructive_dequeue(self):
         entry = {
             "id": "queue-entry",
             "state": "AWAITING_CHECKS",
@@ -147,19 +162,20 @@ class MarkPrReadyTest(unittest.TestCase):
         binding = {
             "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
             "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
-            "reviewedHeadSha": "a" * 40, "sourceRunId": "source-run",
-            "reviewRunId": "review-run",
+            "reviewedHeadSha": "a" * 40,
         }
         state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
             MODULE.queue_attempt_key(binding): {
-                "binding": binding, "state": "enqueued", "queueEntryId": "queue-entry",
+                "binding": binding,
+                "reviewProvenance": {"sourceRunId": "source-run", "reviewRunId": "review-run"},
+                "state": "enqueued", "queueEntryId": "queue-entry",
             },
         }}
         with mock.patch.object(MODULE, "load_queue_attempts", return_value=state), mock.patch.object(
             MODULE, "save_queue_attempts"
         ), mock.patch.object(MODULE, "queue_entry", return_value=entry), mock.patch.object(
-            MODULE, "dequeue_entry"
-        ) as dequeue, mock.patch.object(MODULE, "ensure_integration_review_check") as publish:
+            MODULE, "graphql"
+        ) as graphql, mock.patch.object(MODULE, "ensure_integration_review_check") as publish:
             with self.assertRaisesRegex(RuntimeError, "fresh review required"):
                 MODULE.enqueue_exact_merge_group(
                     queue_token="queue-token", check_token="check-token",
@@ -168,31 +184,20 @@ class MarkPrReadyTest(unittest.TestCase):
                     expected_base_sha="b" * 40, expected_head_sha="a" * 40,
                     source_run_id="source-run", review_run_id="review-run",
                 )
-        dequeue.assert_called_once_with("queue-token", "pr-node", "queue-entry")
+        graphql.assert_not_called()
         publish.assert_not_called()
-
-    def test_dequeue_uses_pull_request_node_and_binds_returned_entry(self):
-        with mock.patch.object(MODULE, "graphql", return_value={
-            "dequeuePullRequest": {"mergeQueueEntry": {"id": "entry-1"}},
-        }) as graphql:
-            MODULE.dequeue_entry("token", "pr-node", "entry-1")
-        self.assertEqual(graphql.call_args.args[2], {"id": "pr-node"})
-        with mock.patch.object(MODULE, "graphql", return_value={
-            "dequeuePullRequest": {"mergeQueueEntry": {"id": "entry-2"}},
-        }):
-            with self.assertRaisesRegex(RuntimeError, "does not match"):
-                MODULE.dequeue_entry("token", "pr-node", "entry-1")
 
     def test_finished_queue_attempt_is_not_reenqueued(self):
         binding = {
             "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
             "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
-            "reviewedHeadSha": "a" * 40, "sourceRunId": "source-run",
-            "reviewRunId": "review-run",
+            "reviewedHeadSha": "a" * 40,
         }
         state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
             MODULE.queue_attempt_key(binding): {
-                "binding": binding, "state": "integration_review_published",
+                "binding": binding,
+                "reviewProvenance": {"sourceRunId": "source-run", "reviewRunId": "review-run"},
+                "state": "integration_review_published",
                 "queueEntryId": "old-entry",
             },
         }}
@@ -211,6 +216,100 @@ class MarkPrReadyTest(unittest.TestCase):
             "priorQueueEntryId": "old-entry",
             "attemptState": "integration_review_published",
         })
+        graphql.assert_not_called()
+
+    def test_reserved_pre_effect_attempt_requires_reconciliation(self):
+        binding = {
+            "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
+            "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
+            "reviewedHeadSha": "a" * 40,
+        }
+        state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
+            MODULE.queue_attempt_key(binding): {
+                "binding": binding,
+                "reviewProvenance": {"sourceRunId": "source-run", "reviewRunId": "review-run"},
+                "state": "reserved", "queueEntryId": None,
+            },
+        }}
+        with mock.patch.object(MODULE, "load_queue_attempts", return_value=state), mock.patch.object(
+            MODULE, "queue_entry", return_value=None
+        ), mock.patch.object(MODULE, "graphql") as graphql:
+            result = MODULE.enqueue_exact_merge_group(
+                queue_token="queue-token", check_token="check-token",
+                node_id="pr-node", repo="gloopsAI/paperclip",
+                repository_id=1299155335, pull_request_number=305,
+                expected_base_sha="b" * 40, expected_head_sha="a" * 40,
+                source_run_id="source-run", review_run_id="review-run",
+            )
+        self.assertEqual(result, {
+            "queueAttemptSuppressed": True,
+            "reconciliationRequired": True,
+            "attemptState": "reserved",
+        })
+        graphql.assert_not_called()
+
+    def test_enqueue_response_loss_reconciles_observed_entry(self):
+        binding = {
+            "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
+            "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
+            "reviewedHeadSha": "a" * 40,
+        }
+        state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
+            MODULE.queue_attempt_key(binding): {
+                "binding": binding,
+                "reviewProvenance": {"sourceRunId": "source-run", "reviewRunId": "review-run"},
+                "state": "reserved", "queueEntryId": None,
+            },
+        }}
+        entry = {
+            "id": "recovered-entry", "state": "AWAITING_CHECKS",
+            "baseCommit": {"oid": "b" * 40}, "headCommit": {"oid": "d" * 40},
+            "pullRequest": {"id": "pr-node"},
+        }
+        with mock.patch.object(MODULE, "load_queue_attempts", return_value=state), mock.patch.object(
+            MODULE, "save_queue_attempts"
+        ) as save, mock.patch.object(MODULE, "queue_entry", return_value=entry), mock.patch.object(
+            MODULE, "graphql"
+        ) as graphql, mock.patch.object(
+            MODULE, "ensure_integration_review_check", return_value="gloops-ir-group-v1:digest"
+        ):
+            result = MODULE.enqueue_exact_merge_group(
+                queue_token="queue-token", check_token="check-token",
+                node_id="pr-node", repo="gloopsAI/paperclip",
+                repository_id=1299155335, pull_request_number=305,
+                expected_base_sha="b" * 40, expected_head_sha="a" * 40,
+                source_run_id="source-run", review_run_id="review-run",
+            )
+        self.assertEqual(result["queueEntryId"], "recovered-entry")
+        self.assertEqual(result["integrationSha"], "d" * 40)
+        self.assertEqual(state["attempts"][MODULE.queue_attempt_key(binding)]["state"], "integration_review_published")
+        graphql.assert_not_called()
+        save.assert_called_once()
+
+    def test_new_review_lineage_cannot_reenqueue_same_candidate(self):
+        binding = {
+            "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
+            "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
+            "reviewedHeadSha": "a" * 40,
+        }
+        state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
+            MODULE.queue_attempt_key(binding): {
+                "binding": binding,
+                "reviewProvenance": {"sourceRunId": "source-run", "reviewRunId": "old-review"},
+                "state": "integration_review_published", "queueEntryId": "old-entry",
+            },
+        }}
+        with mock.patch.object(MODULE, "load_queue_attempts", return_value=state), mock.patch.object(
+            MODULE, "queue_entry", return_value=None
+        ), mock.patch.object(MODULE, "graphql") as graphql:
+            with self.assertRaisesRegex(RuntimeError, "provenance changed"):
+                MODULE.enqueue_exact_merge_group(
+                    queue_token="queue-token", check_token="check-token",
+                    node_id="pr-node", repo="gloopsAI/paperclip",
+                    repository_id=1299155335, pull_request_number=305,
+                    expected_base_sha="b" * 40, expected_head_sha="a" * 40,
+                    source_run_id="source-run", review_run_id="new-review",
+                )
         graphql.assert_not_called()
 
     def test_queue_attempt_state_is_durable_and_round_trips(self):

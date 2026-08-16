@@ -173,7 +173,10 @@ class ArgusPublishPollerTests(unittest.TestCase):
                     "ok": True, "repo": "gloopsAI/paperclip", "pr": 300,
                     "headSha": HEAD, "baseRef": "gloops/stable",
                     "baseSha": "b" * 40, "queueEnded": True,
-                    "queueEvidence": {"attemptState": "integration_review_published"},
+                    "queueEvidence": {
+                        "attemptState": "integration_review_published",
+                        "priorQueueEntryId": "entry-1",
+                    },
                 },
             ), patch.object(poller.sys, "argv", ["poller", "--once"]):
                 self.assertEqual(poller.main(), 0)
@@ -208,6 +211,20 @@ class ArgusPublishPollerTests(unittest.TestCase):
             publish.assert_called_once_with(binding, "accepted")
             self.assertEqual(receipt["result"], "review_published_merge_pending")
             self.assertEqual(receipt["mergePathErrorClass"], "RuntimeError")
+
+    def test_publication_failure_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            binding = {**BINDING, "sourceIssue": "GLO-3000", "reviewIssueId": "review-1", "reviewRunId": RUN_ID}
+            pr = {"number": 300, "title": "surface", "state": "open", "head": {"sha": HEAD}, "base": {"ref": "gloops/stable", "sha": "b" * 40, "repo": {"id": 1299155335}}}
+            with patch.object(poller, "STATE_PATH", state), patch.object(
+                poller, "collect_approved_bindings", return_value=[binding]
+            ), patch.object(poller, "gh_json", return_value=pr), patch.object(
+                poller, "independent_review_ok", return_value=False
+            ), patch.object(poller, "publish", side_effect=RuntimeError("injected")), patch.object(
+                poller.sys, "argv", ["poller", "--once"]
+            ):
+                self.assertEqual(poller.main(), 1)
 
     def test_independent_review_recovery_requires_exact_app_and_external_id(self):
         binding = {**BINDING, "sourceIssue": "GLO-3000", "reviewIssueId": "review-1", "reviewRunId": RUN_ID}

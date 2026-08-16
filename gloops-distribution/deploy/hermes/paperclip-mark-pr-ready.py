@@ -223,17 +223,6 @@ def queue_entry(token: str, pull_request_node_id: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
-def dequeue_entry(token: str, pull_request_node_id: str, expected_entry_id: str) -> None:
-    data = graphql(token, """
-      mutation($id: ID!) {
-        dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { id } }
-      }
-    """, {"id": pull_request_node_id})
-    removed = (data.get("dequeuePullRequest") or {}).get("mergeQueueEntry")
-    if not isinstance(removed, dict) or removed.get("id") != expected_entry_id:
-        raise RuntimeError("dequeued merge-queue entry does not match the observed entry")
-
-
 def queue_attempt_key(binding: dict) -> str:
     return hashlib.sha256(
         json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
@@ -344,29 +333,41 @@ def enqueue_exact_merge_group(
     pull_request_number: int, expected_base_sha: str, expected_head_sha: str,
     source_run_id: str, review_run_id: str,
 ) -> dict:
-    attempt_binding = {
+    candidate_binding = {
         "repositoryId": repository_id,
         "repository": repo,
         "pullRequestNumber": pull_request_number,
         "reviewedBaseSha": expected_base_sha,
         "reviewedHeadSha": expected_head_sha,
+    }
+    review_provenance = {
         "sourceRunId": source_run_id,
         "reviewRunId": review_run_id,
     }
-    attempt_key = queue_attempt_key(attempt_binding)
+    attempt_key = queue_attempt_key(candidate_binding)
     attempt_state = load_queue_attempts()
     attempts = attempt_state["attempts"]
     entry = queue_entry(queue_token, node_id)
     if entry is None:
         existing = attempts.get(attempt_key)
         if isinstance(existing, dict):
+            if existing.get("reviewProvenance") != review_provenance:
+                raise RuntimeError("review provenance changed for an already-attempted candidate")
+            proven_entry_id = existing.get("queueEntryId")
+            if not isinstance(proven_entry_id, str) or not proven_entry_id:
+                return {
+                    "queueAttemptSuppressed": True,
+                    "reconciliationRequired": True,
+                    "attemptState": existing.get("state"),
+                }
             return {
                 "queueEnded": True,
-                "priorQueueEntryId": existing.get("queueEntryId"),
+                "priorQueueEntryId": proven_entry_id,
                 "attemptState": existing.get("state"),
             }
         attempts[attempt_key] = {
-            "binding": attempt_binding,
+            "binding": candidate_binding,
+            "reviewProvenance": review_provenance,
             "state": "reserved",
             "reservedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "queueEntryId": None,
@@ -400,18 +401,20 @@ def enqueue_exact_merge_group(
     existing = attempts.get(attempt_key)
     if not isinstance(existing, dict):
         raise RuntimeError("unreserved merge-queue entry cannot receive review authority")
+    if existing.get("reviewProvenance") != review_provenance:
+        raise RuntimeError("review provenance changed for an already-attempted candidate")
     if existing.get("queueEntryId") not in (None, entry_id):
         raise RuntimeError("merge-queue entry conflicts with its durable reservation")
     existing["queueEntryId"] = entry_id
     if SHA_RE.fullmatch(integration_sha) is None or not entry_id:
         raise RuntimeError("merge-queue integration identity is malformed")
     if base_sha != expected_base_sha:
-        dequeue_entry(queue_token, node_id, entry_id)
-        existing["state"] = "dequeued_base_drift"
+        existing["state"] = "withheld_base_drift"
         existing["observedBaseSha"] = base_sha
         save_queue_attempts(attempt_state)
         raise RuntimeError(
-            f"merge-queue base drifted: expected {expected_base_sha}, observed {base_sha or 'missing'}; fresh review required"
+            f"merge-queue base drifted: expected {expected_base_sha}, observed {base_sha or 'missing'}; "
+            "integration authority withheld and fresh review required"
         )
     external_id = ensure_integration_review_check(
         repo=repo, repository_id=repository_id,
@@ -479,6 +482,12 @@ def main() -> int:
     if SHA_RE.fullmatch(expected_head) is None or SHA_RE.fullmatch(expected_base_sha) is None:
         print(json.dumps({"ok": False, "error": "expected head and base must be full lowercase SHAs"}), file=sys.stderr)
         return 1
+    if args.merge_exact:
+        try:
+            require_ci_merge_enabled()
+        except Exception as error:
+            print(json.dumps({"ok": False, "error": str(error)[:400]}, sort_keys=True), file=sys.stderr)
+            return 1
 
     tokens: list[str] = []
     try:
@@ -543,7 +552,6 @@ def main() -> int:
             refreshed = gh_api("GET", path, check_token)
             assert_exact_pr(refreshed, expected_head, args.base, expected_base_sha)
             if args.merge_exact and refreshed.get("mergeable") is True and refreshed.get("mergeable_state") == "clean":
-                require_ci_merge_enabled()
                 mutation_attempted = True
                 queue_token = app_b_token(
                     int(binding["repositoryId"]),
@@ -577,6 +585,10 @@ def main() -> int:
             isinstance(queue_evidence, dict)
             and queue_evidence.get("queueEnded") is True
         )
+        queue_attempt_suppressed = bool(
+            isinstance(queue_evidence, dict)
+            and queue_evidence.get("queueAttemptSuppressed") is True
+        )
         if not ready:
             raise RuntimeError("PR did not become ready")
         print(json.dumps({
@@ -589,8 +601,19 @@ def main() -> int:
             "ready": ready,
             "merged": merged,
             "mergePending": bool(args.merge_exact and not merged and queue_evidence is None),
-            "mergeQueued": bool(queue_evidence is not None and not queue_ended and not merged),
+            "mergeQueued": bool(
+                queue_evidence is not None
+                and not queue_ended
+                and not queue_attempt_suppressed
+                and not merged
+            ),
             "queueEnded": queue_ended,
+            "queueAttemptSuppressed": queue_attempt_suppressed,
+            "reconciliationRequired": bool(
+                queue_attempt_suppressed
+                and isinstance(queue_evidence, dict)
+                and queue_evidence.get("reconciliationRequired") is True
+            ),
             "queueEvidence": queue_evidence,
             "queuePolicy": policy,
             "mutationAttempted": mutation_attempted,

@@ -42,8 +42,10 @@ projects the authenticated independent-review receipt onto the queue integration
 SHA only when its queue base exactly matches the reviewed base SHA.
 The queue token has only `merge_queues:write` plus repository read authority;
 check publication uses a separate `checks:write` token. A durable attempt slot
-permits one queue entry for the exact reviewed tuple and terminally suppresses
-automatic re-enqueue after GitHub removes it. The systemd path and timer are the
+permits one queue entry for the exact repository/PR/base/head candidate and
+terminally suppresses automatic re-enqueue after GitHub removes it. A reserved
+but unproved entry is receipted as reconciliation-required instead of ended.
+The systemd path and timer are the
 operational kill switch, and the helper also requires the explicit
 `PAPERCLIP_CI_MERGE_ENABLED=1` unit setting before queue mutation.
 The helper allowlists the four governed repository/base pairs and revalidates
