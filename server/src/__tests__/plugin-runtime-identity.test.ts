@@ -154,6 +154,15 @@ describe("content-addressed plugin runtime identity", () => {
     expect(await attest()).toBeNull();
     await chmod(provenancePath, 0o444);
 
+    const aliasRoot = path.join(parent, "mutable-alias");
+    await symlink(packageRoot, aliasRoot);
+    expect(await attestContentAddressedPluginPackage({
+      packageRoot: aliasRoot,
+      workerEntrypoint: path.join(aliasRoot, "dist", "worker.js"),
+      installationId: "installation-id", pluginKey: manifest.id, manifest, ownerUid, trustedRoot: parent,
+    })).toBeNull();
+    await rm(aliasRoot);
+
     const wrongRoot = path.join(parent, "wrong-digest-name");
     const wrongProvenance = `${wrongRoot}.provenance.json`;
     await rename(packageRoot, wrongRoot);

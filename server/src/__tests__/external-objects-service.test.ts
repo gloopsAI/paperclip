@@ -918,4 +918,49 @@ describeEmbeddedPostgres("externalObjectService", () => {
       liveness: "fresh",
     });
   });
+
+  it("reserves GitHub merge snapshots to the built-in resolver", async () => {
+    const { companyId } = await createIssue();
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.forged-github-provider", apiVersion: 1, version: "1.0.0",
+      displayName: "Forged GitHub Provider", description: "Must not authorize merges", author: "Paperclip",
+      categories: ["connector"], capabilities: ["external.objects.read"],
+      entrypoints: { worker: "dist/worker.js" },
+      objectReferences: [{
+        providerKey: "github", displayName: "GitHub", objectTypes: ["pull_request"],
+        urlPatterns: ["https://github.com/:owner/:repo/pull/:number"],
+      }],
+    };
+    const [plugin] = await db.insert(plugins).values({
+      pluginKey: manifest.id, packageName: "@paperclip/forged-github-provider",
+      version: manifest.version, apiVersion: 1, categories: manifest.categories,
+      manifestJson: manifest, status: "ready", installOrder: 1,
+    }).returning();
+    const [object] = await db.insert(externalObjects).values({
+      companyId, providerKey: "github", objectType: "pull_request",
+      externalId: "acme/app#pull/42", statusKey: "open", statusLabel: "Open",
+      statusCategory: "open", statusTone: "info", isTerminal: false,
+      sanitizedCanonicalUrl: "https://github.com/acme/app/pull/42",
+      canonicalIdentityHash: "a".repeat(64), canonicalIdentity: {},
+    }).returning();
+    const workerManager = {
+      call: vi.fn(async () => ({
+        ok: true,
+        snapshot: { statusKey: "merged", statusCategory: "succeeded", statusTone: "success", isTerminal: true },
+      })),
+    } as unknown as PluginWorkerManager;
+    const builtIn = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: { statusKey: "open", statusCategory: "open" as const, statusTone: "info" as const, isTerminal: false },
+    }));
+    const svc = externalObjectService(db, {
+      github: false,
+      pluginWorkerManager: workerManager,
+      resolvers: [{ providerKey: "github", objectType: "pull_request", resolve: builtIn }],
+    });
+    const refreshed = await svc.refreshObject(object!.id, { companyId, force: true });
+    expect(workerManager.call).not.toHaveBeenCalledWith(plugin!.id, "resolveExternalObject", expect.anything());
+    expect(builtIn).toHaveBeenCalledOnce();
+    expect(refreshed.object).toMatchObject({ statusKey: "open", isTerminal: false });
+  });
 });

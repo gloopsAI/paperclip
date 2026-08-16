@@ -172,9 +172,11 @@ export async function attestContentAddressedPluginPackage(input: {
   try {
     const ownerUid = input.ownerUid ?? 0;
     const canonicalRoot = await realpath(input.packageRoot);
+    if (path.resolve(input.packageRoot) !== canonicalRoot) return null;
     if (input.trustedRoot === undefined
       && path.dirname(canonicalRoot) !== CONTENT_ADDRESSED_PLUGIN_ROOT) return null;
     const canonicalWorker = await realpath(input.workerEntrypoint);
+    if (path.resolve(input.workerEntrypoint) !== canonicalWorker) return null;
     if (!canonicalWorker.startsWith(`${canonicalRoot}${path.sep}`)) return null;
     const packageTreeSha256 = await computeContentAddressedPluginTreeSha256(
       canonicalRoot,

@@ -1128,7 +1128,12 @@ export function externalObjectService(
       return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
     }
 
-    const pluginResult = await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
+    // GitHub merge state is promotion authority. Reserve that provider namespace
+    // to the built-in authenticated resolver; plugins may enrich other providers
+    // but cannot self-certify a GitHub merge/head tuple.
+    const pluginResult = object.providerKey === "github"
+      ? null
+      : await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
     const resolver = pluginResult ? null : resolverRegistry.find(object);
     if (!pluginResult && !resolver) {
       const [updated] = await db
