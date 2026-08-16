@@ -27,7 +27,12 @@ import {
 } from "../services/external-objects.js";
 import { canonicalizeExternalObjectUrl } from "@paperclipai/shared/external-objects-server";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
+import {
+  PAPERCLIP_EXECUTION_CONTEXT_KEY,
+  PAPERCLIP_EXECUTION_RECEIPT_KEY,
+  buildBoundExecutionContext,
+  buildCanonicalContinuationPacket,
+} from "@paperclipai/adapter-utils/execution-envelope";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
 
@@ -651,12 +656,25 @@ describeEmbeddedPostgres("externalObjectService", () => {
       ...receiptBody,
       digest: `sha256:${createHash("sha256").update(JSON.stringify(stable(receiptBody))).digest("hex")}`,
     };
+    const boundPacket = buildCanonicalContinuationPacket({
+      issue: { id: issueId, title: "Autonomic policy" },
+      repoRef: {
+        repoUrl: "https://github.com/acme/app.git",
+        workspaceId: executionWorkspaceId,
+      },
+      authority: { companyId, runId },
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
       status: "succeeded",
-      contextSnapshot: { [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt },
+      contextSnapshot: {
+        issueId,
+        executionWorkspaceId,
+        [PAPERCLIP_EXECUTION_CONTEXT_KEY]: buildBoundExecutionContext(boundPacket),
+        [PAPERCLIP_EXECUTION_RECEIPT_KEY]: receipt,
+      },
     });
     await db.update(issues).set({
       status: "in_review",
@@ -670,6 +688,34 @@ describeEmbeddedPostgres("externalObjectService", () => {
       originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
       originId: "c".repeat(64),
     }).where(eq(issues.id, issueId));
+    const createdByRuntime = {
+      installationId: "plugin-record-id",
+      pluginKey: "gloops.autonomic-improvement-policy",
+      version: "0.3.0",
+      manifestSha256: "d".repeat(64),
+      workerEntrypointSha256: "e".repeat(64),
+      packageTreeSha256: "f".repeat(64),
+      sourceRepository: "gloopsai/gloops-paperclip-plugin",
+      sourceHeadSha: "1".repeat(40),
+      deploymentReceiptDigest: "2".repeat(64),
+      jobDeclarationCount: 1,
+      jobKeys: ["observe"],
+      jobDeclarationsSha256: "3".repeat(64),
+    };
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "plugin",
+      actorId: createdByRuntime.installationId,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        pluginKey: createdByRuntime.pluginKey,
+        originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+        originId: "c".repeat(64),
+        createdByRuntime,
+      },
+    });
 
     const svc = externalObjectService(db, {
       github: {
@@ -702,7 +748,8 @@ describeEmbeddedPostgres("externalObjectService", () => {
     });
     expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
       .toEqual([{ status: "in_review" }]);
-    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toHaveLength(0);
+    expect((await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
+      .filter((entry) => entry.action === "issue.updated")).toHaveLength(0);
 
     await db.update(executionWorkspaces)
       .set({ repoUrl: "https://github.com/acme/app.git" })
@@ -750,6 +797,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
       authorizedRepository: "acme/app",
       terminalReceiptDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       candidateOriginId: "c".repeat(64),
+      candidateCreatedByRuntime: createdByRuntime,
     });
   });
 

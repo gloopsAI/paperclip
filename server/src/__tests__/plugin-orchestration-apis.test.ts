@@ -243,7 +243,28 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       identifier: `${issuePrefix(companyId)}-blocker`,
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const creationRuntimeIdentity = {
+      installationId: "plugin-record-id",
+      pluginKey: "paperclip.missions",
+      version: "1.0.0",
+      manifestSha256: "1".repeat(64),
+      workerEntrypointSha256: "2".repeat(64),
+      packageTreeSha256: "3".repeat(64),
+      sourceRepository: "acme/paperclip-missions",
+      sourceHeadSha: "4".repeat(40),
+      deploymentReceiptDigest: "5".repeat(64),
+      jobDeclarationCount: 1,
+      jobKeys: ["observe"],
+      jobDeclarationsSha256: "6".repeat(64),
+    };
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.missions",
+      createEventBusStub(),
+      undefined,
+      { runtimeIdentity: creationRuntimeIdentity },
+    );
     const issue = await services.issues.create({
       companyId,
       title: "Plugin child issue",
@@ -287,6 +308,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
             initiatingActorType: "agent",
             initiatingActorId: agentId,
             initiatingRunId: originRunId,
+            createdByRuntime: creationRuntimeIdentity,
           }),
         }),
       ]),
@@ -423,6 +445,17 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         patch: { originKind: "plugin:other.plugin:feature" },
       }),
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
+
+    await expect(services.issues.update({
+      issueId: featureIssue.id,
+      companyId,
+      patch: { originKind: "plugin:paperclip.missions:other" },
+    })).rejects.toThrow("originKind is immutable");
+    await expect(services.issues.update({
+      issueId: featureIssue.id,
+      companyId,
+      patch: { originId: "replacement" },
+    })).rejects.toThrow("originId is immutable");
   });
 
   it("accepts terminal truth only from a capability-scoped plugin projection bound to the run", async () => {
@@ -1130,6 +1163,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       version: "0.3.1",
       manifestSha256: "d".repeat(64),
       workerEntrypointSha256: "e".repeat(64),
+      packageTreeSha256: "f".repeat(64),
+      sourceRepository: "gloopsai/gloops-paperclip-plugin",
+      sourceHeadSha: "1".repeat(40),
+      deploymentReceiptDigest: "2".repeat(64),
+      jobDeclarationCount: 1,
+      jobKeys: ["observe"],
+      jobDeclarationsSha256: "3".repeat(64),
     };
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub(), undefined, {
       runtimeIdentity,
@@ -1154,6 +1194,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         terminalReceiptDigest: receipt.digest,
         candidateOriginKind: "plugin:gloops.autonomic-improvement-policy:candidate",
         candidateOriginId: "c".repeat(64),
+        candidateCreatedByRuntime: runtimeIdentity,
       },
     });
     const forged = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
@@ -1178,6 +1219,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         terminalReceiptDigest: receipt.digest,
         candidateOriginKind: "plugin:gloops.autonomic-improvement-policy:candidate",
         candidateOriginId: "c".repeat(64),
+        candidateCreatedByRuntime: runtimeIdentity,
       },
     });
     const summary = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
@@ -1188,6 +1230,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       candidate: {
         originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
         originId: "c".repeat(64),
+        createdByRuntime: runtimeIdentity,
       },
       pullRequest: {
         provider: "github",

@@ -1253,6 +1253,7 @@ export interface PluginIssueRunSummary {
     candidate: {
       originKind: string;
       originId: string;
+      createdByRuntime: PluginRuntimeIdentity;
     };
     pullRequest: {
       provider: "github";
@@ -1326,6 +1327,21 @@ export interface PluginIssueInvocationBlockSummary {
   reason: string;
 }
 
+export interface PluginRuntimeIdentity {
+  installationId: string;
+  pluginKey: string;
+  version: string;
+  manifestSha256: string;
+  workerEntrypointSha256: string;
+  packageTreeSha256: string;
+  sourceRepository: string;
+  sourceHeadSha: string;
+  deploymentReceiptDigest: string;
+  jobDeclarationCount: number;
+  jobKeys: string[];
+  jobDeclarationsSha256: string;
+}
+
 export interface PluginIssueOrchestrationSummary {
   issueId: string;
   companyId: string;
@@ -1333,13 +1349,7 @@ export interface PluginIssueOrchestrationSummary {
    * Host-observed identity of the exact plugin worker instance serving this
    * request. The worker cannot supply or override these values.
    */
-  runtimeIdentity: {
-    installationId: string;
-    pluginKey: string;
-    version: string;
-    manifestSha256: string;
-    workerEntrypointSha256: string;
-  };
+  runtimeIdentity: PluginRuntimeIdentity | null;
   subtreeIssueIds: string[];
   relations: Record<string, PluginIssueRelationSummary>;
   approvals: PluginIssueApprovalSummary[];

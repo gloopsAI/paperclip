@@ -530,7 +530,14 @@ export function buildHostServices(
       version: string;
       manifestSha256: string;
       workerEntrypointSha256: string;
-    };
+      packageTreeSha256: string;
+      sourceRepository: string;
+      sourceHeadSha: string;
+      deploymentReceiptDigest: string;
+      jobDeclarationCount: number;
+      jobKeys: string[];
+      jobDeclarationsSha256: string;
+    } | null;
   } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
@@ -669,7 +676,41 @@ export function buildHostServices(
   };
 
   const SHA = /^[0-9a-f]{40}$/;
+  const SHA256 = /^[0-9a-f]{64}$/;
   const RECEIPT_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+  const parsePluginRuntimeIdentity = (value: unknown) => {
+    if (!isRecord(value)) return null;
+    const text = (key: string) => typeof value[key] === "string" ? value[key] as string : null;
+    const digest = (key: string) => text(key)?.match(SHA256)?.[0] ?? null;
+    const jobDeclarationCount = value.jobDeclarationCount;
+    const jobKeys = Array.isArray(value.jobKeys)
+      && value.jobKeys.every((entry) => typeof entry === "string" && entry.length > 0)
+      && new Set(value.jobKeys).size === value.jobKeys.length
+      ? [...value.jobKeys].sort() as string[]
+      : null;
+    if (!text("installationId") || !text("pluginKey") || !text("version")
+      || !text("sourceRepository")?.match(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+      || !text("sourceHeadSha")?.match(SHA) || !digest("manifestSha256")
+      || !digest("workerEntrypointSha256") || !digest("packageTreeSha256")
+      || !digest("deploymentReceiptDigest") || !digest("jobDeclarationsSha256")
+      || typeof jobDeclarationCount !== "number" || !Number.isSafeInteger(jobDeclarationCount)
+      || jobDeclarationCount < 0 || !jobKeys || jobKeys.length !== jobDeclarationCount) return null;
+    return {
+      installationId: text("installationId")!,
+      pluginKey: text("pluginKey")!,
+      version: text("version")!,
+      manifestSha256: digest("manifestSha256")!,
+      workerEntrypointSha256: digest("workerEntrypointSha256")!,
+      packageTreeSha256: digest("packageTreeSha256")!,
+      sourceRepository: text("sourceRepository")!.toLowerCase(),
+      sourceHeadSha: text("sourceHeadSha")!.toLowerCase(),
+      deploymentReceiptDigest: digest("deploymentReceiptDigest")!,
+      jobDeclarationCount,
+      jobKeys,
+      jobDeclarationsSha256: digest("jobDeclarationsSha256")!,
+    };
+  };
 
   const parseVerifiedTerminalReceipt = (contextSnapshot: unknown) => {
     if (!isRecord(contextSnapshot)) return null;
@@ -987,6 +1028,7 @@ export function buildHostServices(
               ? data.number
               : null;
             const repository = owner && repo ? `${owner}/${repo}` : null;
+            const createdByRuntime = parsePluginRuntimeIdentity(activity.candidateCreatedByRuntime);
             return candidate.pullObjectId !== null
               && candidate.pullExternalId === `${repository}#pull/${pullNumber}`
               && candidate.pullProviderKey === "github"
@@ -1007,7 +1049,8 @@ export function buildHostServices(
               && activity.mergeCommitSha === mergeCommitSha
               && activity.terminalReceiptDigest === terminalReceipt.receiptDigest
               && activity.candidateOriginKind === row.terminalIssueOriginKind
-              && activity.candidateOriginId === row.terminalIssueOriginId;
+              && activity.candidateOriginId === row.terminalIssueOriginId
+              && createdByRuntime !== null;
           }).map((candidate) => [
             `${candidate.pullObjectId}:${candidate.reconciliationActivityId}`,
             candidate,
@@ -1015,6 +1058,11 @@ export function buildHostServices(
         : [];
       const verifiedTerminalChange = matchingPulls.length === 1 && terminalReceipt
         && typeof row.terminalIssueOriginId === "string" && row.terminalIssueOriginId.length > 0
+        && parsePluginRuntimeIdentity(
+          (isRecord(matchingPulls[0]!.reconciliationActivityDetails)
+            ? matchingPulls[0]!.reconciliationActivityDetails
+            : {}).candidateCreatedByRuntime,
+        )
         ? {
             status: "operational" as const,
             receiptDigest: terminalReceipt.receiptDigest,
@@ -1022,6 +1070,11 @@ export function buildHostServices(
             candidate: {
               originKind: row.terminalIssueOriginKind!,
               originId: row.terminalIssueOriginId,
+              createdByRuntime: parsePluginRuntimeIdentity(
+                (isRecord(matchingPulls[0]!.reconciliationActivityDetails)
+                  ? matchingPulls[0]!.reconciliationActivityDetails
+                  : {}).candidateCreatedByRuntime,
+              )!,
             },
             pullRequest: {
               provider: "github" as const,
@@ -1897,6 +1950,7 @@ export function buildHostServices(
               identifier: issue.identifier,
               originKind: normalizedOriginKind,
               originId: issue.originId,
+              createdByRuntime: options.runtimeIdentity ?? null,
               billingCode: issue.billingCode,
               blockedByIssueIds: params.blockedByIssueIds ?? [],
             },
@@ -1986,7 +2040,17 @@ export function buildHostServices(
         delete patch.actorRunId;
         delete patch.executionTruthReceipt;
         if (patch.originKind !== undefined) {
-          patch.originKind = normalizePluginOriginKind(patch.originKind);
+          const requestedOriginKind = normalizePluginOriginKind(patch.originKind);
+          if (requestedOriginKind !== existing.originKind) {
+            throw new Error("Plugin issue originKind is immutable after creation");
+          }
+          delete patch.originKind;
+        }
+        if (patch.originId !== undefined) {
+          if (patch.originId !== existing.originId) {
+            throw new Error("Plugin issue originId is immutable after creation");
+          }
+          delete patch.originId;
         }
         const governedTransition = patch.status === "in_review"
           ? "ready"
@@ -2439,13 +2503,7 @@ export function buildHostServices(
         return {
           issueId: rootIssue.id,
           companyId,
-          runtimeIdentity: options.runtimeIdentity ?? {
-            installationId: pluginId,
-            pluginKey,
-            version: options.manifest?.version ?? "unknown",
-            manifestSha256: "unavailable",
-            workerEntrypointSha256: "unavailable",
-          },
+          runtimeIdentity: options.runtimeIdentity ?? null,
           subtreeIssueIds,
           relations: Object.fromEntries(relationPairs),
           approvals: approvalRows,
