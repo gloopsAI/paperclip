@@ -338,6 +338,10 @@ const closedLoopPublishPathUnitPath = new URL(
   "../gloops-distribution/deploy/hermes/systemd/paperclip-closed-loop-publish-poller.path",
   import.meta.url,
 );
+const closedLoopPublishServicePath = new URL(
+  "../gloops-distribution/deploy/hermes/systemd/paperclip-closed-loop-publish-poller.service",
+  import.meta.url,
+);
 const githubWebhookCaddyRoutePath = new URL(
   "../gloops-distribution/deploy/hermes/github-webhook-caddy-route.txt",
   import.meta.url,
@@ -580,6 +584,7 @@ const githubWebhookReceiverService = readFileSync(githubWebhookReceiverServicePa
 const closedLoopPublishPoller = readFileSync(closedLoopPublishPollerPath, "utf8");
 const markPrReady = readFileSync(markPrReadyPath, "utf8");
 const closedLoopPublishPathUnit = readFileSync(closedLoopPublishPathUnitPath, "utf8");
+const closedLoopPublishService = readFileSync(closedLoopPublishServicePath, "utf8");
 const githubWebhookCaddyRoute = readFileSync(githubWebhookCaddyRoutePath, "utf8");
 const publicGithubWebhookRunbook = readFileSync(publicGithubWebhookRunbookPath, "utf8");
 const prepareHermesExecution = readFileSync(prepareHermesExecutionPath, "utf8");
@@ -2107,6 +2112,7 @@ for (const required of [
   '"--base-sha"',
   '"merge_path_failed"',
   '"review_published_merge_pending"',
+  '"review_published_queue_terminal_suppressed"',
   "protected merge helper evidence is not bound to the approved head/base",
 ]) {
   if (!closedLoopPublishPoller.includes(required)) {
@@ -2121,11 +2127,24 @@ for (const required of [
   'parser.add_argument("--merge-exact", action="store_true")',
   '"single-entry merge queue or exact App-B required check is absent"',
   'enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head})',
+  'dequeuePullRequest(input: {id: $id})',
+  '"merge_queues": "write"',
+  '"exact-merge-queue-attempts@1"',
+  '"PAPERCLIP_CI_MERGE_ENABLED"',
   '"mergeQueued"',
   '"mergePending"',
+  '"queueEnded"',
 ]) {
   if (!markPrReady.includes(required)) {
     fail(`exact-head protected merge helper is missing ${required}`);
+  }
+}
+for (const required of [
+  "Environment=PAPERCLIP_CI_MERGE_ENABLED=1",
+  "Environment=PAPERCLIP_MERGE_QUEUE_STATE=/var/lib/paperclip-gloops/exact-merge-queue-attempts.json",
+]) {
+  if (!closedLoopPublishService.includes(required)) {
+    fail(`closed-loop publish service is missing ${required}`);
   }
 }
 for (const required of [

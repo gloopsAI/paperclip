@@ -253,8 +253,9 @@ def mark_ready_and_merge(binding: dict) -> dict:
         evidence.get("merged") is not True
         and evidence.get("mergePending") is not True
         and evidence.get("mergeQueued") is not True
+        and evidence.get("queueEnded") is not True
     ):
-        raise RuntimeError("protected merge path is neither merged, queued, nor cleanly pending")
+        raise RuntimeError("protected merge path is neither merged, queued, terminally suppressed, nor cleanly pending")
     return evidence
 
 
@@ -528,17 +529,26 @@ def main() -> int:
                     merge_evidence = mark_ready_and_merge(binding)
                     merged = merge_evidence.get("merged") is True
                     queued = merge_evidence.get("mergeQueued") is True
+                    queue_ended = merge_evidence.get("queueEnded") is True
                     st.setdefault("publishedForPr", {})[key] = {
                         "at": ts(),
                         "source": binding["sourceIssue"],
-                        "note": "merged" if merged else ("merge_queued" if queued else "merge_pending"),
+                        "note": (
+                            "merged" if merged else
+                            ("merge_queued" if queued else
+                             ("queue_terminal_suppressed" if queue_ended else "merge_pending"))
+                        ),
                     }
                     actions.append(
                         {
                             "repository": repo, "pr": num,
                             "head": head,
                             "at": ts(),
-                            "result": "merged" if merged else ("merge_queued" if queued else "merge_pending"),
+                            "result": (
+                                "merged" if merged else
+                                ("merge_queued" if queued else
+                                 ("queue_terminal_suppressed" if queue_ended else "merge_pending"))
+                            ),
                             "alreadyPublished": already,
                             "mergeEvidence": merge_evidence,
                         }
@@ -583,7 +593,11 @@ def main() -> int:
                 else (
                     "review_published_merge_queued"
                     if action.get("mergeEvidence", {}).get("mergeQueued") is True
-                    else "review_published_merge_pending"
+                    else (
+                        "review_published_queue_terminal_suppressed"
+                        if action.get("mergeEvidence", {}).get("queueEnded") is True
+                        else "review_published_merge_pending"
+                    )
                 )
             )
             st.setdefault("publishedForPr", {})[key] = action

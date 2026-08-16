@@ -40,6 +40,12 @@ After SUCCESS publication, the same repository-scoped App-B installation marks
 the exact draft ready and enqueues the normal protected squash merge. App B
 projects the authenticated independent-review receipt onto the queue integration
 SHA only when its queue base exactly matches the reviewed base SHA.
+The queue token has only `merge_queues:write` plus repository read authority;
+check publication uses a separate `checks:write` token. A durable attempt slot
+permits one queue entry for the exact reviewed tuple and terminally suppresses
+automatic re-enqueue after GitHub removes it. The systemd path and timer are the
+operational kill switch, and the helper also requires the explicit
+`PAPERCLIP_CI_MERGE_ENABLED=1` unit setting before queue mutation.
 The helper allowlists the four governed repository/base pairs and revalidates
 the full PR tuple before and after every mutation. It cannot bypass the publisher's
 trust-substrate denylist. A substrate PR still follows the Board Approve →

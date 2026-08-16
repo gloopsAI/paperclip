@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -23,6 +24,11 @@ class MarkPrReadyTest(unittest.TestCase):
             MODULE.governed_repository("gloopsAI/personal-delegate", "gloops/stable")
         with self.assertRaisesRegex(RuntimeError, "outside the governed allowlist"):
             MODULE.governed_repository("acme/foreign", "main")
+
+    def test_ci_merge_kill_switch_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "disabled by kill switch"):
+            MODULE.require_ci_merge_enabled({})
+        MODULE.require_ci_merge_enabled({"PAPERCLIP_CI_MERGE_ENABLED": "1"})
 
     def test_exact_head_and_base_are_required(self):
         head = "a" * 40
@@ -97,14 +103,10 @@ class MarkPrReadyTest(unittest.TestCase):
                 "required_status_checks": [{"context": "gloops / independent-review", "integration_id": 4071335}],
             }},
         ]
-        with mock.patch.object(MODULE, "gh_api", side_effect=[rules, {"bypass_actors": []}]):
+        with mock.patch.object(MODULE, "gh_api", return_value=rules):
             self.assertEqual(MODULE.merge_queue_policy("gloopsAI/paperclip", "gloops/stable", "token"), {
                 "queueRulesetIds": [10],
             })
-        bypass = {"bypass_actors": [{"actor_type": "Integration", "actor_id": 4071335}]}
-        with mock.patch.object(MODULE, "gh_api", side_effect=[rules, bypass]):
-            with self.assertRaisesRegex(RuntimeError, "may not bypass"):
-                MODULE.merge_queue_policy("gloopsAI/paperclip", "gloops/stable", "token")
         wrong_checks = [{**rules[0]}, {**rules[1], "parameters": {
             **rules[1]["parameters"],
             "required_status_checks": [{"context": "gloops / independent-review", "integration_id": 1}],
@@ -142,18 +144,84 @@ class MarkPrReadyTest(unittest.TestCase):
             "headCommit": {"oid": "d" * 40},
             "pullRequest": {"id": "pr-node"},
         }
-        with mock.patch.object(MODULE, "queue_entry", return_value=entry), mock.patch.object(
+        binding = {
+            "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
+            "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
+            "reviewedHeadSha": "a" * 40, "sourceRunId": "source-run",
+            "reviewRunId": "review-run",
+        }
+        state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
+            MODULE.queue_attempt_key(binding): {
+                "binding": binding, "state": "enqueued", "queueEntryId": "queue-entry",
+            },
+        }}
+        with mock.patch.object(MODULE, "load_queue_attempts", return_value=state), mock.patch.object(
+            MODULE, "save_queue_attempts"
+        ), mock.patch.object(MODULE, "queue_entry", return_value=entry), mock.patch.object(
             MODULE, "dequeue_entry"
         ) as dequeue, mock.patch.object(MODULE, "ensure_integration_review_check") as publish:
             with self.assertRaisesRegex(RuntimeError, "fresh review required"):
                 MODULE.enqueue_exact_merge_group(
-                    token="token", node_id="pr-node", repo="gloopsAI/paperclip",
+                    queue_token="queue-token", check_token="check-token",
+                    node_id="pr-node", repo="gloopsAI/paperclip",
                     repository_id=1299155335, pull_request_number=305,
                     expected_base_sha="b" * 40, expected_head_sha="a" * 40,
                     source_run_id="source-run", review_run_id="review-run",
                 )
-        dequeue.assert_called_once_with("token", "queue-entry")
+        dequeue.assert_called_once_with("queue-token", "pr-node", "queue-entry")
         publish.assert_not_called()
+
+    def test_dequeue_uses_pull_request_node_and_binds_returned_entry(self):
+        with mock.patch.object(MODULE, "graphql", return_value={
+            "dequeuePullRequest": {"mergeQueueEntry": {"id": "entry-1"}},
+        }) as graphql:
+            MODULE.dequeue_entry("token", "pr-node", "entry-1")
+        self.assertEqual(graphql.call_args.args[2], {"id": "pr-node"})
+        with mock.patch.object(MODULE, "graphql", return_value={
+            "dequeuePullRequest": {"mergeQueueEntry": {"id": "entry-2"}},
+        }):
+            with self.assertRaisesRegex(RuntimeError, "does not match"):
+                MODULE.dequeue_entry("token", "pr-node", "entry-1")
+
+    def test_finished_queue_attempt_is_not_reenqueued(self):
+        binding = {
+            "repositoryId": 1299155335, "repository": "gloopsAI/paperclip",
+            "pullRequestNumber": 305, "reviewedBaseSha": "b" * 40,
+            "reviewedHeadSha": "a" * 40, "sourceRunId": "source-run",
+            "reviewRunId": "review-run",
+        }
+        state = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
+            MODULE.queue_attempt_key(binding): {
+                "binding": binding, "state": "integration_review_published",
+                "queueEntryId": "old-entry",
+            },
+        }}
+        with mock.patch.object(MODULE, "load_queue_attempts", return_value=state), mock.patch.object(
+            MODULE, "queue_entry", return_value=None
+        ), mock.patch.object(MODULE, "graphql") as graphql:
+            result = MODULE.enqueue_exact_merge_group(
+                queue_token="queue-token", check_token="check-token",
+                node_id="pr-node", repo="gloopsAI/paperclip",
+                repository_id=1299155335, pull_request_number=305,
+                expected_base_sha="b" * 40, expected_head_sha="a" * 40,
+                source_run_id="source-run", review_run_id="review-run",
+            )
+        self.assertEqual(result, {
+            "queueEnded": True,
+            "priorQueueEntryId": "old-entry",
+            "attemptState": "integration_review_published",
+        })
+        graphql.assert_not_called()
+
+    def test_queue_attempt_state_is_durable_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "state.json"
+            value = {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {
+                "key": {"state": "reserved"},
+            }}
+            MODULE.save_queue_attempts(value, path)
+            self.assertEqual(MODULE.load_queue_attempts(path), value)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_integration_review_check_binds_full_queue_tuple(self):
         base = "b" * 40

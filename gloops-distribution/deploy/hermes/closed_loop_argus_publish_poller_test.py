@@ -159,6 +159,27 @@ class ArgusPublishPollerTests(unittest.TestCase):
             publish.assert_called_once_with(binding, "accepted")
             merge_path.assert_called_once_with(binding)
 
+    def test_ended_queue_attempt_is_terminally_suppressed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            binding = {**BINDING, "sourceIssue": "GLO-3000", "reviewIssueId": "review-1", "reviewRunId": RUN_ID}
+            pr = {"number": 300, "title": "surface", "state": "open", "head": {"sha": HEAD}, "base": {"ref": "gloops/stable", "sha": "b" * 40, "repo": {"id": 1299155335}}}
+            with patch.object(poller, "STATE_PATH", state), patch.object(
+                poller, "collect_approved_bindings", return_value=[binding]
+            ), patch.object(poller, "gh_json", return_value=pr), patch.object(
+                poller, "independent_review_ok", return_value=False
+            ), patch.object(poller, "publish"), patch.object(
+                poller, "mark_ready_and_merge", return_value={
+                    "ok": True, "repo": "gloopsAI/paperclip", "pr": 300,
+                    "headSha": HEAD, "baseRef": "gloops/stable",
+                    "baseSha": "b" * 40, "queueEnded": True,
+                    "queueEvidence": {"attemptState": "integration_review_published"},
+                },
+            ), patch.object(poller.sys, "argv", ["poller", "--once"]):
+                self.assertEqual(poller.main(), 0)
+                receipt = poller.load_state()["publishedForPr"]["1299155335:300:" + HEAD]
+            self.assertEqual(receipt["result"], "review_published_queue_terminal_suppressed")
+
     def test_nonmatching_head_does_not_publish(self):
         other = "b" * 40
         binding = {**BINDING, "sourceIssue": "GLO-3000", "reviewIssueId": "review-1", "reviewRunId": RUN_ID}

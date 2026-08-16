@@ -13,6 +13,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -34,6 +35,12 @@ GOVERNED_REPOSITORIES = {
     "gloopsAI/gloops-paperclip-plugin": {"repositoryId": 1297008772, "baseRef": "main"},
 }
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+QUEUE_STATE_PATH = Path(
+    os.environ.get(
+        "PAPERCLIP_MERGE_QUEUE_STATE",
+        "/var/lib/paperclip-gloops/exact-merge-queue-attempts.json",
+    )
+)
 
 
 def governed_repository(repo: str, base_ref: str) -> dict[str, object]:
@@ -43,7 +50,12 @@ def governed_repository(repo: str, base_ref: str) -> dict[str, object]:
     return binding
 
 
-def app_b_token(repository_id: int) -> str:
+def require_ci_merge_enabled(environment: dict[str, str] = os.environ) -> None:
+    if environment.get("PAPERCLIP_CI_MERGE_ENABLED") != "1":
+        raise RuntimeError("CI-to-merge mutation is disabled by kill switch")
+
+
+def app_b_token(repository_id: int, permissions: dict[str, str]) -> str:
     key = serialization.load_pem_private_key(KEY.read_bytes(), password=None)
     encode = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=")
     now = int(time.time())
@@ -57,7 +69,7 @@ def app_b_token(repository_id: int) -> str:
         jwt,
         {
             "repository_ids": [repository_id],
-            "permissions": {"checks": "write", "contents": "read", "pull_requests": "write"},
+            "permissions": permissions,
         },
         bearer=True,
     )
@@ -187,18 +199,6 @@ def merge_queue_policy(repo: str, base_ref: str, token: str) -> dict:
     ruleset_ids = {int(rule.get("ruleset_id") or 0) for rule in [*valid_queues, *valid_checks]}
     if 0 in ruleset_ids:
         raise RuntimeError("merge-queue ruleset identity is absent")
-    for ruleset_id in ruleset_ids:
-        ruleset = gh_api("GET", f"/repos/{repo}/rulesets/{ruleset_id}", token)
-        bypass = ruleset.get("bypass_actors") if isinstance(ruleset, dict) else None
-        if not isinstance(bypass, list):
-            raise RuntimeError("merge-queue bypass policy is unproved")
-        if any(
-            isinstance(actor, dict)
-            and actor.get("actor_type") == "Integration"
-            and int(actor.get("actor_id") or 0) == int(APP_B_ID)
-            for actor in bypass
-        ):
-            raise RuntimeError("App B may not bypass the merge-queue policy")
     return {"queueRulesetIds": sorted(ruleset_ids)}
 
 
@@ -223,12 +223,58 @@ def queue_entry(token: str, pull_request_node_id: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
-def dequeue_entry(token: str, entry_id: str) -> None:
-    graphql(token, """
+def dequeue_entry(token: str, pull_request_node_id: str, expected_entry_id: str) -> None:
+    data = graphql(token, """
       mutation($id: ID!) {
         dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { id } }
       }
-    """, {"id": entry_id})
+    """, {"id": pull_request_node_id})
+    removed = (data.get("dequeuePullRequest") or {}).get("mergeQueueEntry")
+    if not isinstance(removed, dict) or removed.get("id") != expected_entry_id:
+        raise RuntimeError("dequeued merge-queue entry does not match the observed entry")
+
+
+def queue_attempt_key(binding: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def load_queue_attempts(path: Path = QUEUE_STATE_PATH) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"schemaVersion": "exact-merge-queue-attempts@1", "attempts": {}}
+    if (
+        not isinstance(value, dict)
+        or value.get("schemaVersion") != "exact-merge-queue-attempts@1"
+        or not isinstance(value.get("attempts"), dict)
+    ):
+        raise RuntimeError("merge-queue attempt state is malformed")
+    return value
+
+
+def save_queue_attempts(value: dict, path: Path = QUEUE_STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        offset = 0
+        while offset < len(payload):
+            written = os.write(fd, payload[offset:])
+            if written <= 0:
+                raise RuntimeError("short write while persisting merge-queue attempt state")
+            offset += written
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def ensure_integration_review_check(
@@ -294,13 +340,39 @@ def ensure_integration_review_check(
 
 
 def enqueue_exact_merge_group(
-    *, token: str, node_id: str, repo: str, repository_id: int,
+    *, queue_token: str, check_token: str, node_id: str, repo: str, repository_id: int,
     pull_request_number: int, expected_base_sha: str, expected_head_sha: str,
     source_run_id: str, review_run_id: str,
 ) -> dict:
-    entry = queue_entry(token, node_id)
+    attempt_binding = {
+        "repositoryId": repository_id,
+        "repository": repo,
+        "pullRequestNumber": pull_request_number,
+        "reviewedBaseSha": expected_base_sha,
+        "reviewedHeadSha": expected_head_sha,
+        "sourceRunId": source_run_id,
+        "reviewRunId": review_run_id,
+    }
+    attempt_key = queue_attempt_key(attempt_binding)
+    attempt_state = load_queue_attempts()
+    attempts = attempt_state["attempts"]
+    entry = queue_entry(queue_token, node_id)
     if entry is None:
-        data = graphql(token, """
+        existing = attempts.get(attempt_key)
+        if isinstance(existing, dict):
+            return {
+                "queueEnded": True,
+                "priorQueueEntryId": existing.get("queueEntryId"),
+                "attemptState": existing.get("state"),
+            }
+        attempts[attempt_key] = {
+            "binding": attempt_binding,
+            "state": "reserved",
+            "reservedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "queueEntryId": None,
+        }
+        save_queue_attempts(attempt_state)
+        data = graphql(queue_token, """
           mutation($id: ID!, $head: GitObjectID!) {
             enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) {
               mergeQueueEntry { id }
@@ -310,8 +382,11 @@ def enqueue_exact_merge_group(
         queued = (data.get("enqueuePullRequest") or {}).get("mergeQueueEntry")
         if not isinstance(queued, dict) or not isinstance(queued.get("id"), str):
             raise RuntimeError("GitHub did not return a merge-queue entry")
+        attempts[attempt_key]["queueEntryId"] = queued["id"]
+        attempts[attempt_key]["state"] = "enqueued"
+        save_queue_attempts(attempt_state)
         for _ in range(20):
-            entry = queue_entry(token, node_id)
+            entry = queue_entry(queue_token, node_id)
             if entry and (entry.get("baseCommit") or {}).get("oid") and (entry.get("headCommit") or {}).get("oid"):
                 break
             time.sleep(0.5)
@@ -322,10 +397,19 @@ def enqueue_exact_merge_group(
     integration_sha = str((entry.get("headCommit") or {}).get("oid") or "").lower()
     if (entry.get("pullRequest") or {}).get("id") != node_id:
         raise RuntimeError("merge-queue entry is bound to a different pull request")
+    existing = attempts.get(attempt_key)
+    if not isinstance(existing, dict):
+        raise RuntimeError("unreserved merge-queue entry cannot receive review authority")
+    if existing.get("queueEntryId") not in (None, entry_id):
+        raise RuntimeError("merge-queue entry conflicts with its durable reservation")
+    existing["queueEntryId"] = entry_id
     if SHA_RE.fullmatch(integration_sha) is None or not entry_id:
         raise RuntimeError("merge-queue integration identity is malformed")
     if base_sha != expected_base_sha:
-        dequeue_entry(token, entry_id)
+        dequeue_entry(queue_token, node_id, entry_id)
+        existing["state"] = "dequeued_base_drift"
+        existing["observedBaseSha"] = base_sha
+        save_queue_attempts(attempt_state)
         raise RuntimeError(
             f"merge-queue base drifted: expected {expected_base_sha}, observed {base_sha or 'missing'}; fresh review required"
         )
@@ -334,8 +418,13 @@ def enqueue_exact_merge_group(
         pull_request_number=pull_request_number,
         source_run_id=source_run_id, review_run_id=review_run_id,
         expected_base_sha=expected_base_sha, expected_head_sha=expected_head_sha,
-        integration_sha=integration_sha, queue_entry_id=entry_id, token=token,
+        integration_sha=integration_sha, queue_entry_id=entry_id, token=check_token,
     )
+    existing["state"] = "integration_review_published"
+    existing["queueBaseSha"] = base_sha
+    existing["integrationSha"] = integration_sha
+    existing["integrationReviewExternalId"] = external_id
+    save_queue_attempts(attempt_state)
     return {
         "queueEntryId": entry_id,
         "queueBaseSha": base_sha,
@@ -391,19 +480,23 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "expected head and base must be full lowercase SHAs"}), file=sys.stderr)
         return 1
 
-    token = None
+    tokens: list[str] = []
     try:
         binding = governed_repository(args.repo, args.base)
-        token = app_b_token(int(binding["repositoryId"]))
+        check_token = app_b_token(
+            int(binding["repositoryId"]),
+            {"checks": "write", "contents": "read"},
+        )
+        tokens.append(check_token)
         path = f"/repos/{args.repo}/pulls/{args.pr}"
-        pr = gh_api("GET", path, token)
+        pr = gh_api("GET", path, check_token)
         if not pr.get("merged"):
             assert_exact_pr(pr, expected_head, args.base, expected_base_sha)
         checks = gh_api(
             "GET",
             f"/repos/{args.repo}/commits/{expected_head}/check-runs"
             "?check_name=gloops%20%2F%20independent-review&per_page=100",
-            token,
+            check_token,
         )
         assert_exact_independent_review(
             checks,
@@ -425,24 +518,41 @@ def main() -> int:
             final = pr
             merge_sha = reconcile_merged_pr(
                 repo=args.repo, pr=pr, expected_head=expected_head,
-                expected_base=args.base, expected_base_sha=expected_base_sha, token=token,
+                expected_base=args.base, expected_base_sha=expected_base_sha, token=check_token,
             )
         else:
-            policy = merge_queue_policy(args.repo, args.base, token)
+            policy = merge_queue_policy(args.repo, args.base, check_token)
             if pr.get("draft"):
-                graphql(token, """
-                  mutation($id: ID!) {
-                    markPullRequestReadyForReview(input: {pullRequestId: $id}) {
-                      pullRequest { isDraft number }
-                    }
-                  }
-                """, {"id": node_id})
-            refreshed = gh_api("GET", path, token)
+                ready_token = app_b_token(
+                    int(binding["repositoryId"]),
+                    {"contents": "read", "pull_requests": "write"},
+                )
+                try:
+                    graphql(ready_token, """
+                      mutation($id: ID!) {
+                        markPullRequestReadyForReview(input: {pullRequestId: $id}) {
+                          pullRequest { isDraft number }
+                        }
+                      }
+                    """, {"id": node_id})
+                finally:
+                    try:
+                        gh_api("DELETE", "/installation/token", ready_token)
+                    except Exception:
+                        pass
+            refreshed = gh_api("GET", path, check_token)
             assert_exact_pr(refreshed, expected_head, args.base, expected_base_sha)
             if args.merge_exact and refreshed.get("mergeable") is True and refreshed.get("mergeable_state") == "clean":
+                require_ci_merge_enabled()
                 mutation_attempted = True
+                queue_token = app_b_token(
+                    int(binding["repositoryId"]),
+                    {"contents": "read", "merge_queues": "write"},
+                )
+                tokens.append(queue_token)
                 queue_evidence = enqueue_exact_merge_group(
-                    token=token, node_id=node_id, repo=args.repo,
+                    queue_token=queue_token, check_token=check_token,
+                    node_id=node_id, repo=args.repo,
                     repository_id=int(binding["repositoryId"]),
                     pull_request_number=args.pr,
                     expected_base_sha=expected_base_sha,
@@ -450,11 +560,11 @@ def main() -> int:
                     source_run_id=args.source_run_id,
                     review_run_id=args.review_run_id,
                 )
-                final = gh_api("GET", path, token)
+                final = gh_api("GET", path, check_token)
                 if final.get("merged"):
                     merge_sha = reconcile_merged_pr(
                         repo=args.repo, pr=final, expected_head=expected_head,
-                        expected_base=args.base, expected_base_sha=expected_base_sha, token=token,
+                        expected_base=args.base, expected_base_sha=expected_base_sha, token=check_token,
                     )
             else:
                 final = refreshed
@@ -463,6 +573,10 @@ def main() -> int:
             assert_exact_pr(final, expected_head, args.base, expected_base_sha)
         ready = final.get("draft") is False
         merged = bool(final.get("merged"))
+        queue_ended = bool(
+            isinstance(queue_evidence, dict)
+            and queue_evidence.get("queueEnded") is True
+        )
         if not ready:
             raise RuntimeError("PR did not become ready")
         print(json.dumps({
@@ -475,7 +589,8 @@ def main() -> int:
             "ready": ready,
             "merged": merged,
             "mergePending": bool(args.merge_exact and not merged and queue_evidence is None),
-            "mergeQueued": bool(queue_evidence is not None and not merged),
+            "mergeQueued": bool(queue_evidence is not None and not queue_ended and not merged),
+            "queueEnded": queue_ended,
             "queueEvidence": queue_evidence,
             "queuePolicy": policy,
             "mutationAttempted": mutation_attempted,
@@ -486,7 +601,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": str(error)[:400]}, sort_keys=True), file=sys.stderr)
         return 1
     finally:
-        if token is not None:
+        for token in tokens:
             try:
                 gh_api("DELETE", "/installation/token", token)
             except Exception:

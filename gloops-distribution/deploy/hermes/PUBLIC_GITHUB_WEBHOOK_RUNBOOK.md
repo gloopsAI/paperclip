@@ -94,8 +94,16 @@ All of the following are required:
 6. No other public path bypasses the existing Basic Auth boundary.
 7. The accepted delivery updates the private trigger file and starts one
    `paperclip-closed-loop-publish-poller.service` pass; a helper failure is
-   receipted as `merge_path_failed` or `review_published_merge_pending`, never
-   as a ready/merge success.
+   receipted as `merge_path_failed`, `review_published_merge_pending`, or
+   `review_published_queue_terminal_suppressed`, never as a ready/merge success.
+
+The queue conductor admits at most one queue entry for a reviewed
+repository/PR/base/head/source-run/review-run tuple. If GitHub removes that
+entry after CI failure, the durable attempt record suppresses re-enqueueing;
+the next pass reports `queue_terminal_suppressed` and requires a new reviewed
+head. Disable both the path and timer units for an operational kill switch;
+the helper also refuses queue mutation unless its source-controlled systemd
+unit sets `PAPERCLIP_CI_MERGE_ENABLED=1`.
 
 A hand-crafted signed request proves cryptographic plumbing but does not replace
 the genuine GitHub delivery requirement.
