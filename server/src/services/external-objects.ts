@@ -926,6 +926,25 @@ export function externalObjectService(
       if (decision.kind !== "project") continue;
 
       const changed = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from issues where id = ${issue.id} and company_id = ${object.companyId} for update`,
+        );
+        const lockedIssue = await tx.select({
+          executionWorkspaceId: issues.executionWorkspaceId,
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, object.companyId)))
+          .then((rows) => rows[0] ?? null);
+        const lockedRunId = lockedIssue?.executionRunId ?? lockedIssue?.checkoutRunId;
+        if (!lockedIssue?.executionWorkspaceId || !lockedRunId) return false;
+        await tx.execute(
+          sql`select id from execution_workspaces where id = ${lockedIssue.executionWorkspaceId} and company_id = ${object.companyId} for update`,
+        );
+        await tx.execute(
+          sql`select id from heartbeat_runs where id = ${lockedRunId} and company_id = ${object.companyId} for update`,
+        );
         const [currentIssue, currentRun, creationActivities] = await Promise.all([
           tx.select({
             id: issues.id,
@@ -1041,6 +1060,15 @@ export function externalObjectService(
             eq(issues.id, issue.id),
             eq(issues.companyId, object.companyId),
             eq(issues.status, "in_review"),
+            eq(issues.executionWorkspaceId, currentIssue.executionWorkspaceId!),
+            currentIssue.executionRunId === null
+              ? isNull(issues.executionRunId)
+              : eq(issues.executionRunId, currentIssue.executionRunId),
+            currentIssue.checkoutRunId === null
+              ? isNull(issues.checkoutRunId)
+              : eq(issues.checkoutRunId, currentIssue.checkoutRunId),
+            eq(issues.originKind, currentIssue.originKind!),
+            eq(issues.originId, currentIssue.originId!),
           ))
           .returning({ id: issues.id });
         if (updated.length !== 1) return false;

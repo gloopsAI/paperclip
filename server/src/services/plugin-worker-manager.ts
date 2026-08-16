@@ -721,7 +721,7 @@ export function createPluginWorkerHandle(
     const workerEnv: Record<string, string> = {
       ...options.env,
       PATH: process.env.PATH ?? "",
-      NODE_PATH: process.env.NODE_PATH ?? "",
+      NODE_PATH: options.env?.NODE_PATH ?? process.env.NODE_PATH ?? "",
       PAPERCLIP_PLUGIN_ID: pluginId,
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",

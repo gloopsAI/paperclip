@@ -59,8 +59,19 @@ export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROO
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
 const CONTENT_ADDRESSED_PLUGIN_PROVENANCE_SUFFIX = ".provenance.json";
+export const CONTENT_ADDRESSED_PLUGIN_ROOT = "/var/lib/paperclip-plugin-cas";
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+
+export function contentAddressedPluginWorkerIsolation(packageRoot: string) {
+  if (!process.allowedNodeEnvironmentFlags.has("--permission")) {
+    throw new Error("Content-addressed plugin execution requires Node permission isolation");
+  }
+  return {
+    env: { NODE_PATH: "" },
+    execArgv: ["--permission", `--allow-fs-read=${packageRoot}`],
+  };
+}
 
 type TrustedPluginRuntimeIdentity = {
   installationId: string;
@@ -161,6 +172,8 @@ export async function attestContentAddressedPluginPackage(input: {
   try {
     const ownerUid = input.ownerUid ?? 0;
     const canonicalRoot = await realpath(input.packageRoot);
+    if (input.trustedRoot === undefined
+      && path.dirname(canonicalRoot) !== CONTENT_ADDRESSED_PLUGIN_ROOT) return null;
     const canonicalWorker = await realpath(input.workerEntrypoint);
     if (!canonicalWorker.startsWith(`${canonicalRoot}${path.sep}`)) return null;
     const packageTreeSha256 = await computeContentAddressedPluginTreeSha256(
@@ -169,6 +182,15 @@ export async function attestContentAddressedPluginPackage(input: {
       input.trustedRoot,
     );
     if (path.basename(canonicalRoot) !== packageTreeSha256) return null;
+    if (input.trustedRoot === undefined) {
+      let ancestor = path.dirname(canonicalRoot);
+      for (;;) {
+        if (existsSync(path.join(ancestor, "node_modules"))) return null;
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) break;
+        ancestor = parent;
+      }
+    }
     const provenancePath = `${canonicalRoot}${CONTENT_ADDRESSED_PLUGIN_PROVENANCE_SUFFIX}`;
     const provenanceInfo = await lstat(provenancePath);
     if (!provenanceInfo.isFile() || provenanceInfo.isSymbolicLink() || provenanceInfo.uid !== ownerUid
@@ -2311,6 +2333,9 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 5. Spawn worker process
       // ------------------------------------------------------------------
+      const runtimeIsolation = runtimeIdentity
+        ? contentAddressedPluginWorkerIsolation(packageRoot)
+        : null;
       const workerOptions: WorkerStartOptions = {
         entrypointPath: workerEntrypoint,
         manifest,
@@ -2320,14 +2345,19 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
+        env: {
+          ...buildPluginWorkerEnv({ manifest, instanceInfo }),
+          ...(runtimeIsolation?.env ?? {}),
+        },
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (!runtimeIdentity && activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      } else if (runtimeIsolation) {
+        workerOptions.execArgv = runtimeIsolation.execArgv;
       }
 
       const jobDeclarations = manifest.jobs ?? [];

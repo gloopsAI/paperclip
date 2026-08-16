@@ -922,6 +922,7 @@ export function buildHostServices(
         terminalIssueCompletedAt: issuesTable.completedAt,
         terminalIssueExecutionRunId: issuesTable.executionRunId,
         terminalIssueCheckoutRunId: issuesTable.checkoutRunId,
+        terminalIssueExecutionWorkspaceId: issuesTable.executionWorkspaceId,
         terminalIssueOriginKind: issuesTable.originKind,
         terminalIssueOriginId: issuesTable.originId,
         pullObjectId: externalObjects.id,
@@ -1048,6 +1049,7 @@ export function buildHostServices(
               && activity.headSha === headSha
               && activity.mergeCommitSha === mergeCommitSha
               && activity.terminalReceiptDigest === terminalReceipt.receiptDigest
+              && activity.executionWorkspaceId === row.terminalIssueExecutionWorkspaceId
               && activity.candidateOriginKind === row.terminalIssueOriginKind
               && activity.candidateOriginId === row.terminalIssueOriginId
               && createdByRuntime !== null;
@@ -2051,6 +2053,11 @@ export function buildHostServices(
             throw new Error("Plugin issue originId is immutable after creation");
           }
           delete patch.originId;
+        }
+        if (patch.executionWorkspaceId !== undefined
+          && patch.executionWorkspaceId !== existing.executionWorkspaceId
+          && (existing.executionRunId || existing.checkoutRunId)) {
+          throw new Error("Plugin issue executionWorkspaceId is immutable after execution is bound");
         }
         const governedTransition = patch.status === "in_review"
           ? "ready"

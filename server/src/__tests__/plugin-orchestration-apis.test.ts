@@ -168,7 +168,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   }
 
   it("returns plugin-safe execution workspace metadata scoped to the company", async () => {
-    const { companyId } = await seedCompanyAndAgent();
+    const { companyId, agentId } = await seedCompanyAndAgent();
     const otherCompanyId = randomUUID();
     const projectId = randomUUID();
     const workspaceId = randomUUID();
@@ -456,6 +456,21 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       companyId,
       patch: { originId: "replacement" },
     })).rejects.toThrow("originId is immutable");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId: featureIssue.id },
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, featureIssue.id));
+    await expect(services.issues.update({
+      issueId: featureIssue.id,
+      companyId,
+      patch: { executionWorkspaceId: randomUUID() },
+    })).rejects.toThrow("executionWorkspaceId is immutable after execution is bound");
   });
 
   it("accepts terminal truth only from a capability-scoped plugin projection bound to the run", async () => {
@@ -1192,6 +1207,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         headSha,
         mergeCommitSha,
         terminalReceiptDigest: receipt.digest,
+        executionWorkspaceId: null,
         candidateOriginKind: "plugin:gloops.autonomic-improvement-policy:candidate",
         candidateOriginId: "c".repeat(64),
         candidateCreatedByRuntime: runtimeIdentity,
@@ -1217,6 +1233,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         headSha,
         mergeCommitSha,
         terminalReceiptDigest: receipt.digest,
+        executionWorkspaceId: null,
         candidateOriginKind: "plugin:gloops.autonomic-improvement-policy:candidate",
         candidateOriginId: "c".repeat(64),
         candidateCreatedByRuntime: runtimeIdentity,
