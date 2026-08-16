@@ -1072,6 +1072,8 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       status: "done",
       priority: "medium",
       completedAt: new Date("2026-08-16T18:00:00.000Z"),
+      originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+      originId: "c".repeat(64),
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -1111,8 +1113,27 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       detectorKey: "github",
       objectType: "pull_request",
     });
+    await db.insert(externalObjectMentions).values({
+      companyId,
+      sourceIssueId: issueId,
+      sourceKind: "comment",
+      sourceRecordId: randomUUID(),
+      objectId: pull!.id,
+      providerKey: "github",
+      detectorKey: "github",
+      objectType: "pull_request",
+    });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const runtimeIdentity = {
+      installationId: "plugin-record-id",
+      pluginKey: "paperclip.missions",
+      version: "0.3.1",
+      manifestSha256: "d".repeat(64),
+      workerEntrypointSha256: "e".repeat(64),
+    };
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub(), undefined, {
+      runtimeIdentity,
+    });
     await db.insert(activityLog).values({
       companyId,
       actorType: "plugin",
@@ -1126,10 +1147,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         externalObjectId: pull!.id,
         externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
         repository: "gloopsAI/gloops-paperclip-plugin",
+        authorizedRepository: "gloopsai/gloops-paperclip-plugin",
         pullRequestNumber: 50,
         headSha,
         mergeCommitSha,
         terminalReceiptDigest: receipt.digest,
+        candidateOriginKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+        candidateOriginId: "c".repeat(64),
       },
     });
     const forged = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
@@ -1147,10 +1171,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         externalObjectId: pull!.id,
         externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
         repository: "gloopsAI/gloops-paperclip-plugin",
+        authorizedRepository: "gloopsai/gloops-paperclip-plugin",
         pullRequestNumber: 50,
         headSha,
         mergeCommitSha,
         terminalReceiptDigest: receipt.digest,
+        candidateOriginKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+        candidateOriginId: "c".repeat(64),
       },
     });
     const summary = await services.issues.getOrchestrationSummary({ companyId, issueId, includeSubtree: false });
@@ -1158,6 +1185,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       status: "operational",
       receiptDigest: receipt.digest,
       exactHeadSha: headSha,
+      candidate: {
+        originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+        originId: "c".repeat(64),
+      },
       pullRequest: {
         provider: "github",
         externalId: "gloopsAI/gloops-paperclip-plugin#pull/50",
@@ -1165,6 +1196,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         mergeCommitSha,
       },
     });
+    expect(summary.runtimeIdentity).toEqual(runtimeIdentity);
 
     await db.update(externalObjects).set({
       data: {

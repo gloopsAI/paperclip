@@ -1250,6 +1250,10 @@ export interface PluginIssueRunSummary {
     status: "operational";
     receiptDigest: string;
     exactHeadSha: string;
+    candidate: {
+      originKind: string;
+      originId: string;
+    };
     pullRequest: {
       provider: "github";
       externalId: string;
@@ -1325,6 +1329,17 @@ export interface PluginIssueInvocationBlockSummary {
 export interface PluginIssueOrchestrationSummary {
   issueId: string;
   companyId: string;
+  /**
+   * Host-observed identity of the exact plugin worker instance serving this
+   * request. The worker cannot supply or override these values.
+   */
+  runtimeIdentity: {
+    installationId: string;
+    pluginKey: string;
+    version: string;
+    manifestSha256: string;
+    workerEntrypointSha256: string;
+  };
   subtreeIssueIds: string[];
   relations: Record<string, PluginIssueRelationSummary>;
   approvals: PluginIssueApprovalSummary[];

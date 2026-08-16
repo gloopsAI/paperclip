@@ -1885,6 +1885,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           return {
             issueId: root.id,
             companyId: input.companyId,
+            runtimeIdentity: {
+              installationId: "test-plugin-installation",
+              pluginKey: manifest.id,
+              version: manifest.version,
+              manifestSha256: "0".repeat(64),
+              workerEntrypointSha256: "0".repeat(64),
+            },
             subtreeIssueIds,
             relations: Object.fromEntries(subtreeIssueIds.map((id) => [id, issueRelationSummary(id)])),
             approvals: [],

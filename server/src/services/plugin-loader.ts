@@ -26,6 +26,7 @@
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -314,7 +315,17 @@ export interface PluginRuntimeServices {
    * events.emit, config.get). Each plugin gets its own set of handlers
    * scoped to its capabilities and plugin ID.
    */
-  buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => WorkerToHostHandlers;
+  buildHostHandlers: (
+    pluginId: string,
+    manifest: PaperclipPluginManifestV1,
+    runtimeIdentity: {
+      installationId: string;
+      pluginKey: string;
+      version: string;
+      manifestSha256: string;
+      workerEntrypointSha256: string;
+    },
+  ) => WorkerToHostHandlers;
   /**
    * Host instance information passed to the worker during initialization.
    * Includes the instance ID and host version.
@@ -2130,7 +2141,26 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 3. Build host handlers for this plugin
       // ------------------------------------------------------------------
-      const hostHandlers = buildHostHandlers(pluginId, manifest);
+      const stableJson = (value: unknown): string => {
+        if (value === undefined) return "null";
+        if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+        if (value && typeof value === "object") {
+          const record = value as Record<string, unknown>;
+          return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort()
+            .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+        }
+        return JSON.stringify(value) ?? "null";
+      };
+      const runtimeIdentity = {
+        installationId: pluginId,
+        pluginKey,
+        version: manifest.version,
+        manifestSha256: createHash("sha256").update(stableJson(manifest)).digest("hex"),
+        workerEntrypointSha256: createHash("sha256")
+          .update(await readFile(workerEntrypoint))
+          .digest("hex"),
+      };
+      const hostHandlers = buildHostHandlers(pluginId, manifest, runtimeIdentity);
 
       // ------------------------------------------------------------------
       // 4. Retrieve plugin config (if any)

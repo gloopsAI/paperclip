@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -8,10 +8,12 @@ import {
   agents,
   externalObjectMentions,
   externalObjects,
+  executionWorkspaces,
   heartbeatRuns,
   issueComments,
   issues,
   plugins,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -368,7 +370,9 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await db.delete(externalObjects);
     await db.delete(issueComments);
     await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);
@@ -596,6 +600,26 @@ describeEmbeddedPostgres("externalObjectService", () => {
     const runId = randomUUID();
     const headSha = "a".repeat(40);
     const mergeCommitSha = "b".repeat(40);
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Autonomic policy",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Autonomic policy worktree",
+      status: "active",
+      providerType: "git_worktree",
+      repoUrl: "git@github.com:acme/foreign.git",
+    });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -641,6 +665,10 @@ describeEmbeddedPostgres("externalObjectService", () => {
       assigneeAgentId: agentId,
       executionRunId: runId,
       checkoutRunId: runId,
+      projectId,
+      executionWorkspaceId,
+      originKind: "plugin:gloops.autonomic-improvement-policy:candidate",
+      originId: "c".repeat(64),
     }).where(eq(issues.id, issueId));
 
     const svc = externalObjectService(db, {
@@ -672,6 +700,36 @@ describeEmbeddedPostgres("externalObjectService", () => {
       statusKey: "merged",
       data: { headSha, mergeCommitSha },
     });
+    expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .toEqual([{ status: "in_review" }]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toHaveLength(0);
+
+    await db.update(executionWorkspaces)
+      .set({ repoUrl: "https://github.com/acme/app.git" })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION reject_terminal_reconciliation_activity() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.actor_id = 'external-object-resolver' THEN
+          RAISE EXCEPTION 'injected terminal evidence failure';
+        END IF;
+        RETURN NEW;
+      END $$
+    `));
+    await db.execute(sql.raw(`
+      CREATE TRIGGER reject_terminal_reconciliation_activity_trigger
+      BEFORE INSERT ON activity_log FOR EACH ROW
+      EXECUTE FUNCTION reject_terminal_reconciliation_activity()
+    `));
+    await expect(svc.refreshObject(object.id, { companyId, force: true }))
+      .rejects.toThrow("injected terminal evidence failure");
+    expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .toEqual([{ status: "in_review" }]);
+    const uncommittedRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0]!);
+    expect((uncommittedRun.contextSnapshot as any)[PAPERCLIP_EXECUTION_RECEIPT_KEY]).toMatchObject({ status: "built" });
+    await db.execute(sql.raw("DROP TRIGGER reject_terminal_reconciliation_activity_trigger ON activity_log"));
+    await db.execute(sql.raw("DROP FUNCTION reject_terminal_reconciliation_activity()"));
     await svc.refreshObject(object.id, { companyId, force: true });
 
     const [projectedIssue, projectedRun, activities] = await Promise.all([
@@ -688,6 +746,11 @@ describeEmbeddedPostgres("externalObjectService", () => {
       },
     });
     expect(activities.filter((entry) => entry.action === "issue.updated")).toHaveLength(1);
+    expect(activities.find((entry) => entry.action === "issue.updated")?.details).toMatchObject({
+      authorizedRepository: "acme/app",
+      terminalReceiptDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      candidateOriginId: "c".repeat(64),
+    });
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {

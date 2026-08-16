@@ -5,11 +5,13 @@ import {
   documents,
   externalObjectMentions,
   externalObjects,
+  executionWorkspaces,
   heartbeatRuns,
   issueComments,
   issueDocuments,
   issues,
   plugins,
+  activityLog,
 } from "@paperclipai/db";
 import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
 import {
@@ -43,6 +45,22 @@ export interface ExternalObjectSourceContext {
   sourceRecordId: string | null;
   documentKey: string | null;
   propertyKey: string | null;
+}
+
+function canonicalGitHubRepository(repoUrl: string | null): string | null {
+  const raw = repoUrl?.trim();
+  if (!raw) return null;
+  const ssh = raw.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (ssh) return `${ssh[1]}/${ssh[2]}`.toLowerCase();
+  try {
+    const parsed = new URL(raw);
+    if (parsed.hostname.toLowerCase() !== "github.com") return null;
+    const segments = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (segments.length !== 2) return null;
+    return `${segments[0]}/${segments[1]!.replace(/\.git$/i, "")}`.toLowerCase();
+  } catch {
+    return null;
+  }
 }
 
 export interface ExternalObjectDetection {
@@ -814,6 +832,9 @@ export function externalObjectService(
         workMode: issues.workMode,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        originKind: issues.originKind,
+        originId: issues.originId,
         completedAt: issues.completedAt,
       })
       .from(externalObjectMentions)
@@ -868,9 +889,17 @@ export function externalObjectService(
             workMode: issues.workMode,
             executionRunId: issues.executionRunId,
             checkoutRunId: issues.checkoutRunId,
+            executionWorkspaceId: issues.executionWorkspaceId,
+            executionWorkspaceRepoUrl: executionWorkspaces.repoUrl,
+            originKind: issues.originKind,
+            originId: issues.originId,
             completedAt: issues.completedAt,
           })
             .from(issues)
+            .leftJoin(executionWorkspaces, and(
+              eq(executionWorkspaces.id, issues.executionWorkspaceId),
+              eq(executionWorkspaces.companyId, object.companyId),
+            ))
             .where(and(
               eq(issues.id, issue.id),
               eq(issues.companyId, object.companyId),
@@ -889,6 +918,9 @@ export function externalObjectService(
             .then((rows) => rows[0] ?? null),
         ]);
         if (!currentIssue || currentIssue.status !== "in_review" || !currentRun) return false;
+        const expectedRepository = canonicalGitHubRepository(currentIssue.executionWorkspaceRepoUrl);
+        const observedRepository = owner && repo ? `${owner}/${repo}`.toLowerCase() : null;
+        if (!expectedRepository || observedRepository !== expectedRepository) return false;
         const currentDecision = decideMergedPullRequestIssueReconciliation({
           completionProfile: resolveIssueExecutionCompletionProfile({
             executionPolicy: currentIssue.executionPolicy,
@@ -933,33 +965,38 @@ export function externalObjectService(
             eq(issues.status, "in_review"),
           ))
           .returning({ id: issues.id });
-        return updated.length === 1;
+        if (updated.length !== 1) return false;
+        await tx.insert(activityLog).values({
+          companyId: object.companyId,
+          actorType: "system",
+          actorId: "external-object-resolver",
+          agentId: null,
+          runId: currentRun.id,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            identifier: currentIssue.identifier,
+            status: "done",
+            source: "github_merged_exact_head",
+            externalObjectId: object.id,
+            externalId: object.externalId,
+            repository: owner && repo ? `${owner}/${repo}` : null,
+            authorizedRepository: expectedRepository,
+            pullRequestNumber,
+            headSha,
+            mergeCommitSha,
+            terminalReceiptDigest: currentDecision.receipt.digest,
+            candidateOriginKind: currentIssue.originKind,
+            candidateOriginId: currentIssue.originId,
+            executionWorkspaceId: currentIssue.executionWorkspaceId,
+            _previous: { status: "in_review" },
+          },
+        });
+        return true;
       });
       if (!changed) continue;
       projected += 1;
-      await logActivity(db, {
-        companyId: object.companyId,
-        actorType: "system",
-        actorId: "external-object-resolver",
-        agentId: null,
-        runId: run.id,
-        action: "issue.updated",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          status: "done",
-          source: "github_merged_exact_head",
-          externalObjectId: object.id,
-          externalId: object.externalId,
-          repository: owner && repo ? `${owner}/${repo}` : null,
-          pullRequestNumber,
-          headSha,
-          mergeCommitSha,
-          terminalReceiptDigest: decision.receipt.digest,
-          _previous: { status: "in_review" },
-        },
-      });
     }
     return { projected };
   }

@@ -369,7 +369,7 @@ export async function createApp(
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
       },
-      buildHostHandlers: (pluginId, manifest) => {
+      buildHostHandlers: (pluginId, manifest, runtimeIdentity) => {
         const notifyWorker = (method: string, params: unknown) => {
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
@@ -377,6 +377,7 @@ export async function createApp(
         const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
           pluginWorkerManager: workerManager,
           manifest,
+          runtimeIdentity,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({

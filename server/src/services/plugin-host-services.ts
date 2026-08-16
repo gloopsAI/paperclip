@@ -521,7 +521,17 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    runtimeIdentity?: {
+      installationId: string;
+      pluginKey: string;
+      version: string;
+      manifestSha256: string;
+      workerEntrypointSha256: string;
+    };
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -839,6 +849,16 @@ export function buildHostServices(
     const statusCondition = options.activeOnly
       ? inArray(heartbeatRuns.status, ["queued", "running"])
       : undefined;
+    const limitedRunIds = db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(issueIdExpr, issueIds),
+        statusCondition,
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(100);
     const rawRows = await db
       .select({
         id: heartbeatRuns.id,
@@ -861,6 +881,8 @@ export function buildHostServices(
         terminalIssueCompletedAt: issuesTable.completedAt,
         terminalIssueExecutionRunId: issuesTable.executionRunId,
         terminalIssueCheckoutRunId: issuesTable.checkoutRunId,
+        terminalIssueOriginKind: issuesTable.originKind,
+        terminalIssueOriginId: issuesTable.originId,
         pullObjectId: externalObjects.id,
         pullExternalId: externalObjects.externalId,
         pullProviderKey: externalObjects.providerKey,
@@ -897,9 +919,8 @@ export function buildHostServices(
         sql`${activityLog.entityId} = ${issuesTable.id}::text`,
         eq(activityLog.runId, heartbeatRuns.id),
       ))
-      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(issueIdExpr, issueIds), statusCondition))
-      .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(500);
+      .where(inArray(heartbeatRuns.id, limitedRunIds))
+      .orderBy(desc(heartbeatRuns.createdAt));
     const groupedRows = new Map<string, {
       row: (typeof rawRows)[number];
       evidenceRows: Array<(typeof rawRows)[number]>;
@@ -951,7 +972,7 @@ export function buildHostServices(
         && row.terminalIssueCompletedAt !== null
         && expectedWorkId === terminalReceipt.workId
         && (row.terminalIssueExecutionRunId === row.id || row.terminalIssueCheckoutRunId === row.id)
-        ? evidenceRows.filter((candidate) => {
+        ? [...new Map(evidenceRows.filter((candidate) => {
             const data = isRecord(candidate.pullData) ? candidate.pullData : {};
             const activity = isRecord(candidate.reconciliationActivityDetails)
               ? candidate.reconciliationActivityDetails
@@ -980,17 +1001,28 @@ export function buildHostServices(
               && activity.externalObjectId === candidate.pullObjectId
               && activity.externalId === candidate.pullExternalId
               && activity.repository === repository
+              && activity.authorizedRepository === repository?.toLowerCase()
               && activity.pullRequestNumber === pullNumber
               && activity.headSha === headSha
               && activity.mergeCommitSha === mergeCommitSha
-              && activity.terminalReceiptDigest === terminalReceipt.receiptDigest;
-          })
+              && activity.terminalReceiptDigest === terminalReceipt.receiptDigest
+              && activity.candidateOriginKind === row.terminalIssueOriginKind
+              && activity.candidateOriginId === row.terminalIssueOriginId;
+          }).map((candidate) => [
+            `${candidate.pullObjectId}:${candidate.reconciliationActivityId}`,
+            candidate,
+          ] as const)).values()]
         : [];
       const verifiedTerminalChange = matchingPulls.length === 1 && terminalReceipt
+        && typeof row.terminalIssueOriginId === "string" && row.terminalIssueOriginId.length > 0
         ? {
             status: "operational" as const,
             receiptDigest: terminalReceipt.receiptDigest,
             exactHeadSha: terminalReceipt.exactHeadSha,
+            candidate: {
+              originKind: row.terminalIssueOriginKind!,
+              originId: row.terminalIssueOriginId,
+            },
             pullRequest: {
               provider: "github" as const,
               externalId: matchingPulls[0]!.pullExternalId!,
@@ -2407,6 +2439,13 @@ export function buildHostServices(
         return {
           issueId: rootIssue.id,
           companyId,
+          runtimeIdentity: options.runtimeIdentity ?? {
+            installationId: pluginId,
+            pluginKey,
+            version: options.manifest?.version ?? "unknown",
+            manifestSha256: "unavailable",
+            workerEntrypointSha256: "unavailable",
+          },
           subtreeIssueIds,
           relations: Object.fromEntries(relationPairs),
           approvals: approvalRows,
