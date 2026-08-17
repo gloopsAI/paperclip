@@ -29,9 +29,16 @@ test("the committed inventory digest fails closed on same-count row tampering", 
   const bytes = Buffer.from('{"commits":[{"sha":"a"}]}\n');
   const digest = createHash("sha256").update(bytes).digest("hex");
   const policy = { freeze: { inventoryFileSha256: digest } };
-  assert.equal(verifyInventoryFileDigest(policy, bytes), true);
   assert.throws(
-    () => verifyInventoryFileDigest(policy, Buffer.from('{"commits":[{"sha":"b"}]}\n')),
-    /inventory_file_digest_mismatch/,
+    () => verifyInventoryFileDigest(policy, bytes),
+    /inventory_pinned_graph_attestation_mismatch/,
+  );
+  const tamperedBytes = Buffer.from('{"commits":[{"sha":"b"}]}\n');
+  const pairedTamperedPolicy = {
+    freeze: { inventoryFileSha256: createHash("sha256").update(tamperedBytes).digest("hex") },
+  };
+  assert.throws(
+    () => verifyInventoryFileDigest(pairedTamperedPolicy, tamperedBytes),
+    /inventory_pinned_graph_attestation_mismatch/,
   );
 });

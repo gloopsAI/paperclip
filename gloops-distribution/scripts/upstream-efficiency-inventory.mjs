@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 const DISPOSITIONS = new Set(["adopt", "adapt", "superseded", "reject", "conflict"]);
 const POLICY_PATH = new URL("../upstream-efficiency-policy.json", import.meta.url);
 const INVENTORY_PATH = new URL("../upstream-efficiency-inventory.json", import.meta.url);
+// Independently reviewed pinned-graph attestation. Moving the inventory and its
+// policy digest together is insufficient: changing this executable constant is
+// an explicit verifier/authority change rather than a data-only refresh.
+export const PINNED_INVENTORY_FILE_SHA256 = "c6d1f745e9e298e905a916db118125950ac733c83b204c6573d98b8d84aceaab";
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -18,6 +22,7 @@ export function verifyInventoryFileDigest(policy, inventoryBytes) {
   if (!/^[0-9a-f]{64}$/.test(expected ?? "")) throw new Error("inventory_file_digest_missing");
   const actual = createHash("sha256").update(inventoryBytes).digest("hex");
   if (actual !== expected) throw new Error("inventory_file_digest_mismatch");
+  if (actual !== PINNED_INVENTORY_FILE_SHA256) throw new Error("inventory_pinned_graph_attestation_mismatch");
   return true;
 }
 

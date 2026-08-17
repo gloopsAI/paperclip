@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildOutcomeScorecard,
   classifyFailureClass,
+  countHumanInterventions,
   extractUsageTokens,
   isAcceptedOrganizationalOutcome,
   isHumanInterventionActivity,
@@ -502,6 +503,26 @@ describe("buildOutcomeScorecard", () => {
       details: { status: "todo", _previous: { status: "blocked" } },
     })).toBe(true);
     expect(isHumanInterventionActivity({ action: "issue.admin_force_release", details: {} })).toBe(true);
+    expect(countHumanInterventions([
+      {
+        action: "issue.updated",
+        details: {
+          status: "todo",
+          source: "recovery_action_resolution",
+          recoveryActionId: "recovery-1",
+          _previous: { status: "blocked" },
+        },
+      },
+      {
+        action: "issue.recovery_action_resolved",
+        details: { recoveryActionId: "recovery-1" },
+      },
+    ])).toBe(1);
+    expect(isHumanInterventionActivity({
+      action: "issue.updated",
+      details: { executionState: "ready", _previous: { executionState: "planning" } },
+    })).toBe(true);
+    expect(isHumanInterventionActivity({ action: "issue.thread_interaction_accepted", details: {} })).toBe(true);
   });
 
   it("counts created+assigned issues as admitted even without runs", () => {

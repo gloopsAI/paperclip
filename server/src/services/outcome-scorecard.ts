@@ -441,12 +441,33 @@ function isFreshSessionRun(run: ScorecardRun): boolean {
 }
 
 const HUMAN_INTERVENTION_ACTIONS = new Set([
+  "issue.approval_linked",
+  "issue.approval_unlinked",
   "issue.admin_force_release",
+  "issue.approvers_updated",
   "issue.execution_admission_reset_checkout",
   "issue.low_trust_output_promoted",
   "issue.recovery_action_resolved",
+  "issue.released",
+  "issue.reviewers_updated",
   "issue.scheduled_retry_retry_now",
+  "issue.thread_interaction_accepted",
+  "issue.thread_interaction_answered",
+  "issue.thread_interaction_cancelled",
   "issue.tree_hold_released",
+]);
+
+const COMPOUND_INTERVENTION_UPDATE_SOURCES = new Set([
+  "recovery_action_resolution",
+  "request_confirmation_accept",
+]);
+
+const HUMAN_STAGE_UPDATE_FIELDS = new Set([
+  "assigneeAgentId",
+  "assigneeUserId",
+  "executionState",
+  "status",
+  "workMode",
 ]);
 
 /**
@@ -457,10 +478,21 @@ export function isHumanInterventionActivity(input: { action: string; details: un
   if (HUMAN_INTERVENTION_ACTIONS.has(input.action)) return true;
   if (input.action !== "issue.updated") return false;
   const details = asRecord(input.details);
+  const source = readNonEmptyString(details?.source);
+  if (source !== null && COMPOUND_INTERVENTION_UPDATE_SOURCES.has(source)) return false;
   const previous = asRecord(details?._previous);
-  const currentStatus = readNonEmptyString(details?.status);
-  const previousStatus = readNonEmptyString(previous?.status);
-  return currentStatus !== null && previousStatus !== null && currentStatus !== previousStatus;
+  if (!details || !previous) return false;
+  return [...HUMAN_STAGE_UPDATE_FIELDS].some((field) => (
+    Object.hasOwn(details, field)
+      && Object.hasOwn(previous, field)
+      && details[field] !== previous[field]
+  ));
+}
+
+export function countHumanInterventions(
+  activities: Array<{ action: string; details: unknown }>,
+): number {
+  return activities.filter(isHumanInterventionActivity).length;
 }
 
 function providerInvocationAttempted(run: ScorecardRun): boolean | null {
@@ -829,7 +861,7 @@ export function outcomeScorecardService(db: Db) {
                 lte(activityLog.createdAt, until),
               ),
             );
-      const humanInterventions = humanInterventionActivities.filter(isHumanInterventionActivity).length;
+      const humanInterventions = countHumanInterventions(humanInterventionActivities);
 
       return buildOutcomeScorecard({
         companyId,
