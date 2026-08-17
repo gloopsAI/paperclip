@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonSchemaForm, getDefaultValues } from "./JsonSchemaForm";
+import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "./JsonSchemaForm";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -710,6 +710,44 @@ describe("JsonSchemaForm optional string clearing", () => {
     });
 
     expect(onChange).toHaveBeenCalledWith({ repository: "" });
+
+    await act(async () => root.unmount());
+  });
+
+  it("retains an empty string in an array item instead of serializing null", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+    const schema = {
+      type: "object" as const,
+      properties: {
+        repositories: {
+          type: "array" as const,
+          items: { type: "string" as const },
+        },
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={{ repositories: ["gloopsAI/paperclip"] }}
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const input = container.querySelector("input")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const changed = onChange.mock.lastCall![0] as Record<string, unknown>;
+    expect(changed).toEqual({ repositories: [""] });
+    expect(JSON.stringify(changed)).toBe('{"repositories":[""]}');
+    expect(validateJsonSchemaForm(schema, changed)).toEqual({});
 
     await act(async () => root.unmount());
   });

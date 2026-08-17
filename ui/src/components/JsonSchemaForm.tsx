@@ -384,6 +384,7 @@ interface FormFieldProps {
   disabled?: boolean;
   label: string;
   isRequired?: boolean;
+  canUnset?: boolean;
   errors: Record<string, string>; // needed for recursion
   path: string; // needed for recursion error filtering
 }
@@ -805,6 +806,7 @@ const StringField = React.memo(({
   disabled,
   label,
   isRequired,
+  canUnset,
   description,
   error,
   defaultValue,
@@ -816,6 +818,7 @@ const StringField = React.memo(({
   disabled: boolean;
   label: string;
   isRequired?: boolean;
+  canUnset?: boolean;
   description?: string;
   error?: string;
   defaultValue?: unknown;
@@ -834,7 +837,7 @@ const StringField = React.memo(({
       {isTextArea ? (
         <Textarea
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value === "" && !isRequired ? undefined : e.target.value)}
+          onChange={(e) => onChange(e.target.value === "" && canUnset ? undefined : e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
           className="min-h-(--sz-100px)"
@@ -844,7 +847,7 @@ const StringField = React.memo(({
         <Input
           type="text"
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value === "" && !isRequired ? undefined : e.target.value)}
+          onChange={(e) => onChange(e.target.value === "" && canUnset ? undefined : e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
           aria-invalid={!!error}
@@ -1053,6 +1056,7 @@ const FormField = React.memo(({
   disabled,
   label,
   isRequired,
+  canUnset,
   errors,
   path,
 }: FormFieldProps) => {
@@ -1158,6 +1162,7 @@ const FormField = React.memo(({
           disabled={isReadOnly}
           label={label}
           isRequired={isRequired}
+          canUnset={canUnset}
           description={propSchema.description}
           error={error}
           defaultValue={propSchema.default}
@@ -1313,6 +1318,7 @@ export function JsonSchemaForm({
         disabled={disabled}
         label={label}
         isRequired={isRequired}
+        canUnset={!isRequired}
         errors={errors}
         path={path}
       />
