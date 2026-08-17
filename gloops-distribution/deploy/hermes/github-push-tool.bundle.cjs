@@ -18541,7 +18541,7 @@ var MAX_OBJECTS = 1e5;
 var MAX_PACK_BYTES = 64 * 1024 * 1024;
 var DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 var DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
-var ACCEPTED_BLOB_MODES = /* @__PURE__ */ new Set(["100644", "100755"]);
+var ACCEPTED_BLOB_MODES = /* @__PURE__ */ new Set(["100644", "100755", "120000"]);
 var ACCEPTED_TREE_MODE = "040000";
 function fail(message) {
   throw new Error(message);

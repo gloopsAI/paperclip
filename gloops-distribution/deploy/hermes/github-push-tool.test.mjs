@@ -119,6 +119,25 @@ test("client emits a content-addressed commit closure without retaining ingress 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("client transports tracked symlink blobs without following them", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-client-tree-symlink-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  git(repo, "init");
+  git(repo, "config", "user.name", "Calibration");
+  git(repo, "config", "user.email", "calibration@example.com");
+  fs.writeFileSync(path.join(repo, "target.txt"), "target\n");
+  fs.symlinkSync("target.txt", path.join(repo, "link.txt"));
+  git(repo, "add", "target.txt", "link.txt");
+  git(repo, "commit", "-m", "tracked symlink closure");
+
+  const manifest = await runClientAgainstBroker(repo, root);
+  const linkOid = git(repo, "rev-parse", "HEAD:link.txt");
+  assert.ok(manifest.objectOids.includes(linkOid));
+  assert.equal(git(repo, "cat-file", "-p", linkOid), "target.txt");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("client emits a commit closure from a Paperclip-managed git worktree", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worktree-"));
   const repo = path.join(root, "repo");
@@ -214,7 +233,7 @@ test("worker imports a complete closure into a native bare repository", async ()
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("worker rejects a committed symlink before making a request", async () => {
+test("worker imports a committed symlink as a bare blob without following it", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "github-push-worker-symlink-"));
   const repo = path.join(root, "repo");
   const gitdir = path.join(root, "worker.git");
@@ -227,7 +246,7 @@ test("worker rejects a committed symlink before making a request", async () => {
   fs.writeFileSync(path.join(repo, "target.txt"), "target\n");
   fs.symlinkSync("target.txt", path.join(repo, "link.txt"));
   git(repo, "add", "target.txt", "link.txt");
-  git(repo, "commit", "-m", "symlink must be rejected");
+  git(repo, "commit", "-m", "tracked symlink is a bare blob");
   const head = git(repo, "rev-parse", "HEAD");
   const objectOids = git(repo, "rev-list", "--objects", "--no-object-names", "HEAD")
     .split("\n")
@@ -252,8 +271,8 @@ test("worker rejects a committed symlink before making a request", async () => {
     gitdir,
   }));
   const result = await runTool(["validate", "--request", request], root);
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /unsupported object type or mode/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(git(root, "--git-dir", gitdir, "cat-file", "-p", `${head}:link.txt`), "target.txt");
   fs.rmSync(root, { recursive: true, force: true });
 });
 
