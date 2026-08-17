@@ -188,6 +188,101 @@ describe("worker performAction context", () => {
   });
 });
 
+describe("worker issue create transport", () => {
+  it("serializes projectWorkspaceId to the host", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let observedCreateParams: Record<string, unknown> | null = null;
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("create", async () => ctx.issues.create({
+          companyId: "company-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          title: "Transport-bound issue",
+        }));
+      },
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message) || message.method !== "issues.create") return;
+      observedCreateParams = message.params as Record<string, unknown>;
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
+        id: "issue-1",
+        companyId: "company-1",
+        projectId: "project-1",
+        title: "Transport-bound issue",
+      })));
+    });
+
+    try {
+      await expect(callWorker("initialize", {
+        manifest: {
+          id: "paperclip.issue-create-transport",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Issue Create Transport",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["issues.create"],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      })).resolves.toMatchObject({ ok: true });
+
+      await expect(callWorker("getData", {
+        key: "create",
+        params: {},
+        companyId: "company-1",
+      })).resolves.toMatchObject({ id: "issue-1" });
+      expect(observedCreateParams).toMatchObject({
+        companyId: "company-1",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        title: "Transport-bound issue",
+      });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker invocation scope propagation", () => {
   it("keeps overlapping company scopes local to each getData invocation", async () => {
     const hostToWorker = new PassThrough();

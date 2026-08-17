@@ -794,6 +794,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             originRunId: input.originRunId,
             blockedByIssueIds: input.blockedByIssueIds,
             labelIds: input.labelIds,
+            projectWorkspaceId: input.projectWorkspaceId,
             executionWorkspaceId: input.executionWorkspaceId,
             executionWorkspacePreference: input.executionWorkspacePreference,
             executionWorkspaceSettings: input.executionWorkspaceSettings,
