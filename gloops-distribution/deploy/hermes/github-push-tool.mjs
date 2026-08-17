@@ -14,7 +14,12 @@ const MAX_OBJECTS = 100_000;
 const MAX_PACK_BYTES = 64 * 1024 * 1024;
 const DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 const DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
-const ACCEPTED_BLOB_MODES = new Set(["100644", "100755"]);
+// The broker imports a content-addressed object graph into a bare repository;
+// it never checks the submitted tree out.  A tracked symlink is therefore an
+// ordinary blob in this boundary, not a host filesystem traversal.  Paperclip
+// itself contains tracked skill aliases, so rejecting mode 120000 made every
+// Paperclip publication impossible even when the changed files were regular.
+const ACCEPTED_BLOB_MODES = new Set(["100644", "100755", "120000"]);
 const ACCEPTED_TREE_MODE = "040000";
 
 function fail(message) {

@@ -13,6 +13,14 @@ const canonicalPatchDigestTestPath = new URL(
   "../gloops-distribution/scripts/canonical-patch-digest.test.mjs",
   import.meta.url,
 );
+const upstreamEfficiencyInventoryPath = new URL(
+  "../gloops-distribution/scripts/upstream-efficiency-inventory.mjs",
+  import.meta.url,
+);
+const upstreamEfficiencyInventoryTestPath = new URL(
+  "../gloops-distribution/scripts/upstream-efficiency-inventory.test.mjs",
+  import.meta.url,
+);
 const dockerfilePath = new URL("../Dockerfile", import.meta.url);
 const workflowPath = new URL(
   "../.github/workflows/gloops-distribution.yml",
@@ -506,6 +514,18 @@ try {
   });
 } catch (error) {
   fail(`Canonical patch digest tests failed: ${error instanceof Error ? error.message : error}`);
+}
+try {
+  execFileSync("node", ["--test", upstreamEfficiencyInventoryTestPath.pathname], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  execFileSync("node", [upstreamEfficiencyInventoryPath.pathname, "verify"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+} catch (error) {
+  fail(`Upstream efficiency inventory verification failed: ${error instanceof Error ? error.message : error}`);
 }
 try {
   execFileSync("python3", [hermesRouteReceiptApplicatorTestPath.pathname], {
