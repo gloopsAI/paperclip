@@ -17,7 +17,7 @@
       "packages/adapter-utils/src/server-utils.ts": "d046abdec5b391a48e40b0e2cfa4631b1dce64beace589238693dd0f503f9fdc",
       "packages/adapter-utils/src/session-compaction.ts": "fbc50b1888a957ddfac311af99c2674dde7f7dab0f8f3883e237dfd011deacc5",
       "server/src/services/agent-capacity.ts": "24ca64f8edeb1b1ebaf86a6dc14c8412b7c038adf452ea78982b640b25d3628c",
-      "server/src/services/outcome-scorecard.ts": "708cb477f7579f0b4b46fc3071e04bc2fca4c110b8392a3c61321696f96d5332",
+      "server/src/services/outcome-scorecard.ts": "c74c3f2bec9d4d44d28ce18b359c0054850e65a441eb09d5fc8f2cbacf436231",
       "server/src/services/productivity-review.ts": "19cfa1662cd801a2a629c08756521c86bf25aec672ba3d592d25f03a36256767",
       "server/src/services/workforce-capacity.ts": "2bc6ba1b7699fd5639dbcaaff4d18e5c6752e1104c96053fbdbd6358d7326d65",
       "skills/paperclip/SKILL.md": "18f9ab974d972f873e1ea9ca188e4befeb0023232ab67845f80c66cf89b0684e"

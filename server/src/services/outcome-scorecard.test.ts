@@ -520,7 +520,17 @@ describe("buildOutcomeScorecard", () => {
     ])).toBe(1);
     expect(isHumanInterventionActivity({
       action: "issue.updated",
-      details: { executionState: "ready", _previous: { executionState: "planning" } },
+      details: {
+        executionState: { phase: "review", gates: ["ci", "independent_review"] },
+        _previous: { executionState: { gates: ["ci", "independent_review"], phase: "review" } },
+      },
+    })).toBe(false);
+    expect(isHumanInterventionActivity({
+      action: "issue.updated",
+      details: {
+        executionState: { phase: "review", gates: ["ci", "independent_review"] },
+        _previous: { executionState: { phase: "implementation", gates: ["ci"] } },
+      },
     })).toBe(true);
     expect(isHumanInterventionActivity({ action: "issue.thread_interaction_accepted", details: {} })).toBe(true);
   });

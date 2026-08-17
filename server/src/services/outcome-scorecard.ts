@@ -470,6 +470,17 @@ const HUMAN_STAGE_UPDATE_FIELDS = new Set([
   "workMode",
 ]);
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => (
+      `${JSON.stringify(key)}:${canonicalJson(record[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
 /**
  * Count deliberate corrective/stage intervention, not ordinary human issue
  * activity such as creation, comments, edits, or review discussion.
@@ -485,7 +496,7 @@ export function isHumanInterventionActivity(input: { action: string; details: un
   return [...HUMAN_STAGE_UPDATE_FIELDS].some((field) => (
     Object.hasOwn(details, field)
       && Object.hasOwn(previous, field)
-      && details[field] !== previous[field]
+      && canonicalJson(details[field]) !== canonicalJson(previous[field])
   ));
 }
 
