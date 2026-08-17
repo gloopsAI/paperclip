@@ -640,3 +640,77 @@ describe("JsonSchemaForm enum rendering", () => {
     });
   });
 });
+
+describe("JsonSchemaForm optional string clearing", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("unsets an optional string instead of persisting an invalid empty value", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={{
+            type: "object",
+            properties: { projectWorkspaceId: { type: "string", format: "uuid" } },
+          }}
+          values={{ projectWorkspaceId: "11111111-1111-4111-8111-111111111111" }}
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const input = container.querySelector("input")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenCalledWith({ projectWorkspaceId: undefined });
+
+    await act(async () => root.unmount());
+  });
+
+  it("retains an empty required string so required-field validation remains visible", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={{
+            type: "object",
+            required: ["repository"],
+            properties: { repository: { type: "string" } },
+          }}
+          values={{ repository: "gloopsAI/paperclip" }}
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const input = container.querySelector("input")!;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setValue.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenCalledWith({ repository: "" });
+
+    await act(async () => root.unmount());
+  });
+});

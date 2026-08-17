@@ -834,7 +834,7 @@ const StringField = React.memo(({
       {isTextArea ? (
         <Textarea
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChange(e.target.value === "" && !isRequired ? undefined : e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
           className="min-h-(--sz-100px)"
@@ -844,7 +844,7 @@ const StringField = React.memo(({
         <Input
           type="text"
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChange(e.target.value === "" && !isRequired ? undefined : e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
           aria-invalid={!!error}
