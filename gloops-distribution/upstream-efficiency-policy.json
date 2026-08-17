@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "gloops.upstream-efficiency-policy.v1",
+  "program": "paperclip-upstream-efficiency-harvest",
+  "assessmentDate": "2026-08-16",
+  "upstreamRepository": "paperclipai/paperclip",
+  "upstreamRef": "upstream/master",
+  "upstreamHead": "fd472d02ba950519ca5eff75ed9fd55cf976f4c2",
+  "forkRepository": "gloopsAI/paperclip",
+  "forkRef": "origin/gloops/stable",
+  "forkBaselineHead": "e5bbf3efaf2b15321f302e9044010036035567cb",
+  "commonBase": "c36f1a4afd91e4ddf0e5c7224b288ce722c7404f",
+  "freeze": {
+    "rule": "Any change to a protected edge surface must update this assessment and regenerate the complete inventory before it can pass distribution verification.",
+    "protectedEdgeSurfaceDigests": {
+      "packages/adapter-utils/src/execution-envelope.ts": "d5c53ae795b0c8a5f8966bf526c466ed123d64d8bca030337adeb1afbd20a236",
+      "packages/adapter-utils/src/session-compaction.ts": "fbc50b1888a957ddfac311af99c2674dde7f7dab0f8f3883e237dfd011deacc5",
+      "server/src/services/agent-capacity.ts": "24ca64f8edeb1b1ebaf86a6dc14c8412b7c038adf452ea78982b640b25d3628c",
+      "server/src/services/outcome-scorecard.ts": "c311a66fbbee95cb44a8bc19e76ce9574a4e3e7202b92ec2eb4bc6e83ec756a1",
+      "server/src/services/productivity-review.ts": "19cfa1662cd801a2a629c08756521c86bf25aec672ba3d592d25f03a36256767",
+      "server/src/services/workforce-capacity.ts": "2bc6ba1b7699fd5639dbcaaff4d18e5c6752e1104c96053fbdbd6358d7326d65"
+    }
+  },
+  "ownership": {
+    "upstreamCore": [
+      "productivity review and generic recovery suppression",
+      "session compaction and generic task-session lifecycle",
+      "decision queues and prioritized attention",
+      "adapter usage and generic cost telemetry"
+    ],
+    "gloopsEdgeOnly": [
+      "Luna/Terra durable capacity admission",
+      "Codex/Grok typed burst escalation",
+      "exact-head autonomous SDLC review and merge authority",
+      "network-free injected failure harnesses",
+      "subscription-provider availability evidence"
+    ]
+  },
+  "capabilities": [
+    {
+      "name": "productivity-recovery",
+      "disposition": "adapt",
+      "evidence": "Adopt upstream one-per-window and three-no-action suppression while retaining GLoops exact recovery evidence."
+    },
+    {
+      "name": "session-context",
+      "disposition": "adapt",
+      "evidence": "session-compaction.ts is byte-identical; adopt upstream issue-scoped timer session reuse and bounded control-plane write retries."
+    },
+    {
+      "name": "decision-attention",
+      "disposition": "conflict",
+      "evidence": "Upstream decision queues span schema, API and UI; the complete upstream merge currently has 77 conflicts. Do not rebuild them in GLoops; absorb through the future core synchronization stream."
+    },
+    {
+      "name": "usage-cost-telemetry",
+      "disposition": "superseded",
+      "evidence": "GLoops already records Grok native usage, subscription economics and cache-adjusted outcome tokens; this harvest extends accepted-change workforce metrics."
+    }
+  ],
+  "commitOverrides": {
+    "1cd09ed5556b3d0bd1c70f1262d491544b1d97bf": { "disposition": "adapt", "reason": "Issue-scoped timer session reuse and bounded write retries are ported in this harvest." },
+    "85404b46c54172c9801489d5737f422f9c6924f4": { "disposition": "adapt", "reason": "One-per-window and three-no-action productivity suppression are ported in this harvest." },
+    "53f09cb818b934beadc2a58897604c9ddca1d42e": { "disposition": "adapt", "reason": "Creation-order no-action semantics are ported; unrelated migration work remains outside this harvest." },
+    "24bd860280b5a51315a421ad773a9e2352c94ce3": { "disposition": "superseded", "reason": "The fork already excludes cancelled productivity reviews from active and creation-window guards." },
+    "ee851fc364087aa36951aaec78afe2be42ce27e3": { "disposition": "superseded", "reason": "The fork outcome scorecard already separates cached and uncached input tokens per accepted outcome." },
+    "b5ebda1dca0b118a403b35bf70b38870fb981655": { "disposition": "superseded", "reason": "The fork Grok adapter already parses and persists native input/output/cached token usage." },
+    "30c49c83276d1c3c6a48e4e67ac1b618de1ae256": { "disposition": "conflict", "reason": "Adopt through upstream core synchronization; do not create a duplicate GLoops decision-queue implementation." },
+    "0a09e4d975e1e1cd7de65fbd1ca730b9cd9f97ea": { "disposition": "conflict", "reason": "Adopt with its decision-queue predecessor through upstream core synchronization." },
+    "52b8741b8e2ee39f03c2e274fc95eb56184eabd9": { "disposition": "conflict", "reason": "The migration and hot-path changes overlap the fork's newer schema and recovery projections; requires isolated adaptation." },
+    "d816eb80950384cb95b8bc9980e84bd42c0a2ab9": { "disposition": "conflict", "reason": "Company portability and productivity changes overlap divergent fork services; requires isolated adaptation." }
+  }
+}

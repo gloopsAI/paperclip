@@ -318,6 +318,10 @@ describe("buildOutcomeScorecard", () => {
         failed: 2,
         cancelled: 1,
         other: 0,
+        retries: 0,
+        successfulNoModelRuns: 0,
+        freshSessionRuns: 0,
+        providerUnavailableRuns: 0,
       },
       outcomes: {
         // ISSUE_DONE (run), ISSUE_OPEN (run), ISSUE_DONE_NO_RUN (created+assigned),
@@ -339,12 +343,26 @@ describe("buildOutcomeScorecard", () => {
         totalCachedInputTokens: 305,
         totalUncachedInputTokens: 1225,
         totalOutputTokens: 160,
+        totalTokens: 1385,
         uncachedInputTokensPerAcceptedOutcome: 1225,
+        outputTokensPerAcceptedOutcome: 160,
+        totalTokensPerAcceptedOutcome: 1385,
+      },
+      workforce: {
+        humanInterventions: 0,
+        humanInterventionsPerAcceptedOutcome: 0,
+      },
+      delivery: {
+        meanAcceptedLeadTimeSeconds: null,
+        p50AcceptedLeadTimeSeconds: null,
       },
       rates: {
         runtimeSuccessRate: 2 / 5,
         admittedToAcceptedRate: 1 / 4,
         terminalMismatchRate: 1 / 2,
+        retryRate: 0,
+        successfulNoModelRunRate: 0,
+        freshSessionRate: 0,
       },
     });
   });
@@ -366,6 +384,70 @@ describe("buildOutcomeScorecard", () => {
     expect(scorecard.rates.runtimeSuccessRate).toBeNull();
     expect(scorecard.rates.admittedToAcceptedRate).toBeNull();
     expect(scorecard.rates.terminalMismatchRate).toBeNull();
+    expect(scorecard.rates.retryRate).toBeNull();
+    expect(scorecard.workforce.humanInterventionsPerAcceptedOutcome).toBeNull();
+    expect(scorecard.delivery.p50AcceptedLeadTimeSeconds).toBeNull();
+  });
+
+  it("measures retries, no-model runs, fresh sessions, interventions, and accepted lead time", () => {
+    const completedAt = "2026-07-06T00:00:00.000Z";
+    const scorecard = buildOutcomeScorecard({
+      companyId: COMPANY_ID,
+      since: WINDOW_SINCE,
+      until: WINDOW_UNTIL,
+      humanInterventions: 2,
+      issues: [issue({
+        id: ISSUE_DONE,
+        status: "done",
+        createdAt: "2026-07-05T00:00:00.000Z",
+        completedAt,
+      })],
+      runs: [
+        run({
+          id: "run-no-model",
+          status: "succeeded",
+          issueId: ISSUE_DONE,
+          retryOfRunId: "prior-run",
+          contextSnapshot: { wakeReason: "issue_assigned", issueId: ISSUE_DONE },
+          resultJson: {
+            summary: "Merged accepted change",
+            providerInvocationAttempted: false,
+          },
+          usageJson: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20 },
+        }),
+        run({
+          id: "run-provider-down",
+          status: "failed",
+          issueId: ISSUE_DONE,
+          errorCode: "provider_unavailable",
+        }),
+      ],
+    });
+
+    expect(scorecard.runs).toMatchObject({
+      total: 2,
+      retries: 1,
+      successfulNoModelRuns: 1,
+      freshSessionRuns: 1,
+      providerUnavailableRuns: 1,
+    });
+    expect(scorecard.economics).toMatchObject({
+      totalTokens: 80,
+      totalTokensPerAcceptedOutcome: 80,
+    });
+    expect(scorecard.workforce).toEqual({
+      humanInterventions: 2,
+      humanInterventionsPerAcceptedOutcome: 2,
+    });
+    expect(scorecard.delivery).toEqual({
+      meanAcceptedLeadTimeSeconds: 86_400,
+      p50AcceptedLeadTimeSeconds: 86_400,
+    });
+    expect(scorecard.rates).toMatchObject({
+      retryRate: 0.5,
+      successfulNoModelRunRate: 0.5,
+      freshSessionRate: 0.5,
+    });
   });
 
   it("counts created+assigned issues as admitted even without runs", () => {

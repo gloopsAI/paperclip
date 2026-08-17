@@ -9,7 +9,7 @@
  */
 import { and, desc, eq, gte, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 
 export const OUTCOME_SCORECARD_DEFAULT_WINDOW_DAYS = 14;
@@ -31,6 +31,10 @@ export interface OutcomeScorecard {
     failed: number;
     cancelled: number;
     other: number;
+    retries: number;
+    successfulNoModelRuns: number;
+    freshSessionRuns: number;
+    providerUnavailableRuns: number;
   };
   outcomes: {
     admitted: number;
@@ -50,12 +54,26 @@ export interface OutcomeScorecard {
     totalCachedInputTokens: number;
     totalUncachedInputTokens: number;
     totalOutputTokens: number;
+    totalTokens: number;
     uncachedInputTokensPerAcceptedOutcome: number | null;
+    outputTokensPerAcceptedOutcome: number | null;
+    totalTokensPerAcceptedOutcome: number | null;
+  };
+  workforce: {
+    humanInterventions: number;
+    humanInterventionsPerAcceptedOutcome: number | null;
+  };
+  delivery: {
+    meanAcceptedLeadTimeSeconds: number | null;
+    p50AcceptedLeadTimeSeconds: number | null;
   };
   rates: {
     runtimeSuccessRate: number | null;
     admittedToAcceptedRate: number | null;
     terminalMismatchRate: number | null;
+    retryRate: number | null;
+    successfulNoModelRunRate: number | null;
+    freshSessionRate: number | null;
   };
 }
 
@@ -63,6 +81,7 @@ export interface ScorecardIssue {
   id: string;
   status: string;
   createdAt: Date | string;
+  completedAt?: Date | string | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   /** Issue work mode — probe modes (skill_test, ask) are excluded from acceptedOutcomes. */
@@ -80,6 +99,7 @@ export interface ScorecardRun {
   contextSnapshot?: Record<string, unknown> | null;
   /** Resolved issue id when known (from contextSnapshot or join). */
   issueId?: string | null;
+  retryOfRunId?: string | null;
 }
 
 export interface BuildOutcomeScorecardInput {
@@ -88,6 +108,7 @@ export interface BuildOutcomeScorecardInput {
   until: Date;
   runs: ScorecardRun[];
   issues: ScorecardIssue[];
+  humanInterventions?: number;
 }
 
 const INFRA_KEYWORDS = [
@@ -406,6 +427,50 @@ function safeRatio(numerator: number, denominator: number): number | null {
   return numerator / denominator;
 }
 
+function readWakeReason(run: ScorecardRun): string | null {
+  return readNonEmptyString(asRecord(run.contextSnapshot)?.wakeReason);
+}
+
+function isFreshSessionRun(run: ScorecardRun): boolean {
+  const context = asRecord(run.contextSnapshot) ?? {};
+  if (context.forceFreshSession === true) return true;
+  const wakeReason = readWakeReason(run);
+  if ([
+    "issue_assigned",
+    "execution_review_requested",
+    "execution_review_participant_recovery",
+    "execution_approval_requested",
+    "execution_changes_requested",
+  ].includes(wakeReason ?? "")) return true;
+  if (wakeReason !== "heartbeat_timer") return false;
+  return ![
+    context.taskKey,
+    context.taskId,
+    context.issueId,
+  ].some((value) => readNonEmptyString(value));
+}
+
+function providerInvocationAttempted(run: ScorecardRun): boolean | null {
+  const result = asRecord(run.resultJson);
+  if (result?.providerInvocationAttempted === true) return true;
+  if (result?.providerInvocationAttempted === false) return false;
+  return null;
+}
+
+function isProviderUnavailableRun(run: ScorecardRun): boolean {
+  const text = flattenFailureText(run.errorCode, run.error, run.resultJson);
+  return /provider_(?:unavailable|quota)|workforce_capacity|subscription_route|rate.?limit|quota/.test(text);
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle]!
+    : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+
 /**
  * Pure scorecard builder — free of DB so unit tests can drive it with fixtures.
  */
@@ -427,11 +492,19 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
   let totalUncachedInputTokens = 0;
   let totalOutputTokens = 0;
   let runtimeSuccessNotDone = 0;
+  let retries = 0;
+  let successfulNoModelRuns = 0;
+  let freshSessionRuns = 0;
+  let providerUnavailableRuns = 0;
 
   const runsByIssueId = new Map<string, ScorecardRun[]>();
   const issuesWithRunInWindow = new Set<string>();
 
   for (const run of runsInWindow) {
+    if (run.retryOfRunId) retries += 1;
+    if (run.status === "succeeded" && providerInvocationAttempted(run) === false) successfulNoModelRuns += 1;
+    if (isFreshSessionRun(run)) freshSessionRuns += 1;
+    if (isProviderUnavailableRun(run)) providerUnavailableRuns += 1;
     switch (run.status) {
       case "succeeded":
         succeeded += 1;
@@ -488,6 +561,7 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
   let acceptedOutcomes = 0;
   let probeOutcomes = 0;
   let doneWithoutSuccessRun = 0;
+  const acceptedLeadTimesSeconds: number[] = [];
 
   for (const issueId of admittedIssueIds) {
     const issue = issueById.get(issueId);
@@ -496,6 +570,9 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
 
     if (isAcceptedOrganizationalOutcome(issue, linkedRuns)) {
       acceptedOutcomes += 1;
+      if (issue.completedAt) {
+        acceptedLeadTimesSeconds.push(Math.max(0, (toTime(issue.completedAt) - toTime(issue.createdAt)) / 1000));
+      }
     }
     if (isProbeOrganizationalOutcome(issue)) {
       probeOutcomes += 1;
@@ -516,6 +593,8 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
   const totalRuns = runsInWindow.length;
   const totalFailures = infrastructureFailures + reasoningFailures;
   const admitted = admittedIssueIds.size;
+  const humanInterventions = Math.max(0, Math.floor(input.humanInterventions ?? 0));
+  const totalTokens = totalUncachedInputTokens + totalOutputTokens;
 
   return {
     window: {
@@ -529,6 +608,10 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
       failed,
       cancelled,
       other,
+      retries,
+      successfulNoModelRuns,
+      freshSessionRuns,
+      providerUnavailableRuns,
     },
     outcomes: {
       admitted,
@@ -547,10 +630,23 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
       totalCachedInputTokens,
       totalUncachedInputTokens,
       totalOutputTokens,
+      totalTokens,
       uncachedInputTokensPerAcceptedOutcome: safeRatio(
         totalUncachedInputTokens,
         acceptedOutcomes,
       ),
+      outputTokensPerAcceptedOutcome: safeRatio(totalOutputTokens, acceptedOutcomes),
+      totalTokensPerAcceptedOutcome: safeRatio(totalTokens, acceptedOutcomes),
+    },
+    workforce: {
+      humanInterventions,
+      humanInterventionsPerAcceptedOutcome: safeRatio(humanInterventions, acceptedOutcomes),
+    },
+    delivery: {
+      meanAcceptedLeadTimeSeconds: acceptedLeadTimesSeconds.length > 0
+        ? acceptedLeadTimesSeconds.reduce((sum, value) => sum + value, 0) / acceptedLeadTimesSeconds.length
+        : null,
+      p50AcceptedLeadTimeSeconds: median(acceptedLeadTimesSeconds),
     },
     rates: {
       runtimeSuccessRate: safeRatio(succeeded, totalRuns),
@@ -561,6 +657,9 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
         : runtimeSuccessNotDone > 0
           ? runtimeSuccessNotDone / 1
           : null,
+      retryRate: safeRatio(retries, totalRuns),
+      successfulNoModelRunRate: safeRatio(successfulNoModelRuns, totalRuns),
+      freshSessionRate: safeRatio(freshSessionRuns, totalRuns),
     },
   };
 }
@@ -626,6 +725,7 @@ export function outcomeScorecardService(db: Db) {
           resultJson: heartbeatRuns.resultJson,
           contextSnapshot: heartbeatRuns.contextSnapshot,
           issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
         })
         .from(heartbeatRuns)
         .where(
@@ -649,6 +749,7 @@ export function outcomeScorecardService(db: Db) {
           id: issues.id,
           status: issues.status,
           createdAt: issues.createdAt,
+          completedAt: issues.completedAt,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           workMode: issues.workMode,
@@ -677,6 +778,7 @@ export function outcomeScorecardService(db: Db) {
                 id: issues.id,
                 status: issues.status,
                 createdAt: issues.createdAt,
+                completedAt: issues.completedAt,
                 assigneeAgentId: issues.assigneeAgentId,
                 assigneeUserId: issues.assigneeUserId,
                 workMode: issues.workMode,
@@ -694,6 +796,23 @@ export function outcomeScorecardService(db: Db) {
         if (!issueMap.has(row.id)) issueMap.set(row.id, row);
       }
 
+      const humanInterventions = allIssueIds.length === 0
+        ? 0
+        : await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, companyId),
+                eq(activityLog.actorType, "user"),
+                eq(activityLog.entityType, "issue"),
+                inArray(activityLog.entityId, allIssueIds),
+                gte(activityLog.createdAt, since),
+                lte(activityLog.createdAt, until),
+              ),
+            )
+            .then((rows) => Number(rows[0]?.count ?? 0));
+
       return buildOutcomeScorecard({
         companyId,
         since,
@@ -708,8 +827,10 @@ export function outcomeScorecardService(db: Db) {
           resultJson: row.resultJson,
           contextSnapshot: row.contextSnapshot,
           issueId: row.issueId,
+          retryOfRunId: row.retryOfRunId,
         })),
         issues: [...issueMap.values()],
+        humanInterventions,
       });
     },
   };
