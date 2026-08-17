@@ -1271,6 +1271,7 @@ export interface WorkerToHostMethods {
       originRunId?: string | null;
       blockedByIssueIds?: string[];
       labelIds?: string[];
+      projectWorkspaceId?: string | null;
       executionWorkspaceId?: string | null;
       executionWorkspacePreference?: string | null;
       executionWorkspaceSettings?: Record<string, unknown> | null;
