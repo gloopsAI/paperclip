@@ -13,6 +13,14 @@ function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+export function verifyInventoryFileDigest(policy, inventoryBytes) {
+  const expected = policy?.freeze?.inventoryFileSha256;
+  if (!/^[0-9a-f]{64}$/.test(expected ?? "")) throw new Error("inventory_file_digest_missing");
+  const actual = createHash("sha256").update(inventoryBytes).digest("hex");
+  if (actual !== expected) throw new Error("inventory_file_digest_mismatch");
+  return true;
+}
+
 function git(cwd, ...args) {
   return execFileSync("git", args, {
     cwd,
@@ -71,7 +79,7 @@ function parseLog(raw) {
   return records;
 }
 
-export function verifyInventory({ root, policy, inventory }) {
+export function verifyInventory({ root, policy, inventory, inventoryBytes }) {
   if (policy.schemaVersion !== "gloops.upstream-efficiency-policy.v1") throw new Error("policy_schema_invalid");
   if (inventory.schemaVersion !== "gloops.upstream-efficiency-inventory.v1") throw new Error("inventory_schema_invalid");
   for (const key of ["upstreamHead", "forkBaselineHead", "commonBase"]) {
@@ -79,6 +87,7 @@ export function verifyInventory({ root, policy, inventory }) {
   }
   if (inventory.upstreamOnlyCount !== inventory.commits.length) throw new Error("inventory_count_mismatch");
   if (inventory.upstreamOnlyCount !== 611 || inventory.forkOnlyCount !== 425) throw new Error("inventory_pinned_divergence_mismatch");
+  verifyInventoryFileDigest(policy, inventoryBytes);
   const seen = new Set();
   for (const commit of inventory.commits) {
     if (!/^[0-9a-f]{40}$/.test(commit.sha) || seen.has(commit.sha)) throw new Error("inventory_commit_identity_invalid");
@@ -134,13 +143,14 @@ function main() {
   if (command === "generate") {
     const inventory = generate(root, policy);
     writeFileSync(INVENTORY_PATH, `${JSON.stringify(inventory, null, 2)}\n`, { mode: 0o644 });
-    verifyInventory({ root, policy, inventory });
+    verifyInventory({ root, policy, inventory, inventoryBytes: readFileSync(INVENTORY_PATH) });
     console.log(`classified ${inventory.commits.length} upstream commits`);
     return;
   }
   if (command !== "verify") throw new Error("usage: upstream-efficiency-inventory.mjs [generate|verify]");
-  const inventory = JSON.parse(readFileSync(INVENTORY_PATH, "utf8"));
-  verifyInventory({ root, policy, inventory });
+  const inventoryBytes = readFileSync(INVENTORY_PATH);
+  const inventory = JSON.parse(inventoryBytes.toString("utf8"));
+  verifyInventory({ root, policy, inventory, inventoryBytes });
   console.log(`upstream efficiency inventory verified (${inventory.commits.length} commits)`);
 }
 

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dispositionForCommit, themeForCommit } from "./upstream-efficiency-inventory.mjs";
+import { createHash } from "node:crypto";
+import { dispositionForCommit, themeForCommit, verifyInventoryFileDigest } from "./upstream-efficiency-inventory.mjs";
 
 test("classifies efficiency themes from subject and changed paths", () => {
   assert.equal(themeForCommit("fix recovery loop", ["server/src/services/foo.ts"]), "productivity_recovery");
@@ -22,4 +23,15 @@ test("curated overrides win and remaining commits fail into explicit bounded dis
   assert.equal(dispositionForCommit("b".repeat(40), "adapter_runtime", {}).disposition, "adapt");
   assert.equal(dispositionForCommit("b".repeat(40), "decision_attention", {}).disposition, "conflict");
   assert.equal(dispositionForCommit("c".repeat(40), "other", {}).disposition, "reject");
+});
+
+test("the committed inventory digest fails closed on same-count row tampering", () => {
+  const bytes = Buffer.from('{"commits":[{"sha":"a"}]}\n');
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const policy = { freeze: { inventoryFileSha256: digest } };
+  assert.equal(verifyInventoryFileDigest(policy, bytes), true);
+  assert.throws(
+    () => verifyInventoryFileDigest(policy, Buffer.from('{"commits":[{"sha":"b"}]}\n')),
+    /inventory_file_digest_mismatch/,
+  );
 });

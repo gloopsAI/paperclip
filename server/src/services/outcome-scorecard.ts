@@ -54,10 +54,14 @@ export interface OutcomeScorecard {
     totalCachedInputTokens: number;
     totalUncachedInputTokens: number;
     totalOutputTokens: number;
-    totalTokens: number;
+    /** Raw provider/model tokens: total input (including cached input) + output. */
+    totalModelTokens: number;
+    /** Cache-adjusted work: uncached input + output. Never presented as raw token volume. */
+    cacheAdjustedTokens: number;
     uncachedInputTokensPerAcceptedOutcome: number | null;
     outputTokensPerAcceptedOutcome: number | null;
-    totalTokensPerAcceptedOutcome: number | null;
+    totalModelTokensPerAcceptedOutcome: number | null;
+    cacheAdjustedTokensPerAcceptedOutcome: number | null;
   };
   workforce: {
     humanInterventions: number;
@@ -100,6 +104,9 @@ export interface ScorecardRun {
   /** Resolved issue id when known (from contextSnapshot or join). */
   issueId?: string | null;
   retryOfRunId?: string | null;
+  /** Durable session evidence recorded by the heartbeat runner. */
+  sessionIdBefore?: string | null;
+  sessionIdAfter?: string | null;
 }
 
 export interface BuildOutcomeScorecardInput {
@@ -427,27 +434,33 @@ function safeRatio(numerator: number, denominator: number): number | null {
   return numerator / denominator;
 }
 
-function readWakeReason(run: ScorecardRun): string | null {
-  return readNonEmptyString(asRecord(run.contextSnapshot)?.wakeReason);
+function isFreshSessionRun(run: ScorecardRun): boolean {
+  const before = readNonEmptyString(run.sessionIdBefore);
+  const after = readNonEmptyString(run.sessionIdAfter);
+  return after !== null && after !== before;
 }
 
-function isFreshSessionRun(run: ScorecardRun): boolean {
-  const context = asRecord(run.contextSnapshot) ?? {};
-  if (context.forceFreshSession === true) return true;
-  const wakeReason = readWakeReason(run);
-  if ([
-    "issue_assigned",
-    "execution_review_requested",
-    "execution_review_participant_recovery",
-    "execution_approval_requested",
-    "execution_changes_requested",
-  ].includes(wakeReason ?? "")) return true;
-  if (wakeReason !== "heartbeat_timer") return false;
-  return ![
-    context.taskKey,
-    context.taskId,
-    context.issueId,
-  ].some((value) => readNonEmptyString(value));
+const HUMAN_INTERVENTION_ACTIONS = new Set([
+  "issue.admin_force_release",
+  "issue.execution_admission_reset_checkout",
+  "issue.low_trust_output_promoted",
+  "issue.recovery_action_resolved",
+  "issue.scheduled_retry_retry_now",
+  "issue.tree_hold_released",
+]);
+
+/**
+ * Count deliberate corrective/stage intervention, not ordinary human issue
+ * activity such as creation, comments, edits, or review discussion.
+ */
+export function isHumanInterventionActivity(input: { action: string; details: unknown }): boolean {
+  if (HUMAN_INTERVENTION_ACTIONS.has(input.action)) return true;
+  if (input.action !== "issue.updated") return false;
+  const details = asRecord(input.details);
+  const previous = asRecord(details?._previous);
+  const currentStatus = readNonEmptyString(details?.status);
+  const previousStatus = readNonEmptyString(previous?.status);
+  return currentStatus !== null && previousStatus !== null && currentStatus !== previousStatus;
 }
 
 function providerInvocationAttempted(run: ScorecardRun): boolean | null {
@@ -594,7 +607,8 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
   const totalFailures = infrastructureFailures + reasoningFailures;
   const admitted = admittedIssueIds.size;
   const humanInterventions = Math.max(0, Math.floor(input.humanInterventions ?? 0));
-  const totalTokens = totalUncachedInputTokens + totalOutputTokens;
+  const totalModelTokens = totalInputTokens + totalOutputTokens;
+  const cacheAdjustedTokens = totalUncachedInputTokens + totalOutputTokens;
 
   return {
     window: {
@@ -630,13 +644,15 @@ export function buildOutcomeScorecard(input: BuildOutcomeScorecardInput): Outcom
       totalCachedInputTokens,
       totalUncachedInputTokens,
       totalOutputTokens,
-      totalTokens,
+      totalModelTokens,
+      cacheAdjustedTokens,
       uncachedInputTokensPerAcceptedOutcome: safeRatio(
         totalUncachedInputTokens,
         acceptedOutcomes,
       ),
       outputTokensPerAcceptedOutcome: safeRatio(totalOutputTokens, acceptedOutcomes),
-      totalTokensPerAcceptedOutcome: safeRatio(totalTokens, acceptedOutcomes),
+      totalModelTokensPerAcceptedOutcome: safeRatio(totalModelTokens, acceptedOutcomes),
+      cacheAdjustedTokensPerAcceptedOutcome: safeRatio(cacheAdjustedTokens, acceptedOutcomes),
     },
     workforce: {
       humanInterventions,
@@ -726,6 +742,8 @@ export function outcomeScorecardService(db: Db) {
           contextSnapshot: heartbeatRuns.contextSnapshot,
           issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
           retryOfRunId: heartbeatRuns.retryOfRunId,
+          sessionIdBefore: heartbeatRuns.sessionIdBefore,
+          sessionIdAfter: heartbeatRuns.sessionIdAfter,
         })
         .from(heartbeatRuns)
         .where(
@@ -796,10 +814,10 @@ export function outcomeScorecardService(db: Db) {
         if (!issueMap.has(row.id)) issueMap.set(row.id, row);
       }
 
-      const humanInterventions = allIssueIds.length === 0
-        ? 0
+      const humanInterventionActivities = allIssueIds.length === 0
+        ? []
         : await db
-            .select({ count: sql<number>`count(*)::int` })
+            .select({ action: activityLog.action, details: activityLog.details })
             .from(activityLog)
             .where(
               and(
@@ -810,8 +828,8 @@ export function outcomeScorecardService(db: Db) {
                 gte(activityLog.createdAt, since),
                 lte(activityLog.createdAt, until),
               ),
-            )
-            .then((rows) => Number(rows[0]?.count ?? 0));
+            );
+      const humanInterventions = humanInterventionActivities.filter(isHumanInterventionActivity).length;
 
       return buildOutcomeScorecard({
         companyId,
@@ -828,6 +846,8 @@ export function outcomeScorecardService(db: Db) {
           contextSnapshot: row.contextSnapshot,
           issueId: row.issueId,
           retryOfRunId: row.retryOfRunId,
+          sessionIdBefore: row.sessionIdBefore,
+          sessionIdAfter: row.sessionIdAfter,
         })),
         issues: [...issueMap.values()],
         humanInterventions,

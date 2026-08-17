@@ -11,13 +11,16 @@
   "commonBase": "c36f1a4afd91e4ddf0e5c7224b288ce722c7404f",
   "freeze": {
     "rule": "Any change to a protected edge surface must update this assessment and regenerate the complete inventory before it can pass distribution verification.",
+    "inventoryFileSha256": "c6d1f745e9e298e905a916db118125950ac733c83b204c6573d98b8d84aceaab",
     "protectedEdgeSurfaceDigests": {
       "packages/adapter-utils/src/execution-envelope.ts": "d5c53ae795b0c8a5f8966bf526c466ed123d64d8bca030337adeb1afbd20a236",
+      "packages/adapter-utils/src/server-utils.ts": "d046abdec5b391a48e40b0e2cfa4631b1dce64beace589238693dd0f503f9fdc",
       "packages/adapter-utils/src/session-compaction.ts": "fbc50b1888a957ddfac311af99c2674dde7f7dab0f8f3883e237dfd011deacc5",
       "server/src/services/agent-capacity.ts": "24ca64f8edeb1b1ebaf86a6dc14c8412b7c038adf452ea78982b640b25d3628c",
-      "server/src/services/outcome-scorecard.ts": "c311a66fbbee95cb44a8bc19e76ce9574a4e3e7202b92ec2eb4bc6e83ec756a1",
+      "server/src/services/outcome-scorecard.ts": "d5e563a6b6a4c61f09ee3f82a851a5bdd7f7322c3fedb7d9d8fa6151ceab52d2",
       "server/src/services/productivity-review.ts": "19cfa1662cd801a2a629c08756521c86bf25aec672ba3d592d25f03a36256767",
-      "server/src/services/workforce-capacity.ts": "2bc6ba1b7699fd5639dbcaaff4d18e5c6752e1104c96053fbdbd6358d7326d65"
+      "server/src/services/workforce-capacity.ts": "2bc6ba1b7699fd5639dbcaaff4d18e5c6752e1104c96053fbdbd6358d7326d65",
+      "skills/paperclip/SKILL.md": "18f9ab974d972f873e1ea9ca188e4befeb0023232ab67845f80c66cf89b0684e"
     }
   },
   "ownership": {
@@ -44,7 +47,7 @@
     {
       "name": "session-context",
       "disposition": "adapt",
-      "evidence": "session-compaction.ts is byte-identical; adopt upstream issue-scoped timer session reuse and bounded control-plane write retries."
+      "evidence": "session-compaction.ts is byte-identical; adopt bounded control-plane write retries now and keep session reuse upstream-owned until a real producer can prove it."
     },
     {
       "name": "decision-attention",
@@ -58,7 +61,7 @@
     }
   ],
   "commitOverrides": {
-    "1cd09ed5556b3d0bd1c70f1262d491544b1d97bf": { "disposition": "adapt", "reason": "Issue-scoped timer session reuse and bounded write retries are ported in this harvest." },
+    "1cd09ed5556b3d0bd1c70f1262d491544b1d97bf": { "disposition": "adapt", "reason": "Bounded write retries are ported; issue-scoped timer reuse stays upstream-owned until a real fork producer exists." },
     "85404b46c54172c9801489d5737f422f9c6924f4": { "disposition": "adapt", "reason": "One-per-window and three-no-action productivity suppression are ported in this harvest." },
     "53f09cb818b934beadc2a58897604c9ddca1d42e": { "disposition": "adapt", "reason": "Creation-order no-action semantics are ported; unrelated migration work remains outside this harvest." },
     "24bd860280b5a51315a421ad773a9e2352c94ce3": { "disposition": "superseded", "reason": "The fork already excludes cancelled productivity reviews from active and creation-window guards." },

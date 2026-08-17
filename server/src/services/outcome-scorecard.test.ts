@@ -4,6 +4,7 @@ import {
   classifyFailureClass,
   extractUsageTokens,
   isAcceptedOrganizationalOutcome,
+  isHumanInterventionActivity,
   isTerminalMismatch,
   resolveScorecardWindow,
   type ScorecardIssue,
@@ -343,10 +344,12 @@ describe("buildOutcomeScorecard", () => {
         totalCachedInputTokens: 305,
         totalUncachedInputTokens: 1225,
         totalOutputTokens: 160,
-        totalTokens: 1385,
+        totalModelTokens: 1690,
+        cacheAdjustedTokens: 1385,
         uncachedInputTokensPerAcceptedOutcome: 1225,
         outputTokensPerAcceptedOutcome: 160,
-        totalTokensPerAcceptedOutcome: 1385,
+        totalModelTokensPerAcceptedOutcome: 1690,
+        cacheAdjustedTokensPerAcceptedOutcome: 1385,
       },
       workforce: {
         humanInterventions: 0,
@@ -409,6 +412,8 @@ describe("buildOutcomeScorecard", () => {
           issueId: ISSUE_DONE,
           retryOfRunId: "prior-run",
           contextSnapshot: { wakeReason: "issue_assigned", issueId: ISSUE_DONE },
+          sessionIdBefore: null,
+          sessionIdAfter: "session-1",
           resultJson: {
             summary: "Merged accepted change",
             providerInvocationAttempted: false,
@@ -432,8 +437,10 @@ describe("buildOutcomeScorecard", () => {
       providerUnavailableRuns: 1,
     });
     expect(scorecard.economics).toMatchObject({
-      totalTokens: 80,
-      totalTokensPerAcceptedOutcome: 80,
+      totalModelTokens: 120,
+      cacheAdjustedTokens: 80,
+      totalModelTokensPerAcceptedOutcome: 120,
+      cacheAdjustedTokensPerAcceptedOutcome: 80,
     });
     expect(scorecard.workforce).toEqual({
       humanInterventions: 2,
@@ -448,6 +455,53 @@ describe("buildOutcomeScorecard", () => {
       successfulNoModelRunRate: 0.5,
       freshSessionRate: 0.5,
     });
+  });
+
+  it("measures fresh sessions only from durable before/after session evidence", () => {
+    const scorecard = buildOutcomeScorecard({
+      companyId: COMPANY_ID,
+      since: WINDOW_SINCE,
+      until: WINDOW_UNTIL,
+      issues: [],
+      runs: [
+        run({
+          id: "wake-intent-only",
+          status: "succeeded",
+          contextSnapshot: { wakeReason: "issue_assigned", forceFreshSession: true },
+          sessionIdBefore: null,
+          sessionIdAfter: null,
+        }),
+        run({
+          id: "reused-session",
+          status: "succeeded",
+          sessionIdBefore: "session-a",
+          sessionIdAfter: "session-a",
+        }),
+        run({
+          id: "observed-fresh-session",
+          status: "succeeded",
+          sessionIdBefore: "session-a",
+          sessionIdAfter: "session-b",
+        }),
+      ],
+    });
+
+    expect(scorecard.runs.freshSessionRuns).toBe(1);
+    expect(scorecard.rates.freshSessionRate).toBe(1 / 3);
+  });
+
+  it("classifies corrective human intervention without counting ordinary user activity", () => {
+    expect(isHumanInterventionActivity({ action: "issue.created", details: {} })).toBe(false);
+    expect(isHumanInterventionActivity({ action: "issue.comment_added", details: {} })).toBe(false);
+    expect(isHumanInterventionActivity({
+      action: "issue.updated",
+      details: { title: "copy edit", _previous: { title: "old" } },
+    })).toBe(false);
+    expect(isHumanInterventionActivity({
+      action: "issue.updated",
+      details: { status: "todo", _previous: { status: "blocked" } },
+    })).toBe(true);
+    expect(isHumanInterventionActivity({ action: "issue.admin_force_release", details: {} })).toBe(true);
   });
 
   it("counts created+assigned issues as admitted even without runs", () => {

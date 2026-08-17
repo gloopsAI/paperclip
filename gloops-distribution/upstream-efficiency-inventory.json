@@ -6928,7 +6928,7 @@
       ],
       "theme": "session_context",
       "disposition": "adapt",
-      "reason": "Issue-scoped timer session reuse and bounded write retries are ported in this harvest."
+      "reason": "Bounded write retries are ported; issue-scoped timer reuse stays upstream-owned until a real fork producer exists."
     },
     {
       "sha": "3d23c3b2c30179402200924bb2c8c6fd8145adb8",
