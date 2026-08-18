@@ -81,6 +81,22 @@ export function pluginRegistryService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function withConfigMutationLock<T>(
+    pluginId: string,
+    mutation: (lockedDb: Db) => Promise<T>,
+  ): Promise<T> {
+    return db.transaction(async (tx) => {
+      const lockedPlugin = await tx
+        .select({ id: plugins.id })
+        .from(plugins)
+        .where(eq(plugins.id, pluginId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedPlugin) throw notFound("Plugin not found");
+      return mutation(tx as unknown as Db);
+    });
+  }
+
   async function nextInstallOrder(): Promise<number> {
     const result = await db
       .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
@@ -294,36 +310,32 @@ export function pluginRegistryService(db: Db) {
      * otherwise a new row is inserted.
      */
     upsertConfig: async (pluginId: string, input: UpsertPluginConfig) => {
-      const plugin = await getById(pluginId);
-      if (!plugin) throw notFound("Plugin not found");
-
-      const existing = await db
-        .select()
-        .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
-        .then((rows) => rows[0] ?? null);
-
-      if (existing) {
-        return db
-          .update(pluginConfig)
-          .set({
-            configJson: input.configJson,
-            lastError: null,
-            updatedAt: new Date(),
-          })
+      return withConfigMutationLock(pluginId, async (lockedDb) => {
+        const existing = await lockedDb
+          .select()
+          .from(pluginConfig)
           .where(eq(pluginConfig.pluginId, pluginId))
+          .then((rows) => rows[0] ?? null);
+
+        if (existing) {
+          return lockedDb
+            .update(pluginConfig)
+            .set({
+              configJson: input.configJson,
+              lastError: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(pluginConfig.pluginId, pluginId))
+            .returning()
+            .then((rows) => rows[0]);
+        }
+
+        return lockedDb
+          .insert(pluginConfig)
+          .values({ pluginId, configJson: input.configJson })
           .returning()
           .then((rows) => rows[0]);
-      }
-
-      return db
-        .insert(pluginConfig)
-        .values({
-          pluginId,
-          configJson: input.configJson,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      });
     },
 
     /**
@@ -331,37 +343,29 @@ export function pluginRegistryService(db: Db) {
      * If no config row exists yet one is created with the supplied values.
      */
     patchConfig: async (pluginId: string, input: PatchPluginConfig) => {
-      const plugin = await getById(pluginId);
-      if (!plugin) throw notFound("Plugin not found");
-
-      const existing = await db
-        .select()
-        .from(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
-        .then((rows) => rows[0] ?? null);
-
-      if (existing) {
-        const merged = { ...existing.configJson, ...input.configJson };
-        return db
-          .update(pluginConfig)
-          .set({
-            configJson: merged,
-            lastError: null,
-            updatedAt: new Date(),
-          })
+      return withConfigMutationLock(pluginId, async (lockedDb) => {
+        const existing = await lockedDb
+          .select()
+          .from(pluginConfig)
           .where(eq(pluginConfig.pluginId, pluginId))
+          .then((rows) => rows[0] ?? null);
+
+        if (existing) {
+          const merged = { ...existing.configJson, ...input.configJson };
+          return lockedDb
+            .update(pluginConfig)
+            .set({ configJson: merged, lastError: null, updatedAt: new Date() })
+            .where(eq(pluginConfig.pluginId, pluginId))
+            .returning()
+            .then((rows) => rows[0]);
+        }
+
+        return lockedDb
+          .insert(pluginConfig)
+          .values({ pluginId, configJson: input.configJson })
           .returning()
           .then((rows) => rows[0]);
-      }
-
-      return db
-        .insert(pluginConfig)
-        .values({
-          pluginId,
-          configJson: input.configJson,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      });
     },
 
     /**
@@ -381,12 +385,13 @@ export function pluginRegistryService(db: Db) {
 
     /** Delete a plugin's config row. */
     deleteConfig: async (pluginId: string) => {
-      const rows = await db
-        .delete(pluginConfig)
-        .where(eq(pluginConfig.pluginId, pluginId))
-        .returning();
-
-      return rows[0] ?? null;
+      return withConfigMutationLock(pluginId, async (lockedDb) => {
+        const rows = await lockedDb
+          .delete(pluginConfig)
+          .where(eq(pluginConfig.pluginId, pluginId))
+          .returning();
+        return rows[0] ?? null;
+      });
     },
 
     // ----- Company settings ----------------------------------------------

@@ -17,6 +17,7 @@ import {
   heartbeatRuns,
   issueRelations,
   issues,
+  pluginConfig,
   pluginManagedResources,
   plugins,
   projects,
@@ -27,6 +28,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { PAPERCLIP_EXECUTION_RECEIPT_KEY } from "@paperclipai/adapter-utils/execution-envelope";
 import { buildHostServices } from "../services/plugin-host-services.js";
+import { digestPluginConfig } from "@paperclipai/plugin-sdk";
+import { pluginRegistryService } from "../services/plugin-registry.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -316,6 +319,129 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         }),
       ]),
     );
+  });
+
+  it("serializes guarded creates behind every production config writer, including first insert", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginId = randomUUID();
+    const oldConfig = { enabled: true, killSwitch: false, proposalIssuance: true };
+    const newConfig = { enabled: true, killSwitch: true, proposalIssuance: true };
+    const oldConfigDigest = digestPluginConfig(oldConfig);
+    const newConfigDigest = digestPluginConfig(newConfig);
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.config-guard-test",
+      packageName: "@paperclip/config-guard-test",
+      version: "1.0.0",
+      manifestJson: {
+        id: "paperclip.config-guard-test",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Config Guard Test",
+        description: "Config guard race test",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["issues.create"],
+        entrypoints: {},
+      },
+      status: "ready",
+    });
+    await db.insert(pluginConfig).values({ pluginId, configJson: oldConfig });
+
+    const services = buildHostServices(
+      db,
+      pluginId,
+      "paperclip.config-guard-test",
+      createEventBusStub(),
+    );
+    const registry = pluginRegistryService(db);
+    const runWriterRace = async (
+      title: string,
+      expectedDigest: string,
+      mutate: (txRegistry: ReturnType<typeof pluginRegistryService>) => Promise<unknown>,
+    ) => {
+      let releaseMutation!: () => void;
+      let mutationApplied!: () => void;
+      const release = new Promise<void>((resolve) => { releaseMutation = resolve; });
+      const applied = new Promise<void>((resolve) => { mutationApplied = resolve; });
+      const mutation = db.transaction(async (tx) => {
+        await mutate(pluginRegistryService(tx as unknown as typeof db));
+        // The nested registry transaction has returned, but its installation
+        // row lock must remain owned by this outer transaction until commit.
+        mutationApplied();
+        await release;
+      });
+      await applied;
+
+      let settled = false;
+      const staleCreate = services.issues.create({
+        companyId,
+        title,
+        expectedPluginConfigDigest: expectedDigest,
+      }).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(settled).toBe(false);
+      releaseMutation();
+      await mutation;
+      await expect(staleCreate).rejects.toThrow("plugin_config_guard_mismatch");
+    };
+
+    await runWriterRace(
+      "Stale create behind upsert",
+      oldConfigDigest,
+      (txRegistry) => txRegistry.upsertConfig(pluginId, { configJson: newConfig }),
+    );
+
+    await registry.upsertConfig(pluginId, { configJson: oldConfig });
+    await runWriterRace(
+      "Stale create behind patch",
+      oldConfigDigest,
+      (txRegistry) => txRegistry.patchConfig(pluginId, { configJson: { killSwitch: true } }),
+    );
+
+    await registry.upsertConfig(pluginId, { configJson: oldConfig });
+    await runWriterRace(
+      "Stale create behind delete",
+      oldConfigDigest,
+      (txRegistry) => txRegistry.deleteConfig(pluginId),
+    );
+
+    await runWriterRace(
+      "Stale empty create behind first insert",
+      digestPluginConfig({}),
+      (txRegistry) => txRegistry.upsertConfig(pluginId, { configJson: newConfig }),
+    );
+
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
+    await expect(services.issues.create({
+      companyId,
+      title: "Created under exact current config",
+      expectedPluginConfigDigest: newConfigDigest,
+    })).resolves.toMatchObject({ title: "Created under exact current config" });
+
+    const guardedRequest = {
+      companyId,
+      title: "Guarded idempotent create",
+      idempotencyKey: "guarded:create:1",
+      expectedPluginConfigDigest: newConfigDigest,
+    };
+    const guardedIssue = await services.issues.create(guardedRequest);
+    await registry.upsertConfig(pluginId, { configJson: oldConfig });
+    // A byte-identical replay has no new creation effect, so it returns the
+    // original issue even when the current config has since changed.
+    await expect(services.issues.create(guardedRequest)).resolves.toMatchObject({
+      id: guardedIssue.id,
+    });
+    // The digest is part of request identity; callers cannot change or omit it
+    // while reusing the idempotency key.
+    await expect(services.issues.create({
+      ...guardedRequest,
+      expectedPluginConfigDigest: oldConfigDigest,
+    })).rejects.toThrow("idempotencyKey was already used with different create parameters");
+    await expect(services.issues.create({
+      ...guardedRequest,
+      expectedPluginConfigDigest: "sha256:not-a-digest",
+    })).rejects.toThrow("expectedPluginConfigDigest must be sha256");
   });
 
   it("returns one issue and records one create activity for concurrent and replayed idempotent creates", async () => {

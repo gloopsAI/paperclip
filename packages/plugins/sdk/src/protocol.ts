@@ -1275,6 +1275,7 @@ export interface WorkerToHostMethods {
       executionWorkspaceId?: string | null;
       executionWorkspacePreference?: string | null;
       executionWorkspaceSettings?: Record<string, unknown> | null;
+      expectedPluginConfigDigest?: string | null;
       idempotencyKey?: string | null;
       actorAgentId?: string | null;
       actorUserId?: string | null;
