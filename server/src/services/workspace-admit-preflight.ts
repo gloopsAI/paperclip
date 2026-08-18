@@ -27,6 +27,7 @@ import { executionWorkspaces, projectWorkspaces, type Db } from "@paperclipai/db
 import {
   evaluateIssuePacketReadiness,
   extractMarkdownSection,
+  findDeclaredExactHeadShas,
   findExactHeadSha,
   ISSUE_PACKET_REASON,
   type IssuePacketReadinessInput,
@@ -433,8 +434,9 @@ export function resolveExpectedHeadFromIssueAndWorkspace(input: {
   workspaceDefaultRef?: string | null;
   executionBaseRef?: string | null;
 }): string | null {
-  const fromDesc = findExactHeadSha(input.description ?? null);
-  if (fromDesc) return fromDesc;
+  const declaredHeads = findDeclaredExactHeadShas(input.description ?? null);
+  if (declaredHeads.length > 1) return null;
+  if (declaredHeads.length === 1) return declaredHeads[0]!;
   for (const candidate of [input.executionBaseRef, input.workspaceRepoRef, input.workspaceDefaultRef]) {
     const sha = normalizeSha(candidate);
     if (sha) return sha;

@@ -16,9 +16,9 @@
  * - PAPERCLIP_DISPATCH_THRASH_ERROR_CODES (comma-separated override)
  */
 
+import { findExactHeadSha as findCanonicalExactHeadSha } from "./issue-packet-readiness.js";
+
 const FULL_SHA_RE = /\b[0-9a-f]{40}\b/i;
-const EXACT_HEAD_LINE_RE =
-  /(?:^|\n)\s*(?:exact\s*head|head\s*sha|headsha|base\s*sha|commit\s*sha)\s*[:=]?\s*`?([0-9a-f]{40})`?/i;
 
 export const DISPATCH_ASSIGN_ENV = "PAPERCLIP_DISPATCH_ASSIGN_POLICY";
 export const DISPATCH_THRASH_COOLDOWN_SEC_ENV = "PAPERCLIP_DISPATCH_THRASH_COOLDOWN_SEC";
@@ -32,6 +32,7 @@ export const DEFAULT_THRASH_ERROR_CODES = new Set([
   "workspace_validation_failed",
   "workspace_preparation_failed",
   "process_lost",
+  "github_push.preparation_thrash_suppressed",
 ]);
 
 export const DISPATCH_ASSIGN_REASON = {
@@ -222,11 +223,7 @@ export function isDispatchActor(input: {
 }
 
 export function findExactHeadSha(description: string | null | undefined): string | null {
-  if (!description) return null;
-  const line = description.match(EXACT_HEAD_LINE_RE);
-  if (line?.[1]) return line[1].toLowerCase();
-  const any = description.match(FULL_SHA_RE);
-  return any ? any[0].toLowerCase() : null;
+  return findCanonicalExactHeadSha(description);
 }
 
 function looksImplement(input: {

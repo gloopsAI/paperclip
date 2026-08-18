@@ -640,7 +640,7 @@ PY
       fail 'live authenticated API boundary is not healthy'
     fi
     observer_image="$(<"${APPROVED_IMAGE_FILE}")"
-    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '2770:10000:985' ]] \
+    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '3770:0:985' ]] \
       && docker run --rm --pull never --user 995:985 --network none --read-only \
         --cap-drop ALL --security-opt no-new-privileges:true \
         --mount "type=bind,src=${WORKSPACE},dst=/workspace" \

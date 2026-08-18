@@ -28,9 +28,11 @@ node /opt/data/bin/github-push-tool.bundle.cjs client \
   --repo-dir "$CWD"
 ```
 
-The unprivileged client receives no credential. It packages the exact object
-closure and calls the Unix-socket broker. The broker independently resolves
-Paperclip and root authorization, validates the closure, journals the leased
+The unprivileged client receives no credential. It asks the Unix-socket broker
+for the authenticated external-claim base, verifies the mounted workspace
+identity, and packages only the bounded object delta beyond that base. The
+broker independently resolves Paperclip and root authorization, fetches the
+exact base with a short-lived read token, validates the delta, journals the leased
 mutation, mints a memory-only token, reconciles uncertain responses without a
 second write, and emits the durable push/draft-PR receipt.
 

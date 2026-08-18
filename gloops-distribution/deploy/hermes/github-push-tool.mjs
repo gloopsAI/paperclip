@@ -12,6 +12,7 @@ const OID_PATTERN = /^[0-9a-f]{40}$/;
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_OBJECTS = 100_000;
 const MAX_PACK_BYTES = 64 * 1024 * 1024;
+const MAX_GIT_STDOUT_BYTES = MAX_PACK_BYTES + 1024 * 1024;
 const DEFAULT_SOCKET = "/run/paperclip-github-broker/broker.sock";
 const DEFAULT_INGRESS = "/run/paperclip-github-broker/ingress";
 // The broker imports a content-addressed object graph into a bare repository;
@@ -92,16 +93,6 @@ async function resolveRepositoryGitContext(repoDir) {
     fail("repository worktree gitdir must be a real directory");
   }
 
-  const worktreeMarker = `${path.sep}.paperclip${path.sep}worktrees${path.sep}`;
-  const markerIndex = repoDir.indexOf(worktreeMarker);
-  if (markerIndex <= 0) fail("repository worktree is outside the Paperclip worktree boundary");
-  const projectRoot = repoDir.slice(0, markerIndex);
-  const expectedCommonGitdir = fs.realpathSync(path.join(projectRoot, ".git"));
-  const expectedGitdirParent = fs.realpathSync(path.join(expectedCommonGitdir, "worktrees"));
-  if (path.dirname(resolvedGitdir) !== expectedGitdirParent) {
-    fail("repository worktree gitdir is outside the project Git boundary");
-  }
-
   const backpointer = path.join(resolvedGitdir, "gitdir");
   const backpointerStat = fs.lstatSync(backpointer);
   if (!backpointerStat.isFile() || backpointerStat.isSymbolicLink() || backpointerStat.size > 4096) {
@@ -121,8 +112,40 @@ async function resolveRepositoryGitContext(repoDir) {
   const resolvedCommonGitdir = fs.realpathSync(
     path.resolve(resolvedGitdir, fs.readFileSync(commondir, "utf8").trim()),
   );
-  if (resolvedCommonGitdir !== expectedCommonGitdir) {
-    fail("repository worktree common Git boundary does not match the project");
+  const commonGitdirStat = fs.lstatSync(resolvedCommonGitdir);
+  if (
+    !commonGitdirStat.isDirectory()
+    || commonGitdirStat.isSymbolicLink()
+    || path.basename(resolvedCommonGitdir) !== ".git"
+  ) {
+    fail("repository worktree common Git boundary is unavailable");
+  }
+  const projectRoot = path.dirname(resolvedCommonGitdir);
+  const projectRootStat = fs.lstatSync(projectRoot);
+  if (
+    !projectRootStat.isDirectory()
+    || projectRootStat.isSymbolicLink()
+    || fs.realpathSync(projectRoot) !== projectRoot
+  ) {
+    fail("repository worktree project boundary must be a real directory");
+  }
+  const expectedCommonGitdir = fs.realpathSync(path.join(projectRoot, ".git"));
+  const expectedGitdirParent = fs.realpathSync(path.join(expectedCommonGitdir, "worktrees"));
+  if (
+    resolvedCommonGitdir !== expectedCommonGitdir
+    || path.dirname(resolvedGitdir) !== expectedGitdirParent
+  ) {
+    fail("repository worktree gitdir is outside the project Git boundary");
+  }
+
+  const managedWorktreeRoot = path.join(projectRoot, ".paperclip", "worktrees");
+  const isManagedNestedWorktree = repoDir.startsWith(`${managedWorktreeRoot}${path.sep}`);
+  const isGovernedSiblingWorktree = (
+    repoDir !== projectRoot
+    && path.dirname(repoDir) === path.dirname(projectRoot)
+  );
+  if (!isManagedNestedWorktree && !isGovernedSiblingWorktree) {
+    fail("repository worktree is outside the Paperclip worktree boundary");
   }
   return {
     gitdir: resolvedCommonGitdir,
@@ -169,6 +192,125 @@ async function collectCommitClosure(gitdir, commitOid) {
   return [...objects].sort();
 }
 
+async function validateDeltaTreeModes(gitdir, commitOid, baseOid) {
+  const pending = [commitOid];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const oid = pending.pop();
+    if (oid === baseOid || visited.has(oid)) continue;
+    if (!OID_PATTERN.test(oid)) fail("commit delta contains a malformed object id");
+    visited.add(oid);
+    if (visited.size > MAX_OBJECTS) fail("commit delta exceeds the object-count ceiling");
+    const { commit } = await git.readCommit({ fs, gitdir, oid });
+    await collectTreeObjects(gitdir, commit.tree, new Set());
+    for (const parent of commit.parent) pending.push(parent);
+  }
+  if (!visited.has(commitOid)) fail("publication head does not extend the required base");
+}
+
+function nativeGit(gitdir, args, options = {}) {
+  const result = spawnSync(
+    "/usr/bin/git",
+    ["--git-dir", gitdir, ...args],
+    {
+      encoding: options.binary ? null : "utf8",
+      input: options.input,
+      maxBuffer: options.maxBuffer ?? MAX_GIT_STDOUT_BYTES,
+      timeout: options.timeout ?? 120_000,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    },
+  );
+  if (result.status !== 0) {
+    const stderr = Buffer.isBuffer(result.stderr)
+      ? result.stderr.toString("utf8")
+      : String(result.stderr ?? "");
+    fail(`bounded Git operation failed: ${(stderr.trim().split("\n").at(-1) ?? "unknown").slice(0, 500)}`);
+  }
+  return result.stdout;
+}
+
+function collectCommitDelta(gitdir, headOid, baseOid) {
+  if (!OID_PATTERN.test(baseOid)) fail("broker preparation returned a malformed required base");
+  nativeGit(gitdir, ["cat-file", "-e", `${baseOid}^{commit}`]);
+  nativeGit(gitdir, ["merge-base", "--is-ancestor", baseOid, headOid]);
+  const output = String(nativeGit(
+    gitdir,
+    ["rev-list", "--objects", "--no-object-names", headOid, `^${baseOid}`],
+    { maxBuffer: 16 * 1024 * 1024 },
+  ));
+  const objectOids = [...new Set(output.split(/\r?\n/).filter(Boolean))].sort();
+  if (objectOids.length === 0) fail("publication head contains no objects beyond the claimed base");
+  if (objectOids.length > MAX_OBJECTS || objectOids.some((oid) => !OID_PATTERN.test(oid))) {
+    fail("commit delta exceeds the object-count ceiling or contains a malformed object id");
+  }
+  const packfile = nativeGit(
+    gitdir,
+    ["pack-objects", "--stdout", "--revs"],
+    { input: `${headOid}\n^${baseOid}\n`, binary: true },
+  );
+  if (!Buffer.isBuffer(packfile) || packfile.byteLength <= 0 || packfile.byteLength > MAX_PACK_BYTES) {
+    fail("commit delta pack is empty or exceeds the byte ceiling");
+  }
+  return { objectOids, packfile };
+}
+
+function credentialHelper() {
+  return [
+    "!f() {",
+    "printf 'username=x-access-token\\npassword=';",
+    "cat \"$CREDENTIALS_DIRECTORY/github-token\";",
+    "printf '\\n';",
+    "}; f",
+  ].join(" ");
+}
+
+function fetchRequiredBase(gitdir, repositoryFullName, baseRepositoryUrl, requiredBaseOid) {
+  const tokenPath = process.env.CREDENTIALS_DIRECTORY
+    ? path.join(process.env.CREDENTIALS_DIRECTORY, "github-token")
+    : "";
+  if (!tokenPath) fail("worker credential boundary is unavailable");
+  const token = fs.readFileSync(tokenPath, "utf8").trim();
+  if (!token.startsWith("ghs_") || /\s/.test(token)) fail("worker credential is malformed");
+  const canonicalUrl = `https://github.com/${repositoryFullName}.git`;
+  const testFileUrl = process.env.GLOOPS_GITHUB_PUSH_TEST_MODE === "1"
+    && /^file:\/\/\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/.test(baseRepositoryUrl);
+  if (baseRepositoryUrl !== canonicalUrl && !testFileUrl) {
+    fail("base repository URL conflicts with the authenticated repository");
+  }
+  const result = spawnSync(
+    "/usr/bin/git",
+    [
+      "--git-dir", gitdir,
+      "-c", `credential.helper=${credentialHelper()}`,
+      "fetch", "--quiet", "--no-tags", "--depth=1",
+      testFileUrl ? baseRepositoryUrl : `https://x-access-token@github.com/${repositoryFullName}.git`,
+      requiredBaseOid,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: gitdir,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+      },
+      timeout: 120_000,
+    },
+  );
+  if (result.status !== 0) {
+    const detail = result.stderr.trim().split("\n").at(-1) ?? "base fetch failed";
+    fail(`required base fetch failed: ${detail.slice(0, 500)}`);
+  }
+  const fetched = String(nativeGit(gitdir, ["rev-parse", "FETCH_HEAD"])).trim();
+  if (fetched !== requiredBaseOid) fail("fetched base does not match authenticated preparation");
+}
+
 function writeExclusive(filepath, bytes) {
   const fd = fs.openSync(filepath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
   try {
@@ -212,14 +354,49 @@ async function clientCommand(args) {
   if (!RUN_ID_PATTERN.test(runId)) fail("a canonical Paperclip run id is required");
   const repoStat = fs.lstatSync(repoDir);
   if (!repoStat.isDirectory() || repoStat.isSymbolicLink()) fail("repository path must be a real directory");
-  const { gitdir, headOid: newOid } = await resolveRepositoryGitContext(repoDir);
+  const workspaceIdentity = fs.realpathSync(repoDir);
+  const { gitdir, headOid: newOid } = await resolveRepositoryGitContext(workspaceIdentity);
   if (!OID_PATTERN.test(newOid)) fail("repository HEAD is not a SHA-1 commit");
   await git.readCommit({ fs, gitdir, oid: newOid });
-  const objectOids = await collectCommitClosure(gitdir, newOid);
-  const { packfile } = await git.packObjects({ fs, gitdir, oids: objectOids, write: false });
-  if (!(packfile instanceof Uint8Array) || packfile.byteLength <= 0 || packfile.byteLength > MAX_PACK_BYTES) {
-    fail("commit pack is empty or exceeds the byte ceiling");
+  const preparation = await requestBroker(socketPath, {
+    schemaVersion: "gloops.github-push-prepare-request.v1",
+    heartbeatRunId: runId,
+    expectedNewOid: newOid,
+    workspaceIdentity,
+  });
+  if (preparation?.ok === false) {
+    exactKeys(preparation, ["error", "ok", "schemaVersion"], "broker preparation failure");
+    if (
+      preparation.schemaVersion !== "gloops.github-push-client-response.v1"
+      || typeof preparation.error !== "string"
+      || !preparation.error
+    ) {
+      fail("broker preparation failure was malformed");
+    }
+    fail(preparation.error);
   }
+  exactKeys(preparation, [
+    "authorizationDigest",
+    "expectedNewOid",
+    "heartbeatRunId",
+    "ok",
+    "preparationDigest",
+    "requiredBaseOid",
+    "schemaVersion",
+  ], "broker preparation");
+  if (
+    preparation.ok !== true
+    || preparation.schemaVersion !== "gloops.github-push-prepare-response.v1"
+    || preparation.heartbeatRunId !== runId
+    || preparation.expectedNewOid !== newOid
+    || !OID_PATTERN.test(preparation.requiredBaseOid)
+    || !/^sha256:[0-9a-f]{64}$/.test(preparation.authorizationDigest)
+    || !/^sha256:[0-9a-f]{64}$/.test(preparation.preparationDigest)
+  ) {
+    fail(typeof preparation?.error === "string" ? preparation.error : "broker preparation was invalid");
+  }
+  const requiredBaseOid = preparation.requiredBaseOid;
+  const { objectOids, packfile } = collectCommitDelta(gitdir, newOid, requiredBaseOid);
   const ingressReal = fs.realpathSync(ingress);
   const ingressStat = fs.statSync(ingressReal);
   if (!ingressStat.isDirectory()) fail("broker ingress is unavailable");
@@ -231,9 +408,12 @@ async function clientCommand(args) {
   const manifestPath = path.join(ingressReal, manifestName);
   writeExclusive(packPath, packfile);
   const manifest = {
-    schemaVersion: "gloops.github-push-bundle.v1",
+    schemaVersion: "gloops.github-push-bundle.v2",
     heartbeatRunId: runId,
     expectedNewOid: newOid,
+    requiredBaseOid,
+    preparationDigest: preparation.preparationDigest,
+    workspaceIdentity,
     objectCount: objectOids.length,
     objectOids,
     packBytes: packfile.byteLength,
@@ -243,9 +423,12 @@ async function clientCommand(args) {
   writeExclusive(manifestPath, `${canonicalJson(manifest)}\n`);
   try {
     const response = await requestBroker(socketPath, {
-      schemaVersion: "gloops.github-push-client-request.v1",
+      schemaVersion: "gloops.github-push-client-request.v2",
       heartbeatRunId: runId,
       expectedNewOid: newOid,
+      requiredBaseOid,
+      preparationDigest: preparation.preparationDigest,
+      workspaceIdentity,
       manifestName,
     });
     if (!response || response.ok !== true) {
@@ -268,6 +451,7 @@ async function importWorkerBundle(args) {
   if (!requestPath) fail("worker request boundary is unavailable");
   const request = JSON.parse(fs.readFileSync(requestPath, "utf8"));
   exactKeys(request, [
+    "baseRepositoryUrl",
     "defaultBranch",
     "expectedNewOid",
     "expectedOldOid",
@@ -285,11 +469,12 @@ async function importWorkerBundle(args) {
   if (
     request.schemaVersion !== "gloops.github-push-worker-request.v1"
     || !OID_PATTERN.test(request.expectedNewOid)
-    || (request.requiredBaseOid !== null && !OID_PATTERN.test(request.requiredBaseOid))
+    || !OID_PATTERN.test(request.requiredBaseOid)
     || request.expectedOldOid !== ZERO_OID
     || !branchRunId
     || !RUN_ID_PATTERN.test(branchRunId)
     || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repositoryFullName)
+    || typeof request.baseRepositoryUrl !== "string"
     || !Array.isArray(request.objectOids)
     || request.objectOids.length === 0
     || request.objectOids.length > MAX_OBJECTS
@@ -317,6 +502,12 @@ async function importWorkerBundle(args) {
     ].join("\n"),
     { flag: "wx", mode: 0o600 },
   );
+  fetchRequiredBase(
+    gitdir,
+    request.repositoryFullName,
+    request.baseRepositoryUrl,
+    request.requiredBaseOid,
+  );
   const localPack = path.join(gitdir, "objects", "pack", "pack-input.pack");
   fs.copyFileSync(packPath, localPack, fs.constants.COPYFILE_EXCL);
   const { oids } = await git.indexPack({
@@ -330,7 +521,16 @@ async function importWorkerBundle(args) {
   if (indexed.length !== declared.length || indexed.some((oid, index) => oid !== declared[index])) {
     fail("pack objects differ from the declared content-addressed bundle");
   }
-  const reachable = await collectCommitClosure(gitdir, request.expectedNewOid);
+  nativeGit(gitdir, ["merge-base", "--is-ancestor", request.requiredBaseOid, request.expectedNewOid]);
+  await validateDeltaTreeModes(gitdir, request.expectedNewOid, request.requiredBaseOid);
+  const reachable = String(nativeGit(
+    gitdir,
+    [
+      "rev-list", "--objects", "--no-object-names",
+      request.expectedNewOid, `^${request.requiredBaseOid}`,
+    ],
+    { maxBuffer: 16 * 1024 * 1024 },
+  )).split(/\r?\n/).filter(Boolean).sort();
   if (reachable.length !== indexed.length || reachable.some((oid, index) => oid !== indexed[index])) {
     const reachableSet = new Set(reachable);
     const indexedSet = new Set(indexed);
@@ -341,18 +541,6 @@ async function importWorkerBundle(args) {
       + `(reachable=${reachable.length}, indexed=${indexed.length}, missing=${missing.join(",") || "none"}, `
       + `extra=${extra.join(",") || "none"})`,
     );
-  }
-  if (
-    request.requiredBaseOid !== null
-    && !(await git.isDescendent({
-      fs,
-      dir: gitdir,
-      gitdir,
-      oid: request.expectedNewOid,
-      ancestor: request.requiredBaseOid,
-    }))
-  ) {
-    fail("external issue claim base is not an ancestor of the publication head");
   }
   return { request, gitdir };
 }
@@ -384,13 +572,7 @@ async function workerCommand(args) {
   // systemd worker. Use the native credential-helper protocol instead. The
   // helper command contains only the systemd credential path; the token itself
   // never appears in argv, environment values, logs, or repository config.
-  const credentialHelper = [
-    "!f() {",
-    "printf 'username=x-access-token\\npassword=';",
-    "cat \"$CREDENTIALS_DIRECTORY/github-token\";",
-    "printf '\\n';",
-    "}; f",
-  ].join(" ");
+  const helper = credentialHelper();
   const result = spawnSync(
     "/usr/bin/git",
     [
@@ -410,7 +592,7 @@ async function workerCommand(args) {
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "credential.helper",
-        GIT_CONFIG_VALUE_0: credentialHelper,
+        GIT_CONFIG_VALUE_0: helper,
         GIT_TERMINAL_PROMPT: "0",
         CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
       },

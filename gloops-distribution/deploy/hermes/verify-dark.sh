@@ -601,7 +601,7 @@ if [[ "${failed}" -eq 0 ]]; then
   echo "PASS resource and container-security bounds are installed"
 fi
 
-if [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/workspace 2>/dev/null || true)" == '2770:10000:985' ]]; then
+if [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/workspace 2>/dev/null || true)" == '3770:0:985' ]]; then
   echo "PASS host execution workspace supports the bounded Hermes/Paperclip transaction identities"
 else
   echo "FAIL host execution workspace transaction permissions are not bounded" >&2

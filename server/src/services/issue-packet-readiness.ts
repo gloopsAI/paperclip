@@ -67,6 +67,12 @@ const PLACEHOLDER_ONLY_RE =
   /^(?:tbd|todo|n\/a|na|none|placeholder|coming soon|tbc|wip|\.+|-+|\*+|—+|–+)$/i;
 
 const EXACT_HEAD_SHA_RE = /\b[0-9a-f]{40}\b/i;
+const EXPLICIT_EXACT_HEAD_LINE_RE =
+  /^\s*(?:[-*]\s*)?exact\s+head\s*[:=]\s*`?([0-9a-f]{40})`?\s*$/gim;
+const GENERIC_HEAD_LINE_RE =
+  /^\s*(?:[-*]\s*)?(?:head|head\s+sha|headsha|commit\s+sha)\s*[:=]\s*`?([0-9a-f]{40})`?\s*$/gim;
+const BASE_SHA_LINE_RE =
+  /^\s*(?:[-*]\s*)?base\s+sha\s*[:=]\s*`?[0-9a-f]{40}`?\s*$/im;
 const SHA256_DIGEST_RE = /\bsha256:[0-9a-f]{64}\b/i;
 const LOOSE_SHA256_RE = /\b[0-9a-f]{64}\b/i;
 /** Image refs: registry/name:tag, name@sha256:…, or ghcr.io/… */
@@ -78,9 +84,6 @@ const REVIEW_TITLE_RE =
 
 const REVIEW_TERMINAL_LANGUAGE_RE =
   /\b(?:review\s+verdict|terminal\s+(?:review|contract)|verdict\s*:\s*(?:pass|fail|approve|reject)|(?:pass|fail|approved|rejected)\s+with\s+evidence|implementation\s+review\s+(?:pass|fail)|focused\s+review\s+(?:pass|fail))\b/i;
-
-const EXACT_HEAD_LINE_RE =
-  /(?:^|\n)\s*(?:exact\s*head|head\s*sha|headsha|base\s*sha|commit\s*sha)\s*[:=]?\s*`?([0-9a-f]{40})`?/i;
 
 function normalizeToken(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
@@ -279,7 +282,8 @@ function resolveProfile(input: IssuePacketReadinessInput): IssuePacketProfile {
  * structured workspaceStrategy.baseRef (WG-PLAT-008 P1).
  */
 export function findExactHeadSha(description: string | null | undefined): string | null {
-  return findDeclaredExactHeadShas(description)[0] ?? null;
+  const declarations = findDeclaredExactHeadShas(description);
+  return declarations.length === 1 ? declarations[0]! : null;
 }
 
 /**
@@ -291,10 +295,15 @@ export function findDeclaredExactHeadShas(
   description: string | null | undefined,
 ): string[] {
   if (!description) return [];
-  const labeled = [...description.matchAll(new RegExp(EXACT_HEAD_LINE_RE.source, "gi"))]
+  const explicit = [...description.matchAll(new RegExp(EXPLICIT_EXACT_HEAD_LINE_RE.source, "gim"))]
     .map((match) => match[1]?.toLowerCase())
     .filter((sha): sha is string => Boolean(sha));
-  if (labeled.length > 0) return [...new Set(labeled)];
+  if (explicit.length > 0) return [...new Set(explicit)];
+  const generic = [...description.matchAll(new RegExp(GENERIC_HEAD_LINE_RE.source, "gim"))]
+    .map((match) => match[1]?.toLowerCase())
+    .filter((sha): sha is string => Boolean(sha));
+  if (generic.length > 0) return [...new Set(generic)];
+  if (BASE_SHA_LINE_RE.test(description)) return [];
   const bare = EXACT_HEAD_SHA_RE.exec(description);
   return bare?.[0] ? [bare[0].toLowerCase()] : [];
 }

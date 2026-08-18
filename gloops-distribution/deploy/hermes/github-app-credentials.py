@@ -60,8 +60,29 @@ BROKER_TRANSITION_DISTRIBUTIONS = {
 # outside this set fails closed exactly like the previous single-repo pin.
 ALLOWED_REPOSITORIES = frozenset({
     "gloopsAI/gloops-paperclip-plugin",
+    "gloopsAI/paperclip",
     "gloopsAI/paperclip-gym",
 })
+ALLOWED_REPOSITORY_IDS = {
+    "gloopsAI/gloops-paperclip-plugin": 1297008772,
+    "gloopsAI/paperclip": 1299155335,
+    "gloopsAI/paperclip-gym": 1296486381,
+}
+ALLOWED_REPOSITORY_VISIBILITY = {
+    "gloopsAI/gloops-paperclip-plugin": (True, "private"),
+    "gloopsAI/paperclip": (False, "public"),
+    "gloopsAI/paperclip-gym": (True, "private"),
+}
+GITHUB_DEFAULT_BRANCHES = {
+    "gloopsAI/gloops-paperclip-plugin": "main",
+    "gloopsAI/paperclip": "master",
+    "gloopsAI/paperclip-gym": "main",
+}
+GOVERNED_TARGET_BRANCHES = {
+    "gloopsAI/gloops-paperclip-plugin": "main",
+    "gloopsAI/paperclip": "gloops/stable",
+    "gloopsAI/paperclip-gym": "main",
+}
 
 WRITE_PERMISSIONS = {
     "checks": "read",
@@ -115,7 +136,22 @@ def load_config() -> dict[str, object]:
     for key in ("appId", "installationId", "repositoryId"):
         if not isinstance(raw[key], int) or raw[key] <= 0:
             raise CredentialError(f"{key} must be a positive integer")
+    if raw["repositoryId"] != ALLOWED_REPOSITORY_IDS[raw["repository"]]:
+        raise CredentialError("GitHub App repository name/id binding has drifted")
     return raw
+
+
+def scope_repository(
+    config: dict[str, object], repository_id: int, repository: str,
+) -> dict[str, object]:
+    """Return an ephemeral one-repository mint config inside the fixed allowlist."""
+    if repository not in ALLOWED_REPOSITORIES:
+        raise CredentialError("GitHub App repository scope is outside the fixed allowlist")
+    if not isinstance(repository_id, int) or repository_id <= 0:
+        raise CredentialError("GitHub App repository id must be a positive integer")
+    if repository_id != ALLOWED_REPOSITORY_IDS[repository]:
+        raise CredentialError("GitHub App repository name/id binding has drifted")
+    return {**config, "repositoryId": repository_id, "repository": repository}
 
 
 def api_base() -> str:
@@ -208,20 +244,16 @@ def mint(config: dict[str, object], permissions: dict[str, str]) -> tuple[str, s
 
 
 def verify_repository(config: dict[str, object], token: str) -> None:
-    installation = request_json("GET", "/installation/repositories?per_page=100", token)
-    if not isinstance(installation, dict) or not isinstance(installation.get("total_count"), int):
-        raise CredentialError("GitHub App installation inventory is malformed")
-    repositories = installation.get("repositories")
+    token_scope = request_json("GET", "/installation/repositories?per_page=100", token)
+    if not isinstance(token_scope, dict) or not isinstance(token_scope.get("total_count"), int):
+        raise CredentialError("GitHub App token repository scope is malformed")
+    repositories = token_scope.get("repositories")
     if (
         not isinstance(repositories, list)
-        or not repositories
-        or len(repositories) > len(ALLOWED_REPOSITORIES)
-        or installation["total_count"] != len(repositories)
+        or len(repositories) != 1
+        or token_scope["total_count"] != 1
     ):
-        raise CredentialError("GitHub App installation is not restricted to the fixed repository allowlist")
-    for repository in repositories:
-        if not isinstance(repository, dict) or repository.get("full_name") not in ALLOWED_REPOSITORIES:
-            raise CredentialError("GitHub App installation covers a repository outside the fixed allowlist")
+        raise CredentialError("GitHub App token is not restricted to exactly one repository")
     matching = [
         repository
         for repository in repositories
@@ -231,8 +263,15 @@ def verify_repository(config: dict[str, object], token: str) -> None:
     if len(matching) != 1:
         raise CredentialError("GitHub App token repository does not match the configured boundary")
     detail = request_json("GET", f"/repos/{config['repository']}", token)
-    if not isinstance(detail, dict) or detail.get("private") is not True or detail.get("id") != config["repositoryId"]:
-        raise CredentialError("GitHub App private repository boundary is unobservable")
+    expected_visibility = ALLOWED_REPOSITORY_VISIBILITY.get(str(config["repository"]))
+    if (
+        expected_visibility is None
+        or not isinstance(detail, dict)
+        or detail.get("id") != config["repositoryId"]
+        or detail.get("full_name") != config["repository"]
+        or (detail.get("private"), detail.get("visibility")) != expected_visibility
+    ):
+        raise CredentialError("GitHub App repository identity or visibility boundary is unobservable")
 
 
 def fsync_directory(path: Path) -> None:
