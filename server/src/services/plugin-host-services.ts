@@ -12,6 +12,8 @@ import {
   invites,
   issues as issuesTable,
   pluginLogs,
+  pluginConfig as pluginConfigTable,
+  plugins as pluginsTable,
   principalPermissionGrants,
   projects as projectsTable,
 } from "@paperclipai/db";
@@ -29,6 +31,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
+import { digestPluginConfig } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
@@ -678,6 +681,49 @@ export function buildHostServices(
   const SHA = /^[0-9a-f]{40}$/;
   const SHA256 = /^[0-9a-f]{64}$/;
   const RECEIPT_DIGEST = /^sha256:[0-9a-f]{64}$/;
+  const PLUGIN_CONFIG_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+  const normalizeExpectedPluginConfigDigest = (
+    expectedDigest: string | null | undefined,
+  ): string | null => {
+    if (expectedDigest == null) return null;
+    if (!PLUGIN_CONFIG_DIGEST.test(expectedDigest)) {
+      throw new Error("expectedPluginConfigDigest must be sha256:<64 lowercase hex characters>");
+    }
+    return expectedDigest;
+  };
+
+  const assertExpectedPluginConfig = async (
+    tx: DbTransaction,
+    expectedDigest: string | null,
+  ) => {
+    if (expectedDigest == null) return;
+
+    // The config mutation route acquires this same installation-row lock
+    // before changing plugin_config. That makes the digest comparison and
+    // issue creation one linearizable operation, including the absent-config
+    // case where locking plugin_config alone would not serialize an INSERT.
+    const lockedPlugin = await tx
+      .select({ id: pluginsTable.id })
+      .from(pluginsTable)
+      .where(eq(pluginsTable.id, pluginId))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!lockedPlugin) throw new Error("Plugin installation not found for config-guarded issue create");
+
+    const config = await tx
+      .select({ configJson: pluginConfigTable.configJson })
+      .from(pluginConfigTable)
+      .where(eq(pluginConfigTable.pluginId, pluginId))
+      .then((rows) => rows[0] ?? null);
+    // Both the loader and ctx.config.get() expose an absent row as `{}`. The
+    // guard represents that same observable value while the installation lock
+    // prevents a concurrent first config INSERT.
+    const observedDigest = digestPluginConfig(config?.configJson ?? {});
+    if (observedDigest !== expectedDigest) {
+      throw new Error("plugin_config_guard_mismatch");
+    }
+  };
 
   const activityRuntimeVersion = (value: string | null) => {
     if (!value || value === "***REDACTED***") return null;
@@ -1927,9 +1973,13 @@ export function buildHostServices(
           actorRunId,
           originKind,
           surfaceVisibility,
+          expectedPluginConfigDigest,
           idempotencyKey: rawIdempotencyKey,
           ...issueInput
         } = params;
+        const normalizedExpectedPluginConfigDigest = normalizeExpectedPluginConfigDigest(
+          expectedPluginConfigDigest,
+        );
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
@@ -1977,7 +2027,19 @@ export function buildHostServices(
         };
 
         const idempotencyKey = requirePluginIssueIdempotencyKey(rawIdempotencyKey);
-        if (!idempotencyKey) return createAndLog();
+        if (!idempotencyKey) {
+          if (normalizedExpectedPluginConfigDigest == null) return createAndLog();
+          return db.transaction(async (tx) => {
+            await tx.execute(sql`
+              select ${companiesTable.id}
+              from ${companiesTable}
+              where ${companiesTable.id} = ${companyId}
+              for update
+            `);
+            await assertExpectedPluginConfig(tx, normalizedExpectedPluginConfigDigest);
+            return createAndLog(tx);
+          });
+        }
 
         const keyHash = createHash("sha256")
           .update(`${pluginKey}\u0000${idempotencyKey}`)
@@ -1988,6 +2050,9 @@ export function buildHostServices(
             companyId,
             pluginKey,
             createInput,
+            ...(normalizedExpectedPluginConfigDigest === null
+              ? {}
+              : { expectedPluginConfigDigest: normalizedExpectedPluginConfigDigest }),
           }))
           .digest("hex");
         const originFingerprint = `${fingerprintPrefix}${requestHash}`;
@@ -2036,6 +2101,7 @@ export function buildHostServices(
             return { issueId: existing.id, created: false as const };
           }
 
+          await assertExpectedPluginConfig(tx, normalizedExpectedPluginConfigDigest);
           const issue = await createAndLog(tx);
           return { issue, issueId: issue.id, created: true as const };
         });

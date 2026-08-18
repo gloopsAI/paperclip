@@ -54,6 +54,7 @@ export { createTestHarness, createEnvironmentTestHarness, createFakeEnvironmentD
 export { createPluginBundlerPresets } from "./bundlers.js";
 export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";
 export { startWorkerRpcHost, runWorker } from "./worker-rpc-host.js";
+export { digestPluginConfig } from "./plugin-config-digest.js";
 export {
   createHostClientHandlers,
   getRequiredCapability,

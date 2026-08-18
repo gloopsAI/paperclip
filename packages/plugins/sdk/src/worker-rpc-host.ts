@@ -798,6 +798,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             executionWorkspaceId: input.executionWorkspaceId,
             executionWorkspacePreference: input.executionWorkspacePreference,
             executionWorkspaceSettings: input.executionWorkspaceSettings,
+            expectedPluginConfigDigest: input.expectedPluginConfigDigest,
             idempotencyKey: input.idempotencyKey,
             actorAgentId: input.actor?.actorAgentId,
             actorUserId: input.actor?.actorUserId,

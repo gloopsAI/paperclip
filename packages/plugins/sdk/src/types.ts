@@ -1460,6 +1460,16 @@ export interface PluginIssuesClient {
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     /**
+     * Optional digest returned by `digestPluginConfig()` for the complete
+     * plugin instance configuration observed before this request. When
+     * supplied, the host creates the issue only if that exact configuration is
+     * still current in the same database transaction. The digest is part of
+     * idempotency equivalence: a replay with the same key and digest returns
+     * the original issue without a new creation effect, while changing the
+     * digest is rejected as a different request.
+     */
+    expectedPluginConfigDigest?: string | null;
+    /**
      * Stable caller-supplied identity for this create request. Replays within
      * the same plugin and company return the original issue. Reusing a key
      * with different create parameters is rejected.

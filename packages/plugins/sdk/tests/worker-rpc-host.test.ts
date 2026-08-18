@@ -203,6 +203,7 @@ describe("worker issue create transport", () => {
           companyId: "company-1",
           projectId: "project-1",
           projectWorkspaceId: "workspace-1",
+          expectedPluginConfigDigest: `sha256:${"a".repeat(64)}`,
           title: "Transport-bound issue",
         }));
       },
@@ -272,6 +273,7 @@ describe("worker issue create transport", () => {
         companyId: "company-1",
         projectId: "project-1",
         projectWorkspaceId: "workspace-1",
+        expectedPluginConfigDigest: `sha256:${"a".repeat(64)}`,
         title: "Transport-bound issue",
       });
     } finally {
