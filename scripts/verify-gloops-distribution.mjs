@@ -302,6 +302,14 @@ const githubPushToolTestPath = new URL(
   "../gloops-distribution/deploy/hermes/github-push-tool.test.mjs",
   import.meta.url,
 );
+const governedWorkspaceHandoffTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/reconcile_governed_workspace_test.py",
+  import.meta.url,
+);
+const githubPushTransportActivationTestPath = new URL(
+  "../gloops-distribution/deploy/hermes/github_push_transport_activation_test.py",
+  import.meta.url,
+);
 const registeredPublishPathTestPath = new URL(
   "../gloops-distribution/deploy/hermes/registered_publish_path_test.py",
   import.meta.url,
@@ -568,6 +576,12 @@ try {
     stdio: "inherit",
   });
   execFileSync("node", ["--test", githubPushToolTestPath.pathname], {
+    stdio: "inherit",
+  });
+  execFileSync("python3", [governedWorkspaceHandoffTestPath.pathname], {
+    stdio: "inherit",
+  });
+  execFileSync("python3", [githubPushTransportActivationTestPath.pathname], {
     stdio: "inherit",
   });
   execFileSync("python3", [registeredPublishPathTestPath.pathname], {
@@ -2075,6 +2089,8 @@ for (const required of [
   "SET token_expires_at = MAX(COALESCE(token_expires_at, ?), ?), updated_at = ?",
   "observe_draft_pull_request",
   "list_draft_pull_request",
+  'module.GOVERNED_TARGET_BRANCHES.get(authorization["repositoryFullName"])',
+  'repository.get("default_branch") != expected_github_default',
 ]) {
   if (!githubPushBroker.includes(required)) {
     fail(`root GitHub push broker is missing ${required}`);
@@ -2303,6 +2319,8 @@ for (const required of [
   "github-app-credentials.py",
   "github-push-broker.py",
   "github-push-tool.bundle.cjs",
+  "reconcile-governed-workspace.py",
+  "github-push-transport-activation.py",
   "paperclip-github-push-broker.service",
   "github-broker-receipt-token",
   "paperclip-git-worker",
@@ -2342,8 +2360,8 @@ if (!prepareHermesExecution.includes("paperclip-hermes-handshake-egress.service"
 }
 for (const required of [
   "did not become healthy within",
-  "chown \"${HERMES_UID}:${PAPERCLIP_GID}\" \"${WORKSPACE}\"",
-  "chmod 2770 \"${WORKSPACE}\"",
+  "chown \"0:${PAPERCLIP_GID}\" \"${WORKSPACE}\"",
+  "chmod 3770 \"${WORKSPACE}\"",
   "docker run --rm --pull never --user \"${PAPERCLIP_UID}:${PAPERCLIP_GID}\"",
   "--network none --read-only --cap-drop ALL --security-opt no-new-privileges:true",
   "mkdir \"$probe\"",
@@ -2505,13 +2523,20 @@ for (const required of [
   '"pull_requests": "read"',
   'seconds < 2700 or seconds > 3900',
   'ALLOWED_REPOSITORIES = frozenset({',
+  'ALLOWED_REPOSITORY_VISIBILITY = {',
+  'GITHUB_DEFAULT_BRANCHES = {',
+  'GOVERNED_TARGET_BRANCHES = {',
   '"gloopsAI/gloops-paperclip-plugin",',
+  '"gloopsAI/paperclip",',
   '"gloopsAI/paperclip-gym",',
+  '"gloopsAI/paperclip": (False, "public"),',
+  '"gloopsAI/paperclip": "master",',
+  '"gloopsAI/paperclip": "gloops/stable",',
   'if raw["repository"] not in ALLOWED_REPOSITORIES:',
-  'len(repositories) > len(ALLOWED_REPOSITORIES)',
-  'installation["total_count"] != len(repositories)',
-  'repository.get("full_name") not in ALLOWED_REPOSITORIES',
-  'detail.get("private") is not True',
+  'ALLOWED_REPOSITORY_IDS[raw["repository"]]',
+  'or len(repositories) != 1',
+  'or token_scope["total_count"] != 1',
+  '(detail.get("private"), detail.get("visibility")) != expected_visibility',
   'revoke_value(token)',
   'except CredentialRetentionError as error:',
   'except Exception:',

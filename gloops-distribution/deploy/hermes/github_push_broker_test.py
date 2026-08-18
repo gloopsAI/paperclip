@@ -107,6 +107,42 @@ class GitHubPushBrokerTests(unittest.TestCase):
             ), self.assertRaisesRegex(broker.BrokerError, "digest does not match"):
                 broker.load_authorization()
 
+    def test_app_config_is_ephemerally_scoped_to_the_authorized_repository(self):
+        authorization = self.authorization("a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1")
+        authorization["repositoryId"] = 1299155335
+        authorization["repositoryFullName"] = "gloopsAI/paperclip"
+        authorization["defaultBranch"] = "gloops/stable"
+
+        class FakeModule:
+            GOVERNED_TARGET_BRANCHES = {"gloopsAI/paperclip": "gloops/stable"}
+            GITHUB_DEFAULT_BRANCHES = {"gloopsAI/paperclip": "master"}
+
+            @staticmethod
+            def load_config():
+                return {"repositoryId": 1297008772, "repository": "gloopsAI/gloops-paperclip-plugin"}
+
+            @staticmethod
+            def scope_repository(config, repository_id, repository):
+                self.assertEqual(config["repository"], "gloopsAI/gloops-paperclip-plugin")
+                return {**config, "repositoryId": repository_id, "repository": repository}
+
+        with patch.object(broker, "load_app_module", return_value=FakeModule):
+            scoped = broker.load_app_config_for_authorization(authorization)
+        self.assertEqual(scoped["repositoryId"], 1299155335)
+        self.assertEqual(scoped["repository"], "gloopsAI/paperclip")
+        FakeModule.request_json = staticmethod(lambda *_args: {
+            "id": 1299155335,
+            "full_name": "gloopsAI/paperclip",
+            "default_branch": "master",
+        })
+        broker.verify_github_repository(FakeModule, scoped, "ghs_token", authorization)
+        with patch.dict(FakeModule.GITHUB_DEFAULT_BRANCHES, {"gloopsAI/paperclip": "main"}), \
+                self.assertRaisesRegex(broker.BrokerError, "metadata conflicts"):
+            broker.verify_github_repository(FakeModule, scoped, "ghs_token", authorization)
+        with patch.object(broker, "load_app_module", return_value=FakeModule), \
+                self.assertRaisesRegex(broker.BrokerError, "repository boundary"):
+            broker.load_app_config_for_authorization({**authorization, "defaultBranch": "master"})
+
     def test_allocation_is_durable_single_use_and_journal_is_hash_chained(self):
         run_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         authorization = self.authorization(run_id)
@@ -198,6 +234,84 @@ class GitHubPushBrokerTests(unittest.TestCase):
         with self.assertRaisesRegex(broker.BrokerError, "lacks a valid atomic issue claim"):
             broker.compare_work_facts(authorization, {**external, "externalIssueClaim": None})
 
+    def test_preparation_binds_claim_base_workspace_and_suppresses_thrash(self):
+        run_id = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd"
+        authorization = self.authorization(run_id)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        workspace_identity = "/opt/data/workspace/paperclip-claim"
+        context = {
+            "schemaVersion": "gloops.repository-mutation-context.v1",
+            "heartbeatRunId": run_id,
+            "runInvocationSource": "external_claim",
+            "runStatus": "running",
+            "companyId": authorization["companyId"],
+            "agentId": authorization["agentId"],
+            "issueId": authorization["issueId"],
+            "issueStatus": "in_progress",
+            "projectId": authorization["projectId"],
+            "projectWorkspaceId": authorization["projectWorkspaceId"],
+            "repositoryFullName": authorization["repositoryFullName"],
+            "configuredDefaultBranch": authorization["defaultBranch"],
+            "configuredRepositoryRef": "a" * 40,
+            "externalIssueClaim": {
+                "schemaVersion": "paperclip.external-issue-claim.v1",
+                "claimId": run_id,
+                "companyId": authorization["companyId"],
+                "issueId": authorization["issueId"],
+                "agentId": authorization["agentId"],
+                "entryPoint": "interactive_codex",
+                "repositoryFullName": authorization["repositoryFullName"],
+                "baseSha": "a" * 40,
+                "branchName": authorization["branchRef"].removeprefix("refs/heads/"),
+                "projectWorkspaceId": authorization["projectWorkspaceId"],
+                "workspaceIdentity": workspace_identity,
+                "claimedAt": "2026-08-18T00:00:00.000Z",
+            },
+        }
+        request = {
+            "schemaVersion": "gloops.github-push-prepare-request.v1",
+            "heartbeatRunId": run_id,
+            "expectedNewOid": "b" * 40,
+            "workspaceIdentity": workspace_identity,
+        }
+        app_config = {
+            "repositoryId": authorization["repositoryId"],
+            "repository": authorization["repositoryFullName"],
+        }
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            with patch.object(
+                broker, "load_authorization", return_value=(authorization, authorization_digest)
+            ), patch.object(broker, "load_app_config_for_authorization", return_value=app_config), patch.object(
+                broker, "paperclip_request", return_value=context
+            ):
+                first = broker.prepare_request(connection, request)
+                second = broker.prepare_request(connection, request)
+                self.assertEqual(first, second)
+                publish = {
+                    **request,
+                    "requiredBaseOid": "a" * 40,
+                    "preparationDigest": first["preparationDigest"],
+                }
+                broker.verify_preparation(publish, authorization_digest, "a" * 40)
+                with self.assertRaisesRegex(broker.BrokerError, "authenticated preparation"):
+                    broker.verify_preparation(publish, authorization_digest, "f" * 40)
+                with self.assertRaisesRegex(
+                    broker.BrokerError, "github_push.preparation_thrash_suppressed"
+                ):
+                    broker.prepare_request(connection, request)
+                with self.assertRaisesRegex(broker.BrokerError, "client workspace conflicts"):
+                    broker.prepare_request(
+                        connection,
+                        {**request, "workspaceIdentity": "/opt/data/workspace/other"},
+                    )
+            row = connection.execute("SELECT * FROM preparations").fetchone()
+            self.assertEqual(row["attempts"], 2)
+            self.assertEqual(row["required_base_oid"], "a" * 40)
+            connection.close()
+
     def test_bundle_import_rejects_symlink_and_digest_drift(self):
         run_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
@@ -207,10 +321,14 @@ class GitHubPushBrokerTests(unittest.TestCase):
             pack = broker.INGRESS_DIR / f"{run_id}-{'a' * 32}.pack"
             pack.write_bytes(b"PACK")
             manifest_name = f"{run_id}-{'a' * 32}.json"
+            preparation_digest = "sha256:" + "b" * 64
             manifest = {
-                "schemaVersion": "gloops.github-push-bundle.v1",
+                "schemaVersion": "gloops.github-push-bundle.v2",
                 "heartbeatRunId": run_id,
                 "expectedNewOid": "e" * 40,
+                "requiredBaseOid": "c" * 40,
+                "preparationDigest": preparation_digest,
+                "workspaceIdentity": "/opt/data/workspace/test",
                 "objectCount": 1,
                 "objectOids": ["e" * 40],
                 "packBytes": 4,
@@ -220,9 +338,12 @@ class GitHubPushBrokerTests(unittest.TestCase):
             manifest_path = broker.INGRESS_DIR / manifest_name
             manifest_path.write_text(broker.canonical_json(manifest))
             request = {
-                "schemaVersion": "gloops.github-push-client-request.v1",
+                "schemaVersion": "gloops.github-push-client-request.v2",
                 "heartbeatRunId": run_id,
                 "expectedNewOid": "e" * 40,
+                "requiredBaseOid": "c" * 40,
+                "preparationDigest": preparation_digest,
+                "workspaceIdentity": "/opt/data/workspace/test",
                 "manifestName": manifest_name,
             }
             imported, copied = broker.read_bundle(request, work)
@@ -262,6 +383,24 @@ class GitHubPushBrokerTests(unittest.TestCase):
             ),
             run_id,
         )
+        self.assertEqual(
+            broker.verify_peer_command(
+                "/usr/bin/node",
+                (
+                    b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                    b"--run-id\0" + run_id.encode() +
+                    b"\0--repo-dir\0/opt/data/workspace/paperclip-glo2971-fbe7\0"
+                ),
+            ),
+            run_id,
+        )
+        self.assertIsNone(broker.verify_peer_command(
+            "/usr/bin/node",
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--repo-dir\0/opt/data/workspace/paperclip-glo2971-fbe7\0"
+            ),
+        ))
         for command in (
             b"node\0-e\0malicious()\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0",
             b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0--run-id\0spoof\0",
@@ -269,6 +408,27 @@ class GitHubPushBrokerTests(unittest.TestCase):
             (
                 b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
                 b"--run-id\0" + run_id.encode() + b"\0extra\0"
+            ),
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--run-id\0" + run_id.encode() +
+                b"\0--run-id\0" + run_id.encode() + b"\0"
+            ),
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--repo-dir\0/opt/data/workspace/../etc\0"
+            ),
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--repo-dir\0relative/repository\0"
+            ),
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--socket\0/tmp/attacker.sock\0"
+            ),
+            (
+                b"node\0/opt/data/bin/github-push-tool.bundle.cjs\0client\0"
+                b"--ingress-dir\0/tmp/attacker\0"
             ),
             b"node\0/tmp/github-push-tool.bundle.cjs\0client\0",
         ):
@@ -338,7 +498,7 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 any(value.startswith("--property=LoadCredential=github-token:") for value in command)
             )
 
-    def test_validation_worker_has_no_credential_or_network_boundary(self):
+    def test_validation_worker_has_read_credential_and_bounded_network_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             request_path = root / "worker-request.json"
@@ -352,20 +512,21 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 stdout=json.dumps({"ok": True, "expectedNewOid": "a" * 40}) + "\n",
                 stderr="",
             )
-            with patch.object(broker, "sealed_token_fd") as seal, \
+            token_fd = os.open(root / "token", os.O_CREAT | os.O_RDWR, 0o600)
+            with patch.object(broker, "sealed_token_fd", return_value=token_fd) as seal, \
                     patch.object(broker.subprocess, "run", return_value=completed) as run:
                 broker.run_worker(
                     "c" * 32,
                     request_path,
                     pack_path,
                     gitdir,
-                    None,
+                    "ghs_read_only",
                     "validate",
                 )
-            seal.assert_not_called()
+            seal.assert_called_once_with("ghs_read_only")
             command = run.call_args.args[0]
-            self.assertIn("--property=RestrictAddressFamilies=AF_UNIX", command)
-            self.assertFalse(any("LoadCredential" in value for value in command))
+            self.assertIn("--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", command)
+            self.assertTrue(any("LoadCredential" in value for value in command))
             self.assertIn("validate", command)
 
     def test_recovery_after_in_flight_only_reconciles_and_never_runs_worker(self):
@@ -400,6 +561,10 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 @staticmethod
                 def load_config():
                     return {"repository": authorization["repositoryFullName"]}
+
+                @staticmethod
+                def scope_repository(config, repository_id, repository):
+                    return {**config, "repositoryId": repository_id, "repository": repository}
 
                 @staticmethod
                 def mint(_config, permissions):
@@ -515,6 +680,174 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 ).fetchone()["terminal_posted"],
                 1,
             )
+            connection.close()
+
+    def test_revoked_pre_mutation_failure_terminalizes_without_expiry_wait(self):
+        run_id = "abababab-abab-4aba-8aba-abababababab"
+        authorization = self.authorization(run_id)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        revoked: list[str] = []
+
+        class FakeModule:
+            @staticmethod
+            def revoke_value(token):
+                revoked.append(token)
+
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            lease, _, prepared = broker.create_lease(
+                connection, authorization, authorization_digest, "d" * 40
+            )
+            broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+            broker.transition(
+                connection,
+                lease["nonce"],
+                "prepared",
+                "token_minted",
+                {},
+                token_expires_at="2099-01-01T00:00:00Z",
+            )
+
+            with patch.object(
+                broker,
+                "verify_github_repository",
+                side_effect=broker.BrokerError("metadata conflicts"),
+            ), patch.object(broker, "paperclip_request", return_value={}):
+                with self.assertRaisesRegex(broker.BrokerError, "metadata conflicts"):
+                    broker.verify_pre_mutation_boundary(
+                        connection,
+                        FakeModule,
+                        {},
+                        "ghs_pre_mutation",
+                        authorization,
+                        lease,
+                        prepared,
+                        None,
+                    )
+
+            self.assertEqual(revoked, ["ghs_pre_mutation"])
+            row = connection.execute(
+                "SELECT state, terminal_receipt_json, terminal_posted FROM leases WHERE nonce = ?",
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "bounded_failure")
+            self.assertEqual(row["terminal_posted"], 1)
+            receipt = json.loads(row["terminal_receipt_json"])
+            self.assertEqual(receipt["remoteOldOid"], broker.ZERO_OID)
+            self.assertEqual(receipt["remoteNewOid"], broker.ZERO_OID)
+            self.assertIsNone(broker.reconciliation_delay(connection))
+            connection.close()
+
+    def test_revoked_pre_mutation_mismatch_preserves_conflict_oid(self):
+        run_id = "cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd"
+        authorization = self.authorization(run_id)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+        revoked: list[str] = []
+
+        class FakeModule:
+            @staticmethod
+            def revoke_value(token):
+                revoked.append(token)
+
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            lease, _, prepared = broker.create_lease(
+                connection, authorization, authorization_digest, "e" * 40
+            )
+            broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+            broker.transition(
+                connection,
+                lease["nonce"],
+                "prepared",
+                "token_minted",
+                {},
+                token_expires_at="2099-01-01T00:00:00Z",
+            )
+            observed = "9" * 40
+
+            with patch.object(broker, "verify_github_repository"), patch.object(
+                broker, "read_remote_ref", return_value=observed
+            ), patch.object(broker, "paperclip_request", return_value={}):
+                with self.assertRaisesRegex(broker.BrokerError, "not absent"):
+                    broker.verify_pre_mutation_boundary(
+                        connection,
+                        FakeModule,
+                        {},
+                        "ghs_pre_mutation",
+                        authorization,
+                        lease,
+                        prepared,
+                        None,
+                    )
+
+            self.assertEqual(revoked, ["ghs_pre_mutation"])
+            row = connection.execute(
+                "SELECT state, terminal_receipt_json, terminal_posted FROM leases WHERE nonce = ?",
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "conflict")
+            self.assertEqual(row["terminal_posted"], 1)
+            receipt = json.loads(row["terminal_receipt_json"])
+            self.assertEqual(receipt["remoteOldOid"], broker.ZERO_OID)
+            self.assertEqual(receipt["remoteNewOid"], observed)
+            connection.close()
+
+    def test_pre_mutation_revoke_failure_retains_conservative_lease(self):
+        run_id = "dededede-dede-4ded-8ded-dededededede"
+        authorization = self.authorization(run_id)
+        authorization_digest = broker.digest(
+            "gloops.github-push-authorization.v1", authorization
+        )
+
+        class FakeModule:
+            @staticmethod
+            def revoke_value(_token):
+                raise broker.BrokerError("revoke failed")
+
+        with tempfile.TemporaryDirectory() as directory, self.paths(Path(directory)):
+            connection = broker.connect_database()
+            lease, _, prepared = broker.create_lease(
+                connection, authorization, authorization_digest, "f" * 40
+            )
+            broker.mark_posted(connection, lease["nonce"], "prepared_posted")
+            broker.transition(
+                connection,
+                lease["nonce"],
+                "prepared",
+                "token_minted",
+                {},
+                token_expires_at="2099-01-01T00:00:00Z",
+            )
+
+            with patch.object(
+                broker,
+                "verify_github_repository",
+                side_effect=broker.BrokerError("metadata conflicts"),
+            ):
+                with self.assertRaisesRegex(broker.BrokerError, "revoke failed"):
+                    broker.verify_pre_mutation_boundary(
+                        connection,
+                        FakeModule,
+                        {},
+                        "ghs_pre_mutation",
+                        authorization,
+                        lease,
+                        prepared,
+                        None,
+                    )
+
+            row = connection.execute(
+                "SELECT state, terminal_receipt_json, terminal_posted FROM leases WHERE nonce = ?",
+                (lease["nonce"],),
+            ).fetchone()
+            self.assertEqual(row["state"], "token_minted")
+            self.assertIsNone(row["terminal_receipt_json"])
+            self.assertEqual(row["terminal_posted"], 0)
+            self.assertGreater(broker.reconciliation_delay(connection), 60 * 60)
             connection.close()
 
     def test_root_authorization_accepts_only_exact_draft_pull_request_field(self):
@@ -784,6 +1117,10 @@ class GitHubPushBrokerTests(unittest.TestCase):
                     return {"repository": authorization["repositoryFullName"]}
 
                 @staticmethod
+                def scope_repository(config, repository_id, repository):
+                    return {**config, "repositoryId": repository_id, "repository": repository}
+
+                @staticmethod
                 def mint(_config, permissions):
                     mints.append(permissions)
                     return "ghs_reconcile_only", "2099-01-01T00:00:00Z", {}
@@ -888,6 +1225,10 @@ class GitHubPushBrokerTests(unittest.TestCase):
                 @staticmethod
                 def load_config():
                     return {"repository": authorization["repositoryFullName"]}
+
+                @staticmethod
+                def scope_repository(config, repository_id, repository):
+                    return {**config, "repositoryId": repository_id, "repository": repository}
 
                 @staticmethod
                 def mint(_config, permissions):
