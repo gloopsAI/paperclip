@@ -3,7 +3,6 @@ set -euo pipefail
 
 readonly CONTAINER='paperclip-hermes-execution'
 readonly WORKSPACE='/opt/paperclip/hermes-execution-state/workspace'
-readonly HERMES_UID='10000'
 readonly PAPERCLIP_GID='985'
 readonly PAPERCLIP_UID='995'
 readonly MAX_HEALTH_POLLS='75'
@@ -24,12 +23,13 @@ done
 
 # The Hermes image initializes /opt/data as uid:gid 10000:10000, including the
 # bind-mounted workspace root. Restore the shared transaction boundary after
-# initialization: Hermes owns the root and Paperclip's group can create the
-# adjacent merge lock required for deterministic sync-back.
-chown "${HERMES_UID}:${PAPERCLIP_GID}" "${WORKSPACE}"
-chmod 2770 "${WORKSPACE}"
+# initialization: root owns the setgid+sticky root, both identities can create
+# entries through the shared group, and neither can replace an entry after its
+# ownership has been handed to the other identity.
+chown "0:${PAPERCLIP_GID}" "${WORKSPACE}"
+chmod 3770 "${WORKSPACE}"
 
-[[ "$(stat -c '%a:%u:%g' "${WORKSPACE}")" == '2770:10000:985' ]] || {
+[[ "$(stat -c '%a:%u:%g' "${WORKSPACE}")" == '3770:0:985' ]] || {
   echo 'Hermes/Paperclip shared workspace transaction permissions were not restored' >&2
   exit 1
 }
