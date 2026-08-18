@@ -14,12 +14,24 @@ const GOOD_SHA = "a".repeat(40);
 const GOOD_DIGEST = `sha256:${"b".repeat(64)}`;
 
 describe("canonical exact-head declarations", () => {
-  it("preserves downstream precedence while exposing every canonical alias", () => {
+  it("prefers the explicit Exact head and never mistakes Base SHA for the target", () => {
     const baseSha = "b".repeat(40);
     const exactHead = "a".repeat(40);
     const description = `Base SHA: \`${baseSha}\`\nExact head: \`${exactHead}\``;
-    expect(findDeclaredExactHeadShas(description)).toEqual([baseSha, exactHead]);
-    expect(findExactHeadSha(description)).toBe(baseSha);
+    expect(findDeclaredExactHeadShas(description)).toEqual([exactHead]);
+    expect(findExactHeadSha(description)).toBe(exactHead);
+  });
+
+  it("fails closed on conflicting explicit Exact head declarations", () => {
+    const first = "a".repeat(40);
+    const second = "c".repeat(40);
+    const description = `Exact head: \`${first}\`\nExact head: \`${second}\``;
+    expect(findDeclaredExactHeadShas(description)).toEqual([first, second]);
+    expect(findExactHeadSha(description)).toBeNull();
+  });
+
+  it("does not reuse a lone Base SHA through the bare-SHA fallback", () => {
+    expect(findExactHeadSha(`Base SHA: \`${"b".repeat(40)}\``)).toBeNull();
   });
 });
 

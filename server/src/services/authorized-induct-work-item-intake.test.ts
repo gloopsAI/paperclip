@@ -78,7 +78,7 @@ describe("authorized Induct work-item intake", () => {
       companyId: COMPANY_ID,
       projectId: PROJECT_ID,
       requestedRepoUrl: "InductAI/induct",
-      description: `Base SHA: \`${declaredHead}\`\nExact head: \`${head}\``,
+      description: `Exact head: \`${declaredHead}\`\nExact head: \`${head}\``,
       workspaceCandidates: [
         {
           id: WORKSPACE_ID,

@@ -215,6 +215,17 @@ def connect_database() -> sqlite3.Connection:
           UNIQUE (repository_id, branch_ref),
           UNIQUE (nonce)
         );
+        CREATE TABLE IF NOT EXISTS preparations (
+          preparation_digest TEXT PRIMARY KEY,
+          heartbeat_run_id TEXT NOT NULL,
+          expected_new_oid TEXT NOT NULL,
+          required_base_oid TEXT NOT NULL,
+          projection_json TEXT NOT NULL,
+          state TEXT NOT NULL,
+          attempts INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS leases (
           nonce TEXT PRIMARY KEY,
           authorization_json TEXT NOT NULL,
@@ -399,6 +410,21 @@ def load_app_module():
     return module
 
 
+def load_app_config_for_authorization(authorization: dict[str, Any]) -> dict[str, Any]:
+    module = load_app_module()
+    try:
+        config = module.scope_repository(
+            module.load_config(),
+            authorization["repositoryId"],
+            authorization["repositoryFullName"],
+        )
+        if module.GOVERNED_TARGET_BRANCHES.get(authorization["repositoryFullName"]) != authorization["defaultBranch"]:
+            raise ValueError("governed target branch mismatch")
+        return config
+    except Exception as error:
+        raise BrokerError("root authorization disagrees with the GitHub App repository boundary") from error
+
+
 def paperclip_request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
     board_token = read_root_secret(BOARD_TOKEN, "Paperclip board token")
     broker_token = read_root_secret(BROKER_TOKEN, "Paperclip broker receipt token")
@@ -446,16 +472,42 @@ def verify_peer_command(executable: str, command_bytes: bytes) -> str | None:
     )
     if not prefix_valid:
         raise BrokerError("socket peer command is not the installed GitHub push client")
-    if len(command) == 3:
-        return None
-    if len(command) != 5 or command[3] != b"--run-id":
+    arguments = command[3:]
+    if len(arguments) % 2 != 0:
         raise BrokerError("socket peer command is not the installed GitHub push client")
-    try:
-        explicit_run_id = command[4].decode("ascii")
-    except UnicodeDecodeError as error:
-        raise BrokerError("socket peer command has an invalid Paperclip run id") from error
-    if not RUN_ID_PATTERN.fullmatch(explicit_run_id):
-        raise BrokerError("socket peer command has an invalid Paperclip run id")
+
+    parsed: dict[bytes, bytes] = {}
+    for offset in range(0, len(arguments), 2):
+        flag, value = arguments[offset:offset + 2]
+        if flag not in (b"--run-id", b"--repo-dir") or flag in parsed or not value:
+            raise BrokerError("socket peer command is not the installed GitHub push client")
+        parsed[flag] = value
+
+    explicit_run_id: str | None = None
+    if b"--run-id" in parsed:
+        try:
+            explicit_run_id = parsed[b"--run-id"].decode("ascii")
+        except UnicodeDecodeError as error:
+            raise BrokerError("socket peer command has an invalid Paperclip run id") from error
+        if not RUN_ID_PATTERN.fullmatch(explicit_run_id):
+            raise BrokerError("socket peer command has an invalid Paperclip run id")
+
+    if b"--repo-dir" in parsed:
+        try:
+            repo_dir_text = parsed[b"--repo-dir"].decode("ascii")
+        except UnicodeDecodeError as error:
+            raise BrokerError("socket peer command has an invalid governed repository directory") from error
+        repo_dir = Path(repo_dir_text)
+        workspace_root = Path("/opt/data/workspace")
+        if (
+            not repo_dir.is_absolute()
+            or repo_dir == workspace_root
+            or workspace_root not in repo_dir.parents
+            or str(repo_dir) != repo_dir_text
+            or any(part in (".", "..") for part in repo_dir.parts)
+        ):
+            raise BrokerError("socket peer command has an invalid governed repository directory")
+
     return explicit_run_id
 
 
@@ -509,10 +561,22 @@ def read_request(connection: socket.socket) -> dict[str, Any]:
         request = json.loads(chunks)
     except json.JSONDecodeError as error:
         raise BrokerError("socket request is malformed") from error
+    if not isinstance(request, dict):
+        raise BrokerError("socket request must be an object")
+    if request.get("schemaVersion") == "gloops.github-push-prepare-request.v1":
+        return exact_keys(
+            request,
+            {"schemaVersion", "heartbeatRunId", "expectedNewOid", "workspaceIdentity"},
+            "prepare socket request",
+        )
     return exact_keys(
         request,
-        {"schemaVersion", "heartbeatRunId", "expectedNewOid", "manifestName"},
-        "socket request",
+        {
+            "schemaVersion", "heartbeatRunId", "expectedNewOid", "requiredBaseOid",
+            "preparationDigest", "manifestName",
+            "workspaceIdentity",
+        },
+        "publish socket request",
     )
 
 
@@ -525,9 +589,13 @@ def verify_peer_request_run_id(peer_run_id: str | None, request: dict[str, Any])
 
 def read_bundle(request: dict[str, Any], work_dir: Path) -> tuple[dict[str, Any], Path]:
     if (
-        request["schemaVersion"] != "gloops.github-push-client-request.v1"
+        request["schemaVersion"] != "gloops.github-push-client-request.v2"
         or not RUN_ID_PATTERN.fullmatch(str(request["heartbeatRunId"]))
         or not OID_PATTERN.fullmatch(str(request["expectedNewOid"]))
+        or not OID_PATTERN.fullmatch(str(request["requiredBaseOid"]))
+        or not SHA256_PATTERN.fullmatch(str(request["preparationDigest"]))
+        or not isinstance(request["workspaceIdentity"], str)
+        or not request["workspaceIdentity"].startswith("/opt/data/workspace/")
         or not MANIFEST_PATTERN.fullmatch(str(request["manifestName"]))
     ):
         raise BrokerError("socket request violates the accepted schema")
@@ -541,6 +609,9 @@ def read_bundle(request: dict[str, Any], work_dir: Path) -> tuple[dict[str, Any]
             "schemaVersion",
             "heartbeatRunId",
             "expectedNewOid",
+            "requiredBaseOid",
+            "preparationDigest",
+            "workspaceIdentity",
             "objectCount",
             "objectOids",
             "packBytes",
@@ -551,9 +622,12 @@ def read_bundle(request: dict[str, Any], work_dir: Path) -> tuple[dict[str, Any]
     )
     object_oids = manifest["objectOids"]
     if (
-        manifest["schemaVersion"] != "gloops.github-push-bundle.v1"
+        manifest["schemaVersion"] != "gloops.github-push-bundle.v2"
         or manifest["heartbeatRunId"] != request["heartbeatRunId"]
         or manifest["expectedNewOid"] != request["expectedNewOid"]
+        or manifest["requiredBaseOid"] != request["requiredBaseOid"]
+        or manifest["preparationDigest"] != request["preparationDigest"]
+        or manifest["workspaceIdentity"] != request["workspaceIdentity"]
         or not isinstance(object_oids, list)
         or not object_oids
         or len(object_oids) > MAX_OBJECTS
@@ -680,6 +754,167 @@ def compare_work_facts(authorization: dict[str, Any], context: dict[str, Any]) -
     ):
         raise BrokerError("Paperclip external issue claim conflicts with publication facts")
     return str(claim["baseSha"])
+
+
+def authenticated_request_facts(
+    request: dict[str, Any],
+) -> tuple[dict[str, Any], str, dict[str, Any], str]:
+    authorization, authorization_digest = load_authorization()
+    if (
+        request["heartbeatRunId"] != authorization["paperclipRunId"]
+        or request["expectedNewOid"] == authorization["expectedOldOid"]
+        or not OID_PATTERN.fullmatch(str(request["expectedNewOid"]))
+    ):
+        raise BrokerError("client request conflicts with the root authorization")
+    app_config = load_app_config_for_authorization(authorization)
+    context = paperclip_request(
+        "GET",
+        f"/heartbeat-runs/{authorization['paperclipRunId']}/repository-mutation-context",
+    )
+    required_base_oid = compare_work_facts(authorization, context)
+    if required_base_oid is None:
+        raise BrokerError("delta publication requires an exact external-claim base")
+    claim = context["externalIssueClaim"]
+    if (
+        not isinstance(claim, dict)
+        or request.get("workspaceIdentity") != claim.get("workspaceIdentity")
+    ):
+        raise BrokerError("client workspace conflicts with the atomic issue claim")
+    return authorization, authorization_digest, app_config, required_base_oid
+
+
+def preparation_projection(
+    authorization_digest: str,
+    heartbeat_run_id: str,
+    expected_new_oid: str,
+    required_base_oid: str,
+    workspace_identity: str,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": "gloops.github-push-preparation.v1",
+        "authorizationDigest": authorization_digest,
+        "heartbeatRunId": heartbeat_run_id,
+        "expectedNewOid": expected_new_oid,
+        "requiredBaseOid": required_base_oid,
+        "workspaceIdentity": workspace_identity,
+    }
+
+
+def reserve_preparation(
+    connection: sqlite3.Connection,
+    preparation_digest: str,
+    projection: dict[str, Any],
+) -> None:
+    now = datetime.now(timezone.utc)
+    connection.execute("BEGIN IMMEDIATE")
+    row = connection.execute(
+        "SELECT * FROM preparations WHERE preparation_digest = ?",
+        (preparation_digest,),
+    ).fetchone()
+    if row is None:
+        connection.execute(
+            """
+            INSERT INTO preparations
+              (preparation_digest, heartbeat_run_id, expected_new_oid, required_base_oid,
+               projection_json, state, attempts, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'prepared', 1, ?, ?)
+            """,
+            (
+                preparation_digest,
+                projection["heartbeatRunId"],
+                projection["expectedNewOid"],
+                projection["requiredBaseOid"],
+                canonical_json(projection),
+                timestamp(),
+                timestamp(),
+            ),
+        )
+    elif row["projection_json"] != canonical_json(projection):
+        connection.rollback()
+        raise BrokerError("stored preparation conflicts with authenticated facts")
+    elif row["state"] == "consumed":
+        pass
+    else:
+        age = now - parse_timestamp(row["updated_at"])
+        if row["attempts"] >= 2 and age < timedelta(minutes=15):
+            connection.rollback()
+            raise BrokerError("github_push.preparation_thrash_suppressed")
+        connection.execute(
+            """
+            UPDATE preparations
+            SET attempts = attempts + 1, updated_at = ?
+            WHERE preparation_digest = ? AND state = 'prepared'
+            """,
+            (timestamp(), preparation_digest),
+        )
+    connection.commit()
+    fsync_database()
+
+
+def consume_preparation(connection: sqlite3.Connection, preparation_digest: str) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    cursor = connection.execute(
+        """
+        UPDATE preparations SET state = 'consumed', updated_at = ?
+        WHERE preparation_digest = ? AND state IN ('prepared', 'consumed')
+        """,
+        (timestamp(), preparation_digest),
+    )
+    if cursor.rowcount != 1:
+        connection.rollback()
+        raise BrokerError("authenticated preparation is unavailable")
+    connection.commit()
+    fsync_database()
+
+
+def prepare_request(connection: sqlite3.Connection, request: dict[str, Any]) -> dict[str, Any]:
+    if (
+        request["schemaVersion"] != "gloops.github-push-prepare-request.v1"
+        or not isinstance(request["workspaceIdentity"], str)
+        or not request["workspaceIdentity"].startswith("/opt/data/workspace/")
+    ):
+        raise BrokerError("prepare request violates the accepted schema")
+    _authorization, authorization_digest, _app_config, required_base_oid = (
+        authenticated_request_facts(request)
+    )
+    projection = preparation_projection(
+        authorization_digest,
+        request["heartbeatRunId"],
+        request["expectedNewOid"],
+        required_base_oid,
+        request["workspaceIdentity"],
+    )
+    preparation_digest = digest("gloops.github-push-preparation.v1", projection)
+    reserve_preparation(connection, preparation_digest, projection)
+    return {
+        "ok": True,
+        "schemaVersion": "gloops.github-push-prepare-response.v1",
+        "authorizationDigest": authorization_digest,
+        "heartbeatRunId": request["heartbeatRunId"],
+        "expectedNewOid": request["expectedNewOid"],
+        "requiredBaseOid": required_base_oid,
+        "preparationDigest": preparation_digest,
+    }
+
+
+def verify_preparation(
+    request: dict[str, Any],
+    authorization_digest: str,
+    required_base_oid: str,
+) -> None:
+    projection = preparation_projection(
+        authorization_digest,
+        request["heartbeatRunId"],
+        request["expectedNewOid"],
+        required_base_oid,
+        request["workspaceIdentity"],
+    )
+    expected_digest = digest("gloops.github-push-preparation.v1", projection)
+    if (
+        request["requiredBaseOid"] != required_base_oid
+        or request["preparationDigest"] != expected_digest
+    ):
+        raise BrokerError("publish request conflicts with authenticated preparation")
 
 
 def prepared_receipt(
@@ -928,11 +1163,13 @@ def post_prepared(connection: sqlite3.Connection, nonce: str, receipt: dict[str,
 
 def verify_github_repository(module: Any, config: dict[str, Any], token: str, authorization: dict[str, Any]) -> None:
     repository = module.request_json("GET", f"/repositories/{authorization['repositoryId']}", token)
+    expected_github_default = module.GITHUB_DEFAULT_BRANCHES.get(authorization["repositoryFullName"])
     if (
         not isinstance(repository, dict)
         or repository.get("id") != authorization["repositoryId"]
         or repository.get("full_name") != authorization["repositoryFullName"]
-        or repository.get("default_branch") != authorization["defaultBranch"]
+        or expected_github_default is None
+        or repository.get("default_branch") != expected_github_default
         or config["repositoryId"] != authorization["repositoryId"]
         or config["repository"] != authorization["repositoryFullName"]
     ):
@@ -976,9 +1213,9 @@ def run_worker(
     token: str | None,
     mode: str = "worker",
 ) -> None:
-    if mode not in {"validate", "worker"} or (mode == "worker") != (token is not None):
+    if mode not in {"validate", "worker"} or token is None:
         raise BrokerError("isolated worker mode and credential boundary conflict")
-    token_fd = sealed_token_fd(token) if token is not None else None
+    token_fd = sealed_token_fd(token)
     unit = f"paperclip-github-push-{mode}-{nonce[:16]}"
     command = [
         "/usr/bin/systemd-run",
@@ -999,11 +1236,7 @@ def run_worker(
         "--property=ProtectControlGroups=yes",
         "--property=RestrictSUIDSGID=yes",
         "--property=LockPersonality=yes",
-        (
-            "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6"
-            if mode == "worker"
-            else "--property=RestrictAddressFamilies=AF_UNIX"
-        ),
+        "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
         "--property=CapabilityBoundingSet=",
         "--property=AmbientCapabilities=",
         "--property=MemoryMax=512M",
@@ -1013,10 +1246,9 @@ def run_worker(
         f"--property=ReadOnlyPaths={pack_path}",
         f"--property=ReadWritePaths={gitdir}",
     ]
-    if token_fd is not None:
-        command.append(
-            f"--property=LoadCredential=github-token:/proc/{os.getpid()}/fd/{token_fd}"
-        )
+    command.append(
+        f"--property=LoadCredential=github-token:/proc/{os.getpid()}/fd/{token_fd}"
+    )
     command.extend(
         [
             "/usr/bin/node",
@@ -1253,25 +1485,57 @@ def finalize(
     mark_posted(connection, nonce, "terminal_posted")
 
 
+def verify_pre_mutation_boundary(
+    connection: sqlite3.Connection,
+    module,
+    config: dict[str, Any],
+    token: str,
+    authorization: dict[str, Any],
+    lease: dict[str, Any],
+    prepared: dict[str, Any],
+    draft_authorization: dict[str, Any] | None,
+) -> str:
+    try:
+        verify_github_repository(module, config, token, authorization)
+        remote_before = read_remote_ref(module, token, authorization)
+    except BaseException:
+        # No mutation-capable worker has started yet. Once revocation succeeds,
+        # this lease is a proved bounded failure and does not need to occupy the
+        # conservative token-expiry recovery window.
+        module.revoke_value(token)
+        receipt = terminal_receipt(
+            prepared,
+            "bounded_failure",
+            ZERO_OID,
+            ZERO_OID,
+            {"disposition": "none"} if draft_authorization is not None else None,
+        )
+        finalize(connection, lease["nonce"], "token_minted", receipt)
+        raise
+    if remote_before != lease["expectedOldOid"]:
+        module.revoke_value(token)
+        receipt = terminal_receipt(
+            prepared,
+            "conflict",
+            lease["expectedOldOid"],
+            remote_before,
+            {"disposition": "none"} if draft_authorization is not None else None,
+        )
+        finalize(connection, lease["nonce"], "token_minted", receipt)
+        raise BrokerError("target branch is not absent at the mutation boundary")
+    return remote_before
+
+
 def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> dict[str, Any]:
-    authorization, authorization_digest = load_authorization()
-    draft_authorization = draft_pull_request_authorization(authorization)
-    if (
-        request["heartbeatRunId"] != authorization["paperclipRunId"]
-        or request["expectedNewOid"] == authorization["expectedOldOid"]
-    ):
-        raise BrokerError("client request conflicts with the root authorization")
-    app_config = json.loads(read_root_secret(APP_CONFIG, "GitHub App configuration"))
-    if (
-        app_config.get("repositoryId") != authorization["repositoryId"]
-        or app_config.get("repository") != authorization["repositoryFullName"]
-    ):
-        raise BrokerError("root authorization disagrees with the GitHub App repository boundary")
-    context = paperclip_request(
-        "GET",
-        f"/heartbeat-runs/{authorization['paperclipRunId']}/repository-mutation-context",
+    if request.get("schemaVersion") == "gloops.github-push-prepare-request.v1":
+        return prepare_request(connection, request)
+    if request.get("schemaVersion") != "gloops.github-push-client-request.v2":
+        raise BrokerError("socket request violates the accepted schema")
+    authorization, authorization_digest, app_config, required_base_oid = (
+        authenticated_request_facts(request)
     )
-    required_base_oid = compare_work_facts(authorization, context)
+    verify_preparation(request, authorization_digest, required_base_oid)
+    draft_authorization = draft_pull_request_authorization(authorization)
 
     work_dir = create_worker_area()
     try:
@@ -1282,7 +1546,11 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             authorization_digest,
             manifest["expectedNewOid"],
         )
+        consume_preparation(connection, request["preparationDigest"])
         post_prepared(connection, lease["nonce"], prepared)
+
+        module = load_app_module()
+        config = app_config
 
         os.chmod(pack_path, 0o444)
         preflight_root = work_dir / "preflight"
@@ -1294,6 +1562,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
         preflight_request = {
             "schemaVersion": "gloops.github-push-worker-request.v1",
             "repositoryFullName": authorization["repositoryFullName"],
+            "baseRepositoryUrl": f"https://github.com/{authorization['repositoryFullName']}.git",
             "defaultBranch": authorization["defaultBranch"],
             "remoteRef": authorization["branchRef"],
             "expectedOldOid": lease["expectedOldOid"],
@@ -1309,13 +1578,16 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             f"{canonical_json(preflight_request)}\n",
             0o444,
         )
+        read_token, _read_expires_at, _read_permissions = module.mint(
+            config, {"contents": "read"}
+        )
         try:
             run_worker(
                 lease["nonce"],
                 preflight_request_path,
                 pack_path,
                 preflight_gitdir,
-                None,
+                read_token,
                 "validate",
             )
         except BrokerError:
@@ -1329,10 +1601,9 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             finalize(connection, lease["nonce"], "prepared", receipt)
             raise
         finally:
+            module.revoke_value(read_token)
             shutil.rmtree(preflight_root, ignore_errors=True)
 
-        module = load_app_module()
-        config = module.load_config()
         record_mint_intent(connection, lease["nonce"])
         token, expires_at, _permissions = module.mint(config, {"contents": "write"})
         transition(
@@ -1343,11 +1614,17 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             {"tokenFingerprint": hashlib.sha256(token.encode()).hexdigest()},
             token_expires_at=expires_at,
         )
+        remote_before = verify_pre_mutation_boundary(
+            connection,
+            module,
+            config,
+            token,
+            authorization,
+            lease,
+            prepared,
+            draft_authorization,
+        )
         try:
-            verify_github_repository(module, config, token, authorization)
-            remote_before = read_remote_ref(module, token, authorization)
-            if remote_before != lease["expectedOldOid"]:
-                raise BrokerError("target branch is not absent at the mutation boundary")
             worker_root = work_dir / "worker"
             gitdir = worker_root / "repo.git"
             worker_root.mkdir(mode=0o711)
@@ -1357,6 +1634,7 @@ def process_request(connection: sqlite3.Connection, request: dict[str, Any]) -> 
             worker_request = {
                 "schemaVersion": "gloops.github-push-worker-request.v1",
                 "repositoryFullName": authorization["repositoryFullName"],
+                "baseRepositoryUrl": f"https://github.com/{authorization['repositoryFullName']}.git",
                 "defaultBranch": authorization["defaultBranch"],
                 "remoteRef": authorization["branchRef"],
                 "expectedOldOid": lease["expectedOldOid"],
@@ -1482,7 +1760,14 @@ def reconcile_pending(connection: sqlite3.Connection) -> None:
             raise BrokerError("in-flight lease has no conservative token expiry envelope")
         if parse_timestamp(recovery_after) > datetime.now(timezone.utc):
             continue
-        config = module.load_config()
+        try:
+            config = module.scope_repository(
+                module.load_config(),
+                authorization["repositoryId"],
+                authorization["repositoryFullName"],
+            )
+        except Exception as error:
+            raise BrokerError("stored authorization disagrees with the GitHub App repository boundary") from error
         reconciliation_token, _expires, _permissions = module.mint(config, {"contents": "read"})
         try:
             verify_github_repository(module, config, reconciliation_token, authorization)

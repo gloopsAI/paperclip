@@ -154,13 +154,19 @@ facts before accepting the request and the GitHub App installation before
 minting a credential. A durable allocation prevents another authorization or
 run from claiming the same branch.
 
-The client packs exactly the new commit and its reachable closure without
-retaining ingress. Before token mint, a network-denied validation worker indexes
-the root-owned, read-only pack into a disposable bare repository; it proves that
-the object set is exactly the manifest set, that the declared commit resolves,
-and that every tree entry is a regular file, executable file, or directory
-(symlinks and gitlinks are rejected). A fresh push worker repeats those checks
-against the same immutable pack and then makes one exact isomorphic-git push.
+The client first asks the broker to authenticate the current external claim.
+That preparation binds the exact claim base and the claim's mounted workspace
+identity before any repository walk. The client then packs only `head ^ base`,
+with hard object and byte ceilings, and never traverses the inherited history.
+Two lost preparation responses are tolerated; a third unconsumed attempt inside
+15 minutes is durably suppressed with
+`github_push.preparation_thrash_suppressed`. Before write-token mint, a
+least-authority `contents:read` worker fetches the exact authenticated base into
+a disposable bare repository and indexes the root-owned, read-only delta pack.
+It proves exact ancestry, manifest/object equality, and accepted tree modes
+(regular, executable, tracked symlink, or directory; gitlinks remain rejected).
+A fresh push worker repeats those checks against the same immutable pack and
+then makes one exact native-Git push.
 A network exception does not imply failure. The write token exists only in
 broker memory and the push worker's sealed, RAM-backed systemd credential; it
 is never written to durable state. Normal completion revokes it. Crash recovery waits until its
@@ -175,6 +181,31 @@ This broker is not a general GitHub shell, credential vending endpoint, PR
 creator, branch updater, or merge path. Expanding its mutation class, repository,
 ref namespace, or invocation count is a new authority decision and requires a
 separate accepted release.
+
+When the Paperclip service and Hermes use different UIDs, operators must not
+weaken workspace admission. Install and invoke
+`tools/reconcile-governed-workspace.py` with the exact project-workspace UUID,
+recorded cwd, checkout cwd, claimed head, service UID, and shared Hermes group.
+It changes only checkout-root uid/gid/mode, writes an exclusive digest-bound
+receipt, and supports exact metadata rollback. It rejects dirty, shallow,
+partial, symlinked, wrong-head, or metadata-mismatched workspaces.
+The shared workspace root is root-owned, shared-group writable, setgid, and
+sticky (`3770`): both Hermes and Paperclip can create entries, while Hermes
+cannot rename or replace a checkout after ownership is handed to Paperclip.
+
+Live upgrades of the writable Git transport use
+`github-push-transport-activation.py activate`, never a loose sequence of file
+copies and service restarts. The command snapshots exact bytes, uid/gid, and
+mode for the broker, bundled client, workspace reconciler, and persistent
+Hermes workspace observer, plus the exact
+workspace-root identity and metadata, before stopping the broker; proves
+journal quiescence after admission is closed; activates the root-owned sticky
+workspace policy; installs only reviewed SHA-256-bound artifacts; requires representative socket health; and writes a durable activation
+receipt. A durable mutation-started state precedes the first service effect;
+every later invocation restores any incomplete transaction before it may
+snapshot a new baseline. Any apply, start, health, or receipt failure jointly restores all four
+artifacts, exact prior workspace-root metadata, and the prior service state. `rollback --transaction-dir ...`
+provides a separately claimed, digest-bound later rollback and refuses replay.
 
 ## Rollback evidence
 

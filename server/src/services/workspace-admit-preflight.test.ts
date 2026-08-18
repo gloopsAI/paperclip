@@ -241,6 +241,15 @@ describe("resolveExpectedHeadFromIssueAndWorkspace", () => {
       }),
     ).toBeNull();
   });
+
+  it("fails closed on conflicting explicit heads instead of falling back to workspace metadata", () => {
+    expect(
+      resolveExpectedHeadFromIssueAndWorkspace({
+        description: `Exact head: \`${GOOD_SHA}\`\nExact head: \`${OTHER_SHA}\``,
+        workspaceRepoRef: GOOD_SHA,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("shouldInheritProjectWorkspace (C3)", () => {
