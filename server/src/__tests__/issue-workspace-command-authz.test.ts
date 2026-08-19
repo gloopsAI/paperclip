@@ -360,7 +360,7 @@ describe("issue workspace command authorization", () => {
           title: "Authorized Induct work",
           projectId,
           intakeTarget: "induct",
-          description: `## Scope\n- README.md\n\nBase SHA: \`${declaredHead}\`\nExact head: \`${leaseHead}\``,
+          description: `## Scope\n- README.md\n\nExact head: \`${declaredHead}\`\nExact head: \`${leaseHead}\``,
         });
 
       expect(res.status, JSON.stringify(res.body)).toBe(422);

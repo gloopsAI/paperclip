@@ -168,7 +168,10 @@ install -m 0600 -o root -g root "${SCRIPT_DIR}/hermes-handshake-policy.json" "${
 install -m 0444 -o root -g root "${SCRIPT_DIR}/hermes-handshake-resolv.conf" "${LIB_DIR}/hermes-handshake-resolv.conf"
 rm -f "${LIB_DIR}/hermes-execution-gitconfig" "${LIB_DIR}/hermes-execution-gh-config.yml"
 install -d -m 0555 -o root -g root "${LIB_DIR}/tools"
+install -d -m 0700 -o root -g root /var/lib/paperclip-gloops/github-push-transport-transactions
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-tool.bundle.cjs" "${LIB_DIR}/tools/github-push-tool.bundle.cjs"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/reconcile-governed-workspace.py" "${LIB_DIR}/tools/reconcile-governed-workspace.py"
+install -m 0555 -o root -g root "${SCRIPT_DIR}/github-push-transport-activation.py" "${LIB_DIR}/tools/github-push-transport-activation.py"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/github-read-tool.mjs" "${LIB_DIR}/tools/github-read-tool.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/platform-ops-tool.mjs" "${LIB_DIR}/tools/platform-ops-tool.mjs"
 install -m 0555 -o root -g root "${SCRIPT_DIR}/closed-loop-argus-publish-poller.py" "${LIB_DIR}/tools/closed-loop-argus-publish-poller.py"

@@ -473,7 +473,7 @@ if [[ "${MODE}" == '--live' ]]; then
     install -o 995 -g 985 -m 0664 /dev/null "${paperclip_owned_probe}"
     if docker exec --user 10000:10000 "${CONTAINER}" \
       /opt/hermes/.venv/bin/python -c \
-      'from pathlib import Path; p=Path("/opt/data/workspace/.gloops-paperclip-owned-write-probe"); p.write_text("hermes-ok"); raise SystemExit(0 if p.read_text() == "hermes-ok" else 1)' \
+      'import os; from pathlib import Path; p=Path("/opt/data/workspace/.gloops-paperclip-owned-write-probe"); fd=os.open(p, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW); os.write(fd, b"hermes-ok"); os.fsync(fd); os.close(fd); raise SystemExit(0 if p.read_text() == "hermes-ok" else 1)' \
       && [[ "$(stat -c '%u:%g:%a' "${paperclip_owned_probe}")" == '995:985:664' ]]; then
       pass 'live Hermes identity can update a Paperclip-owned group-writable workspace file'
     else
@@ -640,7 +640,7 @@ PY
       fail 'live authenticated API boundary is not healthy'
     fi
     observer_image="$(<"${APPROVED_IMAGE_FILE}")"
-    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '2770:10000:985' ]] \
+    if [[ "$(stat -c '%a:%u:%g' "${WORKSPACE}" 2>/dev/null || true)" == '3770:0:985' ]] \
       && docker run --rm --pull never --user 995:985 --network none --read-only \
         --cap-drop ALL --security-opt no-new-privileges:true \
         --mount "type=bind,src=${WORKSPACE},dst=/workspace" \

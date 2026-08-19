@@ -296,6 +296,29 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
     const identity = await seed();
     const service = repositoryMutationReceiptService(db);
     const receipt = prepared(identity);
+    const exactBaseSha = "a".repeat(40);
+    await db.update(projectWorkspaces).set({ repoRef: exactBaseSha });
+    await db.update(issues).set({ checkoutRunId: identity.heartbeatRunId });
+    await db.update(heartbeatRuns).set({
+      invocationSource: "external_claim",
+      contextSnapshot: {
+        issueId: identity.issueId,
+        externalIssueClaim: {
+          schemaVersion: "paperclip.external-issue-claim.v1",
+          claimId: identity.heartbeatRunId,
+          companyId: identity.companyId,
+          issueId: identity.issueId,
+          agentId: identity.agentId,
+          entryPoint: "interactive_codex",
+          repositoryFullName: receipt.repositoryFullName,
+          baseSha: exactBaseSha,
+          branchName: receipt.branchRef.replace(/^refs\/heads\//, ""),
+          projectWorkspaceId: identity.projectWorkspaceId,
+          workspaceIdentity: "/workspace/interactive",
+          claimedAt: "2026-08-19T00:00:00.000Z",
+        },
+      },
+    });
     await service.recordPrepared(receipt);
 
     const terminalReceipt = terminalWithDraftPullRequest(
@@ -324,13 +347,13 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
       companyId: identity.companyId,
       issueId: identity.issueId,
       projectWorkspaceId: identity.projectWorkspaceId,
-      exactBaseSha: receipt.expectedOldOid,
+      exactBaseSha,
       exactHeadSha: receipt.expectedNewOid,
     })).resolves.toEqual({
       repositoryId: receipt.repositoryId,
       repositoryFullName: receipt.repositoryFullName,
       baseRef: receipt.defaultBranch,
-      exactBaseSha: receipt.expectedOldOid,
+      exactBaseSha,
       exactHeadSha: receipt.expectedNewOid,
       pullRequestNumber: 7,
       pullRequestUrl: "https://github.com/gloopsAI/gloops-paperclip-plugin/pull/7",

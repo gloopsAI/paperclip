@@ -144,6 +144,7 @@ describe("thrash env knobs", () => {
     expect(isThrashErrorCode("workspace_validation_failed", {})).toBe(true);
     expect(isThrashErrorCode("workspace_preparation_failed", {})).toBe(true);
     expect(isThrashErrorCode("process_lost", {})).toBe(true);
+    expect(isThrashErrorCode("github_push.preparation_thrash_suppressed", {})).toBe(true);
     expect(isThrashErrorCode("provider_quota", {})).toBe(false);
   });
   it("isThrashErrorCode override list", () => {
@@ -283,5 +284,9 @@ describe("evaluateDispatchWake", () => {
 describe("findExactHeadSha", () => {
   it("finds line form", () => {
     expect(findExactHeadSha(`Exact head: \`${SHA}\``)).toBe(SHA);
+  });
+
+  it("does not promote Base SHA to an implementation target", () => {
+    expect(findExactHeadSha(`Base SHA: \`${SHA}\``)).toBeNull();
   });
 });
