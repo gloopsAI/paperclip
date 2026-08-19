@@ -627,7 +627,12 @@ const repositoryFullNameSchema = z.string().regex(
   /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
   "Expected an owner/repository GitHub repository name",
 );
-const externalClaimEntryPointSchema = z.enum(["buzz", "paperclip_agent", "interactive_codex"]);
+const externalClaimEntryPointSchema = z.enum([
+  "buzz",
+  "paperclip_agent",
+  "interactive_codex",
+  "interactive_grok",
+]);
 
 const externalIssueClaimFactsSchema = z.object({
   claimId: z.string().uuid(),

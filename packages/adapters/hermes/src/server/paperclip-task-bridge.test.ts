@@ -239,6 +239,27 @@ describe("paperclip-task-bridge helper", () => {
       .toEqual([claimId, claimId, claimId]);
   });
 
+  it("accepts interactive_grok as an external claim entry point", async () => {
+    const issueId = "33333333-3333-4333-8333-333333333333";
+    const claimId = "88888888-8888-4888-8888-888888888888";
+    const baseSha = "a".repeat(40);
+    const claimed = await runHelper([
+      "claim",
+      "--issue", issueId,
+      "--claim-id", claimId,
+      "--entry-point", "interactive_grok",
+      "--repository", "gloopsAI/paperclip",
+      "--base-sha", baseSha,
+      "--workspace-identity", "/workspace/grok",
+    ], env());
+
+    expect(claimed.code).toBe(0);
+    expect(requests.at(-1)?.body).toMatchObject({
+      entryPoint: "interactive_grok",
+      workspaceIdentity: "/workspace/grok",
+    });
+  });
+
   it("rejects a non-UUID claim issue before making any request", async () => {
     const result = await runHelper([
       "claim",

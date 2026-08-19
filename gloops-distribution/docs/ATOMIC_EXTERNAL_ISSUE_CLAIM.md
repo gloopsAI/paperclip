@@ -10,6 +10,9 @@ Buzz-lock database.
 - **Buzz/Hermes** uses `paperclip-task.mjs claim --entry-point buzz` before a repository write.
 - **Interactive Codex** uses the same helper with `--entry-point interactive_codex` before a
   repository write.
+- **Interactive Grok Build** uses the same helper with `--entry-point interactive_grok` before a
+  repository write. Missing `PAPERCLIP_API_KEY` fails closed before model invocation and does not
+  escalate to Codex.
 
 The external endpoint creates a real running heartbeat run whose id is the supplied claim UUID and,
 in the same database transaction, assigns the issue and sets both issue ownership columns. The

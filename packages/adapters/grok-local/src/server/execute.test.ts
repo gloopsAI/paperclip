@@ -108,6 +108,37 @@ describe("grok_local execute", () => {
     expect(runProcessMock).not.toHaveBeenCalled();
   });
 
+  it("fails closed before invocation when Paperclip execution identity is missing", async () => {
+    const root = await makeTempRoot();
+    const result = await execute({
+      runId: "run-identity-missing",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { cwd: root, env: {} },
+      context: {},
+      authToken: "",
+      onLog: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "execution_identity.paperclip_missing",
+      providerInvocationAttempted: false,
+    });
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
   it("refuses shared project-primary workspaces before staging native Grok context", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");

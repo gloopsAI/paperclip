@@ -130,7 +130,7 @@ function externalIssueClaimForMutationContext(value: unknown) {
     || !UUID_PATTERN.test(String(candidate.companyId))
     || !UUID_PATTERN.test(String(candidate.issueId))
     || !UUID_PATTERN.test(String(candidate.agentId))
-    || !["buzz", "paperclip_agent", "interactive_codex"].includes(String(candidate.entryPoint))
+    || !["buzz", "paperclip_agent", "interactive_codex", "interactive_grok"].includes(String(candidate.entryPoint))
     || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(candidate.repositoryFullName))
     || !OID_PATTERN.test(String(candidate.baseSha))
     || candidate.branchName !== `paperclip/${candidate.claimId}/calibration`

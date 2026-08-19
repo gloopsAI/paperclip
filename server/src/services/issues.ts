@@ -173,7 +173,7 @@ function externalIssueClaimFromContext(value: unknown): ExternalIssueClaimBindin
     || typeof candidate.companyId !== "string"
     || typeof candidate.issueId !== "string"
     || typeof candidate.agentId !== "string"
-    || !["buzz", "paperclip_agent", "interactive_codex"].includes(String(candidate.entryPoint))
+    || !["buzz", "paperclip_agent", "interactive_codex", "interactive_grok"].includes(String(candidate.entryPoint))
     || typeof candidate.repositoryFullName !== "string"
     || typeof candidate.baseSha !== "string"
     || typeof candidate.branchName !== "string"

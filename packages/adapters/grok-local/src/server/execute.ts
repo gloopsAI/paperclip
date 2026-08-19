@@ -416,6 +416,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         providerInvocationAttempted: false,
       };
     }
+    if (!hasNonEmptyEnvValue(effectiveEnv, "PAPERCLIP_API_KEY")) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "execution_identity.paperclip_missing",
+        errorMessage:
+          "Grok dispatch denied: missing PAPERCLIP_API_KEY execution identity. Do not invoke the model or escalate provider.",
+        clearSession: true,
+        providerInvocationAttempted: false,
+      };
+    }
     const runtimeEnv = ensurePathInEnv(effectiveEnv);
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
       installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
