@@ -721,8 +721,9 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       errorCode: "workspace_validation_failed",
       error: staleDirtyError,
     });
-    expect(await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]))
-      .toMatchObject({ status: "idle", errorReason: null });
+    await expect.poll(
+      () => db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]),
+    ).toMatchObject({ status: "idle", errorReason: null });
     expect(await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)).then((rows) => rows[0]))
       .toMatchObject({ lastError: null });
     expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId)))
@@ -802,8 +803,9 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
         errorCode: "workspace_validation_failed",
       });
       expect(mockAdapterExecute).not.toHaveBeenCalled();
-      expect(await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]))
-        .toMatchObject({ status: "error", errorReason: expect.stringMatching(/uncommitted|untracked/i) });
+      await expect.poll(
+        () => db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]),
+      ).toMatchObject({ status: "error", errorReason: expect.stringMatching(/uncommitted|untracked/i) });
       expect(await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)).then((rows) => rows[0]))
         .toMatchObject({ lastError: staleDirtyError });
       expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId)))
@@ -848,8 +850,9 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       status: "failed",
       errorCode: "workspace_validation_failed",
     });
-    expect(await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]))
-      .toMatchObject({ status: "error", errorReason: dirtyError });
+    await expect.poll(
+      () => db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]),
+    ).toMatchObject({ status: "error", errorReason: dirtyError });
     expect(await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId)).then((rows) => rows[0]))
       .toMatchObject({ lastError: concurrentError });
   });
