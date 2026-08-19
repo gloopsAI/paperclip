@@ -298,6 +298,7 @@ describeEmbeddedPostgres("repository mutation receipts", () => {
     const receipt = prepared(identity);
     const exactBaseSha = "a".repeat(40);
     await db.update(projectWorkspaces).set({ repoRef: exactBaseSha });
+    await db.update(issues).set({ checkoutRunId: identity.heartbeatRunId });
     await db.update(heartbeatRuns).set({
       invocationSource: "external_claim",
       contextSnapshot: {
