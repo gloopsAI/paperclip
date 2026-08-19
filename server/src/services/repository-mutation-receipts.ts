@@ -345,8 +345,18 @@ export function repositoryMutationReceiptService(db: Db) {
         return null;
       }
       const row = await db
-        .select()
+        .select({
+          state: repositoryMutationReceipts.state,
+          receipt: repositoryMutationReceipts.receipt,
+          runAgentId: heartbeatRuns.agentId,
+          runInvocationSource: heartbeatRuns.invocationSource,
+          runContextSnapshot: heartbeatRuns.contextSnapshot,
+        })
         .from(repositoryMutationReceipts)
+        .innerJoin(
+          heartbeatRuns,
+          eq(heartbeatRuns.id, repositoryMutationReceipts.heartbeatRunId),
+        )
         .where(and(
           eq(repositoryMutationReceipts.heartbeatRunId, input.heartbeatRunId),
           eq(repositoryMutationReceipts.companyId, input.companyId),
@@ -362,11 +372,20 @@ export function repositoryMutationReceiptService(db: Db) {
       } catch {
         return null;
       }
+      const claim = externalIssueClaimForMutationContext(row.runContextSnapshot);
       const draftPullRequest = receipt.draftPullRequest;
       if (
         draftPullRequest?.disposition !== "created"
-        || receipt.expectedOldOid !== input.exactBaseSha.toLowerCase()
-        || receipt.remoteOldOid !== input.exactBaseSha.toLowerCase()
+        || row.runInvocationSource !== "external_claim"
+        || !claim
+        || claim.claimId !== input.heartbeatRunId
+        || claim.companyId !== input.companyId
+        || claim.issueId !== input.issueId
+        || claim.agentId !== row.runAgentId
+        || claim.projectWorkspaceId !== input.projectWorkspaceId
+        || claim.repositoryFullName !== receipt.repositoryFullName
+        || claim.branchName !== receipt.branchRef.replace(/^refs\/heads\//, "")
+        || claim.baseSha !== input.exactBaseSha.toLowerCase()
         || receipt.expectedNewOid !== input.exactHeadSha.toLowerCase()
         || receipt.remoteNewOid !== input.exactHeadSha.toLowerCase()
         || receipt.projectWorkspaceId !== input.projectWorkspaceId
@@ -377,7 +396,7 @@ export function repositoryMutationReceiptService(db: Db) {
         repositoryId: receipt.repositoryId,
         repositoryFullName: receipt.repositoryFullName,
         baseRef: receipt.defaultBranch,
-        exactBaseSha: receipt.remoteOldOid,
+        exactBaseSha: claim.baseSha,
         exactHeadSha: receipt.remoteNewOid,
         pullRequestNumber: draftPullRequest.prNumber,
         pullRequestUrl: draftPullRequest.prUrl,
