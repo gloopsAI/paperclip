@@ -52,8 +52,7 @@ def b64url(b: bytes) -> str:
 def load_config() -> dict:
     if not CONFIG.is_file():
         raise InductAppError(
-            f"missing config {CONFIG}; create Induct GitHub App and install per "
-            "plane-steward/INDUCT_GITHUB_APP_OPTION_A.md"
+            f"missing config {CONFIG}; install the repository-scoped Induct GitHub App configuration"
         )
     raw = json.loads(CONFIG.read_text())
     required = {"appId", "installationId", "repositoryId", "repository", "privateKeyPath"}
@@ -149,7 +148,7 @@ def status() -> dict:
     }
     if not CONFIG.is_file():
         out["error"] = "config_missing"
-        out["next"] = "Follow plane-steward/INDUCT_GITHUB_APP_OPTION_A.md (Zach creates App + install)"
+        out["next"] = "Install the repository-scoped Induct GitHub App configuration"
         return out
     try:
         cfg = load_config()

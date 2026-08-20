@@ -91,27 +91,22 @@ function normalizeToken(value: string | null | undefined): string {
 
 /**
  * Read PAPERCLIP_ISSUE_PACKET_DOR.
- * - Production default: enforce (product fail-close / GIGO).
- * - Vitest default when unset: off (legacy fixtures lack Scope/Acceptance packets).
- * - Explicit env always wins. Unknown values fall back to enforce.
+ * - Default: off. Packet structure is guidance, not an execution admission gate.
+ * - Explicit observe/enforce modes remain available for diagnostics or experiments.
+ * - Unknown values fall back to off rather than silently stopping work.
  */
 export function getIssuePacketDorMode(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): IssuePacketDorMode {
   const raw = env[ISSUE_PACKET_DOR_ENV];
   if (raw === undefined || raw.trim() === "") {
-    const vitest = String(env.VITEST ?? "").trim().toLowerCase();
-    const nodeEnv = String(env.NODE_ENV ?? "").trim().toLowerCase();
-    if (vitest === "true" || nodeEnv === "test") {
-      return "off";
-    }
-    return "enforce";
+    return "off";
   }
   const normalized = raw.trim().toLowerCase();
   if (normalized === "off" || normalized === "observe" || normalized === "enforce") {
     return normalized;
   }
-  return "enforce";
+  return "off";
 }
 
 /**

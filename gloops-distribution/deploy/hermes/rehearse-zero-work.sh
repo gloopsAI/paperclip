@@ -75,15 +75,19 @@ done
   echo "Hermes activation marker already exists" >&2
   exit 1
 }
-grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=false' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_ISSUE_PACKET_DOR=off' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_WORKSPACE_ADMIT=off' "${CONFIG_DIR}/runtime.env"
+grep -Fxq 'PAPERCLIP_SDLC_PREFLIGHT=off' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=general' "${CONFIG_DIR}/runtime.env"
 ! grep -Eq '^PAPERCLIP_CAMPAIGN_' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE=campaign-bound' "${CONFIG_DIR}/campaign-runtime.env"
 grep -Fxq 'PAPERCLIP_CAMPAIGN_ID=controlled-swarm-repair-cell-20260718-3b40dca4278ca8b49782b623dcd9e139' "${CONFIG_DIR}/campaign-runtime.env"
 require_campaign_duration_in_range "${CONFIG_DIR}/campaign-runtime.env"
-grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' "${CONFIG_DIR}/runtime.env"
+! grep -Eq '^PAPERCLIP_(CONTROLLED_SWARM|BACKLOG_BANKRUPTCY|COMPANY_MAX_ACTIVE_RUNS|EXECUTION_MAX_)' "${CONFIG_DIR}/runtime.env"
 grep -Fxq 'PAPERCLIP_MTE_ENABLED=false' "${CONFIG_DIR}/runtime.env"
 "${LIB_DIR}/github-push-broker.py" assert-quiescent
 

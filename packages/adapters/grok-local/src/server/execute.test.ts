@@ -151,7 +151,7 @@ describe("grok_local execute", () => {
     expect(await pathExists(path.join(root, ".claude"))).toBe(false);
   });
 
-  it("stages Grok-native instructions and skills into the workspace for the run and cleans them up afterward", async () => {
+  it("stages Grok instructions and skills outside the git workspace and cleans them up afterward", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");
     const skillSource = path.join(root, "runtime-skills", "paperclip");
@@ -170,8 +170,15 @@ describe("grok_local execute", () => {
           "dontAsk",
         ]),
       );
-      expect(await fs.readFile(path.join(root, "Agents.md"), "utf8")).toContain("You are Grok.");
-      expect(await pathExists(path.join(root, ".claude", "skills", "paperclip", "SKILL.md"))).toBe(true);
+      const rulesArg = args[args.indexOf("--rules") + 1];
+      expect(rulesArg).toMatch(/^@/);
+      const rulesPath = String(rulesArg).slice(1);
+      expect(path.resolve(rulesPath).startsWith(`${path.resolve(root)}${path.sep}`)).toBe(false);
+      const rules = await fs.readFile(rulesPath, "utf8");
+      expect(rules).toContain("You are Grok.");
+      expect(rules).toContain("name: paperclip");
+      expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
+      expect(await pathExists(path.join(root, ".claude"))).toBe(false);
       await options.onLog?.("stdout", '{"type":"text","data":"done"}\n');
       return {
         exitCode: 0,

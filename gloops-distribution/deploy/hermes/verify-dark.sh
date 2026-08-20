@@ -541,27 +541,20 @@ if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloop
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_SOCKET=/run/paperclip-campaign/deadman.sock' /etc/paperclip-gloops/campaign-runtime.env \
   && campaign_duration_in_range /etc/paperclip-gloops/campaign-runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/campaign-runtime.env \
-  && grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' /etc/paperclip-gloops/campaign-runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=true' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_ISSUE_PACKET_DOR=enforce' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-18T23:12:22.000Z' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_TASK=8000000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_TASK=256000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_WALL_MS_PER_TASK=7200000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_INPUT_TOKENS_PER_INVOCATION=4000000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION=128000' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION=64' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION=240' /etc/paperclip-gloops/runtime.env; then
-  echo "PASS release-pinned controlled-swarm envelope is installed dark with the company backlog frozen"
+  && grep -Fxq 'PAPERCLIP_EXECUTION_ADMISSION_ENABLED=false' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_ISSUE_PACKET_DOR=off' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_WORKSPACE_ADMIT=off' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_WORKSPACE_ADMIT_CREATE=off' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_SDLC_PREFLIGHT=off' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT=/opt/data/workspace' /etc/paperclip-gloops/runtime.env \
+  && grep -Fxq 'PAPERCLIP_SSH_SHARED_WORKSPACE_REMOTE_ROOT=/opt/paperclip/hermes-execution-state/workspace' /etc/paperclip-gloops/runtime.env \
+  && ! grep -Eq '^PAPERCLIP_(CONTROLLED_SWARM|BACKLOG_BANKRUPTCY|COMPANY_MAX_ACTIVE_RUNS|EXECUTION_MAX_)' /etc/paperclip-gloops/runtime.env; then
+  echo "PASS upstream-first execution envelope is installed without custom admission gates"
 else
-  echo "FAIL exact controlled-swarm execution envelope is missing or has drifted" >&2
+  echo "FAIL upstream-first execution envelope is missing or has drifted" >&2
   failed=1
 fi
 

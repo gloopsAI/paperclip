@@ -54,12 +54,12 @@ Stdout/stderr JSON:
 Typed errors: `invalid_sha`, `repo_not_allowlisted`, `dest_not_allowlisted`,
 `git_clone_failed`, `git_fetch_failed`, `head_mismatch`, …
 
-## Swarm / Plane Steward usage
+## Workspace repair usage
 
-1. Detect `head_mismatch` or missing cwd via plane-steward `detect.py`.
+1. Observe `head_mismatch` or missing cwd in the ordinary Paperclip run result.
 2. Resolve intended full SHA from PWS catalog (C7) or packet Exact head.
 3. `bootstrap_repo.py --apply --repo … --sha … --dest <PWS cwd>`.
-4. Optional: plane-steward `wrong-head-rebase` if tree already present.
+4. Re-realize the workspace through Paperclip if the configured checkout is stale.
 5. Assign the issue and use Paperclip's ordinary issue-bound wake/claim path.
 
 Never set `repoRef` / expected head to branch name `main`.

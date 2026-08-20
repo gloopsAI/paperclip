@@ -125,27 +125,22 @@ const FORCE_PACKET_PROFILE_ENV = { PAPERCLIP_ISSUE_PACKET_DOR: "enforce" } as co
 
 /**
  * Read PAPERCLIP_WORKSPACE_ADMIT.
- * - Production default: enforce (hard product gate).
- * - Vitest default when unset: off (legacy fixtures lack workspace leases).
- * - Explicit env always wins. Unknown values fall back to enforce.
+ * - Default: off. Upstream workspace realization owns initial checkout safety.
+ * - Explicit observe/enforce modes remain available for diagnostics or experiments.
+ * - Unknown values fall back to off rather than cancelling continuations.
  */
 export function getWorkspaceAdmitMode(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): WorkspaceAdmitMode {
   const raw = env[WORKSPACE_ADMIT_ENV];
   if (raw === undefined || raw.trim() === "") {
-    const vitest = String(env.VITEST ?? "").trim().toLowerCase();
-    const nodeEnv = String(env.NODE_ENV ?? "").trim().toLowerCase();
-    if (vitest === "true" || nodeEnv === "test") {
-      return "off";
-    }
-    return "enforce";
+    return "off";
   }
   const normalized = raw.trim().toLowerCase();
   if (normalized === "off" || normalized === "observe" || normalized === "enforce") {
     return normalized;
   }
-  return "enforce";
+  return "off";
 }
 
 /**
@@ -163,7 +158,7 @@ export function getWorkspaceAdmitCreateMode(
   if (normalized === "off" || normalized === "observe" || normalized === "enforce") {
     return normalized;
   }
-  return "enforce";
+  return "off";
 }
 
 function runGit(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {

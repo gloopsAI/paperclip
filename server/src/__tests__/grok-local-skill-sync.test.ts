@@ -7,7 +7,7 @@ import {
 describe("grok local skill sync", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
 
-  it("reports Grok skills as ephemeral workspace-mounted state", async () => {
+  it("reports Grok skills as ephemeral run-scoped state", async () => {
     const snapshot = await listGrokSkills({
       agentId: "agent-1",
       companyId: "company-1",
@@ -25,7 +25,7 @@ describe("grok local skill sync", () => {
     expect(snapshot.desiredSkills).toContain(paperclipKey);
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)).toMatchObject({
       state: "configured",
-      detail: "Will be copied into `.claude/skills` in the execution workspace on the next run.",
+      detail: "Will be included in a run-scoped rules bundle outside the Git worktree.",
     });
   });
 

@@ -6583,12 +6583,12 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(childrenRows).toHaveLength(0);
   });
 
-  it("rejects createChild when description exact-head disagrees with workspaceStrategy.baseRef (WG-PLAT-008 P1)", async () => {
+  it("does not turn advisory exact-head prose into a child-creation gate", async () => {
     const { sourceIssueId, assigneeAgentId } = await seedAcceptedPlanIssue();
     const descriptionSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const baseRefSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    await expect(svc.createChild(sourceIssueId, {
+    const { issue } = await svc.createChild(sourceIssueId, {
       title: "Implementation review of the claim table slice",
       status: "todo",
       workMode: "standard",
@@ -6602,13 +6602,12 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
         },
       },
       actorAgentId: assigneeAgentId,
-    })).rejects.toMatchObject({ status: 422 });
+    });
 
-    const childrenRows = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.parentId, sourceIssueId));
-    expect(childrenRows).toHaveLength(0);
+    expect(issue.description).toContain(descriptionSha);
+    expect(issue.executionWorkspaceSettings).toMatchObject({
+      workspaceStrategy: { baseRef: baseRefSha },
+    });
   });
 
   it("accepts createChild when description exact-head matches workspaceStrategy.baseRef (WG-PLAT-008 P1)", async () => {

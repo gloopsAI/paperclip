@@ -200,7 +200,6 @@ import {
 } from "../services/dispatch-assignment-policy.js";
 import {
   evaluateInductSdlcGate,
-  recommendedRecipesForAdmitCodes,
   SDLC_PREFLIGHT_REASON,
 } from "../services/sdlc-preflight.js";
 import {
@@ -9476,7 +9475,6 @@ export function issueRoutes(
         },
       });
       if (!workspaceAdmit.admitted) {
-        const recommendedRecipes = recommendedRecipesForAdmitCodes(workspaceAdmit.reasonCodes);
         logger.info(
           {
             issueId: issue.id,
@@ -9486,7 +9484,6 @@ export function issueRoutes(
             observedHeadSha: workspaceAdmit.observedHeadSha,
             projectWorkspaceId: workspaceAdmit.projectWorkspaceId,
             cwd: workspaceAdmit.cwd,
-            recommendedRecipes,
           },
           "workspace admit preflight: not admitted on checkout",
         );

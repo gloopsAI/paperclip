@@ -86,12 +86,7 @@ import {
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import {
-  evaluateIssuePacketReadiness,
-  findExactHeadSha,
-  ISSUE_PACKET_DOR_ENV,
-  ISSUE_PACKET_REASON,
-} from "./issue-packet-readiness.js";
+import { findExactHeadSha } from "./issue-packet-readiness.js";
 import {
   evaluateWorkspaceAdmitCreateRequirements,
   getWorkspaceAdmitCreateMode,
@@ -436,12 +431,6 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
 }
 
 const EXACT_HEAD_SHA_PATTERN = /^[0-9a-f]{40}$/i;
-// Internal-only override so the exact-head preflight below always evaluates
-// as if PAPERCLIP_ISSUE_PACKET_DOR=enforce, regardless of the process env
-// (vitest defaults the real DoR mode to "off" so legacy fixtures still pass).
-// This guarantees dispatched child packets are built to satisfy the *strict*
-// gate up front (WG-PLAT-008), not whichever mode happens to be active.
-const FORCE_ISSUE_PACKET_ENFORCE_ENV = { [ISSUE_PACKET_DOR_ENV]: "enforce" } as const;
 
 /**
  * Derive a candidate exact-head SHA from a (possibly pre-realization) child
@@ -459,22 +448,6 @@ function deriveExactHeadShaFromExecutionWorkspaceSettings(
   if (typeof baseRef !== "string") return null;
   const trimmed = baseRef.trim();
   return EXACT_HEAD_SHA_PATTERN.test(trimmed) ? trimmed.toLowerCase() : null;
-}
-
-/**
- * Append a machine-readable exact-head line the DoR gate recognizes
- * (EXACT_HEAD_LINE_RE / EXACT_HEAD_SHA_RE in issue-packet-readiness.ts),
- * mirroring the single-child Argus handoff's buildImplementationReviewDescription
- * (implementation-review-handoff.ts) so decomposed review/release children
- * carry the same evidence the DoR gate already trusts.
- */
-function appendExactHeadDescriptionSection(
-  description: string | null | undefined,
-  exactHeadSha: string,
-): string {
-  const base = (description ?? "").trimEnd();
-  const section = `## Exact Head\nExact head: \`${exactHeadSha}\``;
-  return base ? `${base}\n\n${section}\n` : `${section}\n`;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -6165,89 +6138,11 @@ export function issueService(db: Db) {
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
 
-      // WG-PLAT-008: review/release-profile children must carry a literal
-      // exact-head SHA in the description or the DoR gate
-      // (evaluateIssuePacketReadiness) cancels them as "not ready". The
-      // single-child Argus handoff (implementation-review-handoff.ts) embeds
-      // this explicitly; this generic helper (used by decomposeAcceptedPlan
-      // and any other child-creation caller) did not. Derive it from the
-      // child's structured workspace intent when possible and inject it; if
-      // the profile requires an exact head and none can be derived, fail
-      // typed here instead of silently creating a packet DoR will cancel.
-      //
-      // WG-PLAT-008 P1: when the description already contains exact-head text
-      // AND structured workspaceStrategy.baseRef also carries a 40-hex SHA,
-      // the two sources must agree. A silent SHA-A-in-text / SHA-B-in-settings
-      // disagreement would let the DoR gate pass while the workspace materializes
-      // a different head. Reject (422) on mismatch instead of rewriting.
       const descriptionWithAcceptanceCriteria = appendAcceptanceCriteriaToDescription(
         issueData.description,
         acceptanceCriteria,
       );
-      const candidateExecutionWorkspaceSettingsForExactHead =
-        inheritedPreRealizationWorkspaceSettings ??
-        (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ??
-        null;
-      const candidateExactHeadSha = deriveExactHeadShaFromExecutionWorkspaceSettings(
-        candidateExecutionWorkspaceSettingsForExactHead,
-      );
-      const descriptionExactHeadSha = findExactHeadSha(descriptionWithAcceptanceCriteria);
-      if (
-        descriptionExactHeadSha &&
-        candidateExactHeadSha &&
-        descriptionExactHeadSha !== candidateExactHeadSha
-      ) {
-        throw unprocessable(
-          `Child issue packet exact-head mismatch: description declares \`${descriptionExactHeadSha}\` but executionWorkspaceSettings.workspaceStrategy.baseRef is \`${candidateExactHeadSha}\`. Align both sources to the same 40-char SHA before dispatching this child.`,
-        );
-      }
-      const exactHeadAssigneeAgentId = issueData.assigneeAgentId ?? null;
-      const exactHeadAssigneeAgent = exactHeadAssigneeAgentId
-        ? await db
-            .select({ role: agents.role, name: agents.name })
-            .from(agents)
-            .where(eq(agents.id, exactHeadAssigneeAgentId))
-            .then((rows) => rows[0] ?? null)
-        : null;
-      const exactHeadPreflightInput = {
-        title: issueData.title ?? null,
-        description: descriptionWithAcceptanceCriteria,
-        workMode: issueData.workMode ?? null,
-        status: issueData.status ?? null,
-        assigneeRole: exactHeadAssigneeAgent?.role ?? null,
-        assigneeName: exactHeadAssigneeAgent?.name ?? null,
-      };
-      const exactHeadPreflight = evaluateIssuePacketReadiness(
-        exactHeadPreflightInput,
-        FORCE_ISSUE_PACKET_ENFORCE_ENV,
-      );
-      const exactHeadRequired =
-        exactHeadPreflight.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_EXACT_HEAD) ||
-        exactHeadPreflight.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_RELEASE_ANCHOR);
-      let finalDescription = descriptionWithAcceptanceCriteria;
-      if (exactHeadRequired) {
-        if (!candidateExactHeadSha) {
-          throw unprocessable(
-            `Child issue packet requires an exact-head SHA for profile "${exactHeadPreflight.profile}" but none could be derived from executionWorkspaceSettings.workspaceStrategy.baseRef. Supply a 40-char exact-head baseRef (or embed the exact head directly in the description) before dispatching this child.`,
-          );
-        }
-        // Description is missing the head (exactHeadRequired) — inject from
-        // structured baseRef. descriptionExactHeadSha is null here; if it were
-        // set and mismatched we already rejected above.
-        finalDescription = appendExactHeadDescriptionSection(descriptionWithAcceptanceCriteria, candidateExactHeadSha);
-        const exactHeadVerification = evaluateIssuePacketReadiness(
-          { ...exactHeadPreflightInput, description: finalDescription },
-          FORCE_ISSUE_PACKET_ENFORCE_ENV,
-        );
-        if (
-          exactHeadVerification.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_EXACT_HEAD) ||
-          exactHeadVerification.reasonCodes.includes(ISSUE_PACKET_REASON.MISSING_RELEASE_ANCHOR)
-        ) {
-          throw unprocessable(
-            `Child issue packet still missing exact-head evidence after injection for profile "${exactHeadPreflight.profile}".`,
-          );
-        }
-      }
+      const finalDescription = descriptionWithAcceptanceCriteria;
 
       // C3: only inherit parent projectWorkspaceId when same project (fail-closed).
       // Cross-project children must not inherit paperclip-gym PWS onto gloops-ui work.

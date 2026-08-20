@@ -310,10 +310,6 @@ const githubPushTransportActivationTestPath = new URL(
   "../gloops-distribution/deploy/hermes/github_push_transport_activation_test.py",
   import.meta.url,
 );
-const registeredPublishPathTestPath = new URL(
-  "../gloops-distribution/deploy/hermes/registered_publish_path_test.py",
-  import.meta.url,
-);
 const githubWebhookReceiverPath = new URL(
   "../gloops-distribution/deploy/hermes/github-webhook-receiver.py",
   import.meta.url,
@@ -582,9 +578,6 @@ try {
     stdio: "inherit",
   });
   execFileSync("python3", [githubPushTransportActivationTestPath.pathname], {
-    stdio: "inherit",
-  });
-  execFileSync("python3", [registeredPublishPathTestPath.pathname], {
     stdio: "inherit",
   });
 } catch {
@@ -1093,12 +1086,23 @@ if (!/^PAPERCLIP_CONFIG=\/home\/paperclip\/\.paperclip\/instances\/default\/conf
 if (!/^PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false$/m.test(runtimeEnv)) {
   fail("release distribution must clear the release-pin activation interlock");
 }
-if (!/^PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local$/m.test(runtimeEnv)) {
-  fail("release distribution must enable reconciled budget accounting for the governed local burst adapters");
+if (/^PAPERCLIP_(?:BACKLOG_BANKRUPTCY|CONTROLLED_SWARM|COMPANY_MAX_ACTIVE_RUNS|EXECUTION_MAX_)/m.test(runtimeEnv)) {
+  fail("upstream-first runtime must not install custom backlog, swarm, WIP, or execution-budget admission controls");
 }
-if (!/^HEARTBEAT_SCHEDULER_ENABLED=false$/m.test(runtimeEnv) ||
-    !preflight.includes("[HEARTBEAT_SCHEDULER_ENABLED]='false'")) {
-  fail("inert activation must keep the global heartbeat scheduler disabled in both runtime and preflight");
+if (!/^HEARTBEAT_SCHEDULER_ENABLED=true$/m.test(runtimeEnv) ||
+    !preflight.includes("[HEARTBEAT_SCHEDULER_ENABLED]='true'")) {
+  fail("upstream-first runtime must leave the normal heartbeat scheduler enabled");
+}
+for (const required of [
+  "PAPERCLIP_EXECUTION_ADMISSION_ENABLED=false",
+  "PAPERCLIP_ISSUE_PACKET_DOR=off",
+  "PAPERCLIP_WORKSPACE_ADMIT=off",
+  "PAPERCLIP_WORKSPACE_ADMIT_CREATE=off",
+  "PAPERCLIP_SDLC_PREFLIGHT=off",
+  "PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT=/opt/data/workspace",
+  "PAPERCLIP_SSH_SHARED_WORKSPACE_REMOTE_ROOT=/opt/paperclip/hermes-execution-state/workspace",
+]) {
+  if (!runtimeEnv.includes(required)) fail(`upstream-first runtime is missing ${required}`);
 }
 if (!service.includes("src=/home/paperclip/.paperclip,dst=/home/paperclip/.paperclip")) {
   fail("Hermes service must mount the persisted Paperclip home at the runtime home path");
@@ -1144,9 +1148,12 @@ if (
   fail("Paperclip must mint the projector role before live preflight so failed activation can archive a complete credential lifecycle");
 }
 for (const required of [
-  "HEARTBEAT_SCHEDULER_ENABLED=false",
+  "HEARTBEAT_SCHEDULER_ENABLED=true",
   "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
-  "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+  "PAPERCLIP_EXECUTION_ADMISSION_ENABLED=false",
+  "PAPERCLIP_ISSUE_PACKET_DOR=off",
+  "PAPERCLIP_WORKSPACE_ADMIT=off",
+  "PAPERCLIP_SDLC_PREFLIGHT=off",
   "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
   "PAPERCLIP_MTE_ENABLED=false",
   "issue_recovery_actions",
@@ -2643,7 +2650,11 @@ for (const required of [
   "FAIL Hermes handshake egress firewall policy remains while dark",
   "PASS no Hermes handshake egress policy remains while dark",
   "PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false",
-  "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=codex_local,grok_local",
+  "PAPERCLIP_EXECUTION_ADMISSION_ENABLED=false",
+  "PAPERCLIP_ISSUE_PACKET_DOR=off",
+  "PAPERCLIP_WORKSPACE_ADMIT=off",
+  "PAPERCLIP_SDLC_PREFLIGHT=off",
+  "PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT=/opt/data/workspace",
 ]) {
   if (!verifyDark.includes(required)) {
     fail(`dark verification is missing revocation evidence ${required}`);

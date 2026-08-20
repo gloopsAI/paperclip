@@ -123,14 +123,11 @@ function parseIdList(raw: string | undefined): Set<string> {
 export function getSdlcPreflightMode(env: EnvMap = process.env): SdlcPreflightMode {
   const raw = env[SDLC_PREFLIGHT_ENV];
   if (raw === undefined || raw.trim() === "") {
-    const vitest = String(env.VITEST ?? "").trim().toLowerCase();
-    const nodeEnv = String(env.NODE_ENV ?? "").trim().toLowerCase();
-    if (vitest === "true" || nodeEnv === "test") return "off";
-    return "enforce";
+    return "off";
   }
   const n = raw.trim().toLowerCase();
   if (n === "off" || n === "observe" || n === "enforce") return n;
-  return "enforce";
+  return "off";
 }
 
 export function getInductProjectWorkspaceIds(env: EnvMap = process.env): Set<string> {
@@ -393,30 +390,4 @@ export function evaluateInductSdlcGate(input: {
     plane,
     isInductImplement,
   };
-}
-
-/** Map workspace_admit codes to plane-steward recipe ids (logging only; no hostctl). */
-export function recommendedRecipesForAdmitCodes(codes: string[]): string[] {
-  const recipes = new Set<string>();
-  for (const code of codes) {
-    const c = code.toLowerCase();
-    if (c.includes("dirty_tree")) {
-      recipes.add("dirty-tree-clean");
-    }
-    if (c.includes("head_mismatch") || c.includes("expected_head")) {
-      recipes.add("wrong-head-rebase");
-      recipes.add("induct-lease-refresh");
-    }
-    if (c.includes("cwd_not_readable") || c.includes("acl")) {
-      recipes.add("acl-fix");
-    }
-    if (c.includes("lease") || c.includes("dirty_or_missing")) {
-      recipes.add("induct-lease-refresh");
-    }
-    if (c.includes("deadline") || c.includes("campaign.")) {
-      recipes.add("campaign-deadline-alert");
-      recipes.add("sdlc-preflight-check");
-    }
-  }
-  return [...recipes];
 }
