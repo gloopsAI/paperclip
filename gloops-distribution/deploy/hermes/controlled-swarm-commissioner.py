@@ -1298,6 +1298,18 @@ def verify_commissioned_state(
     )
 
 
+def controlled_swarm_is_disabled(lines: list[str]) -> bool:
+    key = "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED"
+    declarations = [line for line in lines if line.startswith(f"{key}=")]
+    if not declarations:
+        return True
+    if declarations == [f"{key}=false"]:
+        return True
+    if declarations == [f"{key}=true"]:
+        return False
+    raise CommissioningError("controlled-swarm commissioning barrier is malformed")
+
+
 def main() -> int:
     paths = CommissioningPaths()
     parser = argparse.ArgumentParser()
@@ -1322,13 +1334,9 @@ def main() -> int:
         return 0
     if args.verify_live_if_commissioned:
         lines = paths.runtime_env.read_text(encoding="utf-8").splitlines()
-        if lines.count("PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false") == 1:
+        if controlled_swarm_is_disabled(lines):
             print("PASS controlled swarm remains inert and uncommissioned")
             return 0
-        if lines.count("PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true") != 1:
-            raise CommissioningError(
-                "controlled-swarm commissioning barrier is malformed",
-            )
     if (
         args.verify_receipt
         or args.verify_live

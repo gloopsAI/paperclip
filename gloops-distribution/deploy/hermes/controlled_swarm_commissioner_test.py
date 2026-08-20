@@ -202,6 +202,29 @@ class FakePlatform:
 
 
 class CommissionerTest(unittest.TestCase):
+    def test_removed_commissioning_flag_defaults_to_disabled(self) -> None:
+        self.assertTrue(MODULE.controlled_swarm_is_disabled(["OTHER=value"]))
+        self.assertTrue(
+            MODULE.controlled_swarm_is_disabled(
+                ["PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false"],
+            ),
+        )
+        self.assertFalse(
+            MODULE.controlled_swarm_is_disabled(
+                ["PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true"],
+            ),
+        )
+        with self.assertRaisesRegex(
+            MODULE.CommissioningError,
+            "commissioning barrier is malformed",
+        ):
+            MODULE.controlled_swarm_is_disabled(
+                [
+                    "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+                    "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
+                ],
+            )
+
     def test_execution_route_separates_private_sidecar_from_public_paperclip_tls(self) -> None:
         self.assertEqual(
             MODULE.EXECUTION_ROUTE["apiBaseUrl"],
