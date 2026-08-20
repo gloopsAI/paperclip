@@ -15308,6 +15308,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
     });
     const configuredModel = readConfiguredModelFromAdapterConfig(runtimeConfig);
+    // Automatic recovery may select a fallback model and rebuild packet/workspace
+    // bookkeeping even when no operator-controlled readiness fact changed. Keep
+    // the stop-loss fingerprint limited to stable configuration categories so
+    // retry machinery cannot manufacture its own remediation signal.
+    const preProviderStableSessionConfig = {
+      adapter: sessionConfigMetadata.categoryFingerprints.adapter,
+      agentRuntimeConfig: sessionConfigMetadata.categoryFingerprints.agentRuntimeConfig,
+      instructions: sessionConfigMetadata.categoryFingerprints.instructions,
+      issueOverrides: sessionConfigMetadata.categoryFingerprints.issueOverrides,
+      environment: sessionConfigMetadata.categoryFingerprints.environment,
+      envBindings: sessionConfigMetadata.categoryFingerprints.envBindings,
+      secrets: sessionConfigMetadata.categoryFingerprints.secrets,
+      runtimeSkills: sessionConfigMetadata.categoryFingerprints.runtimeSkills,
+    };
     const wakeSessionResetReason = describeSessionResetReason(context);
     const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
       hasTaskSession: taskSession != null,
@@ -15584,12 +15598,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let preProviderStateDigest = buildPreProviderReadinessStateDigest({
       phase: "workspace_persistence",
       adapterType: agent.adapterType,
-      model: configuredModel,
       repository: executionWorkspace.repoUrl ?? null,
       exactHead: executionWorkspace.baseRefSha ?? null,
       workspaceMode: requestedExecutionWorkspaceMode,
       configFingerprints: {
-        session: sessionConfigFreshness.nextFingerprint,
+        session: preProviderStableSessionConfig,
         workspace: workspaceConfigFreshness.nextFingerprint,
       },
     });
@@ -16735,7 +16748,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context[WORKFORCE_CAPACITY_CONTEXT_KEY] = workforceCapacity;
       preProviderStateDigest = buildPreProviderReadinessStateDigest({
         adapterType: agent.adapterType,
-        model: configuredModel,
         repository: executionWorkspace.repoUrl ?? null,
         exactHead: executionWorkspace.baseRefSha ?? null,
         workspaceMode: persistedExecutionWorkspace
@@ -16750,7 +16762,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reservation: workPreparation.reservation,
           skills: workPreparation.skills,
           tools: workPreparation.tools,
-          capacity: workPreparation.capacity,
+          capacity: { fits: workPreparation.capacity.fits },
           phaseBudget: workPreparation.phaseBudget,
         },
         subscriptionRouteAdmission: {
@@ -16760,10 +16772,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workforceCapacity: {
           decision: workforceCapacity.decision,
           reasons: workforceCapacity.reasons,
-          route: workforceCapacity.route,
+          route: {
+            lane: workforceCapacity.route.lane,
+            provider: workforceCapacity.route.provider,
+            adapterType: workforceCapacity.route.adapterType,
+          },
         },
         configFingerprints: {
-          session: configFreshnessResultMetadata.session.nextFingerprint,
+          session: preProviderStableSessionConfig,
           workspace: configFreshnessResultMetadata.workspace.nextFingerprint,
         },
       });

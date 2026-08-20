@@ -2162,19 +2162,16 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     await waitForTerminalRuns(db, [first!.id]);
     await heartbeat.waitForRunExecutionDrain(first!.id);
 
-    const second = await heartbeat.invoke(
-      agentId,
-      "assignment",
-      { issueId, wakeReason: "issue_assigned" },
-      "system",
-      { actorType: "system", actorId: "test" },
-    );
-    expect(second).not.toBeNull();
-    await waitForTerminalRuns(db, [second!.id]);
-    await heartbeat.waitForRunExecutionDrain(second!.id);
-
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
-    expect(await heartbeat.getRun(second!.id)).toMatchObject({
+    const issueRuns = (await db.select().from(heartbeatRuns)).filter(
+      (row) =>
+        row.companyId === companyId &&
+        (row.contextSnapshot as Record<string, unknown> | null)?.issueId === issueId,
+    );
+    const unchangedRecovery = issueRuns.find(
+      (row) => row.errorCode === "execution_admission.pre_provider_state_unchanged",
+    );
+    expect(unchangedRecovery).toMatchObject({
       status: "failed",
       errorCode: "execution_admission.pre_provider_state_unchanged",
       contextSnapshot: {
@@ -2191,19 +2188,25 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
         },
       },
     });
+    expect(issueRuns).toContainEqual(
+      expect.objectContaining({
+        status: "cancelled",
+        errorCode: "execution_admission.pre_provider_failure_limit_exhausted",
+      }),
+    );
 
-    const third = await heartbeat.invoke(
+    const subsequent = await heartbeat.invoke(
       agentId,
       "assignment",
       { issueId, wakeReason: "issue_assigned" },
       "system",
       { actorType: "system", actorId: "test" },
     );
-    expect(third).not.toBeNull();
-    await waitForTerminalRuns(db, [third!.id]);
-    expect(await heartbeat.getRun(third!.id)).toMatchObject({
+    expect(subsequent).not.toBeNull();
+    await waitForTerminalRuns(db, [subsequent!.id]);
+    expect(await heartbeat.getRun(subsequent!.id)).toMatchObject({
       status: "cancelled",
-      errorCode: "execution_admission.pre_provider_failure_limit_exhausted",
+      errorCode: "admission.issue_blocked",
     });
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
