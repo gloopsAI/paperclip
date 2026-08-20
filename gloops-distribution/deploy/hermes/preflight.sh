@@ -274,19 +274,22 @@ free_bytes="$(df -PB1 "${STATE_DIR}" | awk 'NR == 2 {print $4}')"
   exit 1
 }
 
-[[ "$(stat -c '%a:%u:%g' "${SSH_BUNDLE_STAGING_DIR}" 2>/dev/null || true)" == '700:995:985' ]] || {
-  echo "SSH bundle staging directory is missing or has drifted from its owner-only 700:995:985 contract" >&2
-  exit 1
-}
-[[ ! -L "${SSH_BUNDLE_STAGING_DIR}" ]] || {
-  echo "SSH bundle staging directory must not be a symlink" >&2
-  exit 1
-}
-ssh_bundle_staging_free_bytes="$(df -PB1 "${SSH_BUNDLE_STAGING_DIR}" | awk 'NR == 2 {print $4}')"
-[[ "${ssh_bundle_staging_free_bytes}" -ge "${SSH_BUNDLE_STAGING_MIN_FREE_BYTES}" ]] || {
-  echo "SSH bundle staging volume has less than the required free-space reserve for a worst-case git bundle" >&2
-  exit 1
-}
+if [[ -z "${PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT:-}" \
+  || -z "${PAPERCLIP_SSH_SHARED_WORKSPACE_REMOTE_ROOT:-}" ]]; then
+  [[ "$(stat -c '%a:%u:%g' "${SSH_BUNDLE_STAGING_DIR}" 2>/dev/null || true)" == '700:995:985' ]] || {
+    echo "SSH bundle staging directory is missing or has drifted from its owner-only 700:995:985 contract" >&2
+    exit 1
+  }
+  [[ ! -L "${SSH_BUNDLE_STAGING_DIR}" ]] || {
+    echo "SSH bundle staging directory must not be a symlink" >&2
+    exit 1
+  }
+  ssh_bundle_staging_free_bytes="$(df -PB1 "${SSH_BUNDLE_STAGING_DIR}" | awk 'NR == 2 {print $4}')"
+  [[ "${ssh_bundle_staging_free_bytes}" -ge "${SSH_BUNDLE_STAGING_MIN_FREE_BYTES}" ]] || {
+    echo "SSH bundle staging volume has less than the required free-space reserve for a worst-case git bundle" >&2
+    exit 1
+  }
+fi
 
 /usr/bin/docker image inspect "${EXPECTED_IMAGE}" >/dev/null
 if /usr/bin/docker ps -a --format '{{.Names}}' | grep -Eq '^paperclip-gloops(-handshake)?$'; then
