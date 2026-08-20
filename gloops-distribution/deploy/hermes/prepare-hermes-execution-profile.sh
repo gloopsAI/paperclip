@@ -35,6 +35,11 @@ done
 # writable side as uid 10000. The shared group can traverse the bind-mount root
 # without exposing any credential-bearing state directory.
 install -d -m 0750 -o 10000 -g 985 "${STATE_DIR}/workspace"
+# Bundle staging is exclusive to the Paperclip execution identity (995:985);
+# Hermes never touches it, so it is owner-only (0700) rather than shared like
+# the workspace tree above. This bounds the ~560m Induct SSH git bundle
+# without growing the container's 256m /tmp tmpfs.
+install -d -m 0700 -o 995 -g 985 "${STATE_DIR}/ssh-bundle-staging"
 
 tmp_env="$(mktemp "${CONFIG_DIR}/.hermes-execution.env.XXXXXX")"
 tmp_auth="$(mktemp "${CONFIG_DIR}/.hermes-execution-auth.XXXXXX")"
