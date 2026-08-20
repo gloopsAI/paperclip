@@ -12424,12 +12424,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId,
       });
       const priorExecutionRuns = priorRows.map((row) => priorExecutionRun(row, claimedAt));
-      const hasCountedPriorRun = priorExecutionRuns.some(
+      const hasProviderFreeFailure = priorExecutionRuns.some(
+        (priorRun) =>
+          priorRun.providerInvocationAttempted === false || priorRun.preProviderFailure != null,
+      );
+      const hasInFlightPriorRun = priorRows.some((row) => row.finishedAt === null);
+      // The budget advisory lock serializes claims, but it is released once a
+      // run reaches running. Reserve the single remediation slot while that
+      // exact-budget run is still in flight so a concurrent wake cannot claim
+      // the same post-failure remediation opportunity.
+      const admissionExecutionRuns = hasProviderFreeFailure && hasInFlightPriorRun
+        ? [
+            ...priorExecutionRuns,
+            {
+              countsTowardTaskBudget: false,
+              providerInvocationAttempted: false,
+              wallMs: 0,
+            } satisfies PriorExecutionRun,
+          ]
+        : priorExecutionRuns;
+      const hasCountedPriorRun = admissionExecutionRuns.some(
         (priorRun) => priorRun.countsTowardTaskBudget !== false,
       );
       const decision = evaluateExecutionAdmission(
         effectiveAdmissionPolicy,
-        priorExecutionRuns,
+        admissionExecutionRuns,
         {
           // A successful-run handoff is a bounded continuation of the source
           // execution even though its durable wake creates a sibling run rather
@@ -16740,12 +16759,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           decision: workforceCapacity.decision,
           reasons: workforceCapacity.reasons,
           route: workforceCapacity.route,
-          rawTokenReservation: workforceCapacity.metrics.rawTokenReservation,
-          subscriptionCapacity: {
-            source: workforceCapacity.metrics.subscriptionCapacity.source,
-            state: workforceCapacity.metrics.subscriptionCapacity.state,
-          },
-          quality: workforceCapacity.metrics.quality,
         },
         configFingerprints: {
           session: configFreshnessResultMetadata.session.nextFingerprint,
