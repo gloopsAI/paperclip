@@ -59,9 +59,9 @@ afterEach(() => {
 });
 
 describe("getWorkspaceAdmitMode", () => {
-  it("defaults to enforce outside tests", () => {
-    expect(getWorkspaceAdmitMode({})).toBe("enforce");
-    expect(getWorkspaceAdmitMode({ PAPERCLIP_WORKSPACE_ADMIT: "" })).toBe("enforce");
+  it("defaults to off so upstream workspace realization owns admission", () => {
+    expect(getWorkspaceAdmitMode({})).toBe("off");
+    expect(getWorkspaceAdmitMode({ PAPERCLIP_WORKSPACE_ADMIT: "" })).toBe("off");
   });
 
   it("defaults to off under vitest/test when unset", () => {
@@ -78,8 +78,8 @@ describe("getWorkspaceAdmitMode", () => {
     expect(getWorkspaceAdmitMode({ PAPERCLIP_WORKSPACE_ADMIT: "Enforce" })).toBe("enforce");
   });
 
-  it("falls back to enforce on unknown values", () => {
-    expect(getWorkspaceAdmitMode({ PAPERCLIP_WORKSPACE_ADMIT: "maybe" })).toBe("enforce");
+  it("falls back to off on unknown values", () => {
+    expect(getWorkspaceAdmitMode({ PAPERCLIP_WORKSPACE_ADMIT: "maybe" })).toBe("off");
   });
 });
 

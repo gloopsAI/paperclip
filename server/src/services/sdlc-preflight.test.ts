@@ -7,7 +7,6 @@ import {
   getSdlcPreflightMode,
   isInductImplementTarget,
   looksImplementPacket,
-  recommendedRecipesForAdmitCodes,
   SDLC_PREFLIGHT_REASON,
 } from "./sdlc-preflight.js";
 
@@ -19,8 +18,8 @@ function hoursFromNow(hours: number, now = new Date()): string {
 }
 
 describe("getSdlcPreflightMode", () => {
-  it("defaults enforce outside tests when unset", () => {
-    expect(getSdlcPreflightMode({ PAPERCLIP_SDLC_PREFLIGHT: "" })).toBe("enforce");
+  it("defaults off outside tests when unset", () => {
+    expect(getSdlcPreflightMode({ PAPERCLIP_SDLC_PREFLIGHT: "" })).toBe("off");
   });
 
   it("off under vitest when unset", () => {
@@ -40,7 +39,7 @@ describe("getSdlcPreflightMode", () => {
   });
 
   it("unknown values fall back to enforce", () => {
-    expect(getSdlcPreflightMode({ PAPERCLIP_SDLC_PREFLIGHT: "maybe" })).toBe("enforce");
+    expect(getSdlcPreflightMode({ PAPERCLIP_SDLC_PREFLIGHT: "maybe" })).toBe("off");
   });
 });
 
@@ -344,17 +343,5 @@ describe("evaluateInductSdlcGate", () => {
     });
     expect(d.allowed).toBe(true);
     expect(d.required).toBe(false);
-  });
-});
-
-describe("recommendedRecipesForAdmitCodes", () => {
-  it("maps dirty_tree and head_mismatch", () => {
-    const recipes = recommendedRecipesForAdmitCodes([
-      "workspace_admit.dirty_tree",
-      "workspace_admit.head_mismatch",
-    ]);
-    expect(recipes).toContain("dirty-tree-clean");
-    expect(recipes).toContain("wrong-head-rebase");
-    expect(recipes).toContain("induct-lease-refresh");
   });
 });

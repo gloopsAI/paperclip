@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { readGitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import {
@@ -7,6 +8,8 @@ import {
   normalizeSshWorkspaceWriteAccess,
   preflightSshWorkspaceWriteAccess,
   restoreWorkspaceFromSshExecution,
+  runSshCommand,
+  shellQuote,
   syncDirectoryToSsh,
 } from "./ssh.js";
 import {
@@ -33,6 +36,66 @@ export interface PreparedRemoteManagedRuntime {
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+}
+
+export const SSH_SHARED_WORKSPACE_LOCAL_ROOT_ENV = "PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT";
+export const SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV = "PAPERCLIP_SSH_SHARED_WORKSPACE_REMOTE_ROOT";
+
+export async function resolveSharedSshWorkspaceMapping(input: {
+  workspaceLocalDir: string;
+  env?: Record<string, string | undefined>;
+}): Promise<{ localDir: string; remoteDir: string } | null> {
+  const env = input.env ?? process.env;
+  const configuredLocalRoot = env[SSH_SHARED_WORKSPACE_LOCAL_ROOT_ENV]?.trim() ?? "";
+  const configuredRemoteRoot = env[SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV]?.trim() ?? "";
+  if (!configuredLocalRoot && !configuredRemoteRoot) return null;
+  if (!configuredLocalRoot || !configuredRemoteRoot) {
+    throw new Error(
+      `${SSH_SHARED_WORKSPACE_LOCAL_ROOT_ENV} and ${SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV} must be configured together`,
+    );
+  }
+  if (!path.isAbsolute(configuredLocalRoot) || !path.posix.isAbsolute(configuredRemoteRoot)) {
+    throw new Error("Shared SSH workspace roots must be absolute paths");
+  }
+
+  const [localRoot, localDir] = await Promise.all([
+    fs.realpath(configuredLocalRoot),
+    fs.realpath(input.workspaceLocalDir),
+  ]);
+  const relative = path.relative(localRoot, localDir);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`SSH shared workspace must be a strict descendant of ${localRoot}`);
+  }
+  const remoteRoot = path.posix.normalize(configuredRemoteRoot);
+  if (remoteRoot !== configuredRemoteRoot || remoteRoot === "/") {
+    throw new Error(`${SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV} must be canonical and non-root`);
+  }
+  const remoteDir = path.posix.join(remoteRoot, ...relative.split(path.sep));
+  return { localDir, remoteDir };
+}
+
+async function resolveSharedWorkspace(input: {
+  spec: SshRemoteExecutionSpec;
+  workspaceLocalDir: string;
+}): Promise<{ localDir: string; remoteDir: string } | null> {
+  const mapping = await resolveSharedSshWorkspaceMapping(input);
+  if (!mapping) return null;
+  const remoteRoot = process.env[SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV]!.trim();
+  const { localDir, remoteDir } = mapping;
+  const observed = await runSshCommand(
+    input.spec,
+    [
+      `root=$(realpath -- ${shellQuote(remoteRoot)})`,
+      `cwd=$(realpath -- ${shellQuote(remoteDir)})`,
+      'case "$cwd" in "$root"/*) ;; *) exit 41 ;; esac',
+      'test -d "$cwd" && test -w "$cwd"',
+      'printf "%s\\n" "$cwd"',
+    ].join("\n"),
+  );
+  if (observed.stdout.trim() !== remoteDir) {
+    throw new Error(`SSH shared workspace identity mismatch: expected ${remoteDir}`);
+  }
+  return { localDir, remoteDir };
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -102,6 +165,54 @@ export async function prepareRemoteManagedRuntime(input: {
   // child task wires it into the workspace/asset transfers.
   onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
+  const sharedWorkspace = await resolveSharedWorkspace({
+    spec: input.spec,
+    workspaceLocalDir: input.workspaceLocalDir,
+  });
+  if (sharedWorkspace) {
+    await preflightDirectoryMergeLock(sharedWorkspace.localDir);
+    await normalizeSshWorkspaceWriteAccess({
+      spec: input.spec,
+      remoteDir: sharedWorkspace.remoteDir,
+    });
+    await preflightSshWorkspaceWriteAccess({
+      spec: input.spec,
+      remoteDir: sharedWorkspace.remoteDir,
+    });
+
+    const runtimeRootDir = path.posix.join(
+      path.posix.dirname(sharedWorkspace.remoteDir),
+      ".paperclip-runtime",
+      "runs",
+      input.runId,
+      input.adapterKey,
+    );
+    const assetDirs: Record<string, string> = {};
+    for (const asset of input.assets ?? []) {
+      const remoteDir = path.posix.join(runtimeRootDir, asset.key);
+      assetDirs[asset.key] = remoteDir;
+      await syncDirectoryToSsh({
+        spec: input.spec,
+        localDir: asset.localDir,
+        remoteDir,
+        followSymlinks: asset.followSymlinks,
+        exclude: asset.exclude,
+        onProgress: input.onProgress,
+        progressLabel: asset.key,
+      });
+    }
+    return {
+      spec: input.spec,
+      workspaceLocalDir: sharedWorkspace.localDir,
+      workspaceRemoteDir: sharedWorkspace.remoteDir,
+      runtimeRootDir,
+      assetDirs,
+      restoreWorkspace: async () => {
+        await runSshCommand(input.spec, `rm -rf -- ${shellQuote(runtimeRootDir)}`);
+      },
+    };
+  }
+
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const workspaceRemoteDir = path.posix.join(
     baseWorkspaceRemoteDir,

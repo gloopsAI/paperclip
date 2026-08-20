@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Standing Induct lease refresh — Option A prefers Induct GitHub App; else root gh.
-
-See: plane-steward/INDUCT_GITHUB_APP_OPTION_A.md
-"""
+"""Standing Induct lease refresh using the configured least-privilege GitHub App."""
 
 from __future__ import annotations
 

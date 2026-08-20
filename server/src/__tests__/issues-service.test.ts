@@ -5997,7 +5997,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 
-  it("derives and injects an exact-head line for a decomposed review-profile child so the DoR gate passes (WG-PLAT-008)", async () => {
+  it("does not inject exact-head prose into a decomposed review-profile child", async () => {
     const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
     const exactHeadSha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 
@@ -6023,27 +6023,13 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
 
     expect(result.newlyCreatedIssues).toHaveLength(1);
     const [reviewChild] = result.newlyCreatedIssues;
-    expect(reviewChild?.description).toContain(exactHeadSha);
-
-    const readiness = evaluateIssuePacketReadiness(
-      {
-        title: reviewChild?.title,
-        description: reviewChild?.description,
-        workMode: reviewChild?.workMode,
-        status: reviewChild?.status,
-        assigneeRole: null,
-        assigneeName: null,
-      },
-      { PAPERCLIP_ISSUE_PACKET_DOR: "enforce" },
-    );
-    expect(readiness.profile).toBe("standard_review");
-    expect(readiness.reasonCodes).not.toContain("issue_packet.missing_exact_head");
+    expect(reviewChild?.description).toBeNull();
   });
 
-  it("fails closed instead of dispatching an unready packet when a review-profile child has no derivable exact head (WG-PLAT-008)", async () => {
+  it("creates a review-profile child without requiring exact-head prose", async () => {
     const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
 
-    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
       acceptedPlanRevisionId,
       children: [
         {
@@ -6054,13 +6040,14 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
         },
       ],
       actorAgentId: assigneeAgentId,
-    })).rejects.toMatchObject({ status: 422 });
+    });
 
     const childrenRows = await db
       .select({ id: issues.id })
       .from(issues)
       .where(eq(issues.parentId, sourceIssueId));
-    expect(childrenRows).toHaveLength(0);
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    expect(childrenRows).toHaveLength(1);
   });
 
   it("gives sibling plan children isolated executionWorkspaceId by default even when the parent's workspace is already realized (WG-PLAT-009)", async () => {
@@ -6583,12 +6570,12 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(childrenRows).toHaveLength(0);
   });
 
-  it("rejects createChild when description exact-head disagrees with workspaceStrategy.baseRef (WG-PLAT-008 P1)", async () => {
+  it("does not turn advisory exact-head prose into a child-creation gate", async () => {
     const { sourceIssueId, assigneeAgentId } = await seedAcceptedPlanIssue();
     const descriptionSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const baseRefSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    await expect(svc.createChild(sourceIssueId, {
+    const { issue } = await svc.createChild(sourceIssueId, {
       title: "Implementation review of the claim table slice",
       status: "todo",
       workMode: "standard",
@@ -6602,13 +6589,10 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
         },
       },
       actorAgentId: assigneeAgentId,
-    })).rejects.toMatchObject({ status: 422 });
+    });
 
-    const childrenRows = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.parentId, sourceIssueId));
-    expect(childrenRows).toHaveLength(0);
+    expect(issue.description).toContain(descriptionSha);
+    expect(issue.status).toBe("todo");
   });
 
   it("accepts createChild when description exact-head matches workspaceStrategy.baseRef (WG-PLAT-008 P1)", async () => {

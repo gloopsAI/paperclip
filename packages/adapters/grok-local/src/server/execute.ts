@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -17,6 +18,7 @@ import {
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
+  runtimeAssetDir,
   runAdapterExecutionTargetProcess,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
@@ -85,13 +87,9 @@ function renderApiAccessNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-type StageCleanup = {
-  kind: "file" | "dir";
-  path: string;
-};
-
 type StagedGrokAssets = {
   cleanup: () => Promise<void>;
+  rootDir: string;
   stagedSkillsCount: number;
   stagedInstructionsPath: string | null;
   rulesFilePath: string | null;
@@ -108,81 +106,47 @@ async function stageGrokProjectAssets(input: {
   desiredSkillNames: string[];
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<StagedGrokAssets> {
-  const cleanup: StageCleanup[] = [];
-  const ensureCleanupDir = (candidate: string) => {
-    cleanup.push({ kind: "dir", path: candidate });
-  };
-  const ensureCleanupFile = (candidate: string) => {
-    cleanup.push({ kind: "file", path: candidate });
-  };
-
-  let stagedInstructionsPath: string | null = null;
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-grok-context-"));
+  const stagedInstructionsPath: string | null = null;
   let rulesFilePath: string | null = null;
   let stagedSkillsCount = 0;
-
-  const instructionsTarget = path.join(input.cwd, "Agents.md");
+  const ruleSections: string[] = [];
   if (input.instructionsFilePath) {
-    if (!await pathExists(instructionsTarget)) {
-      await fs.copyFile(input.instructionsFilePath, instructionsTarget);
-      ensureCleanupFile(instructionsTarget);
-      stagedInstructionsPath = instructionsTarget;
-    } else if (path.resolve(instructionsTarget) !== path.resolve(input.instructionsFilePath)) {
-      rulesFilePath = input.instructionsFilePath;
-      await input.onLog(
-        "stdout",
-        `[paperclip] Grok workspace already contains ${instructionsTarget}; using --rules @${input.instructionsFilePath} instead of overwriting it.\n`,
-      );
-    }
+    ruleSections.push(await fs.readFile(input.instructionsFilePath, "utf8"));
   } else {
     const canonicalAgents = path.join(input.cwd, "AGENTS.md");
-    if (!await pathExists(instructionsTarget) && await pathExists(canonicalAgents)) {
-      await fs.copyFile(canonicalAgents, instructionsTarget);
-      ensureCleanupFile(instructionsTarget);
-      stagedInstructionsPath = instructionsTarget;
+    if (await pathExists(canonicalAgents)) {
+      ruleSections.push(await fs.readFile(canonicalAgents, "utf8"));
     }
   }
 
   const desiredSet = new Set(input.desiredSkillNames);
   const selectedSkills = input.skillEntries.filter((entry) => desiredSet.has(entry.key));
-  if (selectedSkills.length > 0) {
-    const claudeDir = path.join(input.cwd, ".claude");
-    const skillsRoot = path.join(claudeDir, "skills");
-    if (!await pathExists(claudeDir)) {
-      await fs.mkdir(claudeDir, { recursive: true });
-      ensureCleanupDir(claudeDir);
-    }
-    if (!await pathExists(skillsRoot)) {
-      await fs.mkdir(skillsRoot, { recursive: true });
-      ensureCleanupDir(skillsRoot);
-    }
-
-    for (const skill of selectedSkills) {
-      const target = path.join(skillsRoot, skill.runtimeName);
-      if (await pathExists(target)) {
-        await input.onLog(
-          "stdout",
-          `[paperclip] Grok skill target already exists at ${target}; leaving it unchanged.\n`,
-        );
-        continue;
-      }
-      await materializePaperclipSkillCopy(skill.source, target);
-      ensureCleanupDir(target);
+  const skillsRoot = path.join(rootDir, "skills");
+  for (const skill of selectedSkills) {
+    const target = path.join(skillsRoot, skill.runtimeName);
+    await materializePaperclipSkillCopy(skill.source, target);
+    const skillInstructions = path.join(target, "SKILL.md");
+    if (await pathExists(skillInstructions)) {
+      ruleSections.push(
+        `# Paperclip skill: ${skill.runtimeName}\n\n${await fs.readFile(skillInstructions, "utf8")}`,
+      );
       stagedSkillsCount += 1;
     }
   }
 
+  if (ruleSections.length > 0) {
+    rulesFilePath = path.join(rootDir, "rules.md");
+    await fs.writeFile(rulesFilePath, `${ruleSections.join("\n\n---\n\n")}\n`, { mode: 0o600 });
+  }
+
   return {
+    rootDir,
     stagedSkillsCount,
     stagedInstructionsPath,
     rulesFilePath,
     cleanup: async () => {
-      for (const entry of [...cleanup].reverse()) {
-        if (entry.kind === "file") {
-          await fs.rm(entry.path, { force: true }).catch(() => undefined);
-          continue;
-        }
-        await fs.rm(entry.path, { recursive: true, force: true }).catch(() => undefined);
-      }
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => undefined);
     },
   };
 }
@@ -242,11 +206,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
-  // Grok's native project discovery writes Agents.md and .claude/skills into
-  // the execution cwd. A process or host crash can prevent the normal finally
-  // cleanup, so those run-owned files must never be staged into a shared
-  // project-primary checkout. Realized git worktrees are disposable and keep
-  // this native context isolated from later agents.
+  // Repository work still requires an isolated worktree. Generated Grok
+  // instructions and skills are staged separately and passed with --rules, so
+  // the adapter itself never dirties that worktree.
   if (workspaceSource === "project_primary" && workspaceStrategy !== "git_worktree") {
     return {
       exitCode: 1,
@@ -271,6 +233,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onLog,
   });
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
+  let effectiveRulesFilePath = stagedAssets.rulesFilePath;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
   try {
@@ -356,6 +319,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         target: executionTarget,
         adapterKey: "grok",
         workspaceLocalDir: cwd,
+        assets: stagedAssets.rulesFilePath
+          ? [{ key: "grok-context", localDir: stagedAssets.rootDir }]
+          : [],
         timeoutSec,
         installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
         detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
@@ -365,6 +331,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
+      if (stagedAssets.rulesFilePath) {
+        effectiveRulesFilePath = path.posix.join(
+          runtimeAssetDir(preparedExecutionTargetRuntime, "grok-context", effectiveExecutionCwd),
+          "rules.md",
+        );
+      }
       refreshPaperclipWorkspaceEnvForExecution({
         env,
         envConfig,
@@ -456,11 +428,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
       }
-      if (stagedAssets.rulesFilePath) {
-        notes.push(`Applied fallback instructions via --rules @${stagedAssets.rulesFilePath}.`);
+      if (effectiveRulesFilePath) {
+        notes.push(`Applied Paperclip instructions via --rules @${effectiveRulesFilePath}.`);
       }
       if (stagedAssets.stagedSkillsCount > 0) {
-        notes.push(`Staged ${stagedAssets.stagedSkillsCount} Paperclip skill(s) into .claude/skills for native Grok discovery.`);
+        notes.push(`Included ${stagedAssets.stagedSkillsCount} Paperclip skill(s) in the run-scoped Grok context bundle.`);
       }
       return notes;
     })();
@@ -504,7 +476,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (permissionMode) args.push("--permission-mode", permissionMode);
       if (alwaysApprove) args.push("--always-approve");
       if (disableWebSearch) args.push("--disable-web-search");
-      if (stagedAssets.rulesFilePath) args.push("--rules", `@${stagedAssets.rulesFilePath}`);
+      if (effectiveRulesFilePath) args.push("--rules", `@${effectiveRulesFilePath}`);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -663,10 +635,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toResult(initial);
   } finally {
-    await Promise.all([
-      paperclipBridge?.stop(),
-      restoreRemoteWorkspace?.(),
-      stagedAssets.cleanup(),
-    ]);
+    await paperclipBridge?.stop();
+    await restoreRemoteWorkspace?.();
+    await stagedAssets.cleanup();
   }
 }

@@ -59,10 +59,10 @@ const OBSERVE = { PAPERCLIP_ISSUE_PACKET_DOR: "observe" };
 const OFF = { PAPERCLIP_ISSUE_PACKET_DOR: "off" };
 
 describe("getIssuePacketDorMode", () => {
-  it("defaults to enforce outside tests", () => {
-    expect(getIssuePacketDorMode({})).toBe("enforce");
-    expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "" })).toBe("enforce");
-    expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "  " })).toBe("enforce");
+  it("defaults to off so packet structure remains guidance", () => {
+    expect(getIssuePacketDorMode({})).toBe("off");
+    expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "" })).toBe("off");
+    expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "  " })).toBe("off");
   });
 
   it("defaults to off under vitest/test when unset", () => {
@@ -78,8 +78,8 @@ describe("getIssuePacketDorMode", () => {
     expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "Enforce" })).toBe("enforce");
   });
 
-  it("falls back to enforce on unknown values", () => {
-    expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "maybe" })).toBe("enforce");
+  it("falls back to off on unknown values", () => {
+    expect(getIssuePacketDorMode({ PAPERCLIP_ISSUE_PACKET_DOR: "maybe" })).toBe("off");
   });
 });
 
