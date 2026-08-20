@@ -11680,6 +11680,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const providerInvocation = parseObject(resultJson.provider_invocation);
     const providerInvocationAttempted = typeof persistedUsage.providerInvocationAttempted === "boolean"
       ? persistedUsage.providerInvocationAttempted
+      : typeof resultJson.providerInvocationAttempted === "boolean"
+        ? resultJson.providerInvocationAttempted
       : typeof providerInvocation.attempted === "boolean"
         ? providerInvocation.attempted
         : null;
