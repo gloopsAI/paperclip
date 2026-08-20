@@ -54,7 +54,8 @@ for expected_runtime_line in \
   'PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS=4' \
   'PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE=2026-07-18T23:12:22.000Z' \
   'PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK=3' \
-  'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2'; do
+  'PAPERCLIP_EXECUTION_MAX_RETRIES_PER_TASK=2' \
+  'PAPERCLIP_SSH_BUNDLE_STAGING_ROOT=/opt/data/ssh-bundle-staging'; do
   grep -Fxq "${expected_runtime_line}" "${runtime_env}" || {
     echo "Refusing source canaries because the governed runtime is missing ${expected_runtime_line}" >&2
     exit 1

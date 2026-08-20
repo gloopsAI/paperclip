@@ -29,6 +29,10 @@ readonly PLUGIN_DIR='/opt/paperclip/plugins'
 readonly MTE_PLUGIN_DIR='/home/paperclip/mte-shadow-package'
 readonly MAX_STATE_BYTES=$((10 * 1024 * 1024 * 1024))
 readonly MIN_FREE_BYTES=$((10 * 1024 * 1024 * 1024))
+readonly SSH_BUNDLE_STAGING_DIR='/opt/paperclip/hermes-execution-state/ssh-bundle-staging'
+# Keep in sync with SSH_BUNDLE_STAGING_MIN_FREE_BYTES in
+# packages/adapter-utils/src/ssh.ts.
+readonly SSH_BUNDLE_STAGING_MIN_FREE_BYTES=$((768 * 1024 * 1024))
 
 [[ -f "${ACTIVATION_MARKER}" || -f "${PAPERCLIP_HANDSHAKE_ACTIVE}" ]] || {
   echo "operator activation marker is absent" >&2
@@ -76,6 +80,7 @@ declare -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_EXECUTION_MAX_OUTPUT_TOKENS_PER_INVOCATION]='128000'
   [PAPERCLIP_EXECUTION_MAX_TURNS_PER_INVOCATION]='64'
   [PAPERCLIP_EXECUTION_MAX_TOOL_CALLS_PER_INVOCATION]='240'
+  [PAPERCLIP_SSH_BUNDLE_STAGING_ROOT]='/opt/data/ssh-bundle-staging'
 )
 if [[ "${MODE}" == '--campaign-bound' ]]; then
   EXPECTED_EXECUTION_ENVELOPE[PAPERCLIP_EXECUTION_CAMPAIGN_SCOPE]='campaign-bound'
@@ -275,6 +280,20 @@ free_bytes="$(df -PB1 "${STATE_DIR}" | awk 'NR == 2 {print $4}')"
 }
 [[ "${free_bytes}" -ge "${MIN_FREE_BYTES}" ]] || {
   echo "host has less than the required 10 GiB free-space reserve" >&2
+  exit 1
+}
+
+[[ "$(stat -c '%a:%u:%g' "${SSH_BUNDLE_STAGING_DIR}" 2>/dev/null || true)" == '700:995:985' ]] || {
+  echo "SSH bundle staging directory is missing or has drifted from its owner-only 700:995:985 contract" >&2
+  exit 1
+}
+[[ ! -L "${SSH_BUNDLE_STAGING_DIR}" ]] || {
+  echo "SSH bundle staging directory must not be a symlink" >&2
+  exit 1
+}
+ssh_bundle_staging_free_bytes="$(df -PB1 "${SSH_BUNDLE_STAGING_DIR}" | awk 'NR == 2 {print $4}')"
+[[ "${ssh_bundle_staging_free_bytes}" -ge "${SSH_BUNDLE_STAGING_MIN_FREE_BYTES}" ]] || {
+  echo "SSH bundle staging volume has less than the required free-space reserve for a worst-case git bundle" >&2
   exit 1
 }
 

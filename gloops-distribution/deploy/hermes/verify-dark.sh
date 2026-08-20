@@ -580,7 +580,8 @@ for required in \
   '--log-opt max-file=3' \
   '--mount type=bind,src=/run/paperclip-campaign,dst=/run/paperclip-campaign,readonly' \
   '--mount type=bind,src=/etc/paperclip-gloops/github-broker-receipt-token,dst=/run/secrets/paperclip-github-broker-receipt-token,readonly' \
-  '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace'; do
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-state/workspace,dst=/opt/data/workspace' \
+  '--mount type=bind,src=/opt/paperclip/hermes-execution-state/ssh-bundle-staging,dst=/opt/data/ssh-bundle-staging'; do
   if ! grep -Fq -- "${required}" "${unit_file}"; then
     echo "FAIL missing resource/security bound: ${required}" >&2
     failed=1
@@ -605,6 +606,21 @@ if [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/workspace 2>/d
   echo "PASS host execution workspace supports the bounded Hermes/Paperclip transaction identities"
 else
   echo "FAIL host execution workspace transaction permissions are not bounded" >&2
+  failed=1
+fi
+
+if [[ ! -L /opt/paperclip/hermes-execution-state/ssh-bundle-staging ]] \
+  && [[ "$(stat -c '%a:%u:%g' /opt/paperclip/hermes-execution-state/ssh-bundle-staging 2>/dev/null || true)" == '700:995:985' ]]; then
+  echo "PASS SSH bundle staging directory is owner-only and bounded to the Paperclip execution identity"
+else
+  echo "FAIL SSH bundle staging directory is missing, symlinked, or has drifted from its owner-only contract" >&2
+  failed=1
+fi
+
+if grep -Fxq "PAPERCLIP_SSH_BUNDLE_STAGING_ROOT=/opt/data/ssh-bundle-staging" /etc/paperclip-gloops/runtime.env 2>/dev/null; then
+  echo "PASS SSH bundle staging root is pinned off the bounded /tmp tmpfs"
+else
+  echo "FAIL SSH bundle staging root env is missing or has drifted" >&2
   failed=1
 fi
 

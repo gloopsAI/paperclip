@@ -1127,6 +1127,21 @@ if (!service.includes("--user 995:985")) {
 if (!service.includes("--network paperclip-execution")) {
   fail("Paperclip and Hermes must share the named execution network");
 }
+if (!service.includes("--mount type=bind,src=/opt/paperclip/hermes-execution-state/ssh-bundle-staging,dst=/opt/data/ssh-bundle-staging")) {
+  fail("Paperclip service must mount a dedicated writable SSH bundle staging directory outside the 256m /tmp tmpfs");
+}
+if (!controlledSwarmService.includes("--mount type=bind,src=/opt/paperclip/hermes-execution-state/ssh-bundle-staging,dst=/opt/data/ssh-bundle-staging")) {
+  fail("controlled-swarm service must mount the same dedicated SSH bundle staging directory as paperclip-gloops.service, since both consume runtime.env's PAPERCLIP_SSH_BUNDLE_STAGING_ROOT");
+}
+if (!/PAPERCLIP_SSH_BUNDLE_STAGING_ROOT=\/opt\/data\/ssh-bundle-staging/m.test(runtimeEnv)) {
+  fail("runtime.env must pin SSH bundle staging off the bounded /tmp tmpfs");
+}
+if (!prepareHermesExecution.includes('install -d -m 0700 -o 995 -g 985 "${STATE_DIR}/ssh-bundle-staging"')) {
+  fail("Hermes execution profile preparer must provision the owner-only SSH bundle staging directory");
+}
+if (!preflight.includes("SSH_BUNDLE_STAGING_DIR='/opt/paperclip/hermes-execution-state/ssh-bundle-staging'")) {
+  fail("activation preflight must verify the SSH bundle staging directory before admitting Paperclip");
+}
 if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh")) {
   fail("Paperclip systemd readiness must wait for container health");
 }

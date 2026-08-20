@@ -42,6 +42,137 @@ export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
 }
 
+/**
+ * Fail-closed override for where SSH git bundles are staged before/after
+ * streaming. Unset (the normal case outside managed production) preserves
+ * the historical `os.tmpdir()` default. When set, the root must be a
+ * canonical, non-symlinked, service-owned directory under the container's
+ * trusted writable-state mount with enough free space for a worst-case
+ * bundle — any violation throws rather than silently falling back to
+ * tmpdir, since a silent fallback would re-open the tmpfs overflow this
+ * contract exists to close.
+ */
+export const SSH_BUNDLE_STAGING_ROOT_ENV = "PAPERCLIP_SSH_BUNDLE_STAGING_ROOT";
+
+// The Induct SSH git bundle observed in production is ~560 MiB; require
+// headroom above that so a near-full staging volume fails admission instead
+// of failing mid-bundle-create.
+export const SSH_BUNDLE_STAGING_MIN_FREE_BYTES = 768 * 1024 * 1024;
+
+// Only roots below this prefix are trusted as bundle staging directories.
+// `/opt/data` is the container-side mount point Hermes production uses for
+// every writable state bind-mount (workspace, cache, logs, ...); the host
+// side of the bundle-staging mount lives under
+// /opt/paperclip/hermes-execution-state, but this code runs inside the
+// container, where only the /opt/data view exists. Anything else (an
+// operator-supplied path, a shared/world directory, etc.) is rejected rather
+// than silently honored, so the env contract can't be used to widen write
+// authority beyond the one directory production provisions.
+const SSH_BUNDLE_STAGING_TRUSTED_ROOT = path.join("/opt", "data") + path.sep;
+
+export class SshBundleStagingRootError extends Error {
+  readonly code = "ssh_bundle_staging_root_invalid";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SshBundleStagingRootError";
+  }
+}
+
+export async function resolveSshBundleStagingRoot(
+  options: {
+    // Test-only override for SSH_BUNDLE_STAGING_TRUSTED_ROOT. Production
+    // code always uses the default, hardcoded, container-side trusted root;
+    // this exists purely so tests can exercise the validation logic against
+    // a real temp directory tree instead of requiring live /opt/data access.
+    trustedRootPrefix?: string;
+  } = {},
+): Promise<string> {
+  const trustedRootPrefix = options.trustedRootPrefix ?? SSH_BUNDLE_STAGING_TRUSTED_ROOT;
+  const configured = process.env[SSH_BUNDLE_STAGING_ROOT_ENV]?.trim();
+  if (!configured) {
+    return os.tmpdir();
+  }
+
+  if (!path.isAbsolute(configured)) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must be an absolute path: ${configured}`,
+    );
+  }
+
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(configured);
+  } catch {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} does not exist or is not accessible: ${configured}`,
+    );
+  }
+  if (stat.isSymbolicLink()) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must not be a symlink: ${configured}`,
+    );
+  }
+  if (!stat.isDirectory()) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must be a directory: ${configured}`,
+    );
+  }
+
+  const canonical = await fs.realpath(configured);
+  if (canonical !== configured) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must be a canonical path with no symlinked ancestors (resolved to ${canonical}): ${configured}`,
+    );
+  }
+
+  const canonicalWithSep = `${canonical}${path.sep}`;
+  if (canonicalWithSep === trustedRootPrefix || !canonicalWithSep.startsWith(trustedRootPrefix)) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must be a strict subdirectory of ${trustedRootPrefix}, not the trusted root itself: ${canonical}`,
+    );
+  }
+
+  const mode = stat.mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must not be group- or world-accessible (mode ${mode.toString(8)}): ${canonical}`,
+    );
+  }
+  const runningUid = process.getuid?.();
+  if (runningUid != null && stat.uid !== runningUid) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} must be owned by the running service identity: ${canonical}`,
+    );
+  }
+
+  const free = await freeSpaceBytes(canonical);
+  if (free < SSH_BUNDLE_STAGING_MIN_FREE_BYTES) {
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} has insufficient free space (${free} bytes available, ${SSH_BUNDLE_STAGING_MIN_FREE_BYTES} required): ${canonical}`,
+    );
+  }
+
+  return canonical;
+}
+
+async function freeSpaceBytes(dir: string): Promise<number> {
+  try {
+    const stats = await fs.statfs(dir);
+    return stats.bavail * stats.bsize;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new SshBundleStagingRootError(
+      `${SSH_BUNDLE_STAGING_ROOT_ENV} free-space check failed for ${dir}: ${reason}`,
+    );
+  }
+}
+
+async function mkdtempBundleDir(prefix: string): Promise<string> {
+  const root = await resolveSshBundleStagingRoot();
+  return await fs.mkdtemp(path.join(root, prefix));
+}
+
 export class WorkspaceNotWritableError extends Error {
   readonly code = "workspace_not_writable";
   readonly providerInvocationAttempted = false;
@@ -827,7 +958,7 @@ async function importGitWorkspaceToSsh(input: {
   snapshot: LocalGitWorkspaceSnapshot;
   onProgress?: RuntimeProgressSink;
 }): Promise<void> {
-  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
+  const bundleDir = await mkdtempBundleDir("paperclip-ssh-bundle-");
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   // Per-import unique ref so concurrent imports against the same local repo
   // can't race on `update-ref` between this run's update and bundle create.
@@ -902,7 +1033,7 @@ async function exportGitWorkspaceFromSsh(input: {
   resetLocalWorkspace?: boolean;
   onProgress?: RuntimeProgressSink;
 }): Promise<string> {
-  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
+  const bundleDir = await mkdtempBundleDir("paperclip-ssh-bundle-");
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
 
