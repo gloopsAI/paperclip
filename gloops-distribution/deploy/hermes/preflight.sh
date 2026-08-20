@@ -126,7 +126,7 @@ fi
 if [[ "${MODE}" == '--campaign-bound' ]]; then
   "/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py"
 fi
-case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-}" in
+case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-false}" in
   false) ;;
   true)
     commissioning_receipt='/var/lib/paperclip-gloops/controlled-swarm/commissioning.json'
