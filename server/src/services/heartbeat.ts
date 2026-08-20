@@ -11722,6 +11722,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryOfRunId: row.retryOfRunId,
       countsAsRetry,
       countsTowardTaskBudget,
+      providerInvocationAttempted,
       inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
       outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
@@ -15556,6 +15557,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const pendingForwardBranchReconcile = executionWorkspace.pendingForwardBranchReconcile ?? null;
     const branchNameForInitialPersistence =
       pendingForwardBranchReconcile?.recordedBranchName ?? executionWorkspace.branchName;
+    // Initialize before any fallible workspace-persistence or preparation
+    // work. Later readiness checks replace this with the complete projection,
+    // but every provider-free terminal path has a deterministic state digest.
+    let preProviderStateDigest = buildPreProviderReadinessStateDigest({
+      phase: "workspace_persistence",
+      adapterType: agent.adapterType,
+      model: configuredModel,
+      repository: executionWorkspace.repoUrl ?? null,
+      exactHead: executionWorkspace.baseRefSha ?? null,
+      workspaceMode: requestedExecutionWorkspaceMode,
+      configFingerprints: {
+        session: sessionConfigFreshness.nextFingerprint,
+        workspace: workspaceConfigFreshness.nextFingerprint,
+      },
+    });
     try {
       persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace
         ? await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
@@ -16696,7 +16712,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         queuedAt: run.createdAt,
       });
       context[WORKFORCE_CAPACITY_CONTEXT_KEY] = workforceCapacity;
-      const preProviderStateDigest = buildPreProviderReadinessStateDigest({
+      preProviderStateDigest = buildPreProviderReadinessStateDigest({
         adapterType: agent.adapterType,
         model: configuredModel,
         repository: executionWorkspace.repoUrl ?? null,
@@ -16716,13 +16732,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           capacity: workPreparation.capacity,
           phaseBudget: workPreparation.phaseBudget,
         },
-        subscriptionRouteAdmission,
+        subscriptionRouteAdmission: {
+          allowed: subscriptionRouteAdmission.allowed,
+          provider: subscriptionRouteAdmission.provider,
+        },
         workforceCapacity: {
           decision: workforceCapacity.decision,
           reasons: workforceCapacity.reasons,
           route: workforceCapacity.route,
           rawTokenReservation: workforceCapacity.metrics.rawTokenReservation,
-          subscriptionCapacity: workforceCapacity.metrics.subscriptionCapacity,
+          subscriptionCapacity: {
+            source: workforceCapacity.metrics.subscriptionCapacity.source,
+            state: workforceCapacity.metrics.subscriptionCapacity.state,
+          },
           quality: workforceCapacity.metrics.quality,
         },
         configFingerprints: {

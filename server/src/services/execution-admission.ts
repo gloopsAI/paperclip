@@ -73,12 +73,9 @@ export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "execution_admission.adapter_budget_unsupported",
   "configuration_incomplete",
   "agent_not_invokable",
-  // C3 / T-RESERVE: hermes auth thrash must never burn task budget or charge reservation.
   "hermes_gateway_auth_failed",
   "hermes_gateway_api_key_missing",
   "hermes_gateway_connect_failed",
-  // Review exit-0 without disposition is demoted to this code; must not brick
-  // the task budget or block guarded admission reset as "success evidence".
   "review_missing_disposition",
   "missing_issue_comment",
   "backlog_bankruptcy.company_frozen",
@@ -199,6 +196,8 @@ export type PriorExecutionRun = {
   fixedOverheadInputTokens?: number | null;
   /** Discretionary input charged for this run. */
   discretionaryInputTokens?: number | null;
+  /** Server-observed provider boundary; false is required for stop-loss use. */
+  providerInvocationAttempted?: boolean | null;
   preProviderFailure?: PreProviderFailureObservation | null;
 };
 
@@ -395,7 +394,6 @@ export function isBudgetExemptPreflightFailure(input: {
   if (input.providerInvocationAttempted === false) return true;
   if (!code) return false;
   if (PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES.has(code)) return true;
-  // Configuration / workspace preflight family prefixes.
   if (
     code.startsWith("workspace_validation") ||
     code.startsWith("configuration_") ||
@@ -1079,11 +1077,18 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
   return priorRuns.reduce<ExecutionAdmissionUsage>(
     (total, run) => {
       if (run.countsTowardTaskBudget === false) {
+        // Historical task-budget exemptions include a few provider-invoking
+        // lifecycle outcomes. They stay exempt for compatibility, but cannot
+        // consume or authorize the provider-free remediation stop-loss.
+        const providerFree = run.providerInvocationAttempted === false || run.preProviderFailure != null;
         return {
           ...total,
-          preflightExemptRunCount: total.preflightExemptRunCount + 1,
-          preflightExemptWallMs: total.preflightExemptWallMs + nonNegative(run.wallMs),
-          lastPreProviderFailure: run.preProviderFailure ?? total.lastPreProviderFailure,
+          preflightExemptRunCount: total.preflightExemptRunCount + (providerFree ? 1 : 0),
+          preflightExemptWallMs:
+            total.preflightExemptWallMs + (providerFree ? nonNegative(run.wallMs) : 0),
+          lastPreProviderFailure: providerFree
+            ? run.preProviderFailure ?? total.lastPreProviderFailure
+            : total.lastPreProviderFailure,
         };
       }
       const inputSplit = splitInputTokenAccounting({

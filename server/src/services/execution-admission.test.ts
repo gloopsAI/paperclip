@@ -488,7 +488,8 @@ describe("execution admission", () => {
       providerInvocationAttempted: null,
       errorCode: "workspace_validation_failed",
     })).toBe(true);
-    // Workspace validation never burns retries even when error code is the only signal.
+    // Historical error-code exemptions remain compatible for task budgets;
+    // provider evidence separately excludes them from provider-free stop-loss.
     expect(isBudgetExemptPreflightFailure({
       providerInvocationAttempted: true,
       errorCode: "workspace_validation_failed",
@@ -530,6 +531,7 @@ describe("execution admission", () => {
       {
         retryOfRunId: null,
         countsTowardTaskBudget: false,
+        providerInvocationAttempted: false,
         inputTokens: 400,
         outputTokens: 100,
         wallMs: 60_000,
@@ -554,6 +556,7 @@ describe("execution admission", () => {
       {
         retryOfRunId: null,
         countsTowardTaskBudget: false,
+        providerInvocationAttempted: false,
         inputTokens: 1_000,
         outputTokens: 200,
         wallMs: 60_000,
@@ -572,9 +575,9 @@ describe("execution admission", () => {
     // Pre-provider failures do not burn provider budget, but the economic
     // stop-loss prevents an unbounded exempt retry loop.
     const validationOnly = [
-      { retryOfRunId: null, countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
-      { retryOfRunId: "run-a", countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
-      { retryOfRunId: "run-b", countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: null, countsTowardTaskBudget: false as const, providerInvocationAttempted: false, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: "run-a", countsTowardTaskBudget: false as const, providerInvocationAttempted: false, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: "run-b", countsTowardTaskBudget: false as const, providerInvocationAttempted: false, inputTokens: 0, outputTokens: 0, wallMs: 1 },
     ];
     expect(summarizePriorExecution(validationOnly)).toMatchObject({
       runCount: 0,
@@ -584,6 +587,16 @@ describe("execution admission", () => {
     expect(evaluateExecutionAdmission(policy(), validationOnly, { isRetry: true })).toMatchObject({
       allowed: false,
       reason: "pre_provider_failure_limit_exhausted",
+    });
+
+    expect(summarizePriorExecution([{
+      countsTowardTaskBudget: false,
+      providerInvocationAttempted: true,
+      wallMs: 60_000,
+    }])).toMatchObject({
+      runCount: 0,
+      preflightExemptRunCount: 0,
+      preflightExemptWallMs: 0,
     });
   });
 
