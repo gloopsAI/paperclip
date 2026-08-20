@@ -3056,7 +3056,10 @@ export function subscriptionRouteAdvanceForRun(
 ): SubscriptionRouteAdvance | null {
   if (run.status !== "failed" && run.status !== "timed_out") return null;
   const provider = subscriptionProviderForAdapter(adapterType, model);
-  if (!provider || provider === "codex") return null;
+  // Grok is an intentionally selected subscription lane. Never turn a Grok
+  // failure into an implicit Codex charge; Codex requires a separate explicit
+  // assignment or company-policy decision.
+  if (!provider || provider === "codex" || provider === "grok") return null;
   const resultJson = parseObject(run.resultJson);
   const usageJson = parseObject(run.usageJson);
   const providerInvocationAttempted = resultJson.providerInvocationAttempted ??
@@ -3081,10 +3084,10 @@ export function subscriptionRouteAdvanceForRun(
   if (!reason) return null;
   return {
     provider,
-    transport: provider === "grok" ? "cli" : "subscription_cli",
+    transport: "subscription_cli",
     reason,
-    targetAdapterType: provider === "ollama" ? "codex_local" : provider === "grok" ? "codex_local" : "grok_local",
-    targetLane: provider === "ollama" ? "durable_bench" : provider === "grok" ? "codex_burst" : "grok_burst",
+    targetAdapterType: "grok_local",
+    targetLane: "grok_burst",
   };
 }
 
@@ -18331,9 +18334,7 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
       return false;
     }
 
-    const targetAdapterTypes = advance.targetLane === "grok_burst"
-      ? ["grok_local", "codex_local"]
-      : [advance.targetAdapterType];
+    const targetAdapterTypes = [advance.targetAdapterType];
     const targetCandidates = await db
       .select({ id: agents.id, name: agents.name, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents)
@@ -18359,10 +18360,7 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
           ? route.lane === "burst" && route.provider === "grok"
           : route.lane === "burst" && route.provider === "codex";
     };
-    const targetAgent = targetCandidates.find((candidate) => matchesLane(candidate, advance.targetLane))
-      ?? (advance.targetLane === "grok_burst"
-        ? targetCandidates.find((candidate) => matchesLane(candidate, "codex_burst"))
-        : null);
+    const targetAgent = targetCandidates.find((candidate) => matchesLane(candidate, advance.targetLane));
     const selectedTargetLane: SubscriptionRouteAdvance["targetLane"] | null = targetAgent
       ? (() => {
           const route = routeForCandidate(targetAgent);

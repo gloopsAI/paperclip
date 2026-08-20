@@ -10,9 +10,9 @@ bounded escalation capacity.
   company operation.
 - **Supplemental:** Hermes/Ollama capacity may be used when available, but it is
   not a prerequisite for Luna, Terra, or the company to operate.
-- **Burst:** Grok CLI and Codex models other than Luna/Terra. These lanes are
-  admitted only after a fresh, digest-verified terminal receipt from Luna,
-  Terra, or supplemental Ollama capacity for the same issue.
+- **Direct subscription:** Grok CLI and Codex models other than Luna/Terra.
+  These lanes may be selected directly when configured, capable, and bounded
+  by an execution reservation. A lower-provider attempt is not a prerequisite.
 
 This policy does not start standing burst workers. A model lane is evaluated at
 an issue-backed provider boundary only.
@@ -31,15 +31,14 @@ Before model execution Paperclip requires:
 2. an execution reservation with positive plan, implement, verify, and closeout
    allocations;
 3. a just-in-time capacity lease;
-4. a non-exhausted provider quota snapshot for Luna/Terra; and
-5. for a burst lane, a fresh typed durable-lane escalation receipt bound to the
-   same issue.
+4. a non-exhausted provider quota snapshot for Luna/Terra.
 
 The default provider-window ceiling is 95 percent used. A failed, missing, or
 percentage-free Luna/Terra quota probe fails closed. Grok currently has no quota
-probe; after valid escalation it receives a lease bounded by the per-item
-execution reservation. Codex burst uses the Codex quota probe plus the same
-per-item reservation.
+probe, so a directly selected Grok run receives a lease bounded by the per-item
+execution reservation. Codex uses the Codex quota probe plus the same per-item
+reservation when that probe is configured. A Grok failure never silently
+reroutes to Codex.
 
 Denied admissions return `workforce_capacity.denied` with
 `providerInvocationAttempted: false`. The typed receipt is stored under
@@ -51,7 +50,7 @@ The capacity receipt deliberately keeps these facts separate:
 
 - raw input/output token ceilings (`reservation` provenance);
 - subscription capacity windows and utilization;
-- typed quality/capability escalation reason;
+- direct-selection or typed reroute reason;
 - queue latency; and
 - billed cost, which is explicitly **not** used for admission.
 
@@ -62,6 +61,5 @@ economics view and never widens an execution lease.
 ## Failure harness
 
 `server/src/services/workforce-capacity.test.ts` is network-free. It injects
-quota exhaustion, missing probes, probe failures, absent/tampered/stale/cross-
-issue escalation receipts, and absent/invalid phase budgets. Those cases must
-all deny before provider invocation.
+quota exhaustion, missing probes, probe failures, direct Grok selection,
+non-authoritative stale route history, and absent/invalid phase budgets.

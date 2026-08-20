@@ -13,7 +13,7 @@ function run(overrides: Record<string, unknown> = {}) {
 }
 
 describe("subscription route advancement", () => {
-  it("advances quota-exhausted supplemental Ollama/Hermes work to the durable bench", () => {
+  it("advances quota-exhausted supplemental Ollama/Hermes work directly to Grok", () => {
     expect(subscriptionRouteAdvanceForRun("hermes_gateway", null, run({
       errorCode: "provider_quota",
       resultJson: { errorFamily: "provider_quota" },
@@ -21,22 +21,16 @@ describe("subscription route advancement", () => {
       provider: "ollama",
       transport: "subscription_cli",
       reason: "quota_exhausted",
-      targetAdapterType: "codex_local",
-      targetLane: "durable_bench",
+      targetAdapterType: "grok_local",
+      targetLane: "grok_burst",
     });
   });
 
-  it("advances an unavailable Grok CLI run to Codex", () => {
+  it("never silently advances an unavailable Grok CLI run to Codex", () => {
     expect(subscriptionRouteAdvanceForRun("grok_local", null, run({
       status: "timed_out",
       errorCode: "timeout",
-    }))).toEqual({
-      provider: "grok",
-      transport: "cli",
-      reason: "provider_unavailable",
-      targetAdapterType: "codex_local",
-      targetLane: "codex_burst",
-    });
+    }))).toBeNull();
   });
 
   it("advances a failed Luna/Terra durable run to a bounded Grok burst lane", () => {
@@ -67,8 +61,8 @@ describe("subscription route advancement", () => {
     }))).toMatchObject({
       provider: "ollama",
       reason: "capability_floor",
-      targetAdapterType: "codex_local",
-      targetLane: "durable_bench",
+      targetAdapterType: "grok_local",
+      targetLane: "grok_burst",
     });
   });
 

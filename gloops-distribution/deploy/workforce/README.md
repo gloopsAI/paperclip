@@ -41,5 +41,7 @@ python3 durable_buzz_roster.py --recover \
 
 Do not apply while a target is running. Do not delete or re-enroll Buzz agents:
 their public keys remain the stable cross-product identity. Hermes/Ollama may
-remain available as a supplemental route, while Codex/Grok remain typed burst
-escalations; neither is the default durable workforce configured here.
+remain available as a supplemental route. Grok and Codex are not standing
+defaults in this roster, but another governed assignment may select either
+subscription directly without first invoking this bench. Grok failure never
+silently falls through to Codex.

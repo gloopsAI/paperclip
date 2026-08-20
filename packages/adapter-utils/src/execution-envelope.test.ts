@@ -210,7 +210,7 @@ describe("execution envelope", () => {
     expect(Object.values(plan).reduce((sum, phase) => sum + phase.toolCalls, 0)).toBe(40);
   });
 
-  it("admits Luna/Terra directly and denies burst routes until durable capacity has a typed receipt", () => {
+  it("admits configured subscription routes directly without sacrificial lower-provider attempts", () => {
     const ollama = buildSubscriptionRouteAttemptEvidence({
       provider: "ollama",
       transport: "cli",
@@ -246,7 +246,13 @@ describe("execution envelope", () => {
     expect(evaluateSubscriptionRouteAdmission("process", {})).toMatchObject({ allowed: true, provider: null });
     expect(evaluateSubscriptionRouteAdmission("claude_local", {})).toMatchObject({ allowed: false, provider: null });
     expect(evaluateSubscriptionRouteAdmission("grok_local_v2", {})).toMatchObject({ allowed: false, provider: null });
-    expect(evaluateSubscriptionRouteAdmission("grok_local", {})).toMatchObject({ allowed: false, provider: "grok" });
+    expect(evaluateSubscriptionRouteAdmission("grok_local", {})).toMatchObject({
+      allowed: true,
+      provider: "grok",
+      reason: expect.stringContaining("directly eligible"),
+    });
+    expect(evaluateSubscriptionRouteAdmission("codex_local", {}, new Date(), "gpt-5.6-sol"))
+      .toMatchObject({ allowed: true, provider: "codex" });
     expect(evaluateSubscriptionRouteAdmission("grok_local", {
       gloopsProviderRouteEvidence: { schemaVersion: "gloops.subscription-route-evidence.v1", attempts: [ollama] },
     }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: true, provider: "grok" });
@@ -279,14 +285,14 @@ describe("execution envelope", () => {
           schemaVersion: "gloops.subscription-route-evidence.v1",
           attempts: [attempt],
         },
-      }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: false, provider: "grok" });
+      }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: true, provider: "grok" });
     }
     expect(evaluateSubscriptionRouteAdmission("grok_local", {
       gloopsProviderRouteEvidence: {
         schemaVersion: "gloops.subscription-route-evidence.v1",
         attempts: [{ ...ollama, receiptDigest: `sha256:${"0".repeat(64)}` }],
       },
-    }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: false, provider: "grok" });
+    }, "2026-07-22T10:02:00Z")).toMatchObject({ allowed: true, provider: "grok" });
   });
 
   it("detects prohibited Grok/xAI routing configuration without scanning prose", () => {
