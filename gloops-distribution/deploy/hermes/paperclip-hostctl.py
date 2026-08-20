@@ -46,8 +46,6 @@ EXPECTED_CODEX_HOME = (
 
 TRACKED_KEYS = (
     "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED",
-    "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS",
-    "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS",
     "HEARTBEAT_SCHEDULER_ENABLED",
     "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED",
 )
@@ -281,10 +279,8 @@ def snapshot(exit_status: int) -> dict[str, Any]:
     approved = APPROVED_IMAGE.read_text(encoding="utf-8").strip() if APPROVED_IMAGE.exists() else "missing"
     return {
         "commissioned": runtime.get(TRACKED_KEYS[0], "missing"),
-        "controlled_swarm_readmit": runtime.get(TRACKED_KEYS[1], "missing"),
-        "backlog_bankruptcy_readmit": runtime.get(TRACKED_KEYS[2], "missing"),
-        "scheduler": runtime.get(TRACKED_KEYS[3], "missing"),
-        "execution_recovery": runtime.get(TRACKED_KEYS[4], "missing"),
+        "scheduler": runtime.get(TRACKED_KEYS[1], "missing"),
+        "execution_recovery": runtime.get(TRACKED_KEYS[2], "missing"),
         "pin_digest": approved,
         "unit_state": {
             "paperclip-gloops.service": unit_state("paperclip-gloops.service"),

@@ -78,8 +78,6 @@ export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "hermes_gateway_connect_failed",
   "review_missing_disposition",
   "missing_issue_comment",
-  "backlog_bankruptcy.company_frozen",
-  "backlog_bankruptcy.readmit_budget_required",
 ]);
 
 export type ExecutionAdmissionPolicy =

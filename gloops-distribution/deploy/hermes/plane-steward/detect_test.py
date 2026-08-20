@@ -32,33 +32,18 @@ class DetectTest(unittest.TestCase):
         )
         self.assertTrue(any(m["recipeId"] == "wrong-head-rebase" for m in matches))
 
-    def test_null_issue_id_not_company_unfreeze(self) -> None:
+    def test_null_issue_id_recommends_bound_wake(self) -> None:
         matches = detect.detect_events(
             [
                 {
                     "kind": "wakeup",
                     "payload": {"issueId": None},
-                    "errorCode": "backlog_bankruptcy.company_frozen",
+                    "errorCode": "execution_admission.issue_unbound",
                 }
             ]
         )
         recipes = {m["recipeId"] for m in matches}
         self.assertIn("null-issueId-wake-reject", recipes)
-        # Must not recommend a non-existent company-unfreeze recipe
-        self.assertNotIn("company-unfreeze", recipes)
-
-    def test_cancel_lt_5s(self) -> None:
-        matches = detect.detect_events(
-            [
-                {
-                    "status": "cancelled",
-                    "durationMs": 900,
-                    "errorCode": "workspace_admit.dirty_tree",
-                }
-            ]
-        )
-        signals = {m["signal"] for m in matches}
-        self.assertIn("cancel_lt_5s", signals)
 
     def test_heartbeat_scheduler(self) -> None:
         matches = detect.detect_in_text("HEARTBEAT_SCHEDULER_ENABLED=true preflight death spiral")
@@ -72,18 +57,6 @@ class DetectTest(unittest.TestCase):
             log.write_text("workspace_admit.cwd_not_readable EACCES uid 995\n", encoding="utf-8")
             rc = detect.main(["--log-file", str(log)])
             self.assertEqual(rc, 0)
-
-    def test_events_file_jsonl(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "e.jsonl"
-            path.write_text(
-                json.dumps({"errorCode": "readmit_budget_required"}) + "\n",
-                encoding="utf-8",
-            )
-            # Capture via detect_events path
-            events = detect.load_json_or_jsonl(path)
-            matches = detect.detect_events(events)
-            self.assertTrue(any(m["recipeId"] == "readmit-budget-bound-wake" for m in matches))
 
     def test_missing_input_fails(self) -> None:
         rc = detect.main([])

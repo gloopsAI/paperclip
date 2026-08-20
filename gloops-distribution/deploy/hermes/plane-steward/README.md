@@ -27,7 +27,7 @@ Hard rules:
    (override for tests: `PLANE_STEWARD_PATH_ROOTS=root1:root2`)
 5. **Exclusive-writer** for local git/ACL recipes — set  
    `PLANE_STEWARD_EXCLUSIVE_WRITER=1` after confirming hostctl / campaign pin.
-6. Prefer **heartbeat-run `errorCode`** over UI `company_frozen` text (W8).
+6. Prefer the durable heartbeat-run `errorCode` over UI summary text (W8).
 
 ## Recipes
 
@@ -36,9 +36,8 @@ Hard rules:
 | `dirty-tree-clean` | `workspace_admit.dirty_tree` | `git reset --hard` + `git clean -fdx` |
 | `wrong-head-rebase` | `head_mismatch` / branch-as-ref | detach checkout **exact 40-char SHA** |
 | `acl-fix` | cwd not readable by runner | chmod + setfacl for uid **995** |
-| `readmit-budget-bound-wake` | budget / bankruptcy / cancel&lt;5s | attach budget → hostctl READMIT one UUID → bound wake |
 | `never-enable-global-heartbeat-scheduler` | scheduler true / death spiral | force **false** only; refuse enable |
-| `null-issueId-wake-reject` | null issueId / false company_frozen | re-issue bound wake; **no** company unfreeze |
+| `null-issueId-wake-reject` | null issueId | re-issue an issue-bound wake |
 | `induct-lease-refresh` | lease dirty / head mismatch on induct | refresh host lease (Sentinel auto-apply allowlisted) |
 | `harbor-campaign-reopen` | campaign deadline / missing epoch | Harbor standing reopen via open-campaign-24h |
 | `sdlc-preflight-check` | plane degraded | host S0 probe only |
@@ -84,14 +83,6 @@ python3 apply_recipe.py --apply --recipe wrong-head-rebase \
   --param cwd=/opt/data/workspace/gloops-ui-main \
   --param expectedSha=f5c08533aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
-# READMIT + budget + bound wake
-PAPERCLIP_API_BASE=https://board… \
-PAPERCLIP_API_TOKEN=… \
-python3 apply_recipe.py --apply --recipe readmit-budget-bound-wake \
-  --param issueId=a2b3db2c-9fbe-457f-96bd-bb6c643029b3 \
-  --param agentId=<wren-agent-uuid> \
-  --param 'hostctlIdentity={"agentSlug":"plane-steward","sessionId":"s1","missionId":"c5"}'
-
 # Null issueId — re-issue bound wake only
 PAPERCLIP_API_BASE=https://board… \
 python3 apply_recipe.py --apply --recipe null-issueId-wake-reject \
@@ -99,7 +90,7 @@ python3 apply_recipe.py --apply --recipe null-issueId-wake-reject \
 ```
 
 Hostctl binary: `../paperclip-hostctl.py` (override `PLANE_STEWARD_HOSTCTL`).
-Runtime env for READMIT lists: `/etc/paperclip-gloops/runtime.env`
+Runtime env: `/etc/paperclip-gloops/runtime.env`
 (`PLANE_STEWARD_RUNTIME_ENV` override).
 
 ## Sentinel + Harbor plane loops (LIVE)

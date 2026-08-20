@@ -149,66 +149,6 @@
       ]
     },
     {
-      "id": "readmit-budget-bound-wake",
-      "title": "Attach resourceBudget, hostctl READMIT one UUID, issue-bound wake",
-      "signals": [
-        "readmit_budget_required",
-        "backlog_bankruptcy.company_frozen",
-        "execution_admission.issue_unbound",
-        "cancel_lt_5s"
-      ],
-      "authority": [
-        "hostctl.apply",
-        "board.issue.patch",
-        "agent.wakeup.issue_bound"
-      ],
-      "requires": {
-        "issueIdUuid": true,
-        "resourceBudgetPresentOrAttachable": true,
-        "singleUuidReadmit": true
-      },
-      "params": {
-        "issueId": {
-          "type": "uuid",
-          "required": true
-        },
-        "agentId": {
-          "type": "string",
-          "required": true
-        },
-        "resourceBudget": {
-          "type": "object",
-          "required": false,
-          "default": {
-            "maxInputTokens": 200000,
-            "maxOutputTokens": 32000
-          }
-        },
-        "hostctlIdentity": {
-          "type": "object",
-          "required": true,
-          "fields": [
-            "agentSlug",
-            "sessionId",
-            "missionId"
-          ]
-        }
-      },
-      "steps": [
-        "reject if issueId missing/null",
-        "PATCH issue executionPolicy.resourceBudget if missing",
-        "hostctl apply READMIT: append issue UUID to BACKLOG + CONTROLLED_SWARM lists only",
-        "POST /agents/{id}/wakeup with payload.issueId (never naked)",
-        "HEARTBEAT_SCHEDULER_ENABLED must remain false"
-      ],
-      "failClosed": [
-        "null issueId",
-        "whole-company unfreeze",
-        "enabling HEARTBEAT_SCHEDULER",
-        "multi-uuid bulk readmit without explicit list"
-      ]
-    },
-    {
       "id": "never-enable-global-heartbeat-scheduler",
       "title": "Guard: refuse enabling HEARTBEAT_SCHEDULER under controlled-swarm",
       "signals": [
@@ -237,7 +177,6 @@
       "id": "null-issueId-wake-reject",
       "title": "Reject null-issueId wake; re-issue with payload.issueId",
       "signals": [
-        "company_frozen_with_null_issueId",
         "execution_admission.issue_unbound",
         "wakeup_missing_issueId"
       ],
@@ -259,13 +198,11 @@
       },
       "steps": [
         "detect wake/invoke with null/missing payload.issueId",
-        "do NOT thrash company READMIT / unfreeze",
         "re-issue POST /agents/{id}/wakeup with {payload: {issueId}}",
         "prefer assignment rebind if checkout DoR 422"
       ],
       "failClosed": [
-        "naked wake without issueId",
-        "treating null-issueId as company_frozen requiring unfreeze"
+        "naked wake without issueId"
       ]
     },
     {

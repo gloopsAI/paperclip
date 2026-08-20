@@ -542,8 +542,6 @@ if grep -Fxq 'PAPERCLIP_RUNTIME_RELEASE_PIN_REQUIRED=false' /etc/paperclip-gloop
   && campaign_duration_in_range /etc/paperclip-gloops/campaign-runtime.env \
   && grep -Fxq 'PAPERCLIP_CAMPAIGN_DEADMAN_TIMEOUT_MS=2000' /etc/paperclip-gloops/campaign-runtime.env \
   && grep -Fxq 'PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS=89ed0964-d918-4fcc-b830-5be49d2d4089' /etc/paperclip-gloops/runtime.env \
-  && grep -Fxq 'PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'HEARTBEAT_SCHEDULER_ENABLED=false' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true' /etc/paperclip-gloops/runtime.env \
   && grep -Fxq 'PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=false' /etc/paperclip-gloops/campaign-runtime.env \
