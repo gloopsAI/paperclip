@@ -2726,6 +2726,9 @@ if (
 ) {
   fail("preflight.sh must bind the runtime image to the root-owned approved-image receipt");
 }
+if (!preflight.includes('case "${PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED:-false}" in')) {
+  fail("preflight.sh must treat the removed controlled-swarm commissioning flag as disabled");
+}
 for (const [label, contents] of [
   ["paperclip-gloops.service", service],
   ["paperclip-gloops-handshake.service", handshakeService],
