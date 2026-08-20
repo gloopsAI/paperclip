@@ -1128,6 +1128,9 @@ if (!prepareHermesExecution.includes('install -d -m 0700 -o 995 -g 985 "${STATE_
 if (!preflight.includes("SSH_BUNDLE_STAGING_DIR='/opt/paperclip/hermes-execution-state/ssh-bundle-staging'")) {
   fail("activation preflight must verify the SSH bundle staging directory before admitting Paperclip");
 }
+if (!preflight.includes('if [[ -z "${PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT:-}"')) {
+  fail("activation preflight must not require bundle staging for the same-host shared workspace path");
+}
 if (!service.includes("ExecStartPost=/usr/local/lib/paperclip-gloops/wait-paperclip-control-plane.sh")) {
   fail("Paperclip systemd readiness must wait for container health");
 }
