@@ -2018,6 +2018,90 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("stops unchanged pre-provider retries before a second adapter call and caps remediation", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_auth_failed",
+      errorMessage: "Managed provider identity is unavailable",
+      providerInvocationAttempted: false,
+      provider: "hermes_gateway",
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      usageBasis: "per_run",
+    };
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Pre-provider stop-loss",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `STOP-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(first).not.toBeNull();
+    await waitForTerminalRuns(db, [first!.id]);
+    await heartbeat.waitForRunExecutionDrain(first!.id);
+
+    const second = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(second).not.toBeNull();
+    await waitForTerminalRuns(db, [second!.id]);
+    await heartbeat.waitForRunExecutionDrain(second!.id);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(await heartbeat.getRun(second!.id)).toMatchObject({
+      status: "failed",
+      errorCode: "execution_admission.pre_provider_state_unchanged",
+      contextSnapshot: {
+        gloopsPreProviderStopLoss: {
+          decision: "denied",
+          reason: "state_unchanged",
+        },
+      },
+      resultJson: {
+        providerInvocationAttempted: false,
+        preProviderFailure: {
+          schemaVersion: "gloops.pre-provider-failure.v1",
+          errorCode: "execution_admission.pre_provider_state_unchanged",
+        },
+      },
+    });
+
+    const third = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(third).not.toBeNull();
+    await waitForTerminalRuns(db, [third!.id]);
+    expect(await heartbeat.getRun(third!.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "execution_admission.pre_provider_failure_limit_exhausted",
+    });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
   it("releases the admission reservation for a pre-model workspace preparation failure", async () => {
     const { companyId, agentId } = await seedDirectAgent();
     const issueId = randomUUID();

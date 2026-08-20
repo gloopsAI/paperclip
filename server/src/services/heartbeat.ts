@@ -232,9 +232,14 @@ import {
 import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
+  PRE_PROVIDER_FAILURE_RESULT_KEY,
+  PRE_PROVIDER_STOP_LOSS_CONTEXT_KEY,
+  buildPreProviderFailureObservation,
+  buildPreProviderReadinessStateDigest,
   buildExecutionAdmissionEnvelope,
   allowsAutomaticRecoveryCreation,
   evaluateExecutionAdmission,
+  evaluatePreProviderStopLoss,
   evaluateExecutionReservationUsage,
   evaluateProspectiveExecutionAdmission,
   executionInvocationBudgetFromEnvelope,
@@ -242,6 +247,7 @@ import {
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
+  readPreProviderFailureObservation,
   resolveEpochBoundExecutionAdmissionPolicy,
   resolveExecutionAdmissionPolicyForResourceBudgetChain,
   resolveExecutionBudgetIdentity,
@@ -11734,6 +11740,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : typeof persistedUsage.discretionaryInputTokens === "number"
           ? persistedUsage.discretionaryInputTokens
           : undefined,
+      preProviderFailure: readPreProviderFailureObservation(
+        resultJson[PRE_PROVIDER_FAILURE_RESULT_KEY],
+      ),
     };
   }
 
@@ -16687,6 +16696,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         queuedAt: run.createdAt,
       });
       context[WORKFORCE_CAPACITY_CONTEXT_KEY] = workforceCapacity;
+      const preProviderStateDigest = buildPreProviderReadinessStateDigest({
+        adapterType: agent.adapterType,
+        model: configuredModel,
+        repository: executionWorkspace.repoUrl ?? null,
+        exactHead: executionWorkspace.baseRefSha ?? null,
+        workspaceMode: persistedExecutionWorkspace
+          ? issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode)
+          : null,
+        workPreparation: {
+          decision: workPreparation.decision,
+          fatalReasons: workPreparation.fatalReasons,
+          splitReasons: workPreparation.splitReasons,
+          packet: { valid: workPreparation.packet.valid },
+          workspace: workPreparation.workspace,
+          reservation: workPreparation.reservation,
+          skills: workPreparation.skills,
+          tools: workPreparation.tools,
+          capacity: workPreparation.capacity,
+          phaseBudget: workPreparation.phaseBudget,
+        },
+        subscriptionRouteAdmission,
+        workforceCapacity: {
+          decision: workforceCapacity.decision,
+          reasons: workforceCapacity.reasons,
+          route: workforceCapacity.route,
+          rawTokenReservation: workforceCapacity.metrics.rawTokenReservation,
+          subscriptionCapacity: workforceCapacity.metrics.subscriptionCapacity,
+          quality: workforceCapacity.metrics.quality,
+        },
+        configFingerprints: {
+          session: configFreshnessResultMetadata.session.nextFingerprint,
+          workspace: configFreshnessResultMetadata.workspace.nextFingerprint,
+        },
+      });
+      const executionAdmissionEnvelope = readExecutionAdmissionEnvelope(
+        context[EXECUTION_ADMISSION_CONTEXT_KEY],
+      );
+      const preProviderStopLoss = evaluatePreProviderStopLoss({
+        priorFailure: executionAdmissionEnvelope?.observed.lastPreProviderFailure ?? null,
+        currentStateDigest: preProviderStateDigest,
+      });
+      context[PRE_PROVIDER_STOP_LOSS_CONTEXT_KEY] = preProviderStopLoss;
       await db
         .update(heartbeatRuns)
         .set({
@@ -16694,7 +16745,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
-      if (
+      if (preProviderStopLoss.decision === "denied") {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "execution_admission.pre_provider_state_unchanged",
+          errorMessage:
+            "Pre-provider retry denied because no server-observed readiness state changed after the prior failure",
+          clearSession: true,
+          providerInvocationAttempted: false,
+          resultJson: { preProviderStopLoss },
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else if (
         runExecutionCampaignPolicy.scope === "campaign-bound" &&
         executionBudgetMode !== "strict"
       ) {
@@ -17241,6 +17305,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 providerInvocationAttempted: effectiveProviderInvocationAttempted,
                 configFreshness: configFreshnessResultMetadata,
                 workPreparation,
+                ...(effectiveProviderInvocationAttempted === false && runErrorCode
+                  ? {
+                      [PRE_PROVIDER_FAILURE_RESULT_KEY]: buildPreProviderFailureObservation({
+                        errorCode: runErrorCode,
+                        adapterType: agent.adapterType,
+                        repository: executionWorkspace.repoUrl ?? null,
+                        exactHead: executionWorkspace.baseRefSha ?? null,
+                        workspaceMode: persistedExecutionWorkspace
+                          ? issueExecutionWorkspaceModeForPersistedWorkspace(
+                              persistedExecutionWorkspace.mode,
+                            )
+                          : null,
+                        stateDigest: preProviderStateDigest,
+                      }),
+                    }
+                  : {}),
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
