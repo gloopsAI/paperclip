@@ -294,6 +294,24 @@ disable the bankruptcy policy. The policy is parsed at service startup, so a
 governed configuration change requires a Paperclip restart and a fresh live
 receipt.
 
+Provider-free failures are exempt from provider token accounting, not from
+economic control. Within one execution-budget epoch Paperclip now admits at
+most an initial pre-provider failure plus one remediation observation, and at
+most 15 minutes of exempt wall time. The remediation reaches an adapter only
+when the server-observed workspace, config, route, capacity, or preparation
+state digest changed. An unchanged retry is terminally denied before adapter
+execution, and the next wake is cancelled by the epoch stop-loss. Both the
+readiness decision and failure fingerprint are digest-bound in the run record;
+a new epoch still requires the existing user-authored reset authority.
+
+Subscription routes are selected directly after that readiness decision.
+Ollama/Hermes, Grok Build CLI, and approved Codex-subscription routes do not
+require a sacrificial lower-provider attempt. Actual provider failures remain
+reroute evidence. Automatic fallback prefers Grok and never converts a Grok
+failure into a Codex invocation; Codex requires an explicit assignment or
+company-policy decision and a live budget. Grok remains CLI-only and xAI API
+use is denied.
+
 This release freezes the GLoops company
 `89ed0964-d918-4fcc-b830-5be49d2d4089` and leaves both readmit lists empty by
 default. No existing issue, including GLO-2227, is admitted by the release pin

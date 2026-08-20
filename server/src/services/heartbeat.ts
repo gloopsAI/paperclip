@@ -232,9 +232,14 @@ import {
 import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
+  PRE_PROVIDER_FAILURE_RESULT_KEY,
+  PRE_PROVIDER_STOP_LOSS_CONTEXT_KEY,
+  buildPreProviderFailureObservation,
+  buildPreProviderReadinessStateDigest,
   buildExecutionAdmissionEnvelope,
   allowsAutomaticRecoveryCreation,
   evaluateExecutionAdmission,
+  evaluatePreProviderStopLoss,
   evaluateExecutionReservationUsage,
   evaluateProspectiveExecutionAdmission,
   executionInvocationBudgetFromEnvelope,
@@ -242,6 +247,7 @@ import {
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
+  readPreProviderFailureObservation,
   resolveEpochBoundExecutionAdmissionPolicy,
   resolveExecutionAdmissionPolicyForResourceBudgetChain,
   resolveExecutionBudgetIdentity,
@@ -3050,7 +3056,10 @@ export function subscriptionRouteAdvanceForRun(
 ): SubscriptionRouteAdvance | null {
   if (run.status !== "failed" && run.status !== "timed_out") return null;
   const provider = subscriptionProviderForAdapter(adapterType, model);
-  if (!provider || provider === "codex") return null;
+  // Grok is an intentionally selected subscription lane. Never turn a Grok
+  // failure into an implicit Codex charge; Codex requires a separate explicit
+  // assignment or company-policy decision.
+  if (!provider || provider === "codex" || provider === "grok") return null;
   const resultJson = parseObject(run.resultJson);
   const usageJson = parseObject(run.usageJson);
   const providerInvocationAttempted = resultJson.providerInvocationAttempted ??
@@ -3075,10 +3084,10 @@ export function subscriptionRouteAdvanceForRun(
   if (!reason) return null;
   return {
     provider,
-    transport: provider === "grok" ? "cli" : "subscription_cli",
+    transport: "subscription_cli",
     reason,
-    targetAdapterType: provider === "ollama" ? "codex_local" : provider === "grok" ? "codex_local" : "grok_local",
-    targetLane: provider === "ollama" ? "durable_bench" : provider === "grok" ? "codex_burst" : "grok_burst",
+    targetAdapterType: "grok_local",
+    targetLane: "grok_burst",
   };
 }
 
@@ -11674,6 +11683,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const providerInvocation = parseObject(resultJson.provider_invocation);
     const providerInvocationAttempted = typeof persistedUsage.providerInvocationAttempted === "boolean"
       ? persistedUsage.providerInvocationAttempted
+      : typeof resultJson.providerInvocationAttempted === "boolean"
+        ? resultJson.providerInvocationAttempted
       : typeof providerInvocation.attempted === "boolean"
         ? providerInvocation.attempted
         : null;
@@ -11716,6 +11727,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryOfRunId: row.retryOfRunId,
       countsAsRetry,
       countsTowardTaskBudget,
+      providerInvocationAttempted,
       inputTokens: useReservation && reservation ? reservation.maxInputTokens : usage.inputTokens,
       cachedInputTokens: usage.cachedInputTokens,
       outputTokens: useReservation && reservation ? reservation.maxOutputTokens : usage.outputTokens,
@@ -11734,6 +11746,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : typeof persistedUsage.discretionaryInputTokens === "number"
           ? persistedUsage.discretionaryInputTokens
           : undefined,
+      preProviderFailure: readPreProviderFailureObservation(
+        resultJson[PRE_PROVIDER_FAILURE_RESULT_KEY],
+      ),
     };
   }
 
@@ -12414,12 +12429,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId,
       });
       const priorExecutionRuns = priorRows.map((row) => priorExecutionRun(row, claimedAt));
-      const hasCountedPriorRun = priorExecutionRuns.some(
+      const hasProviderFreeFailure = priorExecutionRuns.some(
+        (priorRun) =>
+          priorRun.providerInvocationAttempted === false || priorRun.preProviderFailure != null,
+      );
+      const hasInFlightPriorRun = priorRows.some((row) => row.finishedAt === null);
+      // The budget advisory lock serializes claims, but it is released once a
+      // run reaches running. Reserve the single remediation slot while that
+      // exact-budget run is still in flight so a concurrent wake cannot claim
+      // the same post-failure remediation opportunity.
+      const admissionExecutionRuns = hasProviderFreeFailure && hasInFlightPriorRun
+        ? [
+            ...priorExecutionRuns,
+            {
+              countsTowardTaskBudget: false,
+              providerInvocationAttempted: false,
+              wallMs: 0,
+            } satisfies PriorExecutionRun,
+          ]
+        : priorExecutionRuns;
+      const hasCountedPriorRun = admissionExecutionRuns.some(
         (priorRun) => priorRun.countsTowardTaskBudget !== false,
       );
       const decision = evaluateExecutionAdmission(
         effectiveAdmissionPolicy,
-        priorExecutionRuns,
+        admissionExecutionRuns,
         {
           // A successful-run handoff is a bounded continuation of the source
           // execution even though its durable wake creates a sibling run rather
@@ -15277,6 +15311,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
     });
     const configuredModel = readConfiguredModelFromAdapterConfig(runtimeConfig);
+    // Automatic recovery may select a fallback model and rebuild packet/workspace
+    // bookkeeping even when no operator-controlled readiness fact changed. Keep
+    // the stop-loss fingerprint limited to stable configuration categories so
+    // retry machinery cannot manufacture its own remediation signal.
+    const preProviderStableSessionConfig = {
+      adapter: sessionConfigMetadata.categoryFingerprints.adapter,
+      agentRuntimeConfig: sessionConfigMetadata.categoryFingerprints.agentRuntimeConfig,
+      instructions: sessionConfigMetadata.categoryFingerprints.instructions,
+      issueOverrides: sessionConfigMetadata.categoryFingerprints.issueOverrides,
+      environment: sessionConfigMetadata.categoryFingerprints.environment,
+      envBindings: sessionConfigMetadata.categoryFingerprints.envBindings,
+      secrets: sessionConfigMetadata.categoryFingerprints.secrets,
+      runtimeSkills: sessionConfigMetadata.categoryFingerprints.runtimeSkills,
+    };
     const wakeSessionResetReason = describeSessionResetReason(context);
     const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
       hasTaskSession: taskSession != null,
@@ -15547,6 +15595,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const pendingForwardBranchReconcile = executionWorkspace.pendingForwardBranchReconcile ?? null;
     const branchNameForInitialPersistence =
       pendingForwardBranchReconcile?.recordedBranchName ?? executionWorkspace.branchName;
+    // Initialize before any fallible workspace-persistence or preparation
+    // work. Later readiness checks replace this with the complete projection,
+    // but every provider-free terminal path has a deterministic state digest.
+    let preProviderStateDigest = buildPreProviderReadinessStateDigest({
+      phase: "workspace_persistence",
+      adapterType: agent.adapterType,
+      repository: executionWorkspace.repoUrl ?? null,
+      exactHead: executionWorkspace.baseRefSha ?? null,
+      workspaceMode: requestedExecutionWorkspaceMode,
+      configFingerprints: {
+        session: preProviderStableSessionConfig,
+        workspace: workspaceConfigFreshness.nextFingerprint,
+      },
+    });
     try {
       persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace
         ? await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
@@ -16687,6 +16749,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         queuedAt: run.createdAt,
       });
       context[WORKFORCE_CAPACITY_CONTEXT_KEY] = workforceCapacity;
+      preProviderStateDigest = buildPreProviderReadinessStateDigest({
+        adapterType: agent.adapterType,
+        repository: executionWorkspace.repoUrl ?? null,
+        exactHead: executionWorkspace.baseRefSha ?? null,
+        workspaceMode: persistedExecutionWorkspace
+          ? issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode)
+          : null,
+        workPreparation: {
+          decision: workPreparation.decision,
+          fatalReasons: workPreparation.fatalReasons,
+          splitReasons: workPreparation.splitReasons,
+          packet: { valid: workPreparation.packet.valid },
+          workspace: workPreparation.workspace,
+          reservation: workPreparation.reservation,
+          skills: workPreparation.skills,
+          tools: workPreparation.tools,
+          capacity: { fits: workPreparation.capacity.fits },
+          phaseBudget: workPreparation.phaseBudget,
+        },
+        subscriptionRouteAdmission: {
+          allowed: subscriptionRouteAdmission.allowed,
+          provider: subscriptionRouteAdmission.provider,
+        },
+        workforceCapacity: {
+          decision: workforceCapacity.decision,
+          reasons: workforceCapacity.reasons,
+          route: {
+            lane: workforceCapacity.route.lane,
+            provider: workforceCapacity.route.provider,
+            adapterType: workforceCapacity.route.adapterType,
+          },
+        },
+        configFingerprints: {
+          session: preProviderStableSessionConfig,
+          workspace: configFreshnessResultMetadata.workspace.nextFingerprint,
+        },
+      });
+      const executionAdmissionEnvelope = readExecutionAdmissionEnvelope(
+        context[EXECUTION_ADMISSION_CONTEXT_KEY],
+      );
+      const preProviderStopLoss = evaluatePreProviderStopLoss({
+        priorFailure: executionAdmissionEnvelope?.observed.lastPreProviderFailure ?? null,
+        currentStateDigest: preProviderStateDigest,
+      });
+      context[PRE_PROVIDER_STOP_LOSS_CONTEXT_KEY] = preProviderStopLoss;
       await db
         .update(heartbeatRuns)
         .set({
@@ -16694,7 +16801,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
-      if (
+      if (preProviderStopLoss.decision === "denied") {
+        adapterResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "execution_admission.pre_provider_state_unchanged",
+          errorMessage:
+            "Pre-provider retry denied because no server-observed readiness state changed after the prior failure",
+          clearSession: true,
+          providerInvocationAttempted: false,
+          resultJson: { preProviderStopLoss },
+        };
+        await recordWorkspaceFinalize("succeeded");
+      } else if (
         runExecutionCampaignPolicy.scope === "campaign-bound" &&
         executionBudgetMode !== "strict"
       ) {
@@ -17241,6 +17361,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 providerInvocationAttempted: effectiveProviderInvocationAttempted,
                 configFreshness: configFreshnessResultMetadata,
                 workPreparation,
+                ...(effectiveProviderInvocationAttempted === false && runErrorCode
+                  ? {
+                      [PRE_PROVIDER_FAILURE_RESULT_KEY]: buildPreProviderFailureObservation({
+                        errorCode: runErrorCode,
+                        adapterType: agent.adapterType,
+                        repository: executionWorkspace.repoUrl ?? null,
+                        exactHead: executionWorkspace.baseRefSha ?? null,
+                        workspaceMode: persistedExecutionWorkspace
+                          ? issueExecutionWorkspaceModeForPersistedWorkspace(
+                              persistedExecutionWorkspace.mode,
+                            )
+                          : null,
+                        stateDigest: preProviderStateDigest,
+                      }),
+                    }
+                  : {}),
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
@@ -18198,9 +18334,7 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
       return false;
     }
 
-    const targetAdapterTypes = advance.targetLane === "grok_burst"
-      ? ["grok_local", "codex_local"]
-      : [advance.targetAdapterType];
+    const targetAdapterTypes = [advance.targetAdapterType];
     const targetCandidates = await db
       .select({ id: agents.id, name: agents.name, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents)
@@ -18226,10 +18360,7 @@ function buildExecutionReviewParticipantRecoveryComment(input: {
           ? route.lane === "burst" && route.provider === "grok"
           : route.lane === "burst" && route.provider === "codex";
     };
-    const targetAgent = targetCandidates.find((candidate) => matchesLane(candidate, advance.targetLane))
-      ?? (advance.targetLane === "grok_burst"
-        ? targetCandidates.find((candidate) => matchesLane(candidate, "codex_burst"))
-        : null);
+    const targetAgent = targetCandidates.find((candidate) => matchesLane(candidate, advance.targetLane));
     const selectedTargetLane: SubscriptionRouteAdvance["targetLane"] | null = targetAgent
       ? (() => {
           const route = routeForCandidate(targetAgent);

@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExecutionInvocationBudget } from "@paperclipai/adapter-utils/execution-envelope";
-import {
-  PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY,
-  readSubscriptionRouteEvidence,
-  type SubscriptionRouteProvider,
-} from "@paperclipai/adapter-utils/execution-envelope";
+import type { SubscriptionRouteProvider } from "@paperclipai/adapter-utils/execution-envelope";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/shared";
 
 export const WORKFORCE_CAPACITY_CONTEXT_KEY = "gloopsWorkforceCapacity" as const;
@@ -22,7 +18,6 @@ export type WorkforceCapacityReason =
   | "capacity_probe_failed"
   | "capacity_snapshot_missing"
   | "capacity_exhausted"
-  | "burst_escalation_receipt_missing"
   | "unsupported_model_route";
 
 export type WorkforceRoute = {
@@ -63,7 +58,7 @@ export type WorkforceCapacityReceipt = {
       windows: QuotaWindow[];
     };
     quality: {
-      source: "typed_escalation_receipt" | "durable_default" | "supplemental" | "not_applicable";
+      source: "direct_selection" | "durable_default" | "supplemental" | "not_applicable";
       reason: string | null;
     };
     queue: {
@@ -253,17 +248,6 @@ export function assessWorkforceCapacity(input: {
   if (phaseBudget === "missing") reasons.push("phase_budget_missing");
   if (phaseBudget === "invalid") reasons.push("phase_budget_invalid");
 
-  const evidence = readSubscriptionRouteEvidence(
-    input.context?.[PAPERCLIP_PROVIDER_ROUTE_EVIDENCE_KEY],
-    evaluatedAt,
-  );
-  const durableAttempt = evidence?.attempts.find((attempt) =>
-    attempt.issueId === issueId &&
-    (attempt.provider === "luna" || attempt.provider === "terra" || attempt.provider === "ollama"));
-  if (route.lane === "burst" && !durableAttempt) {
-    reasons.push("burst_escalation_receipt_missing");
-  }
-
   const capacity = quotaState(route, input.quota ?? null, maxUsedPercent);
   if (capacity.reason) reasons.push(capacity.reason);
   const decision = reasons.length > 0 ? "denied" as const : "ready" as const;
@@ -286,7 +270,7 @@ export function assessWorkforceCapacity(input: {
         digest: stableDigest(leaseBody),
       }
     : null;
-  return buildReceipt(decision, Array.from(new Set(reasons)), lease, capacity, durableAttempt?.reason ?? null);
+  return buildReceipt(decision, Array.from(new Set(reasons)), lease, capacity);
 
   function buildReceipt(
     receiptDecision: WorkforceCapacityReceipt["decision"],
@@ -322,7 +306,7 @@ export function assessWorkforceCapacity(input: {
         },
         quality: {
           source: route.lane === "burst"
-            ? "typed_escalation_receipt"
+            ? "direct_selection"
             : route.lane === "durable_bench"
               ? "durable_default"
               : route.lane === "supplemental"

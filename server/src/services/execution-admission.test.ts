@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   BOOTSTRAP_EXECUTION_DEFAULTS,
+  PRE_PROVIDER_STOP_LOSS_POLICY,
   allowsAutomaticRecoveryCreation,
+  buildPreProviderFailureObservation,
+  buildPreProviderReadinessStateDigest,
   buildExecutionAdmissionEnvelope,
   evaluateExecutionReservationUsage,
   evaluateExecutionAdmission,
+  evaluatePreProviderStopLoss,
   isBudgetExemptPreflightFailure,
   isNonDispositionalReviewSuccess,
   parseExecutionAdmissionPolicy,
   parseReconciledExecutionAdapters,
   readExecutionAdmissionEnvelope,
+  readPreProviderFailureObservation,
+  readPreProviderStopLossReceipt,
   rehydrateExecutionAdmissionPolicy,
   resolveEffectiveExecutionAdmissionPolicy,
   resolveEpochBoundExecutionAdmissionPolicy,
@@ -482,7 +488,8 @@ describe("execution admission", () => {
       providerInvocationAttempted: null,
       errorCode: "workspace_validation_failed",
     })).toBe(true);
-    // Workspace validation never burns retries even when error code is the only signal.
+    // Historical error-code exemptions remain compatible for task budgets;
+    // provider evidence separately excludes them from provider-free stop-loss.
     expect(isBudgetExemptPreflightFailure({
       providerInvocationAttempted: true,
       errorCode: "workspace_validation_failed",
@@ -524,6 +531,7 @@ describe("execution admission", () => {
       {
         retryOfRunId: null,
         countsTowardTaskBudget: false,
+        providerInvocationAttempted: false,
         inputTokens: 400,
         outputTokens: 100,
         wallMs: 60_000,
@@ -548,6 +556,7 @@ describe("execution admission", () => {
       {
         retryOfRunId: null,
         countsTowardTaskBudget: false,
+        providerInvocationAttempted: false,
         inputTokens: 1_000,
         outputTokens: 200,
         wallMs: 60_000,
@@ -563,11 +572,12 @@ describe("execution admission", () => {
       },
     });
 
-    // Multiple workspace_validation failures (as retries) never exhaust retry budget.
+    // Pre-provider failures do not burn provider budget, but the economic
+    // stop-loss prevents an unbounded exempt retry loop.
     const validationOnly = [
-      { retryOfRunId: null, countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
-      { retryOfRunId: "run-a", countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
-      { retryOfRunId: "run-b", countsTowardTaskBudget: false as const, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: null, countsTowardTaskBudget: false as const, providerInvocationAttempted: false, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: "run-a", countsTowardTaskBudget: false as const, providerInvocationAttempted: false, inputTokens: 0, outputTokens: 0, wallMs: 1 },
+      { retryOfRunId: "run-b", countsTowardTaskBudget: false as const, providerInvocationAttempted: false, inputTokens: 0, outputTokens: 0, wallMs: 1 },
     ];
     expect(summarizePriorExecution(validationOnly)).toMatchObject({
       runCount: 0,
@@ -575,8 +585,83 @@ describe("execution admission", () => {
       preflightExemptRunCount: 3,
     });
     expect(evaluateExecutionAdmission(policy(), validationOnly, { isRetry: true })).toMatchObject({
-      allowed: true,
-      reason: null,
+      allowed: false,
+      reason: "pre_provider_failure_limit_exhausted",
+    });
+
+    expect(summarizePriorExecution([{
+      countsTowardTaskBudget: false,
+      providerInvocationAttempted: true,
+      wallMs: 60_000,
+    }])).toMatchObject({
+      runCount: 0,
+      preflightExemptRunCount: 0,
+      preflightExemptWallMs: 0,
+    });
+  });
+
+  it("requires an observed readiness change and caps pre-provider remediation", () => {
+    const initialState = buildPreProviderReadinessStateDigest({
+      workspace: { repo: "gloopsAI/paperclip", head: "a".repeat(40), writable: false },
+      provider: { configured: true },
+    });
+    const changedState = buildPreProviderReadinessStateDigest({
+      workspace: { repo: "gloopsAI/paperclip", head: "a".repeat(40), writable: true },
+      provider: { configured: true },
+    });
+    const failure = buildPreProviderFailureObservation({
+      errorCode: "workspace_not_ready",
+      adapterType: "grok_local",
+      repository: "gloopsAI/paperclip",
+      exactHead: "a".repeat(40),
+      workspaceMode: "local",
+      stateDigest: initialState,
+      observedAt: new Date("2026-08-20T00:00:00Z"),
+    });
+
+    expect(readPreProviderFailureObservation(failure)).toEqual(failure);
+    expect(readPreProviderFailureObservation({ ...failure, exactHead: "b".repeat(40) })).toBeNull();
+    expect(evaluatePreProviderStopLoss({
+      priorFailure: null,
+      currentStateDigest: initialState,
+      evaluatedAt: new Date("2026-08-20T00:01:00Z"),
+    })).toMatchObject({ decision: "allowed", reason: "initial_attempt" });
+    const denied = evaluatePreProviderStopLoss({
+      priorFailure: failure,
+      currentStateDigest: initialState,
+      evaluatedAt: new Date("2026-08-20T00:02:00Z"),
+    });
+    expect(denied).toMatchObject({
+      decision: "denied",
+      reason: "state_unchanged",
+      priorFailureReceiptDigest: failure.receiptDigest,
+    });
+    expect(readPreProviderStopLossReceipt(denied)).toEqual(denied);
+    expect(readPreProviderStopLossReceipt({ ...denied, currentStateDigest: changedState })).toBeNull();
+    expect(evaluatePreProviderStopLoss({
+      priorFailure: failure,
+      currentStateDigest: changedState,
+      evaluatedAt: new Date("2026-08-20T00:03:00Z"),
+    })).toMatchObject({ decision: "allowed", reason: "observed_state_change" });
+
+    const observed = summarizePriorExecution([{
+      countsTowardTaskBudget: false,
+      wallMs: PRE_PROVIDER_STOP_LOSS_POLICY.maxExemptWallMsPerBudgetEpoch,
+      preProviderFailure: failure,
+    }]);
+    expect(observed).toMatchObject({
+      runCount: 0,
+      preflightExemptRunCount: 1,
+      preflightExemptWallMs: PRE_PROVIDER_STOP_LOSS_POLICY.maxExemptWallMsPerBudgetEpoch,
+      lastPreProviderFailure: failure,
+    });
+    expect(evaluateExecutionAdmission(policy(), [{
+      countsTowardTaskBudget: false,
+      wallMs: PRE_PROVIDER_STOP_LOSS_POLICY.maxExemptWallMsPerBudgetEpoch,
+      preProviderFailure: failure,
+    }])).toMatchObject({
+      allowed: false,
+      reason: "pre_provider_wall_time_limit_exhausted",
     });
   });
 

@@ -21,6 +21,8 @@ import {
 import {
   EXECUTION_ADMISSION_CONTEXT_KEY,
   EXECUTION_ADMISSION_RESET_CONTEXT_KEY,
+  buildPreProviderFailureObservation,
+  buildPreProviderReadinessStateDigest,
   buildExecutionAdmissionEnvelope,
   evaluateExecutionAdmission,
   parseExecutionAdmissionPolicy,
@@ -330,6 +332,110 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       const admission = row.contextSnapshot?.gloopsExecutionAdmission as { budgetId?: string } | undefined;
       return admission?.budgetId === `run:${parentRunId}:default`;
     })).toBe(true);
+  });
+
+  it("atomically reserves the single provider-free remediation across concurrent claims", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_auth_failed",
+      errorMessage: "Managed provider identity is unavailable",
+      providerInvocationAttempted: false,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      usageBasis: "per_run",
+    };
+    const companyId = randomUUID();
+    const agentIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Stop-loss concurrency",
+      issuePrefix: "SLC",
+      defaultResponsibleUserId: "operator",
+      requireBoardApprovalForNewAgents: false,
+    });
+    for (const [index, agentId] of agentIds.entries()) {
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: `StopLossAgent${index}`,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+    }
+
+    const parentRunId = randomUUID();
+    const parsedPolicy = parseExecutionAdmissionPolicy(process.env);
+    if (!parsedPolicy.enabled) throw new Error("expected enabled execution policy");
+    const parentEnvelope = buildExecutionAdmissionEnvelope({
+      identity: { budgetId: `run:${parentRunId}:default`, epoch: "default" },
+      policy: parsedPolicy,
+      decision: evaluateExecutionAdmission(parsedPolicy, []),
+      evaluatedAt: new Date("2026-08-20T00:00:00Z"),
+    });
+    const stateDigest = buildPreProviderReadinessStateDigest({ readiness: "unchanged" });
+    const failure = buildPreProviderFailureObservation({
+      errorCode: "hermes_gateway_auth_failed",
+      adapterType: "codex_local",
+      stateDigest,
+      observedAt: new Date("2026-08-20T00:00:01Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: parentRunId,
+      companyId,
+      agentId: agentIds[0]!,
+      status: "failed",
+      errorCode: "hermes_gateway_auth_failed",
+      startedAt: new Date("2026-08-20T00:00:00Z"),
+      finishedAt: new Date("2026-08-20T00:00:01Z"),
+      usageJson: { providerInvocationAttempted: false },
+      resultJson: { provider_invocation: { attempted: false }, preProviderFailure: failure },
+      contextSnapshot: { gloopsExecutionAdmission: parentEnvelope },
+    });
+
+    const contenderRunIds: string[] = [];
+    for (const agentId of agentIds.slice(1)) {
+      const runId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      contenderRunIds.push(runId);
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "direct_recovery",
+        status: "queued",
+        requestedByActorType: "system",
+        requestedByActorId: "recovery",
+        runId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        retryOfRunId: parentRunId,
+        wakeupRequestId,
+        contextSnapshot: { wakeReason: "direct_recovery" },
+      });
+    }
+
+    await heartbeatService(db).resumeQueuedRuns();
+    await waitForTerminalRuns(db, contenderRunIds);
+    const rows = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, contenderRunIds));
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(rows.filter((row) => row.errorCode === "execution_admission.pre_provider_failure_limit_exhausted"))
+      .toHaveLength(1);
   });
 
   async function seedDirectAgent() {
@@ -2016,6 +2122,88 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       fixedOverheadInputTokens: 0,
       discretionaryInputTokens: 0,
     });
+  });
+
+  it("stops unchanged pre-provider retries before a second adapter call and caps remediation", async () => {
+    mockAdapterState.resultOverride = {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_auth_failed",
+      errorMessage: "Managed provider identity is unavailable",
+      providerInvocationAttempted: false,
+      provider: "hermes_gateway",
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      usageBasis: "per_run",
+    };
+    const { companyId, agentId } = await seedDirectAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Pre-provider stop-loss",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `STOP-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(first).not.toBeNull();
+    await waitForTerminalRuns(db, [first!.id]);
+    await heartbeat.waitForRunExecutionDrain(first!.id);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    const issueRuns = (await db.select().from(heartbeatRuns)).filter(
+      (row) =>
+        row.companyId === companyId &&
+        (row.contextSnapshot as Record<string, unknown> | null)?.issueId === issueId,
+    );
+    const unchangedRecovery = issueRuns.find(
+      (row) => row.errorCode === "execution_admission.pre_provider_state_unchanged",
+    );
+    expect(unchangedRecovery).toMatchObject({
+      status: "failed",
+      errorCode: "execution_admission.pre_provider_state_unchanged",
+      contextSnapshot: {
+        gloopsPreProviderStopLoss: {
+          decision: "denied",
+          reason: "state_unchanged",
+        },
+      },
+      resultJson: {
+        providerInvocationAttempted: false,
+        preProviderFailure: {
+          schemaVersion: "gloops.pre-provider-failure.v1",
+          errorCode: "execution_admission.pre_provider_state_unchanged",
+        },
+      },
+    });
+    const subsequent = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(subsequent).not.toBeNull();
+    await waitForTerminalRuns(db, [subsequent!.id]);
+    const subsequentRun = await heartbeat.getRun(subsequent!.id);
+    expect(subsequentRun?.status).toBe("cancelled");
+    expect([
+      "admission.issue_blocked",
+      "execution_admission.pre_provider_failure_limit_exhausted",
+    ]).toContain(subsequentRun?.errorCode);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
   it("releases the admission reservation for a pre-model workspace preparation failure", async () => {

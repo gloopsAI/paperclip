@@ -182,7 +182,7 @@ describe("workforce capacity admission (network-free failure harness)", () => {
     });
   });
 
-  it("admits a Grok burst only after a fresh typed durable failure receipt", () => {
+  it("admits a directly selected Grok subscription route without a sacrificial provider attempt", () => {
     const common = {
       runId: "run-grok",
       issueId: "issue-1",
@@ -193,24 +193,19 @@ describe("workforce capacity admission (network-free failure harness)", () => {
       quota: null,
       evaluatedAt: new Date("2026-08-13T10:02:00.000Z"),
     };
-    expect(assessWorkforceCapacity(common)).toMatchObject({
-      decision: "denied",
-      reasons: ["burst_escalation_receipt_missing"],
-      lease: null,
-    });
-    const admitted = assessWorkforceCapacity({ ...common, context: durableEvidence() });
+    const admitted = assessWorkforceCapacity(common);
     expect(admitted.decision).toBe("ready");
     expect(admitted.metrics.subscriptionCapacity).toMatchObject({
       source: "bounded_execution_budget",
       state: "available",
     });
     expect(admitted.metrics.quality).toEqual({
-      source: "typed_escalation_receipt",
-      reason: "quality_failure",
+      source: "direct_selection",
+      reason: null,
     });
   });
 
-  it("rejects tampered and stale escalation evidence", () => {
+  it("treats stale or malformed route history as non-authoritative telemetry", () => {
     const common = {
       runId: "run-sol",
       issueId: "issue-1",
@@ -224,11 +219,11 @@ describe("workforce capacity admission (network-free failure harness)", () => {
     expect(assessWorkforceCapacity({
       ...common,
       context: durableEvidence({ receiptDigest: `sha256:${"0".repeat(64)}` }),
-    }).reasons).toContain("burst_escalation_receipt_missing");
+    }).decision).toBe("ready");
     expect(assessWorkforceCapacity({
       ...common,
       context: durableEvidence({ observedAt: "2026-08-13T03:59:00.000Z" }),
-    }).reasons).toContain("burst_escalation_receipt_missing");
+    }).decision).toBe("ready");
     const otherIssueAttempt = buildSubscriptionRouteAttemptEvidence({
       provider: "terra",
       transport: "subscription_cli",
@@ -246,7 +241,7 @@ describe("workforce capacity admission (network-free failure harness)", () => {
           attempts: [otherIssueAttempt],
         },
       },
-    }).reasons).toContain("burst_escalation_receipt_missing");
+    }).decision).toBe("ready");
   });
 
   it("denies every model lane when the per-item phase budget is absent or invalid", () => {

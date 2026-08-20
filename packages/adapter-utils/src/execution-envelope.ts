@@ -215,25 +215,15 @@ export function evaluateSubscriptionRouteAdmission(
     };
   }
   if (provider === "ollama") {
-    return { allowed: true, provider, reason: "Ollama/Hermes is optional supplemental capacity, not a prerequisite" };
+    return { allowed: true, provider, reason: "Ollama/Hermes is directly eligible supplemental capacity" };
   }
   if (provider === "luna" || provider === "terra") {
     return { allowed: true, provider, reason: `${provider} is durable workforce capacity` };
   }
-  const durableAttempt = evidence?.attempts.find((attempt) =>
-    (!contextIssueId || attempt.issueId === contextIssueId) &&
-    (attempt.provider === "luna" || attempt.provider === "terra" || attempt.provider === "ollama"));
-  if (!durableAttempt) {
-    return {
-      allowed: false,
-      provider,
-      reason: `${provider} burst denied: missing typed terminal route receipt from Luna, Terra, or supplemental Ollama capacity`,
-    };
-  }
   return {
     allowed: true,
     provider,
-    reason: `${provider} burst admitted after typed ${durableAttempt.provider} terminal route evidence`,
+    reason: `${provider} is directly eligible; prior-provider failure is not an admission prerequisite`,
   };
 }
 

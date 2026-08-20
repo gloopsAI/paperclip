@@ -6,6 +6,41 @@ import { buildExecutionPhaseBudgetPlan } from "@paperclipai/adapter-utils/execut
 export const EXECUTION_ADMISSION_SCHEMA_VERSION = "gloops.execution-admission.v2" as const;
 export const EXECUTION_ADMISSION_CONTEXT_KEY = "gloopsExecutionAdmission" as const;
 export const EXECUTION_ADMISSION_RESET_CONTEXT_KEY = "gloopsExecutionBudgetResetId" as const;
+export const PRE_PROVIDER_STOP_LOSS_CONTEXT_KEY = "gloopsPreProviderStopLoss" as const;
+export const PRE_PROVIDER_FAILURE_RESULT_KEY = "preProviderFailure" as const;
+
+export const PRE_PROVIDER_STOP_LOSS_POLICY = {
+  maxFailuresPerBudgetEpoch: 2,
+  maxRemediationAttempts: 1,
+  maxExemptWallMsPerBudgetEpoch: 15 * 60 * 1000,
+  requireObservedStateChangeBeforeRetry: true,
+} as const;
+
+export type PreProviderFailureObservation = {
+  schemaVersion: "gloops.pre-provider-failure.v1";
+  stage: "pre_provider";
+  errorCode: string;
+  adapterType: string;
+  repository: string | null;
+  exactHead: string | null;
+  workspaceMode: string | null;
+  failureFingerprint: string;
+  stateDigest: string;
+  observedAt: string;
+  receiptDigest: string;
+};
+
+export type PreProviderStopLossReceipt = {
+  schemaVersion: "gloops.pre-provider-stop-loss.v1";
+  decision: "allowed" | "denied";
+  reason: "initial_attempt" | "observed_state_change" | "state_unchanged";
+  policy: typeof PRE_PROVIDER_STOP_LOSS_POLICY;
+  priorFailureReceiptDigest: string | null;
+  priorStateDigest: string | null;
+  currentStateDigest: string;
+  evaluatedAt: string;
+  receiptDigest: string;
+};
 
 /**
  * Explicit task policy may request a larger calibration envelope than the
@@ -38,12 +73,9 @@ export const PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES = new Set([
   "execution_admission.adapter_budget_unsupported",
   "configuration_incomplete",
   "agent_not_invokable",
-  // C3 / T-RESERVE: hermes auth thrash must never burn task budget or charge reservation.
   "hermes_gateway_auth_failed",
   "hermes_gateway_api_key_missing",
   "hermes_gateway_connect_failed",
-  // Review exit-0 without disposition is demoted to this code; must not brick
-  // the task budget or block guarded admission reset as "success evidence".
   "review_missing_disposition",
   "missing_issue_comment",
   "backlog_bankruptcy.company_frozen",
@@ -78,6 +110,8 @@ export type ExecutionAdmissionReason =
   | "input_token_limit_exhausted"
   | "output_token_limit_exhausted"
   | "wall_time_limit_exhausted"
+  | "pre_provider_failure_limit_exhausted"
+  | "pre_provider_wall_time_limit_exhausted"
   | "input_reservation_unavailable"
   | "output_reservation_unavailable";
 
@@ -95,6 +129,10 @@ export type ExecutionAdmissionUsage = {
   fixedOverheadInputTokens: number;
   /** Preflight/bootstrap failures excluded from run/retry ceilings. */
   preflightExemptRunCount: number;
+  /** Wall time in exempt work remains economically bounded. */
+  preflightExemptWallMs: number;
+  /** Latest server-authored failure used to require observed change. */
+  lastPreProviderFailure: PreProviderFailureObservation | null;
 };
 
 /**
@@ -158,7 +196,187 @@ export type PriorExecutionRun = {
   fixedOverheadInputTokens?: number | null;
   /** Discretionary input charged for this run. */
   discretionaryInputTokens?: number | null;
+  /** Server-observed provider boundary; false is required for stop-loss use. */
+  providerInvocationAttempted?: boolean | null;
+  preProviderFailure?: PreProviderFailureObservation | null;
 };
+
+function canonicalJson(value: unknown): string {
+  const normalize = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(normalize);
+    if (entry && typeof entry === "object") {
+      return Object.fromEntries(
+        Object.entries(entry as Record<string, unknown>)
+          .filter(([, nested]) => nested !== undefined)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, nested]) => [key, normalize(nested)]),
+      );
+    }
+    return entry;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+function sha256(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function boundedIdentity(value: string | null | undefined, max = 512): string | null {
+  const normalized = value?.trim();
+  return normalized && normalized.length <= max ? normalized : null;
+}
+
+export function buildPreProviderReadinessStateDigest(evidence: unknown): string {
+  return sha256({ schemaVersion: "gloops.pre-provider-readiness-state.v1", evidence });
+}
+
+export function buildPreProviderFailureObservation(input: {
+  errorCode: string;
+  adapterType: string;
+  repository?: string | null;
+  exactHead?: string | null;
+  workspaceMode?: string | null;
+  stateDigest: string;
+  observedAt?: Date;
+}): PreProviderFailureObservation {
+  const errorCode = boundedIdentity(input.errorCode, 256);
+  const adapterType = boundedIdentity(input.adapterType, 128);
+  if (!errorCode || !adapterType || !/^[a-f0-9]{64}$/.test(input.stateDigest)) {
+    throw new Error("Pre-provider failure evidence is incomplete");
+  }
+  const repository = boundedIdentity(input.repository);
+  const exactHead = boundedIdentity(input.exactHead, 256);
+  const workspaceMode = boundedIdentity(input.workspaceMode, 128);
+  const body = {
+    schemaVersion: "gloops.pre-provider-failure.v1" as const,
+    stage: "pre_provider" as const,
+    errorCode,
+    adapterType,
+    repository,
+    exactHead,
+    workspaceMode,
+    failureFingerprint: sha256({
+      stage: "pre_provider",
+      errorCode,
+      repository,
+      exactHead,
+      adapterType,
+      workspaceMode,
+    }),
+    stateDigest: input.stateDigest,
+    observedAt: (input.observedAt ?? new Date()).toISOString(),
+  };
+  return { ...body, receiptDigest: sha256(body) };
+}
+
+export function readPreProviderFailureObservation(value: unknown): PreProviderFailureObservation | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<PreProviderFailureObservation>;
+  const body = {
+    schemaVersion: candidate.schemaVersion,
+    stage: candidate.stage,
+    errorCode: candidate.errorCode,
+    adapterType: candidate.adapterType,
+    repository: candidate.repository ?? null,
+    exactHead: candidate.exactHead ?? null,
+    workspaceMode: candidate.workspaceMode ?? null,
+    failureFingerprint: candidate.failureFingerprint,
+    stateDigest: candidate.stateDigest,
+    observedAt: candidate.observedAt,
+  };
+  if (
+    body.schemaVersion !== "gloops.pre-provider-failure.v1" ||
+    body.stage !== "pre_provider" ||
+    !boundedIdentity(body.errorCode, 256) ||
+    !boundedIdentity(body.adapterType, 128) ||
+    (body.repository !== null && boundedIdentity(body.repository) !== body.repository) ||
+    (body.exactHead !== null && boundedIdentity(body.exactHead, 256) !== body.exactHead) ||
+    (body.workspaceMode !== null && boundedIdentity(body.workspaceMode, 128) !== body.workspaceMode) ||
+    typeof body.failureFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(body.failureFingerprint) ||
+    typeof body.stateDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.stateDigest) ||
+    typeof body.observedAt !== "string" || !Number.isFinite(Date.parse(body.observedAt)) ||
+    typeof candidate.receiptDigest !== "string" || candidate.receiptDigest !== sha256(body)
+  ) return null;
+  const expectedFingerprint = sha256({
+    stage: body.stage,
+    errorCode: body.errorCode,
+    repository: body.repository,
+    exactHead: body.exactHead,
+    adapterType: body.adapterType,
+    workspaceMode: body.workspaceMode,
+  });
+  return expectedFingerprint === body.failureFingerprint
+    ? candidate as PreProviderFailureObservation
+    : null;
+}
+
+export function evaluatePreProviderStopLoss(input: {
+  priorFailure: PreProviderFailureObservation | null;
+  currentStateDigest: string;
+  evaluatedAt?: Date;
+}): PreProviderStopLossReceipt {
+  if (!/^[a-f0-9]{64}$/.test(input.currentStateDigest)) {
+    throw new Error("Pre-provider readiness state digest is invalid");
+  }
+  const unchanged = Boolean(
+    input.priorFailure && input.priorFailure.stateDigest === input.currentStateDigest,
+  );
+  const body = {
+    schemaVersion: "gloops.pre-provider-stop-loss.v1" as const,
+    decision: unchanged ? "denied" as const : "allowed" as const,
+    reason: !input.priorFailure
+      ? "initial_attempt" as const
+      : unchanged
+        ? "state_unchanged" as const
+        : "observed_state_change" as const,
+    policy: PRE_PROVIDER_STOP_LOSS_POLICY,
+    priorFailureReceiptDigest: input.priorFailure?.receiptDigest ?? null,
+    priorStateDigest: input.priorFailure?.stateDigest ?? null,
+    currentStateDigest: input.currentStateDigest,
+    evaluatedAt: (input.evaluatedAt ?? new Date()).toISOString(),
+  };
+  return { ...body, receiptDigest: sha256(body) };
+}
+
+export function readPreProviderStopLossReceipt(value: unknown): PreProviderStopLossReceipt | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<PreProviderStopLossReceipt>;
+  const policy = candidate.policy as Partial<typeof PRE_PROVIDER_STOP_LOSS_POLICY> | undefined;
+  const body = {
+    schemaVersion: candidate.schemaVersion,
+    decision: candidate.decision,
+    reason: candidate.reason,
+    policy: candidate.policy,
+    priorFailureReceiptDigest: candidate.priorFailureReceiptDigest ?? null,
+    priorStateDigest: candidate.priorStateDigest ?? null,
+    currentStateDigest: candidate.currentStateDigest,
+    evaluatedAt: candidate.evaluatedAt,
+  };
+  if (
+    body.schemaVersion !== "gloops.pre-provider-stop-loss.v1" ||
+    (body.decision !== "allowed" && body.decision !== "denied") ||
+    !["initial_attempt", "observed_state_change", "state_unchanged"].includes(String(body.reason)) ||
+    !policy ||
+    policy.maxFailuresPerBudgetEpoch !== PRE_PROVIDER_STOP_LOSS_POLICY.maxFailuresPerBudgetEpoch ||
+    policy.maxRemediationAttempts !== PRE_PROVIDER_STOP_LOSS_POLICY.maxRemediationAttempts ||
+    policy.maxExemptWallMsPerBudgetEpoch !== PRE_PROVIDER_STOP_LOSS_POLICY.maxExemptWallMsPerBudgetEpoch ||
+    policy.requireObservedStateChangeBeforeRetry !== true ||
+    (body.priorFailureReceiptDigest !== null &&
+      (typeof body.priorFailureReceiptDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.priorFailureReceiptDigest))) ||
+    (body.priorStateDigest !== null &&
+      (typeof body.priorStateDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.priorStateDigest))) ||
+    typeof body.currentStateDigest !== "string" || !/^[a-f0-9]{64}$/.test(body.currentStateDigest) ||
+    typeof body.evaluatedAt !== "string" || !Number.isFinite(Date.parse(body.evaluatedAt)) ||
+    typeof candidate.receiptDigest !== "string" || candidate.receiptDigest !== sha256(body) ||
+    (body.reason === "initial_attempt" &&
+      (body.decision !== "allowed" || body.priorFailureReceiptDigest !== null || body.priorStateDigest !== null)) ||
+    (body.reason === "state_unchanged" &&
+      (body.decision !== "denied" || body.priorStateDigest !== body.currentStateDigest)) ||
+    (body.reason === "observed_state_change" &&
+      (body.decision !== "allowed" || !body.priorStateDigest || body.priorStateDigest === body.currentStateDigest))
+  ) return null;
+  return candidate as PreProviderStopLossReceipt;
+}
 
 /**
  * True when a terminal run failed before provider invocation and must not
@@ -176,7 +394,6 @@ export function isBudgetExemptPreflightFailure(input: {
   if (input.providerInvocationAttempted === false) return true;
   if (!code) return false;
   if (PREFLIGHT_BUDGET_EXEMPT_ERROR_CODES.has(code)) return true;
-  // Configuration / workspace preflight family prefixes.
   if (
     code.startsWith("workspace_validation") ||
     code.startsWith("configuration_") ||
@@ -697,7 +914,14 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     (observed.preflightExemptRunCount === undefined ||
       (typeof observed.preflightExemptRunCount === "number" &&
         Number.isSafeInteger(observed.preflightExemptRunCount) &&
-        observed.preflightExemptRunCount >= 0)),
+        observed.preflightExemptRunCount >= 0)) &&
+    (observed.preflightExemptWallMs === undefined ||
+      (typeof observed.preflightExemptWallMs === "number" &&
+        Number.isSafeInteger(observed.preflightExemptWallMs) &&
+        observed.preflightExemptWallMs >= 0)) &&
+    (observed.lastPreProviderFailure === undefined ||
+      observed.lastPreProviderFailure === null ||
+      readPreProviderFailureObservation(observed.lastPreProviderFailure) !== null),
   );
   const validReason = candidate.reason === null || [
     "run_limit_exhausted",
@@ -705,6 +929,8 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
     "input_token_limit_exhausted",
     "output_token_limit_exhausted",
     "wall_time_limit_exhausted",
+    "pre_provider_failure_limit_exhausted",
+    "pre_provider_wall_time_limit_exhausted",
     "input_reservation_unavailable",
     "output_reservation_unavailable",
   ].includes(candidate.reason as string);
@@ -776,6 +1002,9 @@ export function readExecutionAdmissionEnvelope(value: unknown): ExecutionAdmissi
       ...(observed as ExecutionAdmissionUsage),
       fixedOverheadInputTokens: observed?.fixedOverheadInputTokens ?? 0,
       preflightExemptRunCount: observed?.preflightExemptRunCount ?? 0,
+      preflightExemptWallMs: observed?.preflightExemptWallMs ?? 0,
+      lastPreProviderFailure:
+        readPreProviderFailureObservation(observed?.lastPreProviderFailure) ?? null,
     },
   } as ExecutionAdmissionEnvelope;
   if (policy) {
@@ -848,9 +1077,18 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
   return priorRuns.reduce<ExecutionAdmissionUsage>(
     (total, run) => {
       if (run.countsTowardTaskBudget === false) {
+        // Historical task-budget exemptions include a few provider-invoking
+        // lifecycle outcomes. They stay exempt for compatibility, but cannot
+        // consume or authorize the provider-free remediation stop-loss.
+        const providerFree = run.providerInvocationAttempted === false || run.preProviderFailure != null;
         return {
           ...total,
-          preflightExemptRunCount: total.preflightExemptRunCount + 1,
+          preflightExemptRunCount: total.preflightExemptRunCount + (providerFree ? 1 : 0),
+          preflightExemptWallMs:
+            total.preflightExemptWallMs + (providerFree ? nonNegative(run.wallMs) : 0),
+          lastPreProviderFailure: providerFree
+            ? run.preProviderFailure ?? total.lastPreProviderFailure
+            : total.lastPreProviderFailure,
         };
       }
       const inputSplit = splitInputTokenAccounting({
@@ -873,6 +1111,8 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
         fixedOverheadInputTokens:
           total.fixedOverheadInputTokens + inputSplit.fixedOverheadInputTokens,
         preflightExemptRunCount: total.preflightExemptRunCount,
+        preflightExemptWallMs: total.preflightExemptWallMs,
+        lastPreProviderFailure: total.lastPreProviderFailure,
       };
     },
     {
@@ -884,6 +1124,8 @@ export function summarizePriorExecution(priorRuns: PriorExecutionRun[]): Executi
       wallMs: 0,
       fixedOverheadInputTokens: 0,
       preflightExemptRunCount: 0,
+      preflightExemptWallMs: 0,
+      lastPreProviderFailure: null,
     },
   );
 }
@@ -935,20 +1177,24 @@ export function evaluateExecutionAdmission(
     currentRun.isAuthorizedIndependentStage !== true;
   const reason = observed.runCount >= policy.maxRunsPerTask
     ? "run_limit_exhausted"
-    : isUnclassifiedContinuation ||
-        (currentRun.isRetry === true && observed.retryCount >= policy.maxRetriesPerTask)
-      ? "retry_limit_exhausted"
-      : observed.inputTokens >= policy.maxInputTokensPerTask
-        ? "input_token_limit_exhausted"
-        : observed.outputTokens >= policy.maxOutputTokensPerTask
-          ? "output_token_limit_exhausted"
-          : observed.wallMs >= policy.maxWallMsPerTask
-            ? "wall_time_limit_exhausted"
-            : remainingInputTokens <= 0
-              ? "input_reservation_unavailable"
-              : remainingOutputTokens <= 0
-                ? "output_reservation_unavailable"
-            : null;
+    : observed.preflightExemptRunCount >= PRE_PROVIDER_STOP_LOSS_POLICY.maxFailuresPerBudgetEpoch
+      ? "pre_provider_failure_limit_exhausted"
+      : observed.preflightExemptWallMs >= PRE_PROVIDER_STOP_LOSS_POLICY.maxExemptWallMsPerBudgetEpoch
+        ? "pre_provider_wall_time_limit_exhausted"
+        : isUnclassifiedContinuation ||
+            (currentRun.isRetry === true && observed.retryCount >= policy.maxRetriesPerTask)
+          ? "retry_limit_exhausted"
+          : observed.inputTokens >= policy.maxInputTokensPerTask
+            ? "input_token_limit_exhausted"
+            : observed.outputTokens >= policy.maxOutputTokensPerTask
+              ? "output_token_limit_exhausted"
+              : observed.wallMs >= policy.maxWallMsPerTask
+                ? "wall_time_limit_exhausted"
+                : remainingInputTokens <= 0
+                  ? "input_reservation_unavailable"
+                  : remainingOutputTokens <= 0
+                    ? "output_reservation_unavailable"
+                    : null;
   return { allowed: reason === null, reason, observed };
 }
 

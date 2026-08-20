@@ -13,13 +13,13 @@
     "rule": "Any change to a protected edge surface must update this assessment and regenerate the complete inventory before it can pass distribution verification.",
     "inventoryFileSha256": "c6d1f745e9e298e905a916db118125950ac733c83b204c6573d98b8d84aceaab",
     "protectedEdgeSurfaceDigests": {
-      "packages/adapter-utils/src/execution-envelope.ts": "d5c53ae795b0c8a5f8966bf526c466ed123d64d8bca030337adeb1afbd20a236",
+      "packages/adapter-utils/src/execution-envelope.ts": "8abc61e2c3c43f572c24a93ce9c4b3b9ffa66a9fb6bba106f54bec93fb9f9d91",
       "packages/adapter-utils/src/server-utils.ts": "d046abdec5b391a48e40b0e2cfa4631b1dce64beace589238693dd0f503f9fdc",
       "packages/adapter-utils/src/session-compaction.ts": "fbc50b1888a957ddfac311af99c2674dde7f7dab0f8f3883e237dfd011deacc5",
       "server/src/services/agent-capacity.ts": "24ca64f8edeb1b1ebaf86a6dc14c8412b7c038adf452ea78982b640b25d3628c",
       "server/src/services/outcome-scorecard.ts": "c74c3f2bec9d4d44d28ce18b359c0054850e65a441eb09d5fc8f2cbacf436231",
       "server/src/services/productivity-review.ts": "19cfa1662cd801a2a629c08756521c86bf25aec672ba3d592d25f03a36256767",
-      "server/src/services/workforce-capacity.ts": "2bc6ba1b7699fd5639dbcaaff4d18e5c6752e1104c96053fbdbd6358d7326d65",
+      "server/src/services/workforce-capacity.ts": "9dc9ed1ab79ce3c590fd9c0e5b096fa6295167033d519f21cb999d005ec68900",
       "skills/paperclip/SKILL.md": "18f9ab974d972f873e1ea9ca188e4befeb0023232ab67845f80c66cf89b0684e"
     }
   },
