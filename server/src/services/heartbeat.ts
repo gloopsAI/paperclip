@@ -105,10 +105,6 @@ import {
 } from "./run-liveness.js";
 import { parseControlledSwarmAdmissionPolicy } from "./controlled-swarm-admission.js";
 import {
-  evaluateBacklogBankruptcyAdmission,
-  parseBacklogBankruptcyAdmissionPolicy,
-} from "./backlog-bankruptcy-admission.js";
-import {
   ISSUE_PACKET_REASON,
   evaluateIssuePacketReadiness,
 } from "./issue-packet-readiness.js";
@@ -5529,7 +5525,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const reconciledExecutionAdapters = parseReconciledExecutionAdapters(runtimeEnv);
   const executionCampaignPolicy = parseExecutionCampaignPolicy(runtimeEnv);
   const controlledSwarmAdmissionPolicy = parseControlledSwarmAdmissionPolicy(runtimeEnv);
-  const backlogBankruptcyAdmissionPolicy = parseBacklogBankruptcyAdmissionPolicy(runtimeEnv);
   const campaignDeadmanAdmission = options.campaignDeadmanAdmission ?? admitCampaignRun;
   /**
    * Collect resource budgets from the issue and its ancestors, root-to-leaf.
@@ -12047,97 +12042,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     claimedAt: Date;
   }): Promise<ExecutionAdmissionClaim> {
     const { run, context, campaignPolicy, issueId, responsibleUserId, claimedAt } = input;
-    const bankruptcyCompanyFrozen = backlogBankruptcyAdmissionPolicy.frozenCompanyIds.has(
-      run.companyId.toLowerCase(),
-    );
-    const bankruptcyIssue = bankruptcyCompanyFrozen && issueId
-      ? await db
-          .select({
-            executionPolicy: issues.executionPolicy,
-            originKind: issues.originKind,
-            originId: issues.originId,
-            requestDepth: issues.requestDepth,
-            workMode: issues.workMode,
-            projectId: issues.projectId,
-            projectWorkspaceId: issues.projectWorkspaceId,
-            executionWorkspaceId: issues.executionWorkspaceId,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
-    const normalizedBankruptcyExecutionPolicy = normalizeIssueExecutionPolicy(
-      bankruptcyIssue?.executionPolicy ?? null,
-    );
-    const trustedTaskBridgeConsult = Boolean(
-      bankruptcyIssue &&
-      bankruptcyIssue.originKind === "task_bridge" &&
-      readNonEmptyString(bankruptcyIssue.originId) &&
-      bankruptcyIssue.requestDepth === 0 &&
-      bankruptcyIssue.workMode === "ask" &&
-      bankruptcyIssue.projectId === null &&
-      bankruptcyIssue.projectWorkspaceId === null &&
-      bankruptcyIssue.executionWorkspaceId === null &&
-      normalizedBankruptcyExecutionPolicy?.completionProfile === "direct",
-    );
-    const bankruptcyAdmission = evaluateBacklogBankruptcyAdmission(
-      backlogBankruptcyAdmissionPolicy,
-      {
-        companyId: run.companyId,
-        issueId,
-        executionAdmissionEnabled: executionAdmissionPolicy.enabled,
-        hasExplicitResourceBudget: Boolean(
-          normalizedBankruptcyExecutionPolicy?.resourceBudget,
-        ),
-        trustedTaskBridgeConsult,
-        trustedTaskBridgeBudgetIsOneRun: Boolean(
-          normalizedBankruptcyExecutionPolicy?.resourceBudget?.maxRunsPerTask === 1 &&
-          normalizedBankruptcyExecutionPolicy.resourceBudget.maxRetriesPerTask === 0,
-        ),
-      },
-    );
-    if (!bankruptcyAdmission.admitted) {
-      const denied = await db
-        .update(heartbeatRuns)
-        .set({
-          status: "cancelled",
-          finishedAt: claimedAt,
-          updatedAt: claimedAt,
-          error: bankruptcyAdmission.reason,
-          errorCode: bankruptcyAdmission.errorCode,
-          resultJson: {
-            ...parseObject(run.resultJson),
-            stopReason: bankruptcyAdmission.errorCode,
-            timeoutFired: false,
-          },
-        })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return denied
-        ? {
-            kind: "denied",
-            run: denied,
-            errorCode: bankruptcyAdmission.errorCode,
-            reason: bankruptcyAdmission.reason,
-            envelope: null,
-          }
-        : { kind: "lost_race" };
-    }
-    const contextWithBacklogAdmission = bankruptcyAdmission.reason === "trusted_task_bridge_consult"
-      ? {
-          ...context,
-          backlogBankruptcyAdmission: {
-            schemaVersion: "gloops.backlog-bankruptcy-admission.v1",
-            disposition: "admitted",
-            reason: bankruptcyAdmission.reason,
-            issueId,
-            originKind: bankruptcyIssue?.originKind ?? null,
-            originId: bankruptcyIssue?.originId ?? null,
-            evaluatedAt: claimedAt.toISOString(),
-          },
-        }
-      : context;
     if (!executionAdmissionPolicy.enabled) {
       return db.transaction(async (tx) => {
         const limit = controlledSwarmAdmissionPolicy.companyMaxActiveRuns;
@@ -12169,7 +12073,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { companyId: run.companyId, runId: run.id },
           campaignDeadmanAdmission,
         );
-        const boundContext = bindExecutionCampaignContext(contextWithBacklogAdmission, campaignPolicy);
+        const boundContext = bindExecutionCampaignContext(context, campaignPolicy);
         const nextContext = campaignEpoch
           ? {
               ...boundContext,
@@ -12476,7 +12380,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         evaluatedAt: claimedAt,
       });
       const nextContext = {
-        ...contextWithBacklogAdmission,
+        ...context,
         [EXECUTION_ADMISSION_CONTEXT_KEY]: envelope,
       };
 

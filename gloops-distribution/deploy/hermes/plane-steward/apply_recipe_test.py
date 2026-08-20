@@ -181,18 +181,6 @@ class ApplyRecipeTest(unittest.TestCase):
         self.assertEqual(report["heartbeatSchedulerEnabled"], "false")
         self.assertFalse(report["wouldForceFalse"])
 
-    def test_readmit_dry_run(self) -> None:
-        report = apply_recipe.recipe_readmit_budget_bound_wake(
-            dry_run=True,
-            params={
-                "issueId": "a2b3db2c-9fbe-457f-96bd-bb6c643029b3",
-                "agentId": "wren",
-            },
-            pack=apply_recipe.load_recipes(),
-        )
-        self.assertTrue(report["ok"])
-        self.assertIn("resourceBudget", report)
-
     def test_acl_fix_dry_run(self) -> None:
         report = apply_recipe.recipe_acl_fix(
             dry_run=True,

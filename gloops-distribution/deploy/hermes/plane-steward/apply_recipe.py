@@ -388,13 +388,6 @@ def _read_runtime_key(key: str) -> str | None:
     return None
 
 
-def _csv_append_unique(existing: str | None, uuid: str) -> str:
-    parts = [p.strip() for p in (existing or "").split(",") if p.strip()]
-    if uuid not in parts:
-        parts.append(uuid)
-    return ",".join(parts)
-
-
 def _hostctl_identity(params: dict[str, Any]) -> dict[str, str]:
     ident = params.get("hostctlIdentity") or {}
     if not isinstance(ident, dict):
@@ -455,112 +448,6 @@ def _api_request(method: str, path: str, body: dict[str, Any] | None = None) -> 
         raise RecipeError(f"API {method} {path} returned {error.code}: {detail}") from error
     except urllib.error.URLError as error:
         raise RecipeError(f"API {method} {path} unavailable: {error}") from error
-
-
-def recipe_readmit_budget_bound_wake(
-    *,
-    dry_run: bool,
-    params: dict[str, Any],
-    pack: dict[str, Any],
-) -> dict[str, Any]:
-    recipe_id = "readmit-budget-bound-wake"
-    issue_id = require_uuid(params.get("issueId"), "issueId")
-    agent_id = params.get("agentId")
-    if not agent_id or not isinstance(agent_id, str):
-        raise RecipeError("agentId is required for bound wake")
-    budget = params.get("resourceBudget") or {
-        "maxInputTokens": 200000,
-        "maxOutputTokens": 32000,
-    }
-    identity = _hostctl_identity(params)
-    # Guard: never enable scheduler
-    planned = [
-        f"PATCH issue {issue_id} executionPolicy.resourceBudget",
-        f"hostctl READMIT single UUID {issue_id} on BACKLOG + CONTROLLED_SWARM lists",
-        "assert HEARTBEAT_SCHEDULER_ENABLED=false",
-        f"POST /agents/{agent_id}/wakeup payload.issueId={issue_id}",
-    ]
-    executed: list[str] = []
-    scheduler = _read_runtime_key("HEARTBEAT_SCHEDULER_ENABLED")
-    if scheduler is not None and scheduler.lower() == "true":
-        planned.insert(0, "HEARTBEAT_SCHEDULER_ENABLED is true — will force false first")
-
-    if dry_run:
-        return result(
-            recipe_id=recipe_id,
-            dry_run=True,
-            ok=True,
-            planned=planned,
-            executed=executed,
-            extra={
-                "issueId": issue_id,
-                "agentId": agent_id,
-                "resourceBudget": budget,
-                "heartbeatSchedulerEnabled": scheduler,
-            },
-        )
-
-    # 1) Force scheduler false if drifted
-    if scheduler is not None and scheduler.lower() == "true":
-        _hostctl_apply(
-            ["HEARTBEAT_SCHEDULER_ENABLED=false"],
-            identity,
-            intent=f"plane-steward: force scheduler false before readmit {issue_id}",
-        )
-        executed.append("hostctl HEARTBEAT_SCHEDULER_ENABLED=false")
-
-    # 2) Board patch resourceBudget (best-effort path variants)
-    patch_body = {"executionPolicy": {"resourceBudget": budget}}
-    patched = False
-    for path in (f"/api/issues/{issue_id}", f"/issues/{issue_id}"):
-        try:
-            _api_request("PATCH", path, patch_body)
-            executed.append(f"PATCH {path} resourceBudget")
-            patched = True
-            break
-        except RecipeError:
-            continue
-    if not patched:
-        raise RecipeError("failed to PATCH issue resourceBudget on known API paths")
-
-    # 3) hostctl READMIT one UUID on both lists
-    backlog = _read_runtime_key("PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS")
-    swarm = _read_runtime_key("PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS")
-    new_backlog = _csv_append_unique(backlog, issue_id)
-    new_swarm = _csv_append_unique(swarm, issue_id)
-    _hostctl_apply(
-        [
-            f"PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS={new_backlog}",
-            f"PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS={new_swarm}",
-            "HEARTBEAT_SCHEDULER_ENABLED=false",
-        ],
-        identity,
-        intent=f"plane-steward: READMIT {issue_id}",
-    )
-    executed.append(f"hostctl READMIT {issue_id}")
-
-    # 4) Issue-bound wake only
-    wake_body = {"payload": {"issueId": issue_id}}
-    woken = False
-    for path in (f"/api/agents/{agent_id}/wakeup", f"/agents/{agent_id}/wakeup"):
-        try:
-            _api_request("POST", path, wake_body)
-            executed.append(f"POST {path} issue-bound")
-            woken = True
-            break
-        except RecipeError:
-            continue
-    if not woken:
-        raise RecipeError("issue-bound wakeup failed on known API paths")
-
-    return result(
-        recipe_id=recipe_id,
-        dry_run=False,
-        ok=True,
-        planned=planned,
-        executed=executed,
-        extra={"issueId": issue_id, "agentId": agent_id},
-    )
 
 
 def recipe_never_enable_scheduler(
@@ -665,7 +552,6 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "dirty-tree-clean": recipe_dirty_tree_clean,
     "wrong-head-rebase": recipe_wrong_head_rebase,
     "acl-fix": recipe_acl_fix,
-    "readmit-budget-bound-wake": recipe_readmit_budget_bound_wake,
     "never-enable-global-heartbeat-scheduler": recipe_never_enable_scheduler,
     "null-issueId-wake-reject": recipe_null_issue_wake_reject,
 }

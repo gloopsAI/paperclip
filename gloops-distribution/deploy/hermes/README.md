@@ -275,24 +275,14 @@ The successor release also advances the issue-creation admission floor to
 `2026-07-18T23:12:22.000Z`. Work created before that instant remains
 mechanically ineligible even if it was left open by the predecessor campaign.
 
-### Company-scoped backlog-bankruptcy freeze
+### Ordinary execution baseline
 
-`PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS` is an optional,
-comma-separated UUID list. A queued heartbeat for a listed company is cancelled
-before adapter invocation with `backlog_bankruptcy.company_frozen`. Companies
-not listed continue to claim normally. This is an execution-claim barrier only:
-it does not reject issue creation or rewrite existing issue, assignment, or
-workspace state.
-
-`PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS` is an optional,
-comma-separated UUID list for explicit successor work. A listed issue is
-admitted inside a frozen company only when execution admission is enabled and
-the issue has an explicit `executionPolicy.resourceBudget`; otherwise the claim
-is cancelled with `backlog_bankruptcy.readmit_budget_required`. Both denial
-codes are provider-free and do not consume task run/retry budget. Empty values
-disable the bankruptcy policy. The policy is parsed at service startup, so a
-governed configuration change requires a Paperclip restart and a fresh live
-receipt.
+Ordinary product work follows Paperclip's upstream assignment, workspace, run,
+and atomic issue-claim path. GLoops does not add a company freeze or per-issue
+readmit list in front of that path. Resource budgets remain issue policy, not a
+host configuration gate. Controlled-swarm commissioning remains available only
+for an explicitly governed campaign; it is not the default admission mechanism
+for normal work.
 
 Provider-free failures are exempt from provider token accounting, not from
 economic control. Within one execution-budget epoch Paperclip now admits at

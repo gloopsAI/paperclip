@@ -68,7 +68,6 @@ declare -A EXPECTED_EXECUTION_ENVELOPE=(
   [PAPERCLIP_EXECUTION_ADMISSION_ENABLED]='true'
   [PAPERCLIP_ISSUE_PACKET_DOR]='enforce'
   [PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS]='codex_local,grok_local'
-  [PAPERCLIP_BACKLOG_BANKRUPTCY_FROZEN_COMPANY_IDS]='89ed0964-d918-4fcc-b830-5be49d2d4089'
   [PAPERCLIP_COMPANY_MAX_ACTIVE_RUNS]='4'
   [PAPERCLIP_EXECUTION_ISSUE_CREATED_AT_GTE]='2026-07-18T23:12:22.000Z'
   [PAPERCLIP_EXECUTION_MAX_RUNS_PER_TASK]='3'
@@ -131,7 +130,6 @@ if [[ "${MODE}" == '--campaign-bound' ]]; then
     exit 1
   fi
 fi
-"/usr/local/lib/paperclip-gloops/verify-backlog-readmit-window.py"
 if [[ "${MODE}" == '--campaign-bound' ]]; then
   "/usr/local/lib/paperclip-gloops/verify-predecessor-campaign-epoch.py"
 fi

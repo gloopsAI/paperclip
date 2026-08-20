@@ -42,13 +42,6 @@ UUID_RE = re.compile(
     re.I,
 )
 SHA40_RE = re.compile(r"\b[0-9a-f]{40}\b")
-CANCEL_LT_5S_RE = re.compile(
-    r"(cancel(?:led|ation)?|durationMs|runtimeMs|elapsed).{0,40}\b([0-4](?:\.\d+)?)\s*s\b|"
-    r"\bcancel(?:led)?\b.{0,20}\b([0-4]\d{0,3})\s*ms\b|"
-    r"\"durationMs\"\s*:\s*([0-4]\d{0,3})\b",
-    re.I,
-)
-
 # Map signal code -> recipe id (ordered preference).
 SIGNAL_TO_RECIPE: list[tuple[str, str, re.Pattern[str] | None]] = [
     (
@@ -85,20 +78,6 @@ SIGNAL_TO_RECIPE: list[tuple[str, str, re.Pattern[str] | None]] = [
         re.compile(r"workspace_admit\.(cwd_missing|cwd_not_git|workspace_not_found)", re.I),
     ),
     (
-        "readmit_budget_required",
-        "readmit-budget-bound-wake",
-        re.compile(
-            r"readmit_budget_required|resourceBudget|resource_budget|"
-            r"backlog_bankruptcy|company_frozen",
-            re.I,
-        ),
-    ),
-    (
-        "cancel_lt_5s",
-        "readmit-budget-bound-wake",
-        None,  # special-cased
-    ),
-    (
         "null_issueId",
         "null-issueId-wake-reject",
         re.compile(
@@ -115,14 +94,6 @@ SIGNAL_TO_RECIPE: list[tuple[str, str, re.Pattern[str] | None]] = [
             r"HEARTBEAT_SCHEDULER_ENABLED\s*=\s*true|heartbeat.?scheduler.?enabled.?true|"
             r"preflight_death_spiral",
             re.I,
-        ),
-    ),
-    (
-        "company_frozen_null_issue",
-        "null-issueId-wake-reject",
-        re.compile(
-            r"company_frozen.{0,80}issueId.{0,20}null|issueId.{0,20}null.{0,80}company_frozen",
-            re.I | re.S,
         ),
     ),
     (
@@ -193,45 +164,6 @@ def _as_text(obj: Any) -> str:
         return str(obj)
 
 
-def _duration_ms(obj: dict[str, Any]) -> int | None:
-    for key in ("durationMs", "runtimeMs", "elapsedMs", "cancelAfterMs"):
-        value = obj.get(key)
-        if isinstance(value, (int, float)) and value >= 0:
-            return int(value)
-    # startedAt / cancelledAt pair
-    start = obj.get("startedAt") or obj.get("createdAt")
-    end = obj.get("cancelledAt") or obj.get("endedAt") or obj.get("finishedAt")
-    if isinstance(start, str) and isinstance(end, str):
-        try:
-            s = datetime.fromisoformat(start.replace("Z", "+00:00"))
-            e = datetime.fromisoformat(end.replace("Z", "+00:00"))
-            return max(0, int((e - s).total_seconds() * 1000))
-        except ValueError:
-            return None
-    return None
-
-
-def detect_cancel_lt_5s(text: str, obj: dict[str, Any] | None = None) -> bool:
-    if obj is not None:
-        ms = _duration_ms(obj)
-        if ms is not None and ms < 5000:
-            status = str(obj.get("status") or obj.get("outcome") or "").lower()
-            if "cancel" in status or obj.get("cancelled") is True or "cancel" in text.lower():
-                return True
-            # short-lived failed recovery thrash also matches backlog signal
-            if ms < 5000 and any(
-                token in text.lower()
-                for token in ("cancel", "recovery", "missing_disposition", "workspace_admit")
-            ):
-                return True
-    if CANCEL_LT_5S_RE.search(text):
-        return True
-    # explicit "cancel in 1s" narrative
-    if re.search(r"cancel(?:led)?\s+(?:in\s+)?[0-4](?:\.\d+)?\s*s\b", text, re.I):
-        return True
-    return False
-
-
 def extract_issue_id(obj: dict[str, Any] | None, text: str) -> str | None:
     if obj:
         for key in ("issueId", "issue_id", "id", "workItemId"):
@@ -294,11 +226,7 @@ def detect_in_text(text: str, obj: dict[str, Any] | None = None) -> list[dict[st
             }
         )
 
-    # Special: cancel < 5s
-    if detect_cancel_lt_5s(text, obj):
-        add("cancel_lt_5s", "readmit-budget-bound-wake", "cancel or run duration < 5s")
-
-    # Special: null issueId (prefer over generic company_frozen thrash)
+    # Special: null issueId.
     if issue_id_is_null(obj, text):
         add(
             "null_issueId",
@@ -306,17 +234,8 @@ def detect_in_text(text: str, obj: dict[str, Any] | None = None) -> list[dict[st
             "wake/invoke missing payload.issueId — do not thrash company unfreeze",
             confidence="high",
         )
-        # If company_frozen also present, annotate dual signal but keep null recipe primary
-        if re.search(r"company_frozen|backlog_bankruptcy", text, re.I):
-            add(
-                "company_frozen_null_issue",
-                "null-issueId-wake-reject",
-                "company_frozen with null issueId is often a false surface; re-issue bound wake",
-                confidence="high",
-            )
-
     for signal, recipe_id, pattern in SIGNAL_TO_RECIPE:
-        if signal in ("cancel_lt_5s", "null_issueId", "company_frozen_null_issue"):
+        if signal == "null_issueId":
             continue
         if pattern is None:
             continue
@@ -335,8 +254,6 @@ def detect_in_text(text: str, obj: dict[str, Any] | None = None) -> list[dict[st
                 add("head_mismatch", "wrong-head-rebase", error_code, "high")
             if "cwd_not_readable" in code or "acl" in code:
                 add("acl_denied", "acl-fix", error_code, "high")
-            if "readmit_budget" in code or "resource_budget" in code:
-                add("readmit_budget_required", "readmit-budget-bound-wake", error_code, "high")
             if "issue_unbound" in code:
                 add("null_issueId", "null-issueId-wake-reject", error_code, "high")
             if code.startswith("workspace_admit."):
@@ -438,8 +355,8 @@ def build_report(matches: list[dict[str, Any]], sources: list[str]) -> dict[str,
         "recommendedRecipes": recipe_ids,
         "notes": [
             "Detector is heuristic; operator/Sentinel must confirm before --apply.",
-            "Prefer heartbeat-run errorCode over UI company_frozen text (W8).",
-            "null issueId → null-issueId-wake-reject, not whole-company unfreeze.",
+            "Prefer the durable heartbeat-run errorCode over UI summary text (W8).",
+            "null issueId → null-issueId-wake-reject.",
             "HEARTBEAT_SCHEDULER must stay false under controlled-swarm.",
         ],
     }

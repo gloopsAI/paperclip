@@ -60,7 +60,7 @@ Typed errors: `invalid_sha`, `repo_not_allowlisted`, `dest_not_allowlisted`,
 2. Resolve intended full SHA from PWS catalog (C7) or packet Exact head.
 3. `bootstrap_repo.py --apply --repo … --sha … --dest <PWS cwd>`.
 4. Optional: plane-steward `wrong-head-rebase` if tree already present.
-5. Then READMIT + issue-bound wake (recipe `readmit-budget-bound-wake`).
+5. Assign the issue and use Paperclip's ordinary issue-bound wake/claim path.
 
 Never set `repoRef` / expected head to branch name `main`.
 

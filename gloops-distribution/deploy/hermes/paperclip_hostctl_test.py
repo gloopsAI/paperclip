@@ -20,8 +20,6 @@ class PaperclipHostctlTest(unittest.TestCase):
             "\n".join(
                 (
                     "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
-                    "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=",
-                    "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
                     "HEARTBEAT_SCHEDULER_ENABLED=false",
                     "PAPERCLIP_EXECUTION_RECOVERY_DRIVER_ENABLED=true",
                     "PAPERCLIP_EXECUTION_RECONCILED_ADAPTERS=",
@@ -171,29 +169,23 @@ raise SystemExit(0)
         self.assertEqual(events[-1]["event"], "post")
         self.assertEqual(events[-1]["exit_status"], 0)
 
-    def test_a5_commission_restore_journal_reconstructs_window(self) -> None:
+    def test_a5_commission_restore_journal_reconstructs_transition(self) -> None:
         self.reconcile()
         commissioned = self.command(
-            "apply", *self.identity(), "--intent", "commission one uuid",
+            "apply", *self.identity(), "--intent", "commission controlled swarm",
             "--set", "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=true",
-            "--set", "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=issue-1",
-            "--set", "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=issue-1",
             "--systemctl", "restart:paperclip-gloops.service",
             check=True,
         )
         restored = self.command(
-            "apply", *self.identity(), "--intent", "restore freeze",
+            "apply", *self.identity(), "--intent", "end controlled swarm campaign",
             "--set", "PAPERCLIP_CONTROLLED_SWARM_COMMISSIONED=false",
-            "--set", "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=",
-            "--set", "PAPERCLIP_BACKLOG_BANKRUPTCY_READMIT_ISSUE_IDS=",
             "--systemctl", "restart:paperclip-gloops.service",
             check=True,
         )
         self.assertTrue(json.loads(commissioned.stdout)["ok"])
         final = json.loads(restored.stdout)["post_state"]
         self.assertEqual(final["commissioned"], "false")
-        self.assertEqual(final["controlled_swarm_readmit"], "")
-        self.assertEqual(final["backlog_bankruptcy_readmit"], "")
         events = self.journal()
         self.assertEqual([entry["event"] for entry in events].count("pre"), 2)
         self.assertEqual([entry["event"] for entry in events].count("post"), 2)
@@ -201,36 +193,6 @@ raise SystemExit(0)
             self.assertIn("runtime_env_sha256", entry)
             self.assertIn("unit_state", entry)
             self.assertIn("exit_status", entry)
-
-    def test_a6_explicit_allowlisted_update_appends_one_missing_runtime_key(self) -> None:
-        missing_line = "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=\n"
-        self.runtime.write_text(
-            self.runtime.read_text(encoding="utf-8").replace(missing_line, ""),
-            encoding="utf-8",
-        )
-        self.reconcile()
-        result = self.command(
-            "apply", *self.identity(), "--intent", "initialize new governed runtime key",
-            "--set", "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=",
-            check=True,
-        )
-        self.assertTrue(json.loads(result.stdout)["ok"])
-        lines = self.runtime.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(lines.count("PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS="), 1)
-
-    def test_a7_duplicate_runtime_key_still_fails_closed(self) -> None:
-        self.runtime.write_text(
-            self.runtime.read_text(encoding="utf-8")
-            + "PAPERCLIP_CONTROLLED_SWARM_READMIT_WORK_ITEM_IDS=duplicate\n",
-            encoding="utf-8",
-        )
-        before = self.runtime.read_text(encoding="utf-8")
-        result = self.command(
-            "reconcile", *self.identity(), "--reason", "must reject duplicate",
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("runtime.env contains duplicate key", result.stderr)
-        self.assertEqual(self.runtime.read_text(encoding="utf-8"), before)
 
     def test_a8_reconciled_local_adapters_are_an_allowlisted_receipted_mutation(self) -> None:
         self.reconcile()
