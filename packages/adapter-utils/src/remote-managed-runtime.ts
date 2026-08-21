@@ -97,8 +97,28 @@ async function resolveSharedWorkspace(input: {
   const mapping = await resolveSharedSshWorkspaceMapping(input);
   if (!mapping) return null;
   const remoteRoot = process.env[SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV]!.trim();
+  const localRoot = process.env[SSH_SHARED_WORKSPACE_LOCAL_ROOT_ENV]!.trim();
   const { localDir, remoteDir } = mapping;
   const sharedSpec = sharedSshWorkspaceSpec(input.spec, remoteRoot);
+  const relative = path.relative(await fs.realpath(localRoot), localDir);
+  const namespace = relative.split(path.sep)[0];
+  const localNamespaceDir = path.posix.join(localRoot, namespace);
+  const remoteNamespaceDir = path.posix.join(remoteRoot, namespace);
+  await runSshCommand(
+    sharedSpec,
+    [
+      "set -eu",
+      `root=$(realpath -- ${shellQuote(remoteRoot)})`,
+      `target=$(realpath -- ${shellQuote(remoteNamespaceDir)})`,
+      'case "$target" in "$root"/*) ;; *) exit 41 ;; esac',
+      `alias=${shellQuote(localNamespaceDir)}`,
+      'parent=$(dirname -- "$alias")',
+      'test -d "$parent"',
+      'if [ ! -e "$alias" ] && [ ! -L "$alias" ]; then ln -s -- "$target" "$alias" || :; fi',
+      'observed=$(realpath -- "$alias")',
+      'test "$observed" = "$target"',
+    ].join("\n"),
+  );
   await normalizeSshWorkspaceWriteAccess({
     spec: sharedSpec,
     remoteDir,

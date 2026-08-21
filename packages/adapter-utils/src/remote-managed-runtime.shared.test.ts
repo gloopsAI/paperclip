@@ -70,7 +70,9 @@ describe("same-host shared SSH runtime", () => {
       workspaceWritePolicy: null,
     };
     const mapped = "/opt/paperclip/hermes-execution-state/workspace/induct-main/.paperclip/worktrees/GLO-3000";
-    sshMocks.run.mockResolvedValueOnce({ stdout: `${mapped}\n`, stderr: "", exitCode: 0 });
+    sshMocks.run
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: `${mapped}\n`, stderr: "", exitCode: 0 });
 
     const prepared = await prepareRemoteManagedRuntime({
       spec,
@@ -82,6 +84,11 @@ describe("same-host shared SSH runtime", () => {
 
     expect(prepared.workspaceRemoteDir).toBe(mapped);
     expect(prepared.runtimeRootDir).toBe("/home/gloops-admin/paperclip-workspaces/.paperclip-runtime/runs/run-1/grok");
+    expect(sshMocks.run).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ remoteWorkspacePath: "/opt/paperclip/hermes-execution-state/workspace" }),
+      expect.stringContaining(`alias='${path.join(localRoot, "induct-main")}'`),
+    );
     expect(sshMocks.normalize).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: mapped,
       privilegedPathResolution: true,
@@ -122,7 +129,9 @@ describe("same-host shared SSH runtime", () => {
     expect(sshMocks.sync).not.toHaveBeenCalled();
 
     const mapped = "/shared/repo/.paperclip/worktrees/issue";
-    sshMocks.run.mockResolvedValueOnce({ stdout: `${mapped}\n`, stderr: "", exitCode: 0 });
+    sshMocks.run
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: `${mapped}\n`, stderr: "", exitCode: 0 });
     sshMocks.preflight.mockRejectedValueOnce(new Error("write denied"));
     await expect(prepareRemoteManagedRuntime({
       spec, runId: "run-preflight", adapterKey: "grok", workspaceLocalDir: workspace,
