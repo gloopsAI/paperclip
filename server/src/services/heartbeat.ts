@@ -16575,12 +16575,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
         implementation: implementationAssignment,
       });
-      const workPreparationRequired =
-        issueRef != null &&
-        (
-          issueAssigneeOverrides?.adapterConfig?.paperclipWorkPreparationRequired === true ||
-          runtimeConfig.paperclipWorkPreparationRequired === true
-        );
       const workPreparation = assessWorkPreparation({
         runId: run.id,
         issueId: issueRef?.id ?? null,
@@ -16588,7 +16582,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: agent.id,
         adapterType: agent.adapterType,
         model: configuredModel,
-        required: workPreparationRequired,
+        // Upstream Paperclip starts assigned work without requiring a
+        // GLoops-specific reservation packet. Keep the assessment as
+        // observability, but never make it an execution gate.
+        required: false,
         executionContext: context[PAPERCLIP_EXECUTION_CONTEXT_KEY],
         invocationBudget,
         workspace: {

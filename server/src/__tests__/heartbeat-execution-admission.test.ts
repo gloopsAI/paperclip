@@ -1853,6 +1853,55 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     });
   });
 
+  it("keeps legacy work-preparation configuration advisory and invokes the adapter", async () => {
+    const { companyId, agentId } = await seedDirectAgent();
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: {
+          heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+          paperclipWorkPreparationRequired: true,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Start ordinary work without a planning reservation",
+      status: "todo",
+      workMode: "ask",
+      priority: "medium",
+      responsibleUserId: "operator",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `ASK-${issueId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [] },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+      { actorType: "system", actorId: "test" },
+    );
+    expect(run).not.toBeNull();
+    await waitForTerminalRuns(db, [run!.id]);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({
+      contextSnapshot: {
+        paperclipWorkPreparation: {
+          required: false,
+          decision: "ready",
+          reservation: { present: false },
+        },
+      },
+    });
+  });
+
   it("passes a larger explicit coding envelope through claim-time admission to the adapter", async () => {
     const { companyId, agentId } = await seedDirectAgent();
     const issueId = randomUUID();
