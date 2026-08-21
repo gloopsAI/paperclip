@@ -325,7 +325,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       })
       .from(heartbeatRuns)
       .where(inArray(heartbeatRuns.id, contenderRunIds));
-    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({ runId: run!.id }));
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
     expect(rows.filter((row) => row.status === "succeeded")).toHaveLength(1);
     expect(rows.filter((row) => row.errorCode === "execution_admission.run_limit_exhausted")).toHaveLength(2);
     expect(rows.every((row) => {
@@ -1879,6 +1879,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       executionPolicy: { mode: "normal", commentRequired: true, stages: [] },
     });
 
+    const invocationCountBefore = mockAdapterExecute.mock.calls.length;
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.invoke(
       agentId,
@@ -1890,7 +1891,8 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     expect(run).not.toBeNull();
     await waitForTerminalRuns(db, [run!.id]);
 
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(invocationCountBefore + 1);
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({ runId: run!.id }));
     expect(await heartbeat.getRun(run!.id)).toMatchObject({
       contextSnapshot: {
         paperclipWorkPreparation: {
