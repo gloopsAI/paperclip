@@ -1898,7 +1898,6 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
         paperclipWorkPreparation: {
           required: false,
           decision: "ready",
-          reservation: { present: false },
         },
       },
     });
