@@ -1,0 +1,2048 @@
+{
+  "schemaVersion": "gloops.upstream-migration-bridge-manifest.v1",
+  "release": "v2026.817.0",
+  "upstreamHead": "213dabab4f8e1f3bb1803a2924c0fea1289fcd4c",
+  "forkBase": "fbe7c901b5a42e6e668b3911e720b527b2483db8",
+  "forkMigrationRange": {
+    "first": "0147_agent_wakeup_idempotency",
+    "last": "0154_heartbeat_run_issue_projection_outbox"
+  },
+  "forkOverlapEntries": [
+    {
+      "id": "0147_agent_wakeup_idempotency",
+      "file": "0147_agent_wakeup_idempotency.sql",
+      "sqlSha256": "556f14d1c4c0e91ad696ac2bbeb4bdb3d3d7765dea3790958fa7370b9a023a01"
+    },
+    {
+      "id": "0148_provider_request_evidence",
+      "file": "0148_provider_request_evidence.sql",
+      "sqlSha256": "eb39fdead5ecc7e8a938cc7281a8670dfbd2e1695e7930042943650185cd6cbf"
+    },
+    {
+      "id": "0149_provider_io_terminal_evidence",
+      "file": "0149_provider_io_terminal_evidence.sql",
+      "sqlSha256": "e35f2c256d508daa44db0235470e72a2fc498af2f99b53e1dd8337ae3d6eada0"
+    },
+    {
+      "id": "0150_heartbeat_run_atomic_settlements",
+      "file": "0150_heartbeat_run_atomic_settlements.sql",
+      "sqlSha256": "d4afb90544ee20833dfc3108e577dff5c1e5ec951a3822e42c50344ffe0efc1a"
+    },
+    {
+      "id": "0151_repository_mutation_receipts",
+      "file": "0151_repository_mutation_receipts.sql",
+      "sqlSha256": "447e2c401e8be603a42565f0a832c9fe2913dbdb27380e83b93f90b5e5d09440"
+    },
+    {
+      "id": "0152_gbrain_context_records",
+      "file": "0152_gbrain_context_records.sql",
+      "sqlSha256": "c243fb664b255edbd69e3bfa1145f09e0b89e9e3eb2174feecfdcfdf53202dab"
+    },
+    {
+      "id": "0153_plugin_webhook_delivery_external_id",
+      "file": "0153_plugin_webhook_delivery_external_id.sql",
+      "sqlSha256": "b6ac3fa534809e16efa0dadd286baa253559522ccf8824938822d9f5fb2a4ddb"
+    },
+    {
+      "id": "0154_heartbeat_run_issue_projection_outbox",
+      "file": "0154_heartbeat_run_issue_projection_outbox.sql",
+      "sqlSha256": "5ad60818c2e9d6d793a5cb80d1411e1d4b3bf9e7755115a3057165ebca306b8e"
+    }
+  ],
+  "upstreamMigrationRange": {
+    "first": "0147_cost_event_status",
+    "last": "0211_bright_morg"
+  },
+  "entryCount": 65,
+  "entries": [
+    {
+      "id": "0147_cost_event_status",
+      "file": "0147_cost_event_status.sql",
+      "sqlSha256": "c97f6de83f6f45247122b71669322a52e025ca9ad896a74375bc993f386d50c2",
+      "sourceCommit": "efcce9cc8e17e2b30f6f2edf30e00a77b0bf19bb",
+      "sourceSubject": "fix(adapters): record unpriced CLI usage (#9505)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "cost_events"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0148_tool_access_mcp_connections",
+      "file": "0148_tool_access_mcp_connections.sql",
+      "sqlSha256": "59c99b0728610e2e7ea7f29a62364e6121e2cadac747b83c61735f355d4b38c2",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_access_audit_events",
+          "tool_applications",
+          "tool_catalog_entries",
+          "tool_connections",
+          "tool_runtime_slots"
+        ],
+        "alterTables": [
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_applications",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_connections",
+          "tool_connections",
+          "tool_runtime_slots",
+          "tool_runtime_slots"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_access_audit_company_created_idx",
+          "tool_access_audit_connection_idx",
+          "tool_applications_company_idx",
+          "tool_applications_company_name_uq",
+          "tool_catalog_entries_company_idx",
+          "tool_catalog_entries_connection_idx",
+          "tool_catalog_entries_connection_name_uq",
+          "tool_connections_application_idx",
+          "tool_connections_company_idx",
+          "tool_connections_company_name_uq",
+          "tool_runtime_slots_company_idx",
+          "tool_runtime_slots_connection_idx",
+          "tool_runtime_slots_slot_key_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 10
+      }
+    },
+    {
+      "id": "0149_agent_access_phase2_contracts",
+      "file": "0149_agent_access_phase2_contracts.sql",
+      "sqlSha256": "973497276131c631680c1b265b8d9d9110c3207c9eb066b1854426e4ca08347c",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_action_requests",
+          "tool_call_events",
+          "tool_invocations",
+          "tool_policies",
+          "tool_profile_bindings",
+          "tool_profile_entries",
+          "tool_profiles",
+          "tool_rate_limit_counters"
+        ],
+        "alterTables": [
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_action_requests",
+          "tool_applications",
+          "tool_applications",
+          "tool_applications",
+          "tool_applications",
+          "tool_applications",
+          "tool_applications",
+          "tool_applications",
+          "tool_applications",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_catalog_entries",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_policies",
+          "tool_policies",
+          "tool_profile_bindings",
+          "tool_profile_bindings",
+          "tool_profile_bindings",
+          "tool_profile_entries",
+          "tool_profile_entries",
+          "tool_profile_entries",
+          "tool_profile_entries",
+          "tool_profile_entries",
+          "tool_profiles",
+          "tool_rate_limit_counters",
+          "tool_rate_limit_counters",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots",
+          "tool_runtime_slots"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_action_requests_company_status_idx",
+          "tool_action_requests_invocation_idx",
+          "tool_action_requests_issue_idx",
+          "tool_applications_company_key_uq",
+          "tool_applications_company_status_idx",
+          "tool_call_events_company_created_idx",
+          "tool_call_events_invocation_idx",
+          "tool_call_events_issue_idx",
+          "tool_call_events_run_idx",
+          "tool_catalog_entries_application_idx",
+          "tool_catalog_entries_company_status_idx",
+          "tool_connections_company_enabled_idx",
+          "tool_invocations_company_created_idx",
+          "tool_invocations_company_idempotency_uq",
+          "tool_invocations_issue_idx",
+          "tool_invocations_run_idx",
+          "tool_policies_company_enabled_idx",
+          "tool_policies_company_name_uq",
+          "tool_policies_company_type_idx",
+          "tool_profile_bindings_company_target_idx",
+          "tool_profile_bindings_target_profile_uq",
+          "tool_profile_entries_application_idx",
+          "tool_profile_entries_catalog_entry_idx",
+          "tool_profile_entries_company_profile_idx",
+          "tool_profile_entries_connection_idx",
+          "tool_profiles_company_key_uq",
+          "tool_profiles_company_name_uq",
+          "tool_profiles_company_status_idx",
+          "tool_rate_limit_counters_company_idx",
+          "tool_rate_limit_counters_window_uq",
+          "tool_runtime_slots_execution_workspace_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 57
+      }
+    },
+    {
+      "id": "0150_tool_invocation_catalog_snapshots",
+      "file": "0150_tool_invocation_catalog_snapshots.sql",
+      "sqlSha256": "8ef76e87a40cab9ab5e7fd4fa114a91f29527e525837a043df1a74bebb133938",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_invocations",
+          "tool_invocations"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0151_tool_gateway_sessions",
+      "file": "0151_tool_gateway_sessions.sql",
+      "sqlSha256": "db417e1c46c824c4282ec3bff4572ca816b554e2fd130acfb1ad698e78001f48",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_gateway_sessions"
+        ],
+        "alterTables": [
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_gateway_sessions_company_agent_idx",
+          "tool_gateway_sessions_company_expires_idx",
+          "tool_gateway_sessions_issue_idx",
+          "tool_gateway_sessions_run_idx",
+          "tool_gateway_sessions_token_hash_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 5
+      }
+    },
+    {
+      "id": "0152_tool_connection_application_no_cascade",
+      "file": "0152_tool_connection_application_no_cascade.sql",
+      "sqlSha256": "75ab3c38858e08b8ccc3b58704c449ffba67257a4904cc6ec0caebed444a0f35",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_connections",
+          "tool_connections"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0153_tool_stdio_command_templates",
+      "file": "0153_tool_stdio_command_templates.sql",
+      "sqlSha256": "7a446cd93a5b49228058a8ff999231497fceaa0bd95f960dea9d8e6a113da37f",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_stdio_command_templates"
+        ],
+        "alterTables": [
+          "tool_stdio_command_templates",
+          "tool_stdio_command_templates"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_stdio_command_templates_company_idx",
+          "tool_stdio_command_templates_company_key_uq",
+          "tool_stdio_command_templates_company_status_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 2
+      }
+    },
+    {
+      "id": "0154_tool_oauth_states",
+      "file": "0154_tool_oauth_states.sql",
+      "sqlSha256": "f42d9ed58ab8ebe52a880d6fc01013f785ab8a25c447293acca9d1ed57ad5584",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_oauth_states"
+        ],
+        "alterTables": [
+          "tool_oauth_states",
+          "tool_oauth_states"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_oauth_states_company_idx",
+          "tool_oauth_states_connection_idx",
+          "tool_oauth_states_expires_at_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 2
+      }
+    },
+    {
+      "id": "0155_tool_oauth_state_actor_binding",
+      "file": "0155_tool_oauth_state_actor_binding.sql",
+      "sqlSha256": "63d5854c39bafaca62c7e2ad22253b6d3b0590403b1438b5ad38a594f0cf113c",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_oauth_states",
+          "tool_oauth_states"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_oauth_states_actor_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0156_tool_oauth_state_session_binding",
+      "file": "0156_tool_oauth_state_session_binding.sql",
+      "sqlSha256": "f47da5b40228b23f7aaab712b3c915fbf08876e013cea75ee76af938972fa429",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_oauth_states"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0157_tool_profile_new_tools_review",
+      "file": "0157_tool_profile_new_tools_review.sql",
+      "sqlSha256": "adb9256f4b32c7f73c738f89be8e0a3fe43cfd84f95cb6b833e81f0134adfaf9",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_profiles"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0158_tool_invocation_connected_mcp_metadata",
+      "file": "0158_tool_invocation_connected_mcp_metadata.sql",
+      "sqlSha256": "ff7836f9082ed761cdcc9a6040ab4ea664295b959994d4db279dd286934d00dd",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0159_named_mcp_gateways",
+      "file": "0159_named_mcp_gateways.sql",
+      "sqlSha256": "861b2e582fbb645c2982654fdcd9094f93d1c41c43527fb4787fff2bb3270fa3",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateways"
+        ],
+        "alterTables": [
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_mcp_gateway_tokens_company_expires_idx",
+          "tool_mcp_gateway_tokens_gateway_idx",
+          "tool_mcp_gateway_tokens_token_hash_uq",
+          "tool_mcp_gateways_company_idx",
+          "tool_mcp_gateways_company_name_uq",
+          "tool_mcp_gateways_company_slug_uq",
+          "tool_mcp_gateways_company_status_idx",
+          "tool_mcp_gateways_profile_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 7
+      }
+    },
+    {
+      "id": "0160_mcp_gateway_contract_expansion",
+      "file": "0160_mcp_gateway_contract_expansion.sql",
+      "sqlSha256": "83f11418a9186bde3730d2539103123b03f73db1e9c16770a7e1aa2bdf03fd2d",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_access_audit_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_call_events",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_gateway_sessions",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_invocations",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateway_tokens",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways",
+          "tool_mcp_gateways"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_access_audit_gateway_idx",
+          "tool_call_events_gateway_idx",
+          "tool_gateway_sessions_gateway_idx",
+          "tool_invocations_gateway_idx",
+          "tool_mcp_gateway_tokens_subject_idx",
+          "tool_mcp_gateways_public_id_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 13
+      }
+    },
+    {
+      "id": "0161_environment_custom_image_company_scope_repair",
+      "file": "0161_environment_custom_image_company_scope_repair.sql",
+      "sqlSha256": "cad090ef744bc10a6cb6a7ae4bf83dce3e577dd0522d140a4b7269b11908fee2",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0162_tool_runtime_metric_counters",
+      "file": "0162_tool_runtime_metric_counters.sql",
+      "sqlSha256": "57184b1fded85bfaa8db52b7cd80defd6383b246d987ded9954100d33aaf290c",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_runtime_metric_counters"
+        ],
+        "alterTables": [
+          "tool_runtime_metric_counters"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_runtime_metric_counters_bucket_uq",
+          "tool_runtime_metric_counters_company_metric_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0163_secret_binding_projection_class",
+      "file": "0163_secret_binding_projection_class.sql",
+      "sqlSha256": "3f9c079cbdf1eb26e6b3568b13443376192b064bf316e0286456806d8730afcb",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "company_secret_bindings",
+          "company_secret_bindings"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0164_plugin_config_company_scope",
+      "file": "0164_plugin_config_company_scope.sql",
+      "sqlSha256": "7bebb273adc3938b535366249fab60af88ff842cfff27618ca026156bc61fe7a",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "plugin_config",
+          "plugin_config",
+          "plugin_config"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "plugin_config_plugin_company_idx"
+        ],
+        "dropIndexes": [
+          "plugin_config_plugin_id_idx"
+        ],
+        "dataMutationStatements": 5
+      }
+    },
+    {
+      "id": "0165_connection_token_issuances",
+      "file": "0165_connection_token_issuances.sql",
+      "sqlSha256": "0a3d602fd1949a57b11bc83d72f7514ad2af41b9bf81ef38d167d00f0abdbfa6",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "connection_token_issuances"
+        ],
+        "alterTables": [
+          "connection_token_issuances",
+          "connection_token_issuances",
+          "connection_token_issuances",
+          "connection_token_issuances",
+          "connection_token_issuances",
+          "connection_token_issuances",
+          "connection_token_issuances"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "connection_token_issuances_agent_connection_idx",
+          "connection_token_issuances_company_created_idx",
+          "connection_token_issuances_connection_created_idx",
+          "connection_token_issuances_run_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 7
+      }
+    },
+    {
+      "id": "0166_smoke_lab_results",
+      "file": "0166_smoke_lab_results.sql",
+      "sqlSha256": "1316a83524f3c2d237a8c0dc101a63f3ec8a222816bd2d7fbc1bfc0174f38552",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "smoke_run_steps",
+          "smoke_runs"
+        ],
+        "alterTables": [
+          "smoke_run_steps",
+          "smoke_run_steps",
+          "smoke_runs"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "smoke_run_steps_company_path_idx",
+          "smoke_run_steps_company_run_idx",
+          "smoke_runs_company_started_idx",
+          "smoke_runs_company_status_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 3
+      }
+    },
+    {
+      "id": "0167_environment_custom_image_instance_scope_cleanup",
+      "file": "0167_environment_custom_image_instance_scope_cleanup.sql",
+      "sqlSha256": "c6c8c249b787885d59cd5ef0d7f65927f2b42bd08f9d9273fceaeebabc2e8933",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "environment_custom_image_setup_sessions",
+          "environment_custom_image_setup_sessions",
+          "environment_custom_image_templates",
+          "environment_custom_image_templates"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [
+          "environment_custom_image_setup_sessions_company_environment_active_uq",
+          "environment_custom_image_setup_sessions_company_environment_status_idx",
+          "environment_custom_image_setup_sessions_company_expires_idx",
+          "environment_custom_image_setup_sessions_company_promoted_template_idx",
+          "environment_custom_image_setup_sessions_company_template_idx",
+          "environment_custom_image_templates_company_environment_active_uq",
+          "environment_custom_image_templates_company_environment_status_idx",
+          "environment_custom_image_templates_company_last_used_idx",
+          "environment_custom_image_templates_company_provider_status_idx"
+        ],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0168_tool_connection_installs",
+      "file": "0168_tool_connection_installs.sql",
+      "sqlSha256": "9c9c18ac797dc0b041c8a613594a1a20d5e7299d8e2ea374971909a256e368f2",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_connection_installs"
+        ],
+        "alterTables": [
+          "tool_connection_installs",
+          "tool_connection_installs",
+          "tool_connection_installs"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_connection_installs_company_target_idx",
+          "tool_connection_installs_connection_idx",
+          "tool_connection_installs_target_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 3
+      }
+    },
+    {
+      "id": "0169_tool_gateway_protocol_rate_limit_counters",
+      "file": "0169_tool_gateway_protocol_rate_limit_counters.sql",
+      "sqlSha256": "adc841c1cb58927750ef6ad32e4a38262d69a58596db4c9b00e7adac406662e9",
+      "sourceCommit": "1de0a3bb1e8ff888e911c2ff14394e925bd929c4",
+      "sourceSubject": "feat(mcp) [split 2/8]: add governed access contracts (#9557)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "tool_gateway_rate_limit_counters"
+        ],
+        "alterTables": [
+          "tool_gateway_rate_limit_counters",
+          "tool_gateway_rate_limit_counters"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_gateway_rate_limit_counters_company_idx",
+          "tool_gateway_rate_limit_counters_window_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0170_company_skill_policies",
+      "file": "0170_company_skill_policies.sql",
+      "sqlSha256": "d2e85c848a1f56d9cd654b644fa51e137d9925ef4ae7f8dea0258ad7bd6db1a7",
+      "sourceCommit": "89ce36d7afcb3b2920c45c47b55f210d635b9976",
+      "sourceSubject": "feat(skills): open-by-default company skill policy and core UX (#9564)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "company_skill_policies"
+        ],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0171_issue_create_idempotency_keys",
+      "file": "0171_issue_create_idempotency_keys.sql",
+      "sqlSha256": "6d19e7c22629a90a0fd660b79361f211225736817e5c9d9d7daa05b494325b95",
+      "sourceCommit": "bd7c0d5f8340a04a4a340beedb8de56fc9edaf7b",
+      "sourceSubject": "fix(issues): deduplicate repeated creates (#9650)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "issue_create_idempotency_keys"
+        ],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "issue_create_idempotency_keys_company_key_uq",
+          "issue_create_idempotency_keys_issue_idx",
+          "issues_open_normalized_title_created_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0172_inbox_archive_agent_policies",
+      "file": "0172_inbox_archive_agent_policies.sql",
+      "sqlSha256": "db36bf2e1ccf72c9681edc5bce1af24c64d2eadb486b1817ace7c85e2727ea17",
+      "sourceCommit": "da549123cc05c82de452220b2b1d861441b84ada",
+      "sourceSubject": "feat(db): add inbox archive agent policies (#9654)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "user_inbox_agent_policies"
+        ],
+        "alterTables": [
+          "issue_inbox_archives",
+          "issue_inbox_archives",
+          "issue_inbox_archives",
+          "issue_inbox_archives",
+          "issue_inbox_archives",
+          "issue_inbox_archives",
+          "user_inbox_agent_policies"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "user_inbox_agent_policies_company_user_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 3
+      }
+    },
+    {
+      "id": "0173_inbox_policy_agent_cleanup",
+      "file": "0173_inbox_policy_agent_cleanup.sql",
+      "sqlSha256": "a4a1d0ebc11d81c59653b35d2daf8c874f45b8cf2cef836eec4ba2114bbcd642",
+      "sourceCommit": "a04a77c9d3c665c3653e232ef2a0b4ed7d3b1d91",
+      "sourceSubject": "feat(authz): govern agent inbox archive access (#9658)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "user_inbox_agent_policies_allowed_agent_ids_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0174_folders",
+      "file": "0174_folders.sql",
+      "sqlSha256": "8483f2d9441b96cbf567a72f3728cda020940b2d18fb2a595775b62f995b0ed5",
+      "sourceCommit": "52aea902632fcdb9b3e689c60e3a148a2009358b",
+      "sourceSubject": "feat: organize skills with nested folders and My Skills (#9633)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "folders"
+        ],
+        "alterTables": [
+          "company_skills",
+          "company_skills",
+          "folders",
+          "routines",
+          "routines"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "company_skills_company_folder_idx",
+          "folders_company_kind_name_uq",
+          "folders_company_kind_position_idx",
+          "routines_company_folder_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 3
+      }
+    },
+    {
+      "id": "0175_nested_skill_folders",
+      "file": "0175_nested_skill_folders.sql",
+      "sqlSha256": "be7e1e3b63c65cf227ce1c84f5282706e6b006edd0bdb923cf93bf8dc2e86060",
+      "sourceCommit": "52aea902632fcdb9b3e689c60e3a148a2009358b",
+      "sourceSubject": "feat: organize skills with nested folders and My Skills (#9633)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "folders",
+          "folders",
+          "folders",
+          "folders",
+          "folders",
+          "folders"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "folders_company_kind_parent_position_idx",
+          "folders_company_kind_parent_slug_uq",
+          "folders_company_kind_root_slug_uq",
+          "folders_company_kind_system_key_uq"
+        ],
+        "dropIndexes": [
+          "folders_company_kind_name_uq"
+        ],
+        "dataMutationStatements": 10
+      }
+    },
+    {
+      "id": "0176_issue_create_idempotency_key_expiry",
+      "file": "0176_issue_create_idempotency_key_expiry.sql",
+      "sqlSha256": "119867da6baf0e9c6adef3387d640da7bbbed80bbcbb0fb88e35bd53371af953",
+      "sourceCommit": "53f09cb818b934beadc2a58897604c9ddca1d42e",
+      "sourceSubject": "fix: prevent duplicate task creation and recovery loops (#9648)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Creation-order no-action semantics are ported; unrelated migration work remains outside this harvest.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "issue_create_idempotency_keys_company_created_at_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0177_activity_log_responsible_user",
+      "file": "0177_activity_log_responsible_user.sql",
+      "sqlSha256": "1eb4a204a06a54db7e887ff26c9adc4996059a904aba5592806a2a4bdbad051a",
+      "sourceCommit": "b07b2994cc57988ec22b4f22cf48415f15cb5ddb",
+      "sourceSubject": "feat: stamp responsible users on activity logs (#9731)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "activity_log"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "activity_log_company_agent_created_idx",
+          "activity_log_company_responsible_user_created_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0178_summary_slots",
+      "file": "0178_summary_slots.sql",
+      "sqlSha256": "bd21302a0c52cd29557fa4da8cabc758be52a2f2e87228a42e4fde019d1feeb0",
+      "sourceCommit": "1f1f54523876481ab0011c3fdd0b842753cd511a",
+      "sourceSubject": "feat: add built-in summarizer and summary slots (#9713)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "summary_slots"
+        ],
+        "alterTables": [
+          "summary_slots",
+          "summary_slots",
+          "summary_slots",
+          "summary_slots"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "summary_slots_company_generating_issue_idx",
+          "summary_slots_company_scope_idx",
+          "summary_slots_company_updated_idx",
+          "summary_slots_document_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 4
+      }
+    },
+    {
+      "id": "0179_summary_slot_failure_reason",
+      "file": "0179_summary_slot_failure_reason.sql",
+      "sqlSha256": "33063c60038f2ac962241d9ad511b71b2269488d3cf41872c9023ffcd22052c7",
+      "sourceCommit": "1f1f54523876481ab0011c3fdd0b842753cd511a",
+      "sourceSubject": "feat: add built-in summarizer and summary slots (#9713)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "summary_slots"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0180_decision_training_examples",
+      "file": "0180_decision_training_examples.sql",
+      "sqlSha256": "b578d26f5691fab742b68f4a34b2cff37329906b1c41127f60bbe8506d397ace",
+      "sourceCommit": "a090c09ee567d6c6775a5fb0fa0710b190d5d00e",
+      "sourceSubject": "feat: add decision training snapshot foundation (#9702)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "decision_training_examples"
+        ],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "decision_training_examples_company_created_at_idx",
+          "decision_training_examples_issue_idx",
+          "decision_training_examples_source_author_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0181_decision_training_retention_policy",
+      "file": "0181_decision_training_retention_policy.sql",
+      "sqlSha256": "5d783cbc61dd0522b91e18c7858415aafc1f5474d7aac32a1456a216e402ac85",
+      "sourceCommit": "a090c09ee567d6c6775a5fb0fa0710b190d5d00e",
+      "sourceSubject": "feat: add decision training snapshot foundation (#9702)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "decision_training_examples"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0182_connections_v3_schema_core",
+      "file": "0182_connections_v3_schema_core.sql",
+      "sqlSha256": "16ea6b8bbbf6000e26453ecc4f614e52830a5c6d8258dbf0f1ef0b743540e88c",
+      "sourceCommit": "7e00f6713800ae1829a2f5128a04767eae8a5e3d",
+      "sourceSubject": "feat(connections): add v3 schema core (#9958)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "connection_grants"
+        ],
+        "alterTables": [
+          "connection_grants",
+          "connection_grants",
+          "connection_grants",
+          "connection_grants",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections",
+          "tool_connections"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "connection_grants_company_connection_idx",
+          "connection_grants_default_uq",
+          "connection_grants_subject_user_idx",
+          "connection_grants_user_uq",
+          "tool_connections_company_uid_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 8
+      }
+    },
+    {
+      "id": "0183_connection_user_authorization_state",
+      "file": "0183_connection_user_authorization_state.sql",
+      "sqlSha256": "34fbfbca813c54004579aa5041042ea30a2b7e7ab82a185efe510de1720c5286",
+      "sourceCommit": "cac3c0fa1a23678f28bc987493c8a1f45c25b1dd",
+      "sourceSubject": "feat(connections): add runtime subjects and grants (#9982)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "tool_oauth_states",
+          "tool_oauth_states",
+          "tool_oauth_states",
+          "tool_oauth_states",
+          "tool_oauth_states"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "tool_oauth_states_subject_user_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0184_routable_blocked",
+      "file": "0184_routable_blocked.sql",
+      "sqlSha256": "fbbb9c10fff4cb62ad05a8eda39afb61180ba6184d8a1ab0661a9857ad79dda7",
+      "sourceCommit": "148a5b11f5ffd101d9586d3222f553f99e3ad85f",
+      "sourceSubject": "Route blocked transitions to explicit unblock owners (#10112)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "issues",
+          "issues",
+          "issues"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0185_status_cards",
+      "file": "0185_status_cards.sql",
+      "sqlSha256": "c74b799ef4bb7a3de742fdbb193b9a417e351c9ecb16045d104bfdfbcc42d540",
+      "sourceCommit": "7e40ed8c439c23a53db9135f7e9bae30b56f3d97",
+      "sourceSubject": "feat(status-cards): add experimental status card update view (#10101)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "status_card_updates",
+          "status_cards"
+        ],
+        "alterTables": [
+          "status_card_updates",
+          "status_card_updates",
+          "status_card_updates",
+          "status_cards",
+          "status_cards",
+          "status_cards",
+          "status_cards",
+          "status_cards",
+          "status_cards"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "status_card_updates_card_started_idx",
+          "status_cards_company_archived_idx",
+          "status_cards_company_next_eval_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 9
+      }
+    },
+    {
+      "id": "0186_status_card_compile_provenance",
+      "file": "0186_status_card_compile_provenance.sql",
+      "sqlSha256": "721337870aab9a7164b2687d0924e0dd35ae3a4e56b580233715135ca679ba31",
+      "sourceCommit": "7e40ed8c439c23a53db9135f7e9bae30b56f3d97",
+      "sourceSubject": "feat(status-cards): add experimental status card update view (#10101)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "status_card_updates",
+          "status_card_updates"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0187_status_card_pending_change_hash",
+      "file": "0187_status_card_pending_change_hash.sql",
+      "sqlSha256": "df2cc510cdd759e0ac34b861489548f6569bdc6fca979f141cdc4dbe0b5f9acb",
+      "sourceCommit": "7e40ed8c439c23a53db9135f7e9bae30b56f3d97",
+      "sourceSubject": "feat(status-cards): add experimental status card update view (#10101)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "status_cards"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0188_status_card_generation_issue_index",
+      "file": "0188_status_card_generation_issue_index.sql",
+      "sqlSha256": "f8aa6f315f346afc9837322734aa58d4c6b9e50a0489623a0bc5a1025b958782",
+      "sourceCommit": "7e40ed8c439c23a53db9135f7e9bae30b56f3d97",
+      "sourceSubject": "feat(status-cards): add experimental status card update view (#10101)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "status_card_updates_generation_issue_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0189_status_card_agent",
+      "file": "0189_status_card_agent.sql",
+      "sqlSha256": "d04fe363ca70427d1be21ac04fe7f66307361e6aa099205a30df16c80bffedd4",
+      "sourceCommit": "7e40ed8c439c23a53db9135f7e9bae30b56f3d97",
+      "sourceSubject": "feat(status-cards): add experimental status card update view (#10101)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "status_cards",
+          "status_cards"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0190_status_card_single_prompt",
+      "file": "0190_status_card_single_prompt.sql",
+      "sqlSha256": "63e911b48b78288908f808fbbe3e9da8fb8991a5a14bb813def82b9ce65f8104",
+      "sourceCommit": "3a16b91217483d2c233926de5b7f7bc3a1077924",
+      "sourceSubject": "feat(status-cards): single-message setup drives query and update prompt (#10202)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "status_cards",
+          "status_cards"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0191_status_card_mentioned_issue_ids",
+      "file": "0191_status_card_mentioned_issue_ids.sql",
+      "sqlSha256": "b8341e262a2b600be6e75b1d8a1f1e1a7a46ce55ecacd14c2ac29407fa7023d4",
+      "sourceCommit": "8f08ec5ce660f17a1a698f43132c20678b976a9c",
+      "sourceSubject": "feat(status-cards): join summary-mentioned issues to watched set (#10205)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "status_cards"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0192_task_watchdog_stop_snapshots",
+      "file": "0192_task_watchdog_stop_snapshots.sql",
+      "sqlSha256": "0a5bba629fea3d9a2929f2f568171e7c87e6ba9040c068680773e83742eb7a5c",
+      "sourceCommit": "c481be44e30e71e034591375491a32fc4da2f9ae",
+      "sourceSubject": "fix(task-watchdogs): deduplicate unchanged stopped-state wakes (#10207)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "issue_watchdogs",
+          "issue_watchdogs"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0193_document_memberships",
+      "file": "0193_document_memberships.sql",
+      "sqlSha256": "7fdf9adfb1c4235128c6a806434da0f2050c199d323b6eeb8fc26cd49a0d28bb",
+      "sourceCommit": "c111ee4cb3312077ce4df7b128002079345c083e",
+      "sourceSubject": "feat(server): add per-user document stars (#9952)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "document_memberships"
+        ],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "document_memberships_company_user_document_uq",
+          "document_memberships_company_user_starred_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0194_company_skill_releases",
+      "file": "0194_company_skill_releases.sql",
+      "sqlSha256": "e76ee70f3968e0d6268acb64a561fd93e3ec33b3aa6301d52f5391aa09853b65",
+      "sourceCommit": "c3bd0c5d50a45cda3c9fddbb0f80a85f44a84242",
+      "sourceSubject": "feat(skills): add beta releases for the core Paperclip skill (#10228)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "company_skill_versions",
+          "company_skill_versions",
+          "company_skill_versions"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "company_skill_versions_skill_release_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0195_built_in_agent_unique_marker",
+      "file": "0195_built_in_agent_unique_marker.sql",
+      "sqlSha256": "956efc2dbda881521876b8deae835652079f407462596f230998d86f5fca26a8",
+      "sourceCommit": "dc12197cce0d7c0b849c560b4ab1d7dd920b4bfd",
+      "sourceSubject": "fix: prevent duplicate built-in agents and self-heal reconciliation (#10223)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "agents_company_built_in_agent_key_unique_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 3
+      }
+    },
+    {
+      "id": "0196_drop_cloud_upstream_tables",
+      "file": "0196_drop_cloud_upstream_tables.sql",
+      "sqlSha256": "41d1886d8b00f8484b27108e4538d219d9ed77fca10e6ad3006d9558dd9ec28d",
+      "sourceCommit": "916c13501f80c7d1d659b89e4a06dc47366aa80f",
+      "sourceSubject": "Replace host-to-host Cloud Sync with full-fidelity company Import/Export (#10507)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [
+          "cloud_upstream_connections",
+          "cloud_upstream_runs"
+        ],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0197_decisions_v1",
+      "file": "0197_decisions_v1.sql",
+      "sqlSha256": "65da7612683361ab5c7c8362ffee6e2a863433cc7eda3712b9b8f3fc507c848a",
+      "sourceCommit": "9c1f8e788732c2cff971d8f2b0c69499bde0fac7",
+      "sourceSubject": "feat(decisions): add first-class propose mode (#10010)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "decision_bundles",
+          "decision_effect_executions",
+          "decision_target_issues",
+          "decisions"
+        ],
+        "alterTables": [
+          "decision_bundles",
+          "decision_bundles",
+          "decision_bundles",
+          "decision_bundles",
+          "decision_effect_executions",
+          "decision_effect_executions",
+          "decision_effect_executions",
+          "decision_target_issues",
+          "decision_target_issues",
+          "decision_target_issues",
+          "decisions",
+          "decisions",
+          "decisions",
+          "decisions",
+          "decisions"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "decision_bundles_company_created_at_idx",
+          "decision_effect_executions_decision_effect_uq",
+          "decision_effect_executions_target_issue_idx",
+          "decision_target_issues_decision_idx",
+          "decision_target_issues_issue_idx",
+          "decisions_bundle_idx",
+          "decisions_company_idempotency_uq",
+          "decisions_company_status_expires_at_idx",
+          "decisions_origin_issue_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 15
+      }
+    },
+    {
+      "id": "0198_decision_queues_and_triage",
+      "file": "0198_decision_queues_and_triage.sql",
+      "sqlSha256": "d48baf9a0240fe1ee0b071f4cbfc49cc36edd154760c9566d8064d510229862e",
+      "sourceCommit": "30c49c83276d1c3c6a48e4e67ac1b618de1ae256",
+      "sourceSubject": "feat(decisions): add queues and prioritized attention feed (#10651)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Adopt through upstream core synchronization; do not create a duplicate GLoops decision-queue implementation.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "decision_queue_items",
+          "decision_queues",
+          "decision_triage",
+          "decision_triage_events"
+        ],
+        "alterTables": [
+          "decision_queue_items",
+          "decision_queue_items",
+          "decision_queue_items",
+          "decision_queue_items",
+          "decision_queue_items",
+          "decision_queues",
+          "decision_queues",
+          "decision_queues",
+          "decision_queues",
+          "decision_triage",
+          "decision_triage",
+          "decision_triage",
+          "decision_triage",
+          "decision_triage_events",
+          "decision_triage_events",
+          "decision_triage_events",
+          "decision_triage_events",
+          "decision_triage_events"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "decision_queue_items_company_source_idx",
+          "decision_queue_items_queue_source_uq",
+          "decision_queues_company_key_uq",
+          "decision_queues_company_updated_idx",
+          "decision_queues_id_company_uq",
+          "decision_triage_company_decide_by_idx",
+          "decision_triage_company_source_uq",
+          "decision_triage_events_company_source_created_idx",
+          "decision_triage_events_queue_created_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 18
+      }
+    },
+    {
+      "id": "0199_decision_queue_composite_key",
+      "file": "0199_decision_queue_composite_key.sql",
+      "sqlSha256": "49d1f187dcdb87462299625c8ac733fa5a9b9d7f328b0697931090a5803f597c",
+      "sourceCommit": "30c49c83276d1c3c6a48e4e67ac1b618de1ae256",
+      "sourceSubject": "feat(decisions): add queues and prioritized attention feed (#10651)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Adopt through upstream core synchronization; do not create a duplicate GLoops decision-queue implementation.",
+      "execution": "record_only_conflict",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "decision_queue_items",
+          "decision_queue_items",
+          "decision_queues"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [
+          "decision_queues_id_company_uq"
+        ],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0200_yellow_maria_hill",
+      "file": "0200_yellow_maria_hill.sql",
+      "sqlSha256": "e270a2c71fc3cc115be52873decb60cc4089d9029d328fa6ac083fb7dce82dc9",
+      "sourceCommit": "0a09e4d975e1e1cd7de65fbd1ca730b9cd9f97ea",
+      "sourceSubject": "feat(decisions): add desk workflow and retention (#10672)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Adopt with its decision-queue predecessor through upstream core synchronization.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "decision_archive_notification_outbox",
+          "decision_retention"
+        ],
+        "alterTables": [
+          "decision_archive_notification_outbox",
+          "decision_archive_notification_outbox",
+          "decision_retention",
+          "decision_retention",
+          "decision_retention"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "decision_archive_notification_outbox_pending_idx",
+          "decision_archive_notification_outbox_uq",
+          "decision_retention_company_archived_idx",
+          "decision_retention_company_source_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 5
+      }
+    },
+    {
+      "id": "0201_concerned_captain_midlands",
+      "file": "0201_concerned_captain_midlands.sql",
+      "sqlSha256": "bf566cbaa91c10bb43efc0669c0c9d22ddd84663f65343b8c3e834ce46b62d6d",
+      "sourceCommit": "185515c97be41d545d4a54633e45faf6f458cc62",
+      "sourceSubject": "fix(external-objects): refresh PR status labels (#10704)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "external_objects"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0202_eminent_marvel_zombies",
+      "file": "0202_eminent_marvel_zombies.sql",
+      "sqlSha256": "54662615a77071bba24dab5e8b02922820e598a6281f099cc9440531cfb3af24",
+      "sourceCommit": "185515c97be41d545d4a54633e45faf6f458cc62",
+      "sourceSubject": "fix(external-objects): refresh PR status labels (#10704)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "external_objects"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0203_interaction_resolver_governance",
+      "file": "0203_interaction_resolver_governance.sql",
+      "sqlSha256": "1880b804c5cf748d7b9fddfc79d21d55c7c4372ef1bf687c6b95a2a595886eea",
+      "sourceCommit": "ded813ad6fae2c0b2c9009e04f59b117ecae0151",
+      "sourceSubject": "feat(interactions): add governed agent addressees (#10252)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "companies",
+          "issue_thread_interactions",
+          "issue_thread_interactions",
+          "issue_thread_interactions",
+          "issue_thread_interactions"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0204_interaction_addressee",
+      "file": "0204_interaction_addressee.sql",
+      "sqlSha256": "07b288ec749d4a972621ff257d3de8a45574cc40cc3935f463f83a3c0e575fc3",
+      "sourceCommit": "ded813ad6fae2c0b2c9009e04f59b117ecae0151",
+      "sourceSubject": "feat(interactions): add governed agent addressees (#10252)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "issue_thread_interactions",
+          "issue_thread_interactions"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "issue_thread_interactions_addressee_agent_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 1
+      }
+    },
+    {
+      "id": "0205_narrow_shiva",
+      "file": "0205_narrow_shiva.sql",
+      "sqlSha256": "91290b03590f77d8e9a98138ef039db29fa63c687ae3114573e72cbf8ddf651c",
+      "sourceCommit": "f91a6e27c0feb7f92dcde981c9a741b869484e83",
+      "sourceSubject": "feat(issues): contain cross-issue agent side effects (#10837)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "issue_comments",
+          "issue_comments"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 2
+      }
+    },
+    {
+      "id": "0206_review_path_recovery_idempotency_index",
+      "file": "0206_review_path_recovery_idempotency_index.sql",
+      "sqlSha256": "2422b1c6e1f97a7eee6d2a8c8e2904c6a7c4af6af1ad22920bf33526434b5fd3",
+      "sourceCommit": "678728f650bf2a03f325922db32efb038dbb6ac9",
+      "sourceSubject": "feat: maintained in_review review-path contract + stalled-review actions (#10675)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "agent_wakeup_requests_review_path_recovery_idempotency_uq"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0207_moaning_amazoness",
+      "file": "0207_moaning_amazoness.sql",
+      "sqlSha256": "335414dc280f133e43280873d072d6cad6282a88261c1537fc186f0a869b4d1a",
+      "sourceCommit": "e43f187cad3b05c9f00d1b9d4e924f43f7ab125e",
+      "sourceSubject": "feat(secrets): add human-approved secret proposals (#9934)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [
+          "company_secret_proposals"
+        ],
+        "alterTables": [
+          "company_secret_proposals",
+          "company_secret_proposals",
+          "company_secret_proposals",
+          "company_secret_proposals",
+          "company_secret_proposals",
+          "company_secret_proposals",
+          "company_secret_proposals",
+          "company_secret_proposals"
+        ],
+        "dropTables": [],
+        "createIndexes": [
+          "company_secret_proposals_company_status_idx",
+          "company_secret_proposals_expiry_idx",
+          "company_secret_proposals_proposer_status_idx",
+          "company_secret_proposals_secret_proposal_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0208_keen_sharon_carter",
+      "file": "0208_keen_sharon_carter.sql",
+      "sqlSha256": "848c0d7a129190626e83fdfc83d43b5d30cdbe48c33b46feb1f09a3e32ec3805",
+      "sourceCommit": "f554d67377a5963bc683a8742f456d0a4b114f84",
+      "sourceSubject": "fix(server): add explicit review verdict policies (#10931)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "Decision and attention queues belong to upstream core; absorb them through core synchronization instead of rebuilding them in GLoops.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [
+          "issues"
+        ],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0209_heartbeat_context_snapshot_indexes",
+      "file": "0209_heartbeat_context_snapshot_indexes.sql",
+      "sqlSha256": "442eec68b079796adc3be617e11dbc172943d1964926050e1e48cf7dae6cc709",
+      "sourceCommit": "e591e75b8c5682990babf0b6a47287b7c488f58e",
+      "sourceSubject": "perf(db): index context_snapshot/payload issueId lookups used by recovery sweeps (#10969)",
+      "upstreamDisposition": "adapt",
+      "classification": "adapt",
+      "classificationReason": "Efficiency-adjacent upstream change queued for bounded adaptation; direct wholesale cherry-pick is not authorized by this inventory.",
+      "execution": "deferred_adaptation",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "agent_wakeup_requests_company_payload_issue_idx",
+          "heartbeat_runs_company_ctx_issue_created_idx",
+          "heartbeat_runs_company_ctx_task_created_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0210_heartbeat_context_taskkey_index",
+      "file": "0210_heartbeat_context_taskkey_index.sql",
+      "sqlSha256": "51fab2cb2112fa5c0e2cb94eb7d07ae2e82ef96f39aae32af0766f49db86d70a",
+      "sourceCommit": "52b8741b8e2ee39f03c2e274fc95eb56184eabd9",
+      "sourceSubject": "perf(server): cut steady-state DB hot paths in dashboard, attention, and productivity sweeps (#10992)",
+      "upstreamDisposition": "conflict",
+      "classification": "conflict",
+      "classificationReason": "The migration and hot-path changes overlap the fork's newer schema and recovery projections; requires isolated adaptation.",
+      "execution": "record_only_conflict",
+      "destructive": false,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [
+          "heartbeat_runs_company_ctx_taskkey_created_idx"
+        ],
+        "dropIndexes": [],
+        "dataMutationStatements": 0
+      }
+    },
+    {
+      "id": "0211_bright_morg",
+      "file": "0211_bright_morg.sql",
+      "sqlSha256": "9e0a9fb9f4a1da0321224c964ed50f758851cee9a319963922235fa4cf9484f9",
+      "sourceCommit": "0a511ed1b031f0a3d17c8e3df062530d990b3a1c",
+      "sourceSubject": "feat(apps): support multiple provider connections (#11060)",
+      "upstreamDisposition": "reject",
+      "classification": "conflict",
+      "classificationReason": "Outside the token/workforce-efficiency harvest scope; this is not a permanent rejection from the broader upstream synchronization stream.",
+      "execution": "record_only_conflict",
+      "destructive": true,
+      "effects": {
+        "createTables": [],
+        "alterTables": [],
+        "dropTables": [],
+        "createIndexes": [],
+        "dropIndexes": [
+          "tool_connections_company_name_uq"
+        ],
+        "dataMutationStatements": 0
+      }
+    }
+  ],
+  "manifestDigest": "sha256:0641aea7e6f0cc06ad35c698df61a10b104eb150d6e851779909d3db2f4f69b1"
+}
