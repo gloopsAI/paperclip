@@ -1584,6 +1584,7 @@ function workspaceIdentityCommand(spec: SshRemoteExecutionSpec, username: string
 export async function normalizeSshWorkspaceWriteAccess(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
+  privilegedPathResolution?: boolean;
 }): Promise<void> {
   const policy = input.spec.workspaceWritePolicy;
   if (!policy) return;
@@ -1601,8 +1602,12 @@ export async function normalizeSshWorkspaceWriteAccess(input: {
     : [];
   const script = [
     "set -eu",
-    `base=$(cd ${shellQuote(input.spec.remoteWorkspacePath)} && pwd -P)`,
-    `target=$(cd ${shellQuote(input.remoteDir)} && pwd -P)`,
+    input.privilegedPathResolution
+      ? `base=$(sudo -n realpath -- ${shellQuote(input.spec.remoteWorkspacePath)})`
+      : `base=$(cd ${shellQuote(input.spec.remoteWorkspacePath)} && pwd -P)`,
+    input.privilegedPathResolution
+      ? `target=$(sudo -n realpath -- ${shellQuote(input.remoteDir)})`
+      : `target=$(cd ${shellQuote(input.remoteDir)} && pwd -P)`,
     'case "$target" in "$base"|"$base"/*) ;; *) echo "workspace path escaped configured root" >&2; exit 91 ;; esac',
     'command -v setfacl >/dev/null 2>&1 || { echo "setfacl is required for workspace ACL policy" >&2; exit 92; }',
     `sudo -n setfacl -R -m ${shellQuote(`${accessAcl},m::rwx`)} "$target"`,
