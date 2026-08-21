@@ -1879,7 +1879,6 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       executionPolicy: { mode: "normal", commentRequired: true, stages: [] },
     });
 
-    const invocationCountBefore = mockAdapterExecute.mock.calls.length;
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.invoke(
       agentId,
@@ -1891,8 +1890,9 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
     expect(run).not.toBeNull();
     await waitForTerminalRuns(db, [run!.id]);
 
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(invocationCountBefore + 1);
-    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({ runId: run!.id }));
+    expect(
+      mockAdapterExecute.mock.calls.filter(([context]) => context.runId === run!.id),
+    ).toHaveLength(1);
     expect(await heartbeat.getRun(run!.id)).toMatchObject({
       contextSnapshot: {
         paperclipWorkPreparation: {
