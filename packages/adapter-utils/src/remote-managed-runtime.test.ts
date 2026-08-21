@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   prepareRemoteManagedRuntime,
   resolveSharedSshWorkspaceMapping,
+  sharedSshWorkspaceSpec,
   SSH_SHARED_WORKSPACE_LOCAL_ROOT_ENV,
   SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV,
 } from "./remote-managed-runtime.js";
@@ -68,6 +69,41 @@ describe("remote managed runtime local restore boundary", () => {
       localDir: await realpath(workspace),
       remoteDir: "/opt/paperclip/hermes-execution-state/workspace/induct-main/.paperclip/worktrees/GLO-3000",
     });
+  });
+
+  it("keeps ordinary SSH workspaces on the normal transfer path when shared roots are absent", async () => {
+    const localRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-unshared-workspace-"));
+    cleanupDirs.push(localRoot);
+
+    await expect(resolveSharedSshWorkspaceMapping({
+      workspaceLocalDir: localRoot,
+      env: {},
+    })).resolves.toBeNull();
+  });
+
+  it("defaults same-host shared workspace access to the configured SSH identity", () => {
+    const spec: SshRemoteExecutionSpec = {
+      host: "host",
+      port: 22,
+      username: "gloops-admin",
+      remoteWorkspacePath: "/home/gloops-admin/paperclip-workspaces",
+      remoteCwd: "/home/gloops-admin/paperclip-workspaces",
+      privateKey: null,
+      knownHosts: null,
+      strictHostKeyChecking: true,
+      workspaceWritePolicy: null,
+    };
+
+    expect(sharedSshWorkspaceSpec(spec, "/opt/paperclip/hermes-execution-state/workspace"))
+      .toMatchObject({
+        remoteWorkspacePath: "/opt/paperclip/hermes-execution-state/workspace",
+        workspaceWritePolicy: {
+          strategy: "acl",
+          executionUsername: "gloops-admin",
+          syncUsername: "gloops-admin",
+          sharedGroup: null,
+        },
+      });
   });
 
   it("rejects a workspace outside the configured same-host root", async () => {

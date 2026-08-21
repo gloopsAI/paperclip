@@ -41,6 +41,22 @@ export interface PreparedRemoteManagedRuntime {
 export const SSH_SHARED_WORKSPACE_LOCAL_ROOT_ENV = "PAPERCLIP_SSH_SHARED_WORKSPACE_LOCAL_ROOT";
 export const SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV = "PAPERCLIP_SSH_SHARED_WORKSPACE_REMOTE_ROOT";
 
+export function sharedSshWorkspaceSpec(
+  spec: SshRemoteExecutionSpec,
+  remoteRoot: string,
+): SshRemoteExecutionSpec {
+  return {
+    ...spec,
+    remoteWorkspacePath: remoteRoot,
+    workspaceWritePolicy: spec.workspaceWritePolicy ?? {
+      strategy: "acl",
+      executionUsername: spec.username,
+      syncUsername: spec.username,
+      sharedGroup: null,
+    },
+  };
+}
+
 export async function resolveSharedSshWorkspaceMapping(input: {
   workspaceLocalDir: string;
   env?: Record<string, string | undefined>;
@@ -82,8 +98,14 @@ async function resolveSharedWorkspace(input: {
   if (!mapping) return null;
   const remoteRoot = process.env[SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV]!.trim();
   const { localDir, remoteDir } = mapping;
+  const sharedSpec = sharedSshWorkspaceSpec(input.spec, remoteRoot);
+  await normalizeSshWorkspaceWriteAccess({
+    spec: sharedSpec,
+    remoteDir,
+    privilegedPathResolution: true,
+  });
   const observed = await runSshCommand(
-    input.spec,
+    sharedSpec,
     [
       `root=$(realpath -- ${shellQuote(remoteRoot)})`,
       `cwd=$(realpath -- ${shellQuote(remoteDir)})`,
@@ -171,17 +193,16 @@ export async function prepareRemoteManagedRuntime(input: {
   });
   if (sharedWorkspace) {
     await preflightDirectoryMergeLock(sharedWorkspace.localDir);
-    await normalizeSshWorkspaceWriteAccess({
-      spec: input.spec,
-      remoteDir: sharedWorkspace.remoteDir,
-    });
     await preflightSshWorkspaceWriteAccess({
-      spec: input.spec,
+      spec: sharedSshWorkspaceSpec(
+        input.spec,
+        process.env[SSH_SHARED_WORKSPACE_REMOTE_ROOT_ENV]!.trim(),
+      ),
       remoteDir: sharedWorkspace.remoteDir,
     });
 
     const runtimeRootDir = path.posix.join(
-      path.posix.dirname(sharedWorkspace.remoteDir),
+      input.spec.remoteWorkspacePath,
       ".paperclip-runtime",
       "runs",
       input.runId,
