@@ -1593,6 +1593,7 @@ export async function normalizeSshWorkspaceWriteAccess(input: {
   const identities = [...new Set([policy.executionUsername, syncUsername])];
   const accessAcl = identities.map((identity) => `u:${identity}:rwX`).join(",");
   const defaultAcl = identities.map((identity) => `d:u:${identity}:rwx`).join(",");
+  const ancestorTraverseAcl = identities.map((identity) => `u:${identity}:--x`).join(",");
   const groupCommands = policy.sharedGroup
     ? [
         `sudo -n chgrp -R ${shellQuote(policy.sharedGroup)} "$target"`,
@@ -1610,6 +1611,13 @@ export async function normalizeSshWorkspaceWriteAccess(input: {
       : `target=$(cd ${shellQuote(input.remoteDir)} && pwd -P)`,
     'case "$target" in "$base"|"$base"/*) ;; *) echo "workspace path escaped configured root" >&2; exit 91 ;; esac',
     'command -v setfacl >/dev/null 2>&1 || { echo "setfacl is required for workspace ACL policy" >&2; exit 92; }',
+    ...(input.privilegedPathResolution
+      ? [
+          'ancestor="$target"',
+          'while [ "$ancestor" != "$base" ]; do ancestor=$(dirname -- "$ancestor"); sudo -n setfacl -n -m '
+            + `${shellQuote(ancestorTraverseAcl)} "$ancestor"; done`,
+        ]
+      : []),
     `sudo -n setfacl -R -m ${shellQuote(`${accessAcl},m::rwx`)} "$target"`,
     `sudo -n find "$target" -type d -exec setfacl -m ${shellQuote(`${defaultAcl},d:m::rwx`)} {} +`,
     ...groupCommands,
