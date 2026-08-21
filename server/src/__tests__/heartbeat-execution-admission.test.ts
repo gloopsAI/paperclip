@@ -325,7 +325,7 @@ describeEmbeddedPostgres("heartbeat execution admission", () => {
       })
       .from(heartbeatRuns)
       .where(inArray(heartbeatRuns.id, contenderRunIds));
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(mockAdapterExecute).toHaveBeenCalledWith(expect.objectContaining({ runId: run!.id }));
     expect(rows.filter((row) => row.status === "succeeded")).toHaveLength(1);
     expect(rows.filter((row) => row.errorCode === "execution_admission.run_limit_exhausted")).toHaveLength(2);
     expect(rows.every((row) => {
