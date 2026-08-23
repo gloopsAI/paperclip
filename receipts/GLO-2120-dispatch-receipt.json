@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "gloops.execution-truth.operator-receipt.v2",
+  "work": { "id": "GLO-2120" },
+  "budget": { "exhausted": [] },
+  "route": {
+    "observedPathIds": ["paperclip-control-plane"],
+    "prohibitedPathObserved": false
+  },
+  "continuation": { "required": false, "valid": true, "summary": "Dispatch complete: accepted planned degrade for campaign supervisor-product-sequence-20260730." },
+  "verification": {
+    "mode": "direct",
+    "workspaceFinalized": true,
+    "exactHeadAligned": true,
+    "exactHeadSha": "e00c474e902edd207bb82e601e1bdd7a6986f7b4",
+    "allChecksPassed": true,
+    "disposition": "planned_degrade_accepted"
+  },
+  "authority": { "humanRequired": false },
+  "status": "dispatch_complete",
+  "projection": {
+    "source": "paperclip-control-plane",
+    "purpose": "dispatch_degrade_acceptance",
+    "issueId": "cde5d3c4-d3e7-40a8-b019-173497463a1c",
+    "runId": "96eed6c1-365b-4190-a202-ee78cd3470bf",
+    "agentId": "fd571350-6da8-482e-a17e-7edb914fa612",
+    "workspaceId": "41245755-9301-43aa-abcc-e91fc407e6ff",
+    "contextDigest": "sha256:dispatch-degrade-accepted"
+  }
+}
