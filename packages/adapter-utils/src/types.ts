@@ -2,7 +2,7 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
-import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { SshGitRemoteAuthProvider } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
 
@@ -190,6 +190,11 @@ export interface AdapterExecutionContext {
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /**
+   * Host-side GitHub credential resolver for SSH workspace import. Token stays
+   * in helper env and is never placed on git argv.
+   */
+  resolveGitAuth?: SshGitRemoteAuthProvider;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root
    * parent-context helper). The server passes the real, endpoint-gated

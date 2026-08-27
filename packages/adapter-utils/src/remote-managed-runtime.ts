@@ -1,6 +1,7 @@
 import path from "node:path";
 import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import {
+  type SshGitRemoteAuthProvider,
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
   runSshCommand,
@@ -116,6 +117,7 @@ export async function prepareRemoteManagedRuntime(input: {
   assets?: RemoteManagedRuntimeAsset[];
   /** Referenced (additional) projects to stage as plain, read-only trees. */
   additionalSources?: SandboxAdditionalSource[];
+  resolveGitAuth?: SshGitRemoteAuthProvider;
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
   onProgress?: RuntimeProgressSink;
@@ -138,6 +140,7 @@ export async function prepareRemoteManagedRuntime(input: {
         spec: input.spec,
         localDir: input.workspaceLocalDir,
         remoteDir: workspaceRemoteDir,
+        resolveGitAuth: input.resolveGitAuth,
         onProgress: input.onProgress,
       })
     : null;

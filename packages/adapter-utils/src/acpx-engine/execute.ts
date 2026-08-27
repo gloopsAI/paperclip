@@ -1449,6 +1449,7 @@ async function stageAcpRemoteRuntime(input: {
   // The caller passes a runner that parents to the active `stage.sync` step, so
   // the `pack` span nests under `stage.sync`. The default is a no-op.
   runtimeSpan?: RuntimeSpanRunner;
+  resolveGitAuth?: AdapterExecutionContext["resolveGitAuth"];
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   await input.onLog(
     "stdout",
@@ -1468,6 +1469,7 @@ async function stageAcpRemoteRuntime(input: {
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
     runtimeSpan: input.runtimeSpan,
+    resolveGitAuth: input.resolveGitAuth,
   });
 }
 
@@ -2055,6 +2057,7 @@ async function buildRuntime(input: {
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
           runtimeSpan: input.stageRuntimeSpan,
+          resolveGitAuth: input.ctx.resolveGitAuth,
         }),
       seedManagedHome: input.deps.prepareRemoteManagedHome
         ? async (stage) => {

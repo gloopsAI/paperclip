@@ -16287,6 +16287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             config: runtimeConfig,
             context: adapterContext,
             runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+            resolveGitAuth: workspaceGitAuthProvider,
             executionTarget,
             executionTransport: remoteExecution
               ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }

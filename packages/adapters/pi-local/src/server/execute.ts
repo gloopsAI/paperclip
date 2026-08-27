@@ -420,6 +420,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           workspaceLocalDir: cwd,
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
+          resolveGitAuth: ctx.resolveGitAuth,
           onProgress: (line) => onLog("stdout", line),
           onRuntimeProgress: ctx.onRuntimeProgress,
           assets: [

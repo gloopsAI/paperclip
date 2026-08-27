@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import type { SshRemoteExecutionSpec } from "./ssh.js";
+import type { SshGitRemoteAuthProvider, SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
   type CommandManagedDuplexChannel,
@@ -1395,6 +1395,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   // so the host pack time rides one `pack` span under the `stage.sync` step. The
   // SSH and local lanes ignore it. The default is a no-op.
   runtimeSpan?: RuntimeSpanRunner;
+  resolveGitAuth?: SshGitRemoteAuthProvider;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -1419,6 +1420,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       syncWorkspace: input.syncWorkspace,
       assets: input.assets,
       additionalSources: input.additionalSources,
+      resolveGitAuth: input.resolveGitAuth,
       onProgress: input.onProgress,
     });
     return {

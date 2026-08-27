@@ -806,6 +806,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             syncWorkspace: targetWorkspaceRealization?.mode !== "in_place",
             installCommand: SANDBOX_INSTALL_COMMAND,
             detectCommand: command,
+            resolveGitAuth: ctx.resolveGitAuth,
             onProgress: (line) => onLog("stdout", line),
             onRuntimeProgress: ctx.onRuntimeProgress,
             assets: [

@@ -162,6 +162,7 @@ describe("claude remote execution", () => {
           strictHostKeyChecking: true,
         },
       },
+      resolveGitAuth: async () => null,
       onLog: async () => {},
     });
 
@@ -169,6 +170,7 @@ describe("claude remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,
       remoteDir: managedRemoteWorkspace,
+      resolveGitAuth: expect.any(Function),
     }));
     // One sync per registered runtime asset: skills and mcp-config.
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
