@@ -20,6 +20,7 @@ import {
   type RuntimeProgressPhase,
   type RuntimeProgressSink,
 } from "./runtime-progress.js";
+import { redactCommandText } from "./command-redaction.js";
 
 export interface SshConnectionConfig {
   host: string;
@@ -35,6 +36,20 @@ export interface SshCommandResult {
   stdout: string;
   stderr: string;
 }
+
+/** Env var the managed GitHub credential helper reads; never appears in git argv. */
+export const SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY = "PAPERCLIP_GIT_TOKEN";
+
+/** Actionable missing-credential copy in the `describeGitAuthFailure` family. */
+export const SSH_GIT_LFS_MISSING_CREDENTIAL_MESSAGE =
+  "SSH workspace import cannot hydrate Git LFS objects over GitHub HTTPS. No GitHub credential is configured — add a GITHUB_TOKEN or GH_TOKEN company secret in Settings → Secrets, or configure a local checkout cwd for this project workspace.";
+
+export type SshGitAuthInvocation = {
+  configArgs: string[];
+  env: Record<string, string>;
+};
+
+export type SshGitRemoteAuthProvider = (remoteUrl: string) => Promise<SshGitAuthInvocation | null>;
 
 export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
@@ -157,6 +172,49 @@ export function shellQuote(value: string) {
 
 function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function isGitHubHttpsRemoteUrl(remoteUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(remoteUrl);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  if (parsed.username || parsed.password) return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === "github.com" || host === "www.github.com";
+}
+
+function readGitAuthToken(auth: SshGitAuthInvocation): string | null {
+  const token = auth.env[SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY];
+  if (typeof token !== "string") return null;
+  const trimmed = token.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function redactGitAuthText(text: string, token?: string | null): string {
+  let out = redactCommandText(text);
+  if (token && token.length > 0) {
+    out = out.split(token).join("***REDACTED***");
+  }
+  return out;
+}
+
+async function workspaceHasGitLfsPointers(localDir: string): Promise<boolean> {
+  const attributes = await runLocalGit(localDir, ["show", "HEAD:.gitattributes"], {
+    timeout: 10_000,
+    maxBuffer: 256 * 1024,
+  }).catch(() => null);
+  if (attributes && /\bfilter=lfs\b/.test(attributes.stdout)) return true;
+
+  const grep = await runLocalGit(
+    localDir,
+    ["grep", "-I", "--cached", "-l", "^version https://git-lfs.github.com/spec/v1"],
+    { timeout: 15_000, maxBuffer: 256 * 1024 },
+  ).catch(() => null);
+  return Boolean(grep?.stdout.trim());
 }
 
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
@@ -759,13 +817,161 @@ async function streamSshToLocalFile(input: {
   }).finally(auth.cleanup);
 }
 
+function redactThrownGitAuthError(error: unknown, token?: string | null): unknown {
+  if (!token) return error;
+  if (error instanceof Error) {
+    error.message = redactGitAuthText(error.message, token);
+    if (typeof (error as { stderr?: unknown }).stderr === "string") {
+      (error as { stderr: string }).stderr = redactGitAuthText(
+        (error as { stderr: string }).stderr,
+        token,
+      );
+    }
+    if (typeof (error as { stdout?: unknown }).stdout === "string") {
+      (error as { stdout: string }).stdout = redactGitAuthText(
+        (error as { stdout: string }).stdout,
+        token,
+      );
+    }
+  }
+  return error;
+}
+
+function gitRemoteConfigArgPrefix(configArgs: string[]): string {
+  return configArgs.map((arg) => shellQuote(arg)).join(" ");
+}
+
+/** Command-line Git LFS hydration used when ambient global/system config is isolated. */
+export const SSH_GIT_LFS_HYDRATION_CONFIG_ARGS = [
+  "-c",
+  "filter.lfs.smudge=git-lfs smudge -- %f",
+  "-c",
+  "filter.lfs.required=true",
+] as const;
+
+/**
+ * Merge a managed GitHub credential invocation into SSH checkout `-c` args.
+ *
+ * Production `createGitRemoteAuthProvider` supplies credential-helper args only.
+ * Isolating `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` then leaves no LFS smudge
+ * driver unless this merge injects one. Empty `filter.lfs.process=` is dropped
+ * because it does not disable a repo-local or leftover process protocol.
+ */
+export function mergeSshGitAuthCheckoutConfigArgs(configArgs: string[]): string[] {
+  const merged: string[] = [];
+  for (let index = 0; index < configArgs.length; index += 1) {
+    const current = configArgs[index];
+    const next = configArgs[index + 1];
+    if (current === "-c" && typeof next === "string" && next.startsWith("filter.lfs.")) {
+      index += 1;
+      continue;
+    }
+    if (typeof current === "string" && current.startsWith("filter.lfs.")) continue;
+    merged.push(current);
+  }
+  merged.push(...SSH_GIT_LFS_HYDRATION_CONFIG_ARGS);
+  return merged;
+}
+
+export function buildSshGitAuthCheckoutRemoteCommand(input: {
+  remoteDir: string;
+  branchName: string | null;
+  headCommit: string;
+  tempRef: string;
+  auth: SshGitAuthInvocation;
+}): string {
+  const configArgs = mergeSshGitAuthCheckoutConfigArgs(input.auth.configArgs);
+  const gitPrefix = [
+    "git",
+    "-C",
+    shellQuote(input.remoteDir),
+    gitRemoteConfigArgPrefix(configArgs),
+  ].filter((part) => part.length > 0).join(" ");
+  const extraEnvLines = Object.entries(input.auth.env)
+    .filter(([key, value]) => key !== SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY && typeof value === "string")
+    .map(([key, value]) => {
+      if (!isValidShellEnvKey(key)) {
+        throw new Error(`Invalid SSH environment variable key: ${key}`);
+      }
+      return `export ${key}=${shellQuote(value)}`;
+    });
+  // Isolate global/system Git config so host git-lfs install cannot shadow the
+  // managed credential helper, then inject smudge via command-line `-c`.
+  extraEnvLines.push("export GIT_CONFIG_NOSYSTEM=1");
+  extraEnvLines.push("export GIT_CONFIG_GLOBAL=/dev/null");
+  extraEnvLines.push("export GIT_CONFIG_SYSTEM=/dev/null");
+  const checkout = input.branchName
+    ? `${gitPrefix} checkout --force -B ${shellQuote(input.branchName)} ${shellQuote(input.headCommit)} >/dev/null`
+    : `${gitPrefix} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.headCommit)} >/dev/null`;
+  return [
+    "set -e",
+    `IFS= read -r ${SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY}`,
+    `export ${SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY}`,
+    ...extraEnvLines,
+    // A reused workspace may have `git lfs install` in `.git/config`; that
+    // process protocol would outrank command-line smudge. Drop it first.
+    `git -C ${shellQuote(input.remoteDir)} config --local --unset-all filter.lfs.process >/dev/null 2>&1 || true`,
+    checkout,
+    // `git checkout --force` already rewrote the index and working tree from
+    // the fetched bundle. A follow-up `git reset --hard` would re-copy the
+    // pointer index onto the working tree, undoing the LFS smudge hydration
+    // we just performed. Keep the hydrated working tree and only clean
+    // untracked files.
+    `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
+    `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(input.tempRef)} >/dev/null 2>&1 || true`,
+  ].join("\n");
+}
+
+async function checkoutGitWorkspaceOnSshWithAuth(input: {
+  spec: SshRemoteExecutionSpec;
+  remoteDir: string;
+  snapshot: LocalGitWorkspaceSnapshot;
+  tempRef: string;
+  auth: SshGitAuthInvocation;
+  token: string;
+}): Promise<void> {
+  const remoteCommand = buildSshGitAuthCheckoutRemoteCommand({
+    remoteDir: input.remoteDir,
+    branchName: input.snapshot.branchName,
+    headCommit: input.snapshot.headCommit,
+    tempRef: input.tempRef,
+    auth: input.auth,
+  });
+
+  try {
+    await runSshCommand(input.spec, remoteCommand, {
+      stdin: `${input.token}\n`,
+      timeoutMs: 120_000,
+      maxBuffer: 1024 * 1024,
+    });
+  } catch (error) {
+    throw redactThrownGitAuthError(error, input.token);
+  }
+}
+
 async function importGitWorkspaceToSsh(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir: string;
   snapshot: LocalGitWorkspaceSnapshot;
+  resolveGitAuth?: SshGitRemoteAuthProvider;
   onProgress?: RuntimeProgressSink;
 }): Promise<void> {
+  const access = await workspaceRequiresGitHubLfsNetworkAccess(input.localDir);
+  let gitAuth: SshGitAuthInvocation | null = null;
+  if (access.required) {
+    gitAuth = input.resolveGitAuth && access.originUrl
+      ? await input.resolveGitAuth(access.originUrl)
+      : null;
+    if (!readGitAuthToken(gitAuth ?? { configArgs: [], env: {} })) {
+      throw new Error(SSH_GIT_LFS_MISSING_CREDENTIAL_MESSAGE);
+    }
+  }
+  const gitAuthToken = gitAuth ? readGitAuthToken(gitAuth) : null;
+  if (gitAuthToken?.includes("\n") || gitAuthToken?.includes("\r")) {
+    throw new Error(SSH_GIT_LFS_MISSING_CREDENTIAL_MESSAGE);
+  }
+
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   // Per-import unique ref so concurrent imports against the same local repo
@@ -781,7 +987,18 @@ async function importGitWorkspaceToSsh(input: {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    const originUrl = await readSanitizedOriginRemoteUrl(input.localDir);
+    const originUrl = access.originUrl;
+
+    const checkoutLines = gitAuth
+      ? []
+      : [
+        input.snapshot.branchName
+          ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
+          : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
+        `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
+        `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
+        `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
+      ];
 
     const remoteSetupScript = [
       "set -e",
@@ -800,13 +1017,7 @@ async function importGitWorkspaceToSsh(input: {
         ]
         : []),
       `git -C ${shellQuote(input.remoteDir)} fetch --force "$tmp_bundle" '${tempRef}:${tempRef}' >/dev/null`,
-      input.snapshot.branchName
-        ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
-        : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
-      `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
-      `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
-      // Drop the per-import ref on the remote side too so it can't accumulate.
-      `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
+      ...checkoutLines,
     ].join("\n");
 
     // The git bundle is a real local file of known size, so report an exact
@@ -829,10 +1040,20 @@ async function importGitWorkspaceToSsh(input: {
         remoteScript: remoteSetupScript,
         progress: progress ?? undefined,
       });
+      if (gitAuth && gitAuthToken) {
+        await checkoutGitWorkspaceOnSshWithAuth({
+          spec: input.spec,
+          remoteDir: input.remoteDir,
+          snapshot: input.snapshot,
+          tempRef,
+          auth: gitAuth,
+          token: gitAuthToken,
+        });
+      }
       await progress?.finish();
     } catch (error) {
       await progress?.fail();
-      throw error;
+      throw redactThrownGitAuthError(error, gitAuthToken);
     }
   } finally {
     await runLocalGit(input.localDir, ["update-ref", "-d", tempRef], {
@@ -1553,10 +1774,25 @@ export async function syncDirectoryFromSsh(input: {
   }
 }
 
+export async function workspaceRequiresGitHubLfsNetworkAccess(localDir: string): Promise<{
+  required: boolean;
+  originUrl: string | null;
+}> {
+  const originUrl = await readSanitizedOriginRemoteUrl(localDir);
+  if (!originUrl || !isGitHubHttpsRemoteUrl(originUrl)) {
+    return { required: false, originUrl };
+  }
+  return {
+    required: await workspaceHasGitLfsPointers(localDir),
+    originUrl,
+  };
+}
+
 export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
   remoteDir?: string;
+  resolveGitAuth?: SshGitRemoteAuthProvider;
   onProgress?: RuntimeProgressSink;
 }): Promise<{ gitBacked: boolean }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
@@ -1568,6 +1804,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
+      resolveGitAuth: input.resolveGitAuth,
       onProgress: input.onProgress,
     });
     await syncDirectoryToSsh({

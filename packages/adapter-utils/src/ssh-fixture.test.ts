@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +16,7 @@ import {
   syncDirectoryToSsh,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
+  SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY,
   type SshEnvLabFixtureState,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
@@ -769,6 +770,98 @@ describe("ssh env-lab fixture", () => {
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     expect(await git(localRepo, ["status", "--short"])).toContain("M tracked.txt");
     expect(await git(localRepo, ["status", "--short"])).not.toContain("._tracked.txt");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("hydrates a restricted Git LFS GitHub workspace through the managed helper without leaking the token", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+    const token = "ghp_fixturetokenAAAAAAAAAAAAAAAAAAAA";
+    const payload = "hydrated-lfs-payload\n";
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n", "utf8");
+    await writeFile(
+      path.join(localRepo, "asset.bin"),
+      [
+        "version https://git-lfs.github.com/spec/v1",
+        "oid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size 21",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await git(localRepo, ["add", ".gitattributes", "asset.bin"]);
+    await git(localRepo, ["commit", "-m", "lfs pointer"]);
+    await git(localRepo, ["remote", "add", "origin", "https://github.com/InductAI/induct.git"]);
+    await writeFile(path.join(localRepo, "asset.bin"), payload, "utf8");
+
+    const fakeLfsDir = path.join(rootDir, "fake-lfs-bin");
+    await mkdir(fakeLfsDir, { recursive: true });
+    await writeFile(
+      path.join(fakeLfsDir, "git-lfs"),
+      `#!/bin/sh
+if [ "$1" = "smudge" ]; then
+  if [ -z "$PAPERCLIP_GIT_TOKEN" ]; then echo "missing Paperclip git token" >&2; exit 1; fi
+  case "$PAPERCLIP_GIT_TOKEN" in
+    ghp_*) ;;
+    *) echo "rejected Paperclip git token" >&2; exit 1 ;;
+  esac
+  cat >/dev/null
+  printf '%s' ${JSON.stringify(payload)}
+  exit 0
+fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    await chmod(path.join(fakeLfsDir, "git-lfs"), 0o755);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH Git LFS credential import test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const logs: string[] = [];
+
+    await prepareWorkspaceForSshExecution({
+      spec,
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+      resolveGitAuth: async (remoteUrl) => {
+        expect(remoteUrl).toBe("https://github.com/InductAI/induct.git");
+        const helper =
+          `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
+        return {
+          configArgs: [
+            "-c", "credential.helper=",
+            "-c", `credential.https://github.com.helper=${helper}`,
+            "-c", `credential.https://www.github.com.helper=${helper}`,
+          ],
+          env: {
+            [SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY]: token,
+            GIT_TERMINAL_PROMPT: "0",
+            PATH: `${fakeLfsDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          },
+        };
+      },
+      onProgress: (line) => {
+        logs.push(line);
+      },
+    });
+
+    const remoteAsset = await runSshCommand(
+      config,
+      `cat ${JSON.stringify(path.posix.join(started.workspaceDir, "asset.bin"))}`,
+    );
+    expect(remoteAsset.stdout).toBe(payload);
+    expect(remoteAsset.stdout).not.toContain(token);
+    expect(logs.join("\n")).not.toContain(token);
+    expect(await readFile(path.join(localRepo, "asset.bin"), "utf8")).toBe(payload);
+    expect(await readFile(path.join(localRepo, "asset.bin"), "utf8")).not.toContain(token);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("preserves both concurrent SSH restores in a shared git workspace", async () => {
