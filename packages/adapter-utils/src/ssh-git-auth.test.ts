@@ -10,6 +10,7 @@ import {
   buildSshGitAuthCheckoutRemoteCommand,
   mergeSshGitAuthCheckoutConfigArgs,
   prepareWorkspaceForSshExecution,
+  redactThrownGitAuthError,
   workspaceRequiresGitHubLfsNetworkAccess,
   type SshGitAuthInvocation,
   type SshRemoteExecutionSpec,
@@ -132,6 +133,47 @@ async function collectUtf8Files(rootDir: string): Promise<string[]> {
   }
   return bodies;
 }
+
+describe("redactThrownGitAuthError", () => {
+  const token = "ghp_example_token_value";
+
+  it("returns the error unchanged when no token is provided", () => {
+    const error = new Error("clone failed");
+    expect(redactThrownGitAuthError(error)).toBe(error);
+    expect(redactThrownGitAuthError(error, "")).toBe(error);
+    expect(error.message).toBe("clone failed");
+  });
+
+  it("redacts the token from Error.message and optional stdout/stderr strings", () => {
+    const error = Object.assign(new Error(`fatal: Authentication failed for ${token}`), {
+      stderr: `remote: Invalid username or password: ${token}\n`,
+      stdout: `hint: using token ${token}\n`,
+    });
+    const result = redactThrownGitAuthError(error, token) as Error & {
+      stderr: string;
+      stdout: string;
+    };
+    expect(result).toBe(error);
+    expect(result.message).toContain("***REDACTED***");
+    expect(result.message).not.toContain(token);
+    expect(result.stderr).toContain("***REDACTED***");
+    expect(result.stderr).not.toContain(token);
+    expect(result.stdout).toContain("***REDACTED***");
+    expect(result.stdout).not.toContain(token);
+  });
+
+  it("does not treat non-string stdout/stderr as redaction targets", () => {
+    const error = Object.assign(new Error(`fail ${token}`), {
+      stderr: 12,
+      stdout: Buffer.from(token),
+    });
+    redactThrownGitAuthError(error, token);
+    expect(error.message).not.toContain(token);
+    expect((error as Error & { stderr: number }).stderr).toBe(12);
+    expect(Buffer.isBuffer((error as Error & { stdout: Buffer }).stdout)).toBe(true);
+    expect((error as Error & { stdout: Buffer }).stdout.toString()).toBe(token);
+  });
+});
 
 describe("SSH GitHub LFS credential preflight", () => {
   const cleanupDirs: string[] = [];
