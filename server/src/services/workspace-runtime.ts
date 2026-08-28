@@ -2725,6 +2725,14 @@ async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
 }
 
+async function isGitWorkingTree(workspacePath: string): Promise<boolean> {
+  const gitMarker = path.join(workspacePath, ".git");
+  const hasGitMarker = await fs.lstat(gitMarker).then(() => true).catch(() => false);
+  if (!hasGitMarker) return false;
+  const inside = await runGit(["rev-parse", "--is-inside-work-tree"], workspacePath).catch(() => "");
+  return inside.trim() === "true";
+}
+
 async function resolvePathForWorktreeComparison(value: string): Promise<string> {
   const resolved = path.resolve(value);
   return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
@@ -4116,11 +4124,22 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // cleaned means "every directory we intended to destroy is gone", not
+  // "the cwd no longer exists". Shared/project-primary sessions and leftover
+  // non-worktree paths must archive successfully while leaving the tree.
+  // Host backport: drop this predicate once upstream Paperclip scores
+  // archive_record-only and already-removed gitdir the same way.
+  let directoryRemovalRequired = false;
+  let directoryRemovalFailed = false;
+
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
     const worktreeExists = await directoryExists(workspacePath);
-    if (worktreeExists) {
+    const workingTree = worktreeExists && await isGitWorkingTree(workspacePath);
+    if (workingTree) {
+      directoryRemovalRequired = true;
       if (!repoRoot) {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
+        directoryRemovalFailed = true;
       } else {
         try {
           await input.assertSafeToCleanup?.();
@@ -4143,8 +4162,28 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
             failureLabel: `git worktree remove ${workspacePath}`,
           });
         } catch (err) {
+          directoryRemovalFailed = true;
           warnings.push(err instanceof Error ? err.message : String(err));
         }
+      }
+    } else if (worktreeExists && repoRoot) {
+      try {
+        await recordGitOperation(input.recorder, {
+          phase: "worktree_cleanup",
+          args: ["worktree", "prune"],
+          cwd: repoRoot,
+          metadata: {
+            workspaceId: input.workspace.id,
+            workspacePath,
+            branchName: input.workspace.branchName,
+            cleanupAction: "worktree_prune",
+          },
+          successMessage: `Pruned stale git worktree metadata for ${workspacePath}\n`,
+          failureLabel: `git worktree prune`,
+        });
+      } catch {
+        // Optional: leftover directories that are not working trees are already
+        // removed from git's point of view. Do not fail archive on prune.
       }
     }
     if (branchCreatedByRuntime && input.workspace.branchName) {
@@ -4195,6 +4234,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     if (containsProjectWorkspace) {
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
+      directoryRemovalRequired = true;
       await input.assertSafeToCleanup?.();
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
       if (input.recorder) {
@@ -4213,12 +4253,19 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           }),
         });
       }
+      if (await directoryExists(resolvedWorkspacePath)) {
+        directoryRemovalFailed = true;
+      }
     }
   }
 
   const cleaned =
-    !workspacePath ||
-    !(await directoryExists(workspacePath));
+    !directoryRemovalFailed &&
+    (
+      !directoryRemovalRequired ||
+      !workspacePath ||
+      !(await directoryExists(workspacePath))
+    );
 
   return {
     cleanedPath: workspacePath,
