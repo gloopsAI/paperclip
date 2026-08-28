@@ -849,11 +849,26 @@ async function checkoutGitWorkspaceOnSshWithAuth(input: {
   auth: SshGitAuthInvocation;
   token: string;
 }): Promise<void> {
+  // Setting `filter.lfs.process=` (empty) does not disable the process protocol;
+  // Git may still pick up a system/global `filter.lfs.process` and use the
+  // real `git-lfs filter-process`, bypassing the managed helper and failing
+  // without the token. Drop the `-c filter.lfs.process=` pair and rely on
+  // smudge plus the GIT_CONFIG_* nullification below.
+  const configArgs: string[] = [];
+  for (let index = 0; index < input.auth.configArgs.length; index += 1) {
+    const current = input.auth.configArgs[index];
+    if (current === "-c" && input.auth.configArgs[index + 1] === "filter.lfs.process=") {
+      index += 1;
+      continue;
+    }
+    if (current === "filter.lfs.process=") continue;
+    configArgs.push(current);
+  }
   const gitPrefix = [
     "git",
     "-C",
     shellQuote(input.remoteDir),
-    gitRemoteConfigArgPrefix(input.auth.configArgs),
+    gitRemoteConfigArgPrefix(configArgs),
   ].filter((part) => part.length > 0).join(" ");
   const extraEnvLines = Object.entries(input.auth.env)
     .filter(([key, value]) => key !== SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY && typeof value === "string")
@@ -863,6 +878,13 @@ async function checkoutGitWorkspaceOnSshWithAuth(input: {
       }
       return `export ${key}=${shellQuote(value)}`;
     });
+  // Prevent the operator's global/system git-lfs configuration from overriding
+  // the command-line filter/credential settings we pass to this checkout.
+  // Without this, a host with `filter.lfs.process` or `filter.lfs.smudge`
+  // configured at the system or user level can shadow the managed helper and
+  // skip LFS hydration entirely.
+  extraEnvLines.push("export GIT_CONFIG_GLOBAL=/dev/null");
+  extraEnvLines.push("export GIT_CONFIG_SYSTEM=/dev/null");
   const checkout = input.snapshot.branchName
     ? `${gitPrefix} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
     : `${gitPrefix} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`;
@@ -872,7 +894,11 @@ async function checkoutGitWorkspaceOnSshWithAuth(input: {
     `export ${SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY}`,
     ...extraEnvLines,
     checkout,
-    `${gitPrefix} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
+    // `git checkout --force` already rewrote the index and working tree from
+    // the fetched bundle. A follow-up `git reset --hard` would re-copy the
+    // pointer index onto the working tree, undoing the LFS smudge hydration
+    // we just performed. Keep the hydrated working tree and only clean
+    // untracked files.
     `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
     `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(input.tempRef)} >/dev/null 2>&1 || true`,
   ].join("\n");
