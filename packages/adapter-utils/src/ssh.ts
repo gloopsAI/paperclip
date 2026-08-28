@@ -817,21 +817,22 @@ async function streamSshToLocalFile(input: {
   }).finally(auth.cleanup);
 }
 
-function redactThrownGitAuthError(error: unknown, token?: string | null): unknown {
+/** Optional IO fields on Node `execFile`/`git` errors. Required `{stderr:string}` casts are TS2352. */
+type GitCommandIoView = {
+  stderr?: string;
+  stdout?: string;
+};
+
+export function redactThrownGitAuthError(error: unknown, token?: string | null): unknown {
   if (!token) return error;
   if (error instanceof Error) {
     error.message = redactGitAuthText(error.message, token);
-    if (typeof (error as { stderr?: unknown }).stderr === "string") {
-      (error as { stderr: string }).stderr = redactGitAuthText(
-        (error as { stderr: string }).stderr,
-        token,
-      );
+    const io = error as GitCommandIoView;
+    if (typeof io.stderr === "string") {
+      io.stderr = redactGitAuthText(io.stderr, token);
     }
-    if (typeof (error as { stdout?: unknown }).stdout === "string") {
-      (error as { stdout: string }).stdout = redactGitAuthText(
-        (error as { stdout: string }).stdout,
-        token,
-      );
+    if (typeof io.stdout === "string") {
+      io.stdout = redactGitAuthText(io.stdout, token);
     }
   }
   return error;
