@@ -40,6 +40,7 @@ import {
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
 import {
+  cleanupExecutionWorkspaceArtifacts,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
@@ -1934,6 +1935,107 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
     ]));
   });
+
+  it("reaps a terminal shared local_fs session without deleting the project directory", async () => {
+    const projectDir = await createTempRepo();
+    tempDirs.add(projectDir);
+    await fs.writeFile(path.join(projectDir, "keep.txt"), "stay\n", "utf8");
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared cleanup",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectDir,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: projectDir,
+      metadata: {
+        createdByRuntime: false,
+      },
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Shared session source",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+    expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
+
+    const closedAt = new Date();
+    await db.update(executionWorkspaces).set({
+      status: "archived",
+      closedAt,
+      metadata: { createdByRuntime: false, [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 1 },
+    }).where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: executionWorkspaceId,
+        cwd: projectDir,
+        providerType: "local_fs",
+        providerRef: null,
+        branchName: null,
+        repoUrl: null,
+        baseRef: null,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId,
+        metadata: { createdByRuntime: false },
+      },
+      projectWorkspace: { cwd: projectDir, cleanupCommand: null },
+    });
+    expect(cleanup.cleaned).toBe(true);
+
+    const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+      id: executionWorkspaceId,
+      closedAt,
+      capturedGeneration: 1,
+      cleanupReason: cleanup.warnings.length > 0 ? cleanup.warnings.join(" | ") : null,
+      markCleanupFailed: !cleanup.cleaned,
+    });
+    expect(applied?.status).toBe("archived");
+    await expect(fs.readFile(path.join(projectDir, "keep.txt"), "utf8")).resolves.toBe("stay\n");
+  }, 20_000);
 
   it("clears matching environment selections transactionally without touching other workspaces", async () => {
     const companyId = randomUUID();

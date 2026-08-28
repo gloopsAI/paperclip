@@ -3899,6 +3899,110 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 10_000);
 
+  it("treats shared local_fs archive_record as cleaned while leaving the project directory", async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-session-"));
+    await fs.writeFile(path.join(projectDir, "keep.txt"), "stay\n", "utf8");
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-shared",
+        cwd: projectDir,
+        providerType: "local_fs",
+        providerRef: null,
+        branchName: "paperclip/SUP-492-shared",
+        repoUrl: null,
+        baseRef: "main",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-shared",
+        metadata: {
+          createdByRuntime: false,
+        },
+      },
+      projectWorkspace: {
+        cwd: projectDir,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    await expect(fs.readFile(path.join(projectDir, "keep.txt"), "utf8")).resolves.toBe("stay\n");
+  });
+
+  it("treats a leftover git worktree without a gitdir as already removed and keeps the unmerged branch", async () => {
+    const repoRoot = await createTempRepo();
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-stale-gitdir",
+        identifier: "SUP-380",
+        title: "Stale worktree metadata",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await fs.writeFile(path.join(workspace.cwd, "unmerged.txt"), "keep this commit\n", "utf8");
+    await runGit(workspace.cwd, ["add", "unmerged.txt"]);
+    await runGit(workspace.cwd, ["commit", "-m", "Unmerged leftover work"]);
+    await fs.rm(path.join(workspace.cwd, ".git"), { force: true });
+    await runGit(repoRoot, ["worktree", "prune"]);
+
+    const leftoverMarker = path.join(workspace.cwd, "leftover.txt");
+    await fs.writeFile(leftoverMarker, "not a working tree\n", "utf8");
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-stale-gitdir",
+        cwd: workspace.cwd,
+        providerType: "git_worktree",
+        providerRef: workspace.worktreePath,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.repoRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.workspaceId,
+        sourceIssueId: "issue-stale-gitdir",
+        metadata: {
+          ...RUNTIME_OWNED_GIT_BRANCH_METADATA,
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings.some((warning) => warning.includes("is not a working tree"))).toBe(false);
+    expect(cleanup.warnings).toEqual([
+      expect.stringContaining(`Skipped deleting branch "${workspace.branchName}"`),
+    ]);
+    await expect(fs.readFile(leftoverMarker, "utf8")).resolves.toBe("not a working tree\n");
+    await expect(
+      execFileAsync("git", ["show-ref", "--verify", "--", `refs/heads/${workspace.branchName}`], { cwd: repoRoot }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining(`refs/heads/${workspace.branchName}`),
+    });
+  }, 10_000);
+
   it("records teardown and cleanup operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
