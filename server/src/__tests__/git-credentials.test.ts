@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { mergeSshGitAuthCheckoutConfigArgs } from "@paperclipai/adapter-utils/ssh";
 import {
   DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
   GIT_CREDENTIAL_TOKEN_ENV_KEY,
@@ -156,6 +157,19 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.configArgs[5]).toContain("credential.https://www.github.com.helper=");
     expect(invocation.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("super-secret-token");
     expect(invocation.env.GIT_TERMINAL_PROMPT).toBe("0");
+  });
+
+  it("lets the SSH checkout path hydrate LFS from credential-only production args", () => {
+    const invocation = buildGitAuthInvocation({
+      token: "super-secret-token",
+      source: "company_secret",
+      secretName: "GITHUB_TOKEN",
+    });
+    const merged = mergeSshGitAuthCheckoutConfigArgs(invocation.configArgs);
+    expect(merged.join(" ")).toContain("filter.lfs.smudge=git-lfs smudge -- %f");
+    expect(merged.join(" ")).toContain("filter.lfs.required=true");
+    expect(merged.join(" ")).not.toContain("super-secret-token");
+    expect(invocation.configArgs.join(" ")).not.toMatch(/filter\.lfs/);
   });
 });
 

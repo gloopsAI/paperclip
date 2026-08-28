@@ -841,29 +841,46 @@ function gitRemoteConfigArgPrefix(configArgs: string[]): string {
   return configArgs.map((arg) => shellQuote(arg)).join(" ");
 }
 
-async function checkoutGitWorkspaceOnSshWithAuth(input: {
-  spec: SshRemoteExecutionSpec;
-  remoteDir: string;
-  snapshot: LocalGitWorkspaceSnapshot;
-  tempRef: string;
-  auth: SshGitAuthInvocation;
-  token: string;
-}): Promise<void> {
-  // Setting `filter.lfs.process=` (empty) does not disable the process protocol;
-  // Git may still pick up a system/global `filter.lfs.process` and use the
-  // real `git-lfs filter-process`, bypassing the managed helper and failing
-  // without the token. Drop the `-c filter.lfs.process=` pair and rely on
-  // smudge plus the GIT_CONFIG_* nullification below.
-  const configArgs: string[] = [];
-  for (let index = 0; index < input.auth.configArgs.length; index += 1) {
-    const current = input.auth.configArgs[index];
-    if (current === "-c" && input.auth.configArgs[index + 1] === "filter.lfs.process=") {
+/** Command-line Git LFS hydration used when ambient global/system config is isolated. */
+export const SSH_GIT_LFS_HYDRATION_CONFIG_ARGS = [
+  "-c",
+  "filter.lfs.smudge=git-lfs smudge -- %f",
+  "-c",
+  "filter.lfs.required=true",
+] as const;
+
+/**
+ * Merge a managed GitHub credential invocation into SSH checkout `-c` args.
+ *
+ * Production `createGitRemoteAuthProvider` supplies credential-helper args only.
+ * Isolating `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` then leaves no LFS smudge
+ * driver unless this merge injects one. Empty `filter.lfs.process=` is dropped
+ * because it does not disable a repo-local or leftover process protocol.
+ */
+export function mergeSshGitAuthCheckoutConfigArgs(configArgs: string[]): string[] {
+  const merged: string[] = [];
+  for (let index = 0; index < configArgs.length; index += 1) {
+    const current = configArgs[index];
+    const next = configArgs[index + 1];
+    if (current === "-c" && typeof next === "string" && next.startsWith("filter.lfs.")) {
       index += 1;
       continue;
     }
-    if (current === "filter.lfs.process=") continue;
-    configArgs.push(current);
+    if (typeof current === "string" && current.startsWith("filter.lfs.")) continue;
+    merged.push(current);
   }
+  merged.push(...SSH_GIT_LFS_HYDRATION_CONFIG_ARGS);
+  return merged;
+}
+
+export function buildSshGitAuthCheckoutRemoteCommand(input: {
+  remoteDir: string;
+  branchName: string | null;
+  headCommit: string;
+  tempRef: string;
+  auth: SshGitAuthInvocation;
+}): string {
+  const configArgs = mergeSshGitAuthCheckoutConfigArgs(input.auth.configArgs);
   const gitPrefix = [
     "git",
     "-C",
@@ -878,21 +895,22 @@ async function checkoutGitWorkspaceOnSshWithAuth(input: {
       }
       return `export ${key}=${shellQuote(value)}`;
     });
-  // Prevent the operator's global/system git-lfs configuration from overriding
-  // the command-line filter/credential settings we pass to this checkout.
-  // Without this, a host with `filter.lfs.process` or `filter.lfs.smudge`
-  // configured at the system or user level can shadow the managed helper and
-  // skip LFS hydration entirely.
+  // Isolate global/system Git config so host git-lfs install cannot shadow the
+  // managed credential helper, then inject smudge via command-line `-c`.
+  extraEnvLines.push("export GIT_CONFIG_NOSYSTEM=1");
   extraEnvLines.push("export GIT_CONFIG_GLOBAL=/dev/null");
   extraEnvLines.push("export GIT_CONFIG_SYSTEM=/dev/null");
-  const checkout = input.snapshot.branchName
-    ? `${gitPrefix} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
-    : `${gitPrefix} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`;
-  const remoteCommand = [
+  const checkout = input.branchName
+    ? `${gitPrefix} checkout --force -B ${shellQuote(input.branchName)} ${shellQuote(input.headCommit)} >/dev/null`
+    : `${gitPrefix} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.headCommit)} >/dev/null`;
+  return [
     "set -e",
     `IFS= read -r ${SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY}`,
     `export ${SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY}`,
     ...extraEnvLines,
+    // A reused workspace may have `git lfs install` in `.git/config`; that
+    // process protocol would outrank command-line smudge. Drop it first.
+    `git -C ${shellQuote(input.remoteDir)} config --local --unset-all filter.lfs.process >/dev/null 2>&1 || true`,
     checkout,
     // `git checkout --force` already rewrote the index and working tree from
     // the fetched bundle. A follow-up `git reset --hard` would re-copy the
@@ -902,6 +920,23 @@ async function checkoutGitWorkspaceOnSshWithAuth(input: {
     `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
     `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(input.tempRef)} >/dev/null 2>&1 || true`,
   ].join("\n");
+}
+
+async function checkoutGitWorkspaceOnSshWithAuth(input: {
+  spec: SshRemoteExecutionSpec;
+  remoteDir: string;
+  snapshot: LocalGitWorkspaceSnapshot;
+  tempRef: string;
+  auth: SshGitAuthInvocation;
+  token: string;
+}): Promise<void> {
+  const remoteCommand = buildSshGitAuthCheckoutRemoteCommand({
+    remoteDir: input.remoteDir,
+    branchName: input.snapshot.branchName,
+    headCommit: input.snapshot.headCommit,
+    tempRef: input.tempRef,
+    auth: input.auth,
+  });
 
   try {
     await runSshCommand(input.spec, remoteCommand, {

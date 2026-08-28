@@ -833,13 +833,13 @@ exit 0
       remoteDir: started.workspaceDir,
       resolveGitAuth: async (remoteUrl) => {
         expect(remoteUrl).toBe("https://github.com/InductAI/induct.git");
+        const helper =
+          `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
         return {
           configArgs: [
             "-c", "credential.helper=",
-            "-c", `credential.https://github.com.helper=!f() { printf 'username=x-access-token\\npassword=%s\\n' "$${SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY}"; }; f`,
-            "-c", "filter.lfs.process=",
-            "-c", "filter.lfs.required=true",
-            "-c", "filter.lfs.smudge=git-lfs smudge -- %f",
+            "-c", `credential.https://github.com.helper=${helper}`,
+            "-c", `credential.https://www.github.com.helper=${helper}`,
           ],
           env: {
             [SSH_GIT_CREDENTIAL_TOKEN_ENV_KEY]: token,
