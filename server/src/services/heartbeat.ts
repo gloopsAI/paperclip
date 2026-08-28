@@ -17481,6 +17481,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           typeof deferredOwner === "object" &&
           "agentId" in deferredOwner &&
           deferredOwner.agentId === deferred.agentId;
+        // Source-scoped recovery wakes target the recovery-action owner, who
+        // is often not the issue assignee. Preserve only an authenticated
+        // active/escalated action for this source issue and owner — the same
+        // exemption claimQueuedRun applies at claim time.
+        const deferredRecoveryActionId = readNonEmptyString(deferredContextSeed.recoveryActionId);
+        const deferredIsAuthorizedSourceScopedRecovery =
+          deferredWakeReason === "source_scoped_recovery_action" && deferredRecoveryActionId
+            ? await tx
+              .select({ id: issueRecoveryActions.id })
+              .from(issueRecoveryActions)
+              .where(and(
+                eq(issueRecoveryActions.id, deferredRecoveryActionId),
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.sourceIssueId, issue.id),
+                eq(issueRecoveryActions.ownerAgentId, deferred.agentId),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ))
+              .limit(1)
+              .then((rows) => Boolean(rows[0]))
+            : false;
 
         const deferredStaleError =
           issue.assigneeAgentId !== deferred.agentId &&
@@ -17488,7 +17508,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           !deferredIsCurrentReviewParticipant &&
           !deferredIsCommentDrivenWake &&
           !isNonAssigneeWorkspaceBusyRetry(deferredRetryReason, deferredContextSeed) &&
-          !deferredIsUnblockOwnerWake
+          !deferredIsUnblockOwnerWake &&
+          !deferredIsAuthorizedSourceScopedRecovery
             ? "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead"
             : (issue.status === "done" || issue.status === "cancelled") &&
                 !deferredResumeIntent &&

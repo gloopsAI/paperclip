@@ -15,6 +15,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueRelations,
   issues,
   workspaceOperations,
@@ -130,6 +131,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
     await db.delete(activityLog);
     await db.delete(companySkills);
     await db.delete(issueComments);
+    await db.delete(issueRecoveryActions);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
@@ -850,5 +852,157 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
     expect(mismatchRun.status).toBe("cancelled");
     expect(mismatchRun.errorCode).toBe("issue_assignee_changed");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("promotes a deferred authorized source-scoped recovery wake even though the owner is not the assignee", async () => {
+    const { companyId, producerId, reviewerId } = await seedCompanyAndAgents();
+    const issueId = randomUUID();
+    const recoveryActionId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Packet with a source-scoped recovery owner",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: producerId,
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: reviewerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:deferred-handoff",
+      nextAction: "Choose a valid issue disposition.",
+    });
+
+    const recoveryWakeId = await insertDeferredWake({
+      companyId,
+      issueId,
+      agentId: reviewerId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "source_scoped_recovery_action",
+        recoveryActionId,
+        skipIssueComment: true,
+      },
+    });
+
+    await heartbeat.wakeup(producerId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+
+    const recoveryWakeCompleted = await waitForCondition(async () => {
+      const wake = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, recoveryWakeId))
+        .then((rows) => rows[0]);
+      return wake?.status === "completed";
+    });
+    expect(recoveryWakeCompleted).toBe(true);
+
+    const recoveryWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, recoveryWakeId))
+      .then((rows) => rows[0]);
+    expect(recoveryWake.status).toBe("completed");
+    expect(recoveryWake.error).toBeNull();
+    expect(recoveryWake.runId).not.toBeNull();
+
+    const recoveryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, recoveryWake.runId!))
+      .then((rows) => rows[0]);
+    expect(recoveryRun.status).toBe("succeeded");
+  }, 30_000);
+
+  it("skips a source-scoped recovery wake that fails claim-time authentication", async () => {
+    const { companyId, producerId, reviewerId } = await seedCompanyAndAgents();
+    const issueId = randomUUID();
+    const recoveryActionId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Packet with a mismatched recovery owner",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: producerId,
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: producerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:deferred-handoff-mismatch",
+      nextAction: "Choose a valid issue disposition.",
+    });
+
+    const mismatchWakeId = await insertDeferredWake({
+      companyId,
+      issueId,
+      agentId: reviewerId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "source_scoped_recovery_action",
+        recoveryActionId,
+        skipIssueComment: true,
+      },
+    });
+
+    await heartbeat.wakeup(producerId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+
+    const mismatchWakeSkipped = await waitForCondition(async () => {
+      const wake = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, mismatchWakeId))
+        .then((rows) => rows[0]);
+      return wake?.status === "skipped";
+    });
+    expect(mismatchWakeSkipped).toBe(true);
+
+    const mismatchWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, mismatchWakeId))
+      .then((rows) => rows[0]);
+    expect(mismatchWake.error).toContain("assignee changed");
+    expect(mismatchWake.runId).toBeNull();
   }, 30_000);
 });
