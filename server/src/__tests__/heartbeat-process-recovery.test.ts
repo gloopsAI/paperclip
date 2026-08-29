@@ -1341,18 +1341,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: 999_999_999,
     });
     const reviewerId = randomUUID();
+    const siblingReviewerId = randomUUID();
+    const siblingIssueId = randomUUID();
     const stageId = randomUUID();
-    await db.insert(agents).values({
-      id: reviewerId,
-      companyId,
-      name: "Staff Reviewer",
-      role: "engineer",
-      status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    const siblingStageId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: reviewerId,
+        companyId,
+        name: "Staff Reviewer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: siblingReviewerId,
+        companyId,
+        name: "Sibling Reviewer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
     await db
       .update(issues)
       .set({
@@ -1374,25 +1390,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(issues.id, issueId));
-    const deferredWakeId = randomUUID();
-    await db.insert(agentWakeupRequests).values({
-      id: deferredWakeId,
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: siblingIssueId,
       companyId,
-      agentId: reviewerId,
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_execution_deferred",
-      status: "deferred_issue_execution",
-      payload: {
-        issueId,
-        _paperclipWakeContext: {
-          issueId,
-          taskId: issueId,
-          wakeReason: "execution_review_requested",
-          source: "issue.execution_stage",
-        },
+      title: "Sibling review handoff",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: siblingReviewerId,
+      assigneeUserId: null,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "executor",
+      executionLockedAt: new Date(),
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      executionState: {
+        status: "pending",
+        currentStageId: siblingStageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        currentParticipant: { type: "agent", agentId: siblingReviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        reviewRequest: null,
+        monitor: null,
       },
     });
+    const deferredWakeId = randomUUID();
+    const siblingDeferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: deferredWakeId,
+        companyId,
+        agentId: reviewerId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred",
+        status: "deferred_issue_execution",
+        payload: {
+          issueId,
+          _paperclipWakeContext: {
+            issueId,
+            taskId: issueId,
+            wakeReason: "execution_review_requested",
+            source: "issue.execution_stage",
+          },
+        },
+      },
+      {
+        id: siblingDeferredWakeId,
+        companyId,
+        agentId: siblingReviewerId,
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_execution_deferred",
+        status: "deferred_issue_execution",
+        payload: {
+          issueId: siblingIssueId,
+          _paperclipWakeContext: {
+            issueId: siblingIssueId,
+            taskId: siblingIssueId,
+            wakeReason: "execution_review_requested",
+            source: "issue.execution_stage",
+          },
+        },
+      },
+    ]);
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reapOrphanedRuns();
@@ -1422,6 +1490,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "in_review",
       assigneeAgentId: reviewerId,
       executionRunId: reviewRun?.id,
+    });
+    const siblingPromotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, siblingDeferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(siblingPromotedWake?.status);
+    expect(siblingPromotedWake?.runId).toBeTruthy();
+    const siblingReviewRun = await heartbeat.getRun(siblingPromotedWake!.runId!);
+    expect(siblingReviewRun?.agentId).toBe(siblingReviewerId);
+    expect(["queued", "running", "succeeded"]).toContain(siblingReviewRun?.status);
+    const siblingIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, siblingIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(siblingIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: siblingReviewerId,
+      executionRunId: siblingReviewRun?.id,
     });
   });
 

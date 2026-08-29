@@ -10315,9 +10315,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (issueId) {
         await tx.execute(sql`
           select id from issues
-          where id = ${issueId} and company_id = ${run.companyId}
+          where company_id = ${run.companyId}
+            and (
+              id = ${issueId}
+              or execution_run_id = ${run.id}
+              or checkout_run_id = ${run.id}
+            )
+          order by id
           for update
         `);
+        const candidateIssueIds = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, run.companyId),
+            or(
+              eq(issues.id, issueId),
+              eq(issues.executionRunId, run.id),
+              eq(issues.checkoutRunId, run.id),
+            ),
+          ))
+          .orderBy(asc(issues.id))
+          .then((rows) => rows.map((row) => row.id));
         const currentIssue = await tx
           .select({
             status: issues.status,
@@ -10335,7 +10354,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           currentIssue?.assigneeAgentId === run.agentId ||
           (currentReviewParticipant?.type === "agent" && currentReviewParticipant.agentId === run.agentId);
         if (currentIssue && !runAgentStillOwnsIssue) {
-          return { kind: "ownership_advanced" as const, currentIssue };
+          return { kind: "ownership_advanced" as const, currentIssue, candidateIssueIds };
         }
       }
 
@@ -10414,7 +10433,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           currentAssigneeAgentId: enqueueResult.currentIssue.assigneeAgentId,
         },
       });
-      await releaseIssueExecutionAndPromote(run);
+      for (const candidateIssueId of enqueueResult.candidateIssueIds) {
+        await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
+      }
       return null;
     }
 
@@ -17179,10 +17200,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; contextIssueIdOverride?: string } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
-    const contextIssueId = readNonEmptyString(runContext.issueId);
+    const contextIssueId = options.contextIssueIdOverride ?? readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
     const recoveryAgent = await getAgent(run.agentId);
     const recoveryAgentInvokable =
