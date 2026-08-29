@@ -99,6 +99,7 @@ export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const STALE_LOCK_RECOVERY_RUN_ID_KEY = "staleLockRecoveryRunId";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX = "agent_wakeup_requests_disposition_repair_idempotency_uq";
@@ -5693,6 +5694,57 @@ export function recoveryService(
       terminalizedRunIds: [] as string[],
     };
 
+    // A prior sweep may have cleared a stale lock but failed while invoking the
+    // native deferred-wake promotion transaction. The wake itself is the durable
+    // continuation record; a run id stamped into its existing wake context lets
+    // the next native recovery sweep retry without inventing a parallel queue or
+    // treating the deferred row as a completed execution path.
+    if (deps.releaseIssueExecutionAndPromote) {
+      const markedDeferredWakes = await db
+        .select({
+          id: agentWakeupRequests.id,
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY} ->> ${STALE_LOCK_RECOVERY_RUN_ID_KEY} is not null`,
+          ),
+        );
+
+      for (const deferred of markedDeferredWakes) {
+        const payload = parseObject(deferred.payload);
+        const issueId = readNonEmptyString(payload.issueId);
+        const wakeContext = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+        const runId = readNonEmptyString(wakeContext[STALE_LOCK_RECOVERY_RUN_ID_KEY]);
+        if (!issueId || !runId) continue;
+
+        const terminalRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, runId),
+              inArray(heartbeatRuns.status, [...TERMINAL_HEARTBEAT_RUN_STATUSES]),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!terminalRun) continue;
+
+        try {
+          await deps.releaseIssueExecutionAndPromote(terminalRun, {
+            contextIssueIdOverride: issueId,
+          });
+        } catch (error) {
+          logger.error(
+            { err: error, runId, issueId, wakeupRequestId: deferred.id },
+            "failed to retry deferred issue execution after stale-lock terminalization",
+          );
+        }
+      }
+    }
+
     const candidates = await db
       .select({
         id: issues.id,
@@ -5797,6 +5849,50 @@ export function recoveryService(
         continue;
       }
 
+      const terminalizedRun = [issue.executionRunId, issue.checkoutRunId]
+        .filter((runId): runId is string => !!runId)
+        .map((runId) => terminalizedRunById.get(runId))
+        .find((run): run is typeof heartbeatRuns.$inferSelect => !!run);
+
+      if (terminalizedRun) {
+        // Stamp the existing native deferred wake before clearing the lock. If
+        // the promotion callback or process fails after the clear, the next
+        // sweep can recover the same wake and same issue from this durable
+        // context instead of losing the typed handoff.
+        const deferredWakes = await db
+          .select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        for (const deferred of deferredWakes) {
+          const payload = parseObject(deferred.payload);
+          const wakeContext = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              payload: {
+                ...payload,
+                [DEFERRED_WAKE_CONTEXT_KEY]: {
+                  ...wakeContext,
+                  [STALE_LOCK_RECOVERY_RUN_ID_KEY]: terminalizedRun.id,
+                },
+              },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(agentWakeupRequests.id, deferred.id),
+                eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              ),
+            );
+        }
+      }
+
       const updated = await db
         .update(issues)
         .set({
@@ -5834,10 +5930,6 @@ export function recoveryService(
       // promotion. The explicit issue override preserves one native promotion
       // attempt per affected issue even when the terminalized run has no context
       // issue or was shared across sibling issues.
-      const terminalizedRun = [issue.executionRunId, issue.checkoutRunId]
-        .filter((runId): runId is string => !!runId)
-        .map((runId) => terminalizedRunById.get(runId))
-        .find((run): run is typeof heartbeatRuns.$inferSelect => !!run);
       if (terminalizedRun) {
         promotionJobs.push({ issueId: updated.id, run: terminalizedRun });
       }

@@ -23,6 +23,7 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { recoveryService } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -700,5 +701,96 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       assigneeAgentId: reviewerId,
       executionRunId: reviewRun?.id,
     });
+  });
+
+  it("durably retries reviewer promotion after the first callback fails", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    const deferredWakeId = randomUUID();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        processPid: 2_000_000_000,
+        contextSnapshot: { issueId },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Typed handoff survives a transient promotion failure",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionAgentNameKey: "coder",
+      executionLockedAt: new Date(),
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+        },
+      },
+    });
+
+    const promote = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("simulated transient promotion failure"))
+      .mockImplementationOnce(async () => {
+        await db
+          .update(agentWakeupRequests)
+          .set({ status: "queued", updatedAt: new Date() })
+          .where(eq(agentWakeupRequests.id, deferredWakeId));
+      });
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+      releaseIssueExecutionAndPromote: promote,
+    });
+
+    const first = await recovery.sweepStaleIssueLocks();
+    expect(first).toMatchObject({
+      cleared: 1,
+      issueIds: [issueId],
+      terminalizedRunIds: [runningRunId],
+    });
+    expect(promote).toHaveBeenCalledTimes(1);
+    const afterFailure = await db
+      .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0]);
+    expect(afterFailure?.status).toBe("deferred_issue_execution");
+    expect(
+      ((afterFailure?.payload as Record<string, unknown>)?._paperclipWakeContext as Record<
+        string,
+        unknown
+      >)?.staleLockRecoveryRunId,
+    ).toBe(runningRunId);
+
+    const second = await recovery.sweepStaleIssueLocks();
+    expect(second.cleared).toBe(0);
+    expect(promote).toHaveBeenCalledTimes(2);
+    expect(promote).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: runningRunId, status: "interrupted" }),
+      { contextIssueIdOverride: issueId },
+    );
+    const recoveredWake = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0]);
+    expect(recoveredWake?.status).toBe("queued");
   });
 });
