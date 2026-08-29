@@ -44,7 +44,11 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
-import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
+import {
+  WORKSPACE_GIT_SCAN_ERROR_CODES,
+  WorkspaceGitScanError,
+  workspaceGitOperationScheduler,
+} from "../services/workspace-git-operation-scheduler.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -578,6 +582,91 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
       expect(workspace?.status).toBe("active");
       await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it("does not block shared archive_record-only close when git status exceeds the scan limit", async () => {
+    const projectDir = await createTempRepo();
+    tempDirs.add(projectDir);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared archive",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectDir,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: `${issuePrefix}-1`,
+      status: "cleanup_failed",
+      providerType: "local_fs",
+      cwd: projectDir,
+      baseRef: "main",
+      metadata: {
+        createdByRuntime: false,
+      },
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Shared session source",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockRejectedValue(new WorkspaceGitScanError(
+        WORKSPACE_GIT_SCAN_ERROR_CODES.outputLimit,
+        "Workspace Git scan exceeded its output limit",
+        { stdoutBytes: 2_000_001, maxStdoutBytes: 2_000_000 },
+      ));
+
+    try {
+      const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+      expect(readiness).toMatchObject({
+        state: "ready_with_warnings",
+        isSharedWorkspace: true,
+        isProjectPrimaryWorkspace: true,
+        isDestructiveCloseAllowed: true,
+      });
+      expect(readiness?.blockingReasons).toEqual([]);
+      expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
+      expect(statusSpy).not.toHaveBeenCalled();
     } finally {
       statusSpy.mockRestore();
     }

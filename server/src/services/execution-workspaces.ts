@@ -140,6 +140,40 @@ function isClosedExecutionWorkspaceStatus(status: string | null | undefined): bo
   return status === "archived" || status === "cleanup_failed";
 }
 
+function readWorkspaceCreatedByRuntime(
+  workspace: Pick<ExecutionWorkspace, "providerType" | "metadata">,
+): boolean {
+  return workspace.providerType === "git_worktree"
+    ? isRuntimeOwnedGitBranch(workspace.metadata)
+    : workspace.metadata?.createdByRuntime === true;
+}
+
+const DESTRUCTIVE_CLOSE_ACTION_KINDS = new Set<ExecutionWorkspaceCloseAction["kind"]>([
+  "git_worktree_remove",
+  "git_branch_delete",
+  "remove_local_directory",
+]);
+
+function closeActionsRequireWorkingTreeScan(
+  actions: Pick<ExecutionWorkspaceCloseAction, "kind">[],
+): boolean {
+  return actions.some((action) => DESTRUCTIVE_CLOSE_ACTION_KINDS.has(action.kind));
+}
+
+const GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON =
+  "Paperclip could not verify the workspace git status. Retry before destructive cleanup.";
+
+// Host backport: skip the porcelain dump when close cannot destroy a worktree,
+// branch, or runtime directory. Leaving a shared project cwd is success.
+// Drop this once upstream no longer fail-closes archive_record-only sessions
+// on git-scan output limits.
+function closeRequiresWorkingTreeScan(
+  workspace: Pick<ExecutionWorkspace, "providerType" | "metadata">,
+): boolean {
+  return workspace.providerType === "git_worktree"
+    || (workspace.providerType === "local_fs" && readWorkspaceCreatedByRuntime(workspace));
+}
+
 // The metadata key that marks a workspace as reopened for a source issue that is
 // still terminal. A reopen sets this flag in the same write that publishes the
 // row as active. The source issue is still terminal at that moment, because the
@@ -783,16 +817,18 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
   }
 }
 
-async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
+async function inspectGitCloseReadiness(
+  workspace: ExecutionWorkspace,
+  options: { inspectWorkingTreeStatus?: boolean } = {},
+): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
   statusInspectionSucceeded: boolean;
 }> {
   const warnings: string[] = [];
+  const inspectWorkingTreeStatus = options.inspectWorkingTreeStatus !== false;
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-  const createdByRuntime = workspace.providerType === "git_worktree"
-    ? isRuntimeOwnedGitBranch(workspace.metadata)
-    : workspace.metadata?.createdByRuntime === true;
+  const createdByRuntime = readWorkspaceCreatedByRuntime(workspace);
   const expectsGitInspection =
     workspace.providerType === "git_worktree" ||
     Boolean(workspace.repoUrl || workspace.baseRef || workspace.branchName || workspacePath);
@@ -849,7 +885,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
   let statusInspectionSucceeded = false;
-  if (repoRoot) {
+  if (repoRoot && inspectWorkingTreeStatus) {
     try {
       const statusOutput = (await runExpensiveGitStatus({
         args: ["status", "--porcelain=v1", "--untracked-files=all"],
@@ -875,6 +911,8 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  } else if (repoRoot) {
+    statusInspectionSucceeded = true;
   }
 
   let aheadCount: number | null = null;
@@ -2302,16 +2340,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+      const inspectWorkingTreeStatus = closeRequiresWorkingTreeScan(executionWorkspace);
       const {
         git,
         warnings: gitWarnings,
         statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace);
+      } = await inspectGitCloseReadiness(executionWorkspace, { inspectWorkingTreeStatus });
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
-      if (!statusInspectionSucceeded) {
-        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+      if (!statusInspectionSucceeded && inspectWorkingTreeStatus) {
+        blockingReasons.push(GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON);
       }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
@@ -2477,6 +2516,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
       }
 
+      if (!closeActionsRequireWorkingTreeScan(plannedActions)) {
+        const gitBlockIndex = blockingReasons.indexOf(GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON);
+        if (gitBlockIndex >= 0) blockingReasons.splice(gitBlockIndex, 1);
+      }
+
       const state =
         blockingReasons.length > 0
           ? "blocked"
@@ -2585,8 +2629,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
-        if (!statusInspectionSucceeded) {
+        const inspectWorkingTreeStatus = closeRequiresWorkingTreeScan(executionWorkspace);
+        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(
+          executionWorkspace,
+          { inspectWorkingTreeStatus },
+        );
+        if (!statusInspectionSucceeded && inspectWorkingTreeStatus) {
           result.skippedUndelivered += 1;
           continue;
         }
