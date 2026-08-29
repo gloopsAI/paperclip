@@ -10279,6 +10279,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return existingRetry;
     }
 
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -10292,12 +10294,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...invokability.details,
         },
       });
-      await releaseIssueExecutionAndPromote(run);
+      const candidateIssueIds = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          issueId
+            ? or(
+                eq(issues.id, issueId),
+                eq(issues.executionRunId, run.id),
+                eq(issues.checkoutRunId, run.id),
+              )
+            : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+        ))
+        .orderBy(asc(issues.id))
+        .then((rows) => rows.map((row) => row.id));
+      const primaryIssueId = issueId ?? candidateIssueIds[0] ?? null;
+      for (const candidateIssueId of candidateIssueIds) {
+        if (candidateIssueId === primaryIssueId) continue;
+        await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
+      }
       return null;
     }
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";
