@@ -2103,6 +2103,62 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]));
   });
 
+  it("retries the native archive lifecycle after cleanup_failed", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const retriedClosedAt = new Date("2026-08-29T14:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace cleanup retry",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Retryable shared workspace",
+      status: "cleanup_failed",
+      providerType: "local_fs",
+      cwd: "/tmp/paperclip-primary",
+      closedAt: new Date("2026-08-29T13:00:00.000Z"),
+      cleanupReason: "Paperclip could not verify the workspace git status.",
+      metadata: { lifecycleGeneration: 3 },
+    });
+
+    const result = await svc.archiveWorkspaceUnderLifecycleLock({
+      id: executionWorkspaceId,
+      patch: { status: "archived" },
+      closedAt: retriedClosedAt,
+    });
+
+    expect(result).toMatchObject({
+      outcome: "archived",
+      capturedGeneration: 4,
+      workspace: {
+        id: executionWorkspaceId,
+        status: "archived",
+        cleanupReason: null,
+        closedAt: retriedClosedAt,
+      },
+    });
+    await expect(svc.archiveWorkspaceUnderLifecycleLock({
+      id: executionWorkspaceId,
+      patch: { status: "archived" },
+      closedAt: new Date("2026-08-29T15:00:00.000Z"),
+    })).resolves.toBeNull();
+  });
+
   it("reaps a terminal shared local_fs session without deleting the project directory", async () => {
     const projectDir = await createTempRepo();
     tempDirs.add(projectDir);
