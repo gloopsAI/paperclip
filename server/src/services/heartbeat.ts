@@ -10298,39 +10298,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (issueId) {
-      const currentIssue = await db
-        .select({
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          executionState: issues.executionState,
-        })
-        .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      const currentReviewParticipant = currentIssue?.status === "in_review"
-        ? parseIssueExecutionState(currentIssue.executionState)?.currentParticipant ?? null
-        : null;
-      const runAgentStillOwnsIssue =
-        currentIssue?.assigneeAgentId === run.agentId ||
-        (currentReviewParticipant?.type === "agent" && currentReviewParticipant.agentId === run.agentId);
-      if (currentIssue && !runAgentStillOwnsIssue) {
-        await appendRunEvent(run, await nextRunEventSeq(run.id), {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "info",
-          message: "Process-loss retry suppressed because issue ownership already advanced",
-          payload: {
-            issueId,
-            currentStatus: currentIssue.status,
-            currentAssigneeAgentId: currentIssue.assigneeAgentId,
-          },
-        });
-        await releaseIssueExecutionAndPromote(run);
-        return null;
-      }
-    }
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";
@@ -10344,7 +10311,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
-    const queued = await db.transaction(async (tx) => {
+    const enqueueResult = await db.transaction(async (tx) => {
+      if (issueId) {
+        await tx.execute(sql`
+          select id from issues
+          where id = ${issueId} and company_id = ${run.companyId}
+          for update
+        `);
+        const currentIssue = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const currentReviewParticipant = currentIssue?.status === "in_review"
+          ? parseIssueExecutionState(currentIssue.executionState)?.currentParticipant ?? null
+          : null;
+        const runAgentStillOwnsIssue =
+          currentIssue?.assigneeAgentId === run.agentId ||
+          (currentReviewParticipant?.type === "agent" && currentReviewParticipant.agentId === run.agentId);
+        if (currentIssue && !runAgentStillOwnsIssue) {
+          return { kind: "ownership_advanced" as const, currentIssue };
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -10405,8 +10399,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return retryRun;
+      return { kind: "queued" as const, retryRun };
     });
+
+    if (enqueueResult.kind === "ownership_advanced") {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Process-loss retry suppressed because issue ownership already advanced",
+        payload: {
+          issueId,
+          currentStatus: enqueueResult.currentIssue.status,
+          currentAssigneeAgentId: enqueueResult.currentIssue.assigneeAgentId,
+        },
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
+
+    const queued = enqueueResult.retryRun;
 
     publishLiveEvent({
       companyId: queued.companyId,
