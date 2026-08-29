@@ -3244,8 +3244,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // route calls this so the transition to archived and the destruction fence
     // both run under the same lock as a reopen. The lock stops a concurrent
     // reopen from publishing an active row between the status re-check and the
-    // archive write. The archive runs only while the row is still open (not
-    // already archived by a race) and clears the reopen-pending flag.
+    // archive write. The archive runs while the row is still open or a previous
+    // cleanup attempt left it in cleanup_failed. It does not rerun after the row
+    // is successfully archived, and it clears the reopen-pending flag.
     //
     // The method refuses to archive a row that carries the reopen-pending flag.
     // A reopen sets that flag when it publishes a rebuilt worktree as active
@@ -3270,9 +3271,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .from(executionWorkspaces)
           .where(eq(executionWorkspaces.id, input.id))
           .then((rows) => rows[0] ?? null);
-        if (!fresh || isClosedExecutionWorkspaceStatus(fresh.status)) {
-          // The row is missing or already closed by a concurrent path. Do not
-          // archive again.
+        if (!fresh || fresh.status === "archived") {
+          // The row is missing or already archived by a concurrent/successful
+          // path. A cleanup_failed row remains retryable through the same native
+          // archive lifecycle.
           return null;
         }
         if (metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
