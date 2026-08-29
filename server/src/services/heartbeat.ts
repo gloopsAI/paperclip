@@ -10279,6 +10279,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return existingRetry;
     }
 
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -10292,12 +10294,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...invokability.details,
         },
       });
-      await releaseIssueExecutionAndPromote(run);
+      const candidateIssueIds = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          issueId
+            ? or(
+                eq(issues.id, issueId),
+                eq(issues.executionRunId, run.id),
+                eq(issues.checkoutRunId, run.id),
+              )
+            : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+        ))
+        .orderBy(asc(issues.id))
+        .then((rows) => rows.map((row) => row.id));
+      const primaryIssueId = issueId ?? candidateIssueIds[0] ?? null;
+      for (const candidateIssueId of candidateIssueIds) {
+        if (candidateIssueId === primaryIssueId) continue;
+        await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
+      }
       return null;
     }
 
-    const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";
@@ -10311,7 +10330,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
-    const queued = await db.transaction(async (tx) => {
+    const enqueueResult = await db.transaction(async (tx) => {
+      await tx.execute(
+        issueId
+          ? sql`
+              select id from issues
+              where company_id = ${run.companyId}
+                and (
+                  id = ${issueId}
+                  or execution_run_id = ${run.id}
+                  or checkout_run_id = ${run.id}
+                )
+              order by id
+              for update
+            `
+          : sql`
+              select id from issues
+              where company_id = ${run.companyId}
+                and (execution_run_id = ${run.id} or checkout_run_id = ${run.id})
+              order by id
+              for update
+            `,
+      );
+      const candidateIssueIds = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          issueId
+            ? or(
+                eq(issues.id, issueId),
+                eq(issues.executionRunId, run.id),
+                eq(issues.checkoutRunId, run.id),
+              )
+            : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+        ))
+        .orderBy(asc(issues.id))
+        .then((rows) => rows.map((row) => row.id));
+      if (issueId) {
+        const currentIssue = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const currentReviewParticipant = currentIssue?.status === "in_review"
+          ? parseIssueExecutionState(currentIssue.executionState)?.currentParticipant ?? null
+          : null;
+        const runAgentStillOwnsIssue =
+          currentIssue?.assigneeAgentId === run.agentId ||
+          (currentReviewParticipant?.type === "agent" && currentReviewParticipant.agentId === run.agentId);
+        if (currentIssue && !runAgentStillOwnsIssue) {
+          return { kind: "ownership_advanced" as const, currentIssue, candidateIssueIds };
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -10372,8 +10449,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return retryRun;
+      return { kind: "queued" as const, retryRun, candidateIssueIds };
     });
+
+    if (enqueueResult.kind === "ownership_advanced") {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Process-loss retry suppressed because issue ownership already advanced",
+        payload: {
+          issueId,
+          currentStatus: enqueueResult.currentIssue.status,
+          currentAssigneeAgentId: enqueueResult.currentIssue.assigneeAgentId,
+        },
+      });
+      for (const candidateIssueId of enqueueResult.candidateIssueIds) {
+        if (candidateIssueId === issueId) continue;
+        await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
+      }
+      return null;
+    }
+
+    const queued = enqueueResult.retryRun;
+    for (const candidateIssueId of enqueueResult.candidateIssueIds) {
+      if (candidateIssueId === issueId) continue;
+      await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
@@ -17134,10 +17236,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; contextIssueIdOverride?: string } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
-    const contextIssueId = readNonEmptyString(runContext.issueId);
+    const contextIssueId = options.contextIssueIdOverride ?? readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
     const recoveryAgent = await getAgent(run.agentId);
     const recoveryAgentInvokable =
