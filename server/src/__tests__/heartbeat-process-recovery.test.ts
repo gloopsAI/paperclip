@@ -1728,6 +1728,111 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("promotes an owned reviewer when the lost executor run has no context issue", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      includeIssue: false,
+    });
+    const reviewerId = randomUUID();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const deferredWakeId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(agents).values({
+      id: reviewerId,
+      companyId,
+      name: "Context-free Run Reviewer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review owned by context-free executor run",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerId,
+      assigneeUserId: null,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "executor",
+      executionLockedAt: new Date(),
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        reviewRequest: null,
+        monitor: null,
+      },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: reviewerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const executorRetries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows.filter((row) => row.agentId === agentId));
+    expect(executorRetries).toHaveLength(1);
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(promotedWake?.status);
+    expect(promotedWake?.runId).toBeTruthy();
+    const reviewRun = await heartbeat.getRun(promotedWake!.runId!);
+    expect(reviewRun?.agentId).toBe(reviewerId);
+    expect(["queued", "running", "succeeded"]).toContain(reviewRun?.status);
+    const reviewIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(reviewIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      executionRunId: reviewRun?.id,
+    });
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",

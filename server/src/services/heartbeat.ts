@@ -10331,32 +10331,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const enqueueResult = await db.transaction(async (tx) => {
-      let candidateIssueIds: string[] = [];
+      await tx.execute(
+        issueId
+          ? sql`
+              select id from issues
+              where company_id = ${run.companyId}
+                and (
+                  id = ${issueId}
+                  or execution_run_id = ${run.id}
+                  or checkout_run_id = ${run.id}
+                )
+              order by id
+              for update
+            `
+          : sql`
+              select id from issues
+              where company_id = ${run.companyId}
+                and (execution_run_id = ${run.id} or checkout_run_id = ${run.id})
+              order by id
+              for update
+            `,
+      );
+      const candidateIssueIds = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          issueId
+            ? or(
+                eq(issues.id, issueId),
+                eq(issues.executionRunId, run.id),
+                eq(issues.checkoutRunId, run.id),
+              )
+            : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+        ))
+        .orderBy(asc(issues.id))
+        .then((rows) => rows.map((row) => row.id));
       if (issueId) {
-        await tx.execute(sql`
-          select id from issues
-          where company_id = ${run.companyId}
-            and (
-              id = ${issueId}
-              or execution_run_id = ${run.id}
-              or checkout_run_id = ${run.id}
-            )
-          order by id
-          for update
-        `);
-        candidateIssueIds = await tx
-          .select({ id: issues.id })
-          .from(issues)
-          .where(and(
-            eq(issues.companyId, run.companyId),
-            or(
-              eq(issues.id, issueId),
-              eq(issues.executionRunId, run.id),
-              eq(issues.checkoutRunId, run.id),
-            ),
-          ))
-          .orderBy(asc(issues.id))
-          .then((rows) => rows.map((row) => row.id));
         const currentIssue = await tx
           .select({
             status: issues.status,
@@ -10438,7 +10449,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return { kind: "queued" as const, retryRun, candidateIssueIds: issueId ? candidateIssueIds : [] };
+      return { kind: "queued" as const, retryRun, candidateIssueIds };
     });
 
     if (enqueueResult.kind === "ownership_advanced") {
