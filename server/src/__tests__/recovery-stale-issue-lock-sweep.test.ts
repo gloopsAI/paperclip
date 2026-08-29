@@ -703,6 +703,94 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     });
   });
 
+  it("promotes an unmarked typed wake when restart finds the run already interrupted", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const deferredWakeId = randomUUID();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        finishedAt: new Date(),
+        processPid: null,
+        contextSnapshot: { issueId },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Restart resumes an already-terminal executor handoff",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionAgentNameKey: "coder",
+      executionLockedAt: new Date(),
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        currentParticipant: { type: "agent", agentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        reviewRequest: null,
+        monitor: null,
+      },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
+    });
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result).toMatchObject({
+      cleared: 1,
+      issueIds: [issueId],
+      terminalizedRunIds: [],
+    });
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(promotedWake?.status);
+    expect(promotedWake?.runId).toBeTruthy();
+    const reviewRun = await heartbeat.getRun(promotedWake!.runId!);
+    expect(reviewRun?.agentId).toBe(agentId);
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(issue?.executionRunId).toBe(reviewRun?.id);
+  });
+
   it("durably retries reviewer promotion after the first callback fails", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     const issueId = randomUUID();

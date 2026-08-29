@@ -5773,8 +5773,13 @@ export function recoveryService(
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
     const runStatusById = new Map<string, string>();
-    const terminalizedRunById = new Map<string, typeof heartbeatRuns.$inferSelect>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    const terminalRunById = new Map<string, typeof heartbeatRuns.$inferSelect>();
+    for (const row of runRows) {
+      runStatusById.set(row.id, row.status);
+      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(row.status)) {
+        terminalRunById.set(row.id, row);
+      }
+    }
 
     // Collect the runs that a non-terminal issue still references. Such a run is
     // the live run of an active issue. A different, terminal issue can also hold
@@ -5828,7 +5833,7 @@ export function recoveryService(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, row.id))
           .then((rows) => rows[0] ?? null);
-        if (terminalizedRun) terminalizedRunById.set(row.id, terminalizedRun);
+        if (terminalizedRun) terminalRunById.set(row.id, terminalizedRun);
       }
     }
 
@@ -5851,7 +5856,7 @@ export function recoveryService(
 
       const terminalizedRun = [issue.executionRunId, issue.checkoutRunId]
         .filter((runId): runId is string => !!runId)
-        .map((runId) => terminalizedRunById.get(runId))
+        .map((runId) => terminalRunById.get(runId))
         .find((run): run is typeof heartbeatRuns.$inferSelect => !!run);
 
       if (terminalizedRun) {
