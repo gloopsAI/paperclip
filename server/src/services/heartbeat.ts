@@ -10298,6 +10298,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (issueId) {
+      const currentIssue = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const currentReviewParticipant = currentIssue?.status === "in_review"
+        ? parseIssueExecutionState(currentIssue.executionState)?.currentParticipant ?? null
+        : null;
+      const runAgentStillOwnsIssue =
+        currentIssue?.assigneeAgentId === run.agentId ||
+        (currentReviewParticipant?.type === "agent" && currentReviewParticipant.agentId === run.agentId);
+      if (currentIssue && !runAgentStillOwnsIssue) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: "Process-loss retry suppressed because issue ownership already advanced",
+          payload: {
+            issueId,
+            currentStatus: currentIssue.status,
+            currentAssigneeAgentId: currentIssue.assigneeAgentId,
+          },
+        });
+        await releaseIssueExecutionAndPromote(run);
+        return null;
+      }
+    }
     const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
       ? "issue_continuation_needed"
       : "process_lost";

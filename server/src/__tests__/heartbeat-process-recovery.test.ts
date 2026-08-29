@@ -1334,6 +1334,97 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("promotes the pending reviewer instead of retrying a process-lost executor after handoff", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const reviewerId = randomUUID();
+    const stageId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerId,
+      companyId,
+      name: "Staff Reviewer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: reviewerId,
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageType: "review",
+          currentStageIndex: 0,
+          currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          changesRequestedCount: 0,
+          reviewRequest: null,
+          monitor: null,
+        },
+      })
+      .where(eq(issues.id, issueId));
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: reviewerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const executorRetries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(executorRetries).toHaveLength(0);
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(promotedWake?.status);
+    expect(promotedWake?.runId).toBeTruthy();
+    const reviewRun = await heartbeat.getRun(promotedWake!.runId!);
+    expect(reviewRun?.agentId).toBe(reviewerId);
+    expect(["queued", "running", "succeeded"]).toContain(reviewRun?.status);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      executionRunId: reviewRun?.id,
+    });
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
