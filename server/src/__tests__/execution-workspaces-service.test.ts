@@ -672,6 +672,84 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     }
   }, 20_000);
 
+  it("fails closed on a shared close with teardown when git status is unavailable", async () => {
+    const projectDir = await createTempRepo();
+    tempDirs.add(projectDir);
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared teardown",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: projectDir,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: projectDir,
+      baseRef: "main",
+      metadata: {
+        createdByRuntime: false,
+        config: {
+          teardownCommand: "bash ./scripts/teardown.sh",
+        },
+      },
+    });
+
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockRejectedValue(new WorkspaceGitScanError(
+        WORKSPACE_GIT_SCAN_ERROR_CODES.outputLimit,
+        "Workspace Git scan exceeded its output limit",
+        { stdoutBytes: 2_000_001, maxStdoutBytes: 2_000_000 },
+      ));
+
+    try {
+      const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+      expect(readiness).toMatchObject({
+        state: "blocked",
+        isSharedWorkspace: true,
+        isProjectPrimaryWorkspace: true,
+        isDestructiveCloseAllowed: false,
+        blockingReasons: [
+          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+        ],
+      });
+      expect(readiness?.plannedActions.map((action) => action.kind)).toEqual([
+        "archive_record",
+        "teardown_command",
+      ]);
+      expect(statusSpy).toHaveBeenCalled();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
   it("fails the final cleanup fence when a later git status scan is unavailable", async () => {
     const seeded = await seedAncestryTerminalWorkspace();
     const originalRun = workspaceGitOperationScheduler.run.bind(workspaceGitOperationScheduler);
