@@ -148,30 +148,17 @@ function readWorkspaceCreatedByRuntime(
     : workspace.metadata?.createdByRuntime === true;
 }
 
-const DESTRUCTIVE_CLOSE_ACTION_KINDS = new Set<ExecutionWorkspaceCloseAction["kind"]>([
-  "git_worktree_remove",
-  "git_branch_delete",
-  "remove_local_directory",
-]);
-
-function closeActionsRequireWorkingTreeScan(
-  actions: Pick<ExecutionWorkspaceCloseAction, "kind">[],
-): boolean {
-  return actions.some((action) => DESTRUCTIVE_CLOSE_ACTION_KINDS.has(action.kind));
-}
-
 const GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON =
   "Paperclip could not verify the workspace git status. Retry before destructive cleanup.";
 
-// Host backport: skip the porcelain dump when close cannot destroy a worktree,
-// branch, or runtime directory. Leaving a shared project cwd is success.
-// Drop this once upstream no longer fail-closes archive_record-only sessions
-// on git-scan output limits.
-function closeRequiresWorkingTreeScan(
-  workspace: Pick<ExecutionWorkspace, "providerType" | "metadata">,
+// Host backport: skip the porcelain dump only when the final planned close set
+// is archive_record. Cleanup/teardown commands and filesystem destroy still
+// require a verified working tree. Drop this once upstream no longer
+// fail-closes archive_record-only sessions on git-scan output limits.
+function isArchiveRecordOnlyClose(
+  actions: Pick<ExecutionWorkspaceCloseAction, "kind">[],
 ): boolean {
-  return workspace.providerType === "git_worktree"
-    || (workspace.providerType === "local_fs" && readWorkspaceCreatedByRuntime(workspace));
+  return actions.length > 0 && actions.every((action) => action.kind === "archive_record");
 }
 
 // The metadata key that marks a workspace as reopened for a source issue that is
@@ -2340,18 +2327,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
-      const inspectWorkingTreeStatus = closeRequiresWorkingTreeScan(executionWorkspace);
-      const {
-        git,
-        warnings: gitWarnings,
-        statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace, { inspectWorkingTreeStatus });
-      const { deliveryState } = await assessDelivery(workspace, git);
-      const warnings = [...gitWarnings];
-      const blockingReasons: string[] = [];
-      if (!statusInspectionSucceeded && inspectWorkingTreeStatus) {
-        blockingReasons.push(GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON);
-      }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
@@ -2362,6 +2337,109 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         && resolvedWorkspacePath != null
         && resolvedPrimaryWorkspacePath != null
         && resolvedWorkspacePath === resolvedPrimaryWorkspacePath;
+      const createdByRuntime = readWorkspaceCreatedByRuntime(executionWorkspace);
+      const plannedActions: ExecutionWorkspaceCloseAction[] = [
+        {
+          kind: "archive_record",
+          label: "Archive workspace record",
+          description: "Keep the execution workspace history and issue linkage, but remove it from active workspace lists.",
+          command: null,
+        },
+      ];
+      const closeActionWarnings: string[] = [];
+
+      if (runtimeServices.some((service) => service.status !== "stopped")) {
+        plannedActions.push({
+          kind: "stop_runtime_services",
+          label: runtimeServices.length === 1 ? "Stop attached runtime service" : "Stop attached runtime services",
+          description:
+            runtimeServices.length === 1
+              ? `${runtimeServices[0]?.serviceName ?? "A runtime service"} will be stopped before cleanup.`
+              : `${runtimeServices.length} runtime services will be stopped before cleanup.`,
+          command: null,
+        });
+      }
+
+      const configuredCleanupCommands = [
+        {
+          kind: "cleanup_command" as const,
+          label: "Run workspace cleanup command",
+          description: "Workspace-specific cleanup runs before teardown.",
+          command: config?.cleanupCommand ?? null,
+        },
+        {
+          kind: "cleanup_command" as const,
+          label: "Run project workspace cleanup command",
+          description: "Project workspace cleanup runs before execution workspace teardown.",
+          command: projectWorkspace?.cleanupCommand ?? null,
+        },
+      ];
+      for (const action of configuredCleanupCommands) {
+        if (!action.command) continue;
+        plannedActions.push(action);
+      }
+
+      const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+      if (teardownCommand) {
+        plannedActions.push({
+          kind: "teardown_command",
+          label: "Run teardown command",
+          description: "Teardown runs after cleanup commands during workspace close.",
+          command: teardownCommand,
+        });
+      }
+
+      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
+        plannedActions.push({
+          kind: "git_worktree_remove",
+          label: "Remove git worktree",
+          description: `Paperclip will run git worktree cleanup for ${workspacePath}.`,
+          command: `git worktree remove --force ${workspacePath}`,
+        });
+      }
+
+      if (createdByRuntime && executionWorkspace.branchName) {
+        plannedActions.push({
+          kind: "git_branch_delete",
+          label: "Delete runtime-created branch",
+          description: "Paperclip will try to delete the runtime-created branch after removing the worktree.",
+          command: `git branch -d ${executionWorkspace.branchName}`,
+        });
+      }
+
+      if (executionWorkspace.providerType === "local_fs" && createdByRuntime && workspacePath) {
+        const resolvedCreatedWorkspacePath = path.resolve(workspacePath);
+        const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
+        const containsProjectWorkspace = resolvedProjectWorkspacePath
+          ? (
+              resolvedCreatedWorkspacePath === resolvedProjectWorkspacePath ||
+              resolvedProjectWorkspacePath.startsWith(`${resolvedCreatedWorkspacePath}${path.sep}`)
+            )
+          : false;
+        if (containsProjectWorkspace) {
+          closeActionWarnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
+        } else {
+          plannedActions.push({
+            kind: "remove_local_directory",
+            label: "Remove runtime-created directory",
+            description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
+            command: `rm -rf ${workspacePath}`,
+          });
+        }
+      }
+
+      const inspectWorkingTreeStatus = !isArchiveRecordOnlyClose(plannedActions);
+      const {
+        git,
+        warnings: gitWarnings,
+        statusInspectionSucceeded,
+      } = await inspectGitCloseReadiness(executionWorkspace, { inspectWorkingTreeStatus });
+      const { deliveryState } = await assessDelivery(workspace, git);
+      const warnings = [...gitWarnings, ...closeActionWarnings];
+      const blockingReasons: string[] = [];
+      if (!statusInspectionSucceeded && inspectWorkingTreeStatus) {
+        blockingReasons.push(GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON);
+      }
 
       const linkedIssueSummaries = linkedIssues.map((issue) => ({
         ...issue,
@@ -2425,100 +2503,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             ? `This workspace is 1 commit behind ${git.baseRef ?? "the base ref"}.`
             : `This workspace is ${git.behindCount} commits behind ${git.baseRef ?? "the base ref"}.`,
         );
-      }
-
-      const plannedActions: ExecutionWorkspaceCloseAction[] = [
-        {
-          kind: "archive_record",
-          label: "Archive workspace record",
-          description: "Keep the execution workspace history and issue linkage, but remove it from active workspace lists.",
-          command: null,
-        },
-      ];
-
-      if (runtimeServices.some((service) => service.status !== "stopped")) {
-        plannedActions.push({
-          kind: "stop_runtime_services",
-          label: runtimeServices.length === 1 ? "Stop attached runtime service" : "Stop attached runtime services",
-          description:
-            runtimeServices.length === 1
-              ? `${runtimeServices[0]?.serviceName ?? "A runtime service"} will be stopped before cleanup.`
-              : `${runtimeServices.length} runtime services will be stopped before cleanup.`,
-          command: null,
-        });
-      }
-
-      const configuredCleanupCommands = [
-        {
-          kind: "cleanup_command" as const,
-          label: "Run workspace cleanup command",
-          description: "Workspace-specific cleanup runs before teardown.",
-          command: config?.cleanupCommand ?? null,
-        },
-        {
-          kind: "cleanup_command" as const,
-          label: "Run project workspace cleanup command",
-          description: "Project workspace cleanup runs before execution workspace teardown.",
-          command: projectWorkspace?.cleanupCommand ?? null,
-        },
-      ];
-      for (const action of configuredCleanupCommands) {
-        if (!action.command) continue;
-        plannedActions.push(action);
-      }
-
-      const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
-      if (teardownCommand) {
-        plannedActions.push({
-          kind: "teardown_command",
-          label: "Run teardown command",
-          description: "Teardown runs after cleanup commands during workspace close.",
-          command: teardownCommand,
-        });
-      }
-
-      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
-        plannedActions.push({
-          kind: "git_worktree_remove",
-          label: "Remove git worktree",
-          description: `Paperclip will run git worktree cleanup for ${workspacePath}.`,
-          command: `git worktree remove --force ${workspacePath}`,
-        });
-      }
-
-      if (git?.createdByRuntime && executionWorkspace.branchName) {
-        plannedActions.push({
-          kind: "git_branch_delete",
-          label: "Delete runtime-created branch",
-          description: "Paperclip will try to delete the runtime-created branch after removing the worktree.",
-          command: `git branch -d ${executionWorkspace.branchName}`,
-        });
-      }
-
-      if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
-        const resolvedWorkspacePath = path.resolve(workspacePath);
-        const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
-        const containsProjectWorkspace = resolvedProjectWorkspacePath
-          ? (
-              resolvedWorkspacePath === resolvedProjectWorkspacePath ||
-              resolvedProjectWorkspacePath.startsWith(`${resolvedWorkspacePath}${path.sep}`)
-            )
-          : false;
-        if (containsProjectWorkspace) {
-          warnings.push(`Paperclip will archive this workspace but keep "${workspacePath}" because it contains the project workspace.`);
-        } else {
-          plannedActions.push({
-            kind: "remove_local_directory",
-            label: "Remove runtime-created directory",
-            description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
-            command: `rm -rf ${workspacePath}`,
-          });
-        }
-      }
-
-      if (!closeActionsRequireWorkingTreeScan(plannedActions)) {
-        const gitBlockIndex = blockingReasons.indexOf(GIT_STATUS_DESTRUCTIVE_CLEANUP_BLOCK_REASON);
-        if (gitBlockIndex >= 0) blockingReasons.splice(gitBlockIndex, 1);
       }
 
       const state =
@@ -2629,7 +2613,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const inspectWorkingTreeStatus = closeRequiresWorkingTreeScan(executionWorkspace);
+        const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+        const inspectWorkingTreeStatus =
+          executionWorkspace.providerType === "git_worktree"
+          || readWorkspaceCreatedByRuntime(executionWorkspace)
+          || Boolean(config?.cleanupCommand)
+          || Boolean(config?.teardownCommand);
         const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(
           executionWorkspace,
           { inspectWorkingTreeStatus },
