@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
+  agentRuntimeState,
   agents,
   companies,
   createDb,
@@ -21,6 +23,7 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { recoveryService } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,6 +52,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -589,5 +594,291 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runningRunId));
     expect(events).toEqual([]);
+  });
+
+  it("promotes the typed reviewer wake after terminalizing an orphaned executor run", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const reviewerId = randomUUID();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const deferredWakeId = randomUUID();
+
+    await db.insert(agents).values({
+      id: reviewerId,
+      companyId,
+      name: "Staff Reviewer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        processPid: 2_000_000_000,
+        contextSnapshot: { issueId },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Executor exited after requesting typed review",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: reviewerId,
+      responsibleUserId: "responsible-user",
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionAgentNameKey: "coder",
+      executionLockedAt: new Date(),
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        reviewRequest: null,
+        monitor: null,
+      },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: reviewerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
+    });
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result).toMatchObject({
+      cleared: 1,
+      issueIds: [issueId],
+      terminalizedRunIds: [runningRunId],
+    });
+    const orphanedRun = await heartbeat.getRun(runningRunId);
+    expect(orphanedRun).toMatchObject({ status: "interrupted", errorCode: "orphaned_running_run" });
+
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(promotedWake?.status);
+    expect(promotedWake?.runId).toBeTruthy();
+    const reviewRun = await heartbeat.getRun(promotedWake!.runId!);
+    expect(reviewRun?.agentId).toBe(reviewerId);
+    expect(["queued", "running", "succeeded"]).toContain(reviewRun?.status);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      executionRunId: reviewRun?.id,
+    });
+  });
+
+  it("promotes an unmarked typed wake when restart finds the run already interrupted", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+    const deferredWakeId = randomUUID();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        finishedAt: new Date(),
+        processPid: null,
+        contextSnapshot: { issueId },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Restart resumes an already-terminal executor handoff",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionAgentNameKey: "coder",
+      executionLockedAt: new Date(),
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        currentParticipant: { type: "agent", agentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        reviewRequest: null,
+        monitor: null,
+      },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
+    });
+    const result = await heartbeat.sweepStaleIssueLocks();
+
+    expect(result).toMatchObject({
+      cleared: 1,
+      issueIds: [issueId],
+      terminalizedRunIds: [],
+    });
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(promotedWake?.status);
+    expect(promotedWake?.runId).toBeTruthy();
+    const reviewRun = await heartbeat.getRun(promotedWake!.runId!);
+    expect(reviewRun?.agentId).toBe(agentId);
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(issue?.executionRunId).toBe(reviewRun?.id);
+  });
+
+  it("durably retries reviewer promotion after the first callback fails", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    const deferredWakeId = randomUUID();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        processPid: 2_000_000_000,
+        contextSnapshot: { issueId },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Typed handoff survives a transient promotion failure",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionAgentNameKey: "coder",
+      executionLockedAt: new Date(),
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
+        },
+      },
+    });
+
+    const promote = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("simulated transient promotion failure"))
+      .mockImplementationOnce(async () => {
+        await db
+          .update(agentWakeupRequests)
+          .set({ status: "queued", updatedAt: new Date() })
+          .where(eq(agentWakeupRequests.id, deferredWakeId));
+      });
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+      releaseIssueExecutionAndPromote: promote,
+    });
+
+    const first = await recovery.sweepStaleIssueLocks();
+    expect(first).toMatchObject({
+      cleared: 1,
+      issueIds: [issueId],
+      terminalizedRunIds: [runningRunId],
+    });
+    expect(promote).toHaveBeenCalledTimes(1);
+    const afterFailure = await db
+      .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0]);
+    expect(afterFailure?.status).toBe("deferred_issue_execution");
+    expect(
+      ((afterFailure?.payload as Record<string, unknown>)?._paperclipWakeContext as Record<
+        string,
+        unknown
+      >)?.staleLockRecoveryRunId,
+    ).toBe(runningRunId);
+
+    const second = await recovery.sweepStaleIssueLocks();
+    expect(second.cleared).toBe(0);
+    expect(promote).toHaveBeenCalledTimes(2);
+    expect(promote).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: runningRunId, status: "interrupted" }),
+      { contextIssueIdOverride: issueId },
+    );
+    const recoveredWake = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0]);
+    expect(recoveredWake?.status).toBe("queued");
   });
 });

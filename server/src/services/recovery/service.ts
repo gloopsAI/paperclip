@@ -99,6 +99,7 @@ export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const STALE_LOCK_RECOVERY_RUN_ID_KEY = "staleLockRecoveryRunId";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX = "agent_wakeup_requests_disposition_repair_idempotency_uq";
@@ -746,7 +747,16 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: {
+    enqueueWakeup: RecoveryWakeup;
+    releaseIssueExecutionAndPromote?: (
+      run: typeof heartbeatRuns.$inferSelect,
+      options?: { contextIssueIdOverride?: string },
+    ) => Promise<unknown>;
+  },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -5684,6 +5694,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       terminalizedRunIds: [] as string[],
     };
 
+    // A prior sweep may have cleared a stale lock but failed while invoking the
+    // native deferred-wake promotion transaction. The wake itself is the durable
+    // continuation record; a run id stamped into its existing wake context lets
+    // the next native recovery sweep retry without inventing a parallel queue or
+    // treating the deferred row as a completed execution path.
+    if (deps.releaseIssueExecutionAndPromote) {
+      const markedDeferredWakes = await db
+        .select({
+          id: agentWakeupRequests.id,
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY} ->> ${STALE_LOCK_RECOVERY_RUN_ID_KEY} is not null`,
+          ),
+        );
+
+      for (const deferred of markedDeferredWakes) {
+        const payload = parseObject(deferred.payload);
+        const issueId = readNonEmptyString(payload.issueId);
+        const wakeContext = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+        const runId = readNonEmptyString(wakeContext[STALE_LOCK_RECOVERY_RUN_ID_KEY]);
+        if (!issueId || !runId) continue;
+
+        const terminalRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, runId),
+              inArray(heartbeatRuns.status, [...TERMINAL_HEARTBEAT_RUN_STATUSES]),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!terminalRun) continue;
+
+        try {
+          await deps.releaseIssueExecutionAndPromote(terminalRun, {
+            contextIssueIdOverride: issueId,
+          });
+        } catch (error) {
+          logger.error(
+            { err: error, runId, issueId, wakeupRequestId: deferred.id },
+            "failed to retry deferred issue execution after stale-lock terminalization",
+          );
+        }
+      }
+    }
+
     const candidates = await db
       .select({
         id: issues.id,
@@ -5712,7 +5773,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
     const runStatusById = new Map<string, string>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    const terminalRunById = new Map<string, typeof heartbeatRuns.$inferSelect>();
+    for (const row of runRows) {
+      runStatusById.set(row.id, row.status);
+      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(row.status)) {
+        terminalRunById.set(row.id, row);
+      }
+    }
 
     // Collect the runs that a non-terminal issue still references. Such a run is
     // the live run of an active issue. A different, terminal issue can also hold
@@ -5759,7 +5826,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         runReferencedByActiveIssue: runIdsReferencedByActiveIssue.has(row.id),
       });
       runStatusById.set(row.id, outcome.status);
-      if (outcome.terminalized) result.terminalizedRunIds.push(row.id);
+      if (outcome.terminalized) {
+        result.terminalizedRunIds.push(row.id);
+        const terminalizedRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, row.id))
+          .then((rows) => rows[0] ?? null);
+        if (terminalizedRun) terminalRunById.set(row.id, terminalizedRun);
+      }
     }
 
     const isCleanable = (runId: string | null) => {
@@ -5769,9 +5844,58 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
     };
 
+    const promotionJobs: Array<{
+      issueId: string;
+      run: typeof heartbeatRuns.$inferSelect;
+    }> = [];
+
     for (const issue of candidates) {
       if (!isCleanable(issue.checkoutRunId) || !isCleanable(issue.executionRunId)) {
         continue;
+      }
+
+      const terminalizedRun = [issue.executionRunId, issue.checkoutRunId]
+        .filter((runId): runId is string => !!runId)
+        .map((runId) => terminalRunById.get(runId))
+        .find((run): run is typeof heartbeatRuns.$inferSelect => !!run);
+
+      if (terminalizedRun) {
+        // Stamp the existing native deferred wake before clearing the lock. If
+        // the promotion callback or process fails after the clear, the next
+        // sweep can recover the same wake and same issue from this durable
+        // context instead of losing the typed handoff.
+        const deferredWakes = await db
+          .select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+            ),
+          );
+        for (const deferred of deferredWakes) {
+          const payload = parseObject(deferred.payload);
+          const wakeContext = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              payload: {
+                ...payload,
+                [DEFERRED_WAKE_CONTEXT_KEY]: {
+                  ...wakeContext,
+                  [STALE_LOCK_RECOVERY_RUN_ID_KEY]: terminalizedRun.id,
+                },
+              },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(agentWakeupRequests.id, deferred.id),
+                eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              ),
+            );
+        }
       }
 
       const updated = await db
@@ -5802,6 +5926,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       result.cleared += 1;
       result.issueIds.push(updated.id);
 
+      // A process-death terminalization can occur while a phase handoff wake is
+      // parked behind the executor's issue lock. Clearing that lock without the
+      // standard finalization path leaves the typed reviewer wake deferred
+      // forever. Queue promotion only after every stale candidate has been
+      // cleared: releaseIssueExecutionAndPromote clears all sibling references,
+      // so invoking it inside this loop could make later siblings miss their own
+      // promotion. The explicit issue override preserves one native promotion
+      // attempt per affected issue even when the terminalized run has no context
+      // issue or was shared across sibling issues.
+      if (terminalizedRun) {
+        promotionJobs.push({ issueId: updated.id, run: terminalizedRun });
+      }
+
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: "system",
@@ -5818,6 +5955,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           referencedRunStatuses: Object.fromEntries(runStatusById),
         },
       });
+    }
+
+    for (const job of promotionJobs) {
+      if (!deps.releaseIssueExecutionAndPromote) break;
+      try {
+        await deps.releaseIssueExecutionAndPromote(job.run, {
+          contextIssueIdOverride: job.issueId,
+        });
+      } catch (error) {
+        // The stale lock is already cleared, which remains the backstop's core
+        // safety guarantee. Keep the sweep available and surface the failed
+        // promotion for the next recovery pass instead of restoring a dead lock.
+        logger.error(
+          { err: error, runId: job.run.id, issueId: job.issueId },
+          "failed to promote deferred issue execution after stale-lock terminalization",
+        );
+      }
     }
 
     if (result.cleared > 0 || result.terminalizedRunIds.length > 0) {
