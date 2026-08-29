@@ -1513,6 +1513,117 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("retries an owned context issue while promoting an advanced sibling reviewer", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const reviewerId = randomUUID();
+    const siblingIssueId = randomUUID();
+    const stageId = randomUUID();
+    const deferredWakeId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(agents).values({
+      id: reviewerId,
+      companyId,
+      name: "Mixed Ownership Reviewer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: siblingIssueId,
+      companyId,
+      title: "Advanced sibling review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: reviewerId,
+      assigneeUserId: null,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "executor",
+      executionLockedAt: new Date(),
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        reviewRequest: null,
+        monitor: null,
+      },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: reviewerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId: siblingIssueId,
+        _paperclipWakeContext: {
+          issueId: siblingIssueId,
+          taskId: siblingIssueId,
+          wakeReason: "execution_review_requested",
+          source: "issue.execution_stage",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const executorRetry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows.find((row) => row.agentId === agentId) ?? null);
+    expect(executorRetry).toBeTruthy();
+    const contextIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect([executorRetry?.id ?? null, null]).toContain(contextIssue?.executionRunId ?? null);
+
+    const promotedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(["queued", "claimed", "completed"]).toContain(promotedWake?.status);
+    expect(promotedWake?.runId).toBeTruthy();
+    const reviewRun = await heartbeat.getRun(promotedWake!.runId!);
+    expect(reviewRun?.agentId).toBe(reviewerId);
+    expect(["queued", "running", "succeeded"]).toContain(reviewRun?.status);
+    const siblingIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, siblingIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(siblingIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: reviewerId,
+      executionRunId: reviewRun?.id,
+    });
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",

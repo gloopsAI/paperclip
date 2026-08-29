@@ -10312,6 +10312,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const enqueueResult = await db.transaction(async (tx) => {
+      let candidateIssueIds: string[] = [];
       if (issueId) {
         await tx.execute(sql`
           select id from issues
@@ -10324,7 +10325,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           order by id
           for update
         `);
-        const candidateIssueIds = await tx
+        candidateIssueIds = await tx
           .select({ id: issues.id })
           .from(issues)
           .where(and(
@@ -10418,7 +10419,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return { kind: "queued" as const, retryRun };
+      return { kind: "queued" as const, retryRun, candidateIssueIds: issueId ? candidateIssueIds : [] };
     });
 
     if (enqueueResult.kind === "ownership_advanced") {
@@ -10434,12 +10435,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       for (const candidateIssueId of enqueueResult.candidateIssueIds) {
+        if (candidateIssueId === issueId) continue;
         await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
       }
       return null;
     }
 
     const queued = enqueueResult.retryRun;
+    for (const candidateIssueId of enqueueResult.candidateIssueIds) {
+      if (candidateIssueId === issueId) continue;
+      await releaseIssueExecutionAndPromote(run, { contextIssueIdOverride: candidateIssueId });
+    }
 
     publishLiveEvent({
       companyId: queued.companyId,
